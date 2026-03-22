@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "last_run": "2026-03-22T21:02:43.775935Z",
+    "root": "C:\\DEV\\Proyectos\\Webstorm\\thoth",
+    "include_patterns": [
+      "src/**/*.ts"
+    ],
+    "exclude_patterns": [
+      "**/*.test.ts",
+      "dist/**",
+      "node_modules/**"
+    ],
+    "exceptions": []
+  },
+  "file_hashes": {
+    "src\\config.ts": "6a73e927aa1b7cfd7443b09533611492",
+    "src\\index.ts": "2994a5533a7c598ecd3f7921e54ed150",
+    "src\\server.ts": "a0405a29c2702415abe2b9bfeb54e5be",
+    "src\\store\\index.ts": "06605020a5570c74bc86db013150d13f",
+    "src\\store\\schema.ts": "1057b1946adb94757a5bb7ea85d70748",
+    "src\\store\\types.ts": "181a4b7a6710a197f004209444a33871",
+    "src\\tools\\index.ts": "ba6f2320b523c9509814c0718dc2ff1d",
+    "src\\tools\\mem-capture-passive.ts": "1e89619b4feb9d94a154a25ec3482d49",
+    "src\\tools\\mem-context.ts": "e1a942e813593df57a000e6c8aef4e16",
+    "src\\tools\\mem-delete.ts": "7c83372e1c105e03f72ffb6a6c30ddb2",
+    "src\\tools\\mem-get-observation.ts": "8591b998c2e47513db41158b15167fcd",
+    "src\\tools\\mem-save-prompt.ts": "3827bd7f8d2028dc7bab203ec8e7fe7b",
+    "src\\tools\\mem-save.ts": "b697d606cacb76352b55eada1becac0a",
+    "src\\tools\\mem-search.ts": "7ab2ab51fbb41b0c7a1cde1d97098157",
+    "src\\tools\\mem-session-start.ts": "e5d7ec2b55172c079e25acf95f9fd7a3",
+    "src\\tools\\mem-session-summary.ts": "a4b5b76914f27a33eb58ada152d04c8f",
+    "src\\tools\\mem-stats.ts": "5ca6892a066b1c097b34763e17f27923",
+    "src\\tools\\mem-suggest-topic-key.ts": "4810263e0414a2c7fdd3a1e66267fd48",
+    "src\\tools\\mem-timeline.ts": "224dc4f146257be434c3c69a1ffc7f92",
+    "src\\tools\\mem-update.ts": "c8e8e653fdbe8f5e4062b6dd63ceb98d",
+    "src\\utils\\content.ts": "b059a87147dd24722664c01af03cb885",
+    "src\\utils\\dedup.ts": "841b2b9f8061ea3f79f8d1cc8af76b1c",
+    "src\\utils\\privacy.ts": "541ccf13ef9e9d26fc937ea0991354f0",
+    "src\\utils\\sanitize.ts": "900b3a1150fd9610c76e009082cd03bd",
+    "src\\utils\\topic-key.ts": "bbc18c326064f0bfe809cd5ecadcaac4"
+  },
+  "folder_hashes": {
+    "src/utils": "",
+    ".": "6c4431137ced023279e2f49a35808553",
+    "src": "",
+    "src/tools": "",
+    "src/store": ""
+  }
+}
