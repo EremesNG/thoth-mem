@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "SQLite": {
+      "source": "oriolrius/pki-manager-web",
+      "sourceType": "github",
+      "computedHash": "0d4decc610dd4dd4ee5656d4c30d58fc3404adace71eb7921c808cc572f1bab1"
+    }
+  }
+}
