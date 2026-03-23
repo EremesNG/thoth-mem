@@ -2,20 +2,20 @@ import { describe, it, expect } from 'vitest';
 import { ALL_TOOLS, getToolCount } from '../../src/tools/index.js';
 
 describe('Tool Registry', () => {
-  it('has 13 tools total', () => {
-    expect(ALL_TOOLS).toHaveLength(13);
+  it('has 18 tools total', () => {
+    expect(ALL_TOOLS).toHaveLength(18);
   });
 
   it('agent profile has 10 tools', () => {
     expect(getToolCount(['agent'])).toBe(10);
   });
 
-  it('admin profile has 3 tools', () => {
-    expect(getToolCount(['admin'])).toBe(3);
+  it('admin profile has 8 tools', () => {
+    expect(getToolCount(['admin'])).toBe(8);
   });
 
-  it('both profiles combined has 13 tools', () => {
-    expect(getToolCount(['agent', 'admin'])).toBe(13);
+  it('both profiles combined has 18 tools', () => {
+    expect(getToolCount(['agent', 'admin'])).toBe(18);
   });
 
   it('empty profile array returns 0 tools', () => {
@@ -40,11 +40,16 @@ describe('Tool Registry', () => {
 
   it('all admin tools have correct profile', () => {
     const adminTools = ALL_TOOLS.filter(t => t.profile === 'admin');
-    expect(adminTools).toHaveLength(3);
+    expect(adminTools).toHaveLength(8);
     const names = adminTools.map(t => t.name);
     expect(names).toContain('mem_delete');
     expect(names).toContain('mem_stats');
     expect(names).toContain('mem_timeline');
+    expect(names).toContain('mem_migrate_project');
+    expect(names).toContain('mem_export');
+    expect(names).toContain('mem_import');
+    expect(names).toContain('mem_sync_export');
+    expect(names).toContain('mem_sync_import');
   });
 
   it('no tool appears in both profiles', () => {

@@ -13,6 +13,11 @@ import { registerMemUpdate } from "./mem-update.js";
 import { registerMemDelete } from "./mem-delete.js";
 import { registerMemStats } from "./mem-stats.js";
 import { registerMemTimeline } from "./mem-timeline.js";
+import { registerMemMigrateProject } from "./mem-migrate-project.js";
+import { registerMemExport } from "./mem-export.js";
+import { registerMemImport } from "./mem-import.js";
+import { registerMemSyncExport } from "./mem-sync-export.js";
+import { registerMemSyncImport } from "./mem-sync-import.js";
 
 export type ToolProfile = 'agent' | 'admin';
 
@@ -36,6 +41,11 @@ const ALL_TOOLS: ToolRegistration[] = [
   { name: 'mem_delete', profile: 'admin', register: registerMemDelete },
   { name: 'mem_stats', profile: 'admin', register: registerMemStats },
   { name: 'mem_timeline', profile: 'admin', register: registerMemTimeline },
+  { name: 'mem_migrate_project', profile: 'admin', register: registerMemMigrateProject },
+  { name: 'mem_export', profile: 'admin', register: registerMemExport },
+  { name: 'mem_import', profile: 'admin', register: registerMemImport },
+  { name: 'mem_sync_export', profile: 'admin', register: registerMemSyncExport },
+  { name: 'mem_sync_import', profile: 'admin', register: registerMemSyncImport },
 ];
 
 export function registerTools(server: McpServer, store: Store, profiles: string[]): void {
