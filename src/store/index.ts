@@ -1,8 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { PRAGMAS, SCHEMA_SQL } from './schema.js';
+import { PRAGMAS, SCHEMA_SQL, MIGRATIONS_SQL } from './schema.js';
 import { ThothConfig } from '../config.js';
 import type {
   ContextInput,
+  ExportData,
+  ImportResult,
+  MigrateProjectResult,
   Observation,
   ObservationVersion,
   SaveObservationInput,
@@ -44,6 +48,21 @@ export class Store {
     }
 
     this.db.exec(SCHEMA_SQL);
+    this.runMigrations();
+  }
+
+  /**
+   * Run idempotent schema migrations for existing databases.
+   * Each migration is wrapped in try/catch — already-applied migrations are silently skipped.
+   */
+  private runMigrations(): void {
+    for (const sql of MIGRATIONS_SQL) {
+      try {
+        this.db.exec(sql);
+      } catch {
+        // Already applied — safe to ignore (e.g., "duplicate column name")
+      }
+    }
   }
 
   /**
@@ -54,18 +73,28 @@ export class Store {
   }
 
   /**
-   * Ensure a session exists. Idempotent — INSERT OR IGNORE.
-   * Creates the session if it doesn't exist, does nothing if it does.
+   * Ensure a session exists. Idempotent — creates if new, enriches missing fields if existing.
+   * Replaces empty/unknown project and null/empty directory with provided values.
    */
   ensureSession(sessionId: string, project: string, directory?: string): void {
     this.db
-      .prepare('INSERT OR IGNORE INTO sessions (id, project, directory) VALUES (?, ?, ?)')
+      .prepare(
+        `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
+           directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
+      )
       .run(sessionId, project, directory ?? null);
   }
 
   startSession(id: string, project: string, directory?: string): Session {
     this.db
-      .prepare('INSERT OR IGNORE INTO sessions (id, project, directory) VALUES (?, ?, ?)')
+      .prepare(
+        `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
+           directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
+      )
       .run(id, project, directory ?? null);
 
     return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
@@ -198,9 +227,10 @@ export class Store {
   savePrompt(sessionId: string, content: string, project?: string): UserPrompt {
     this.ensureSession(sessionId, project || 'unknown');
 
+    const syncId = randomUUID();
     const result = this.db.prepare(
-      'INSERT INTO user_prompts (session_id, content, project) VALUES (?, ?, ?)'
-    ).run(sessionId, content, project ?? null);
+      'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
+    ).run(sessionId, content, project ?? null, syncId);
 
     const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
 
@@ -308,9 +338,10 @@ export class Store {
       }
     }
 
+    const syncId = randomUUID();
     const result = this.db.prepare(
-      `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash, sync_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       sessionId,
       type,
@@ -319,7 +350,8 @@ export class Store {
       input.project ?? null,
       scope,
       input.topic_key ?? null,
-      hash
+      hash,
+      syncId
     );
 
     const observation = this.getObservation(Number(result.lastInsertRowid));
@@ -449,9 +481,151 @@ export class Store {
       .all(observationId) as ObservationVersion[];
   }
 
+  // ── Project Migration ──
+
+  migrateProject(oldProject: string, newProject: string): MigrateProjectResult {
+    const migrate = this.db.transaction(() => {
+      const sessions = this.db.prepare(
+        'UPDATE sessions SET project = ? WHERE project = ?'
+      ).run(newProject, oldProject);
+
+      const observations = this.db.prepare(
+        "UPDATE observations SET project = ?, updated_at = datetime('now') WHERE project = ?"
+      ).run(newProject, oldProject);
+
+      const prompts = this.db.prepare(
+        'UPDATE user_prompts SET project = ? WHERE project = ?'
+      ).run(newProject, oldProject);
+
+      return {
+        old_project: oldProject,
+        new_project: newProject,
+        sessions_updated: sessions.changes,
+        observations_updated: observations.changes,
+        prompts_updated: prompts.changes,
+      };
+    });
+
+    return migrate();
+  }
+
+  // ── JSON Export/Import ──
+
+  exportData(project?: string): ExportData {
+    let sessions: Session[];
+    let observations: Observation[];
+    let prompts: UserPrompt[];
+
+    if (project) {
+      sessions = this.db.prepare(
+        'SELECT * FROM sessions WHERE project = ? ORDER BY started_at'
+      ).all(project) as Session[];
+      observations = this.db.prepare(
+        'SELECT * FROM observations WHERE project = ? AND deleted_at IS NULL ORDER BY id'
+      ).all(project) as Observation[];
+      prompts = this.db.prepare(
+        'SELECT * FROM user_prompts WHERE project = ? ORDER BY id'
+      ).all(project) as UserPrompt[];
+    } else {
+      sessions = this.db.prepare(
+        'SELECT * FROM sessions ORDER BY started_at'
+      ).all() as Session[];
+      observations = this.db.prepare(
+        'SELECT * FROM observations WHERE deleted_at IS NULL ORDER BY id'
+      ).all() as Observation[];
+      prompts = this.db.prepare(
+        'SELECT * FROM user_prompts ORDER BY id'
+      ).all() as UserPrompt[];
+    }
+
+    return {
+      version: 1,
+      exported_at: new Date().toISOString(),
+      project,
+      sessions,
+      observations,
+      prompts,
+    };
+  }
+
+  importData(data: ExportData): ImportResult {
+    let sessionsImported = 0;
+    let observationsImported = 0;
+    let promptsImported = 0;
+    let skipped = 0;
+
+    const doImport = this.db.transaction(() => {
+      // Import sessions (skip if already exists)
+      for (const session of data.sessions) {
+        const result = this.db.prepare(
+          `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`
+        ).run(session.id, session.project, session.directory, session.started_at, session.ended_at, session.summary);
+        if (result.changes > 0) sessionsImported++;
+      }
+
+      // Import observations (skip if sync_id already exists)
+      for (const obs of data.observations) {
+        if (obs.sync_id) {
+          const existing = this.db.prepare(
+            'SELECT id FROM observations WHERE sync_id = ?'
+          ).get(obs.sync_id);
+          if (existing) {
+            skipped++;
+            continue;
+          }
+        }
+
+        this.ensureSession(obs.session_id, obs.project || 'unknown');
+
+        this.db.prepare(
+          `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          obs.session_id, obs.type, obs.title, obs.content, obs.tool_name,
+          obs.project, obs.scope, obs.topic_key, obs.normalized_hash,
+          obs.sync_id || randomUUID(),
+          obs.revision_count, obs.duplicate_count,
+          obs.created_at, obs.updated_at
+        );
+        observationsImported++;
+      }
+
+      // Import prompts (skip if sync_id already exists)
+      for (const prompt of data.prompts) {
+        if (prompt.sync_id) {
+          const existing = this.db.prepare(
+            'SELECT id FROM user_prompts WHERE sync_id = ?'
+          ).get(prompt.sync_id);
+          if (existing) {
+            skipped++;
+            continue;
+          }
+        }
+
+        this.ensureSession(prompt.session_id, prompt.project || 'unknown');
+
+        this.db.prepare(
+          `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(
+          prompt.session_id, prompt.content, prompt.project,
+          prompt.sync_id || randomUUID(),
+          prompt.created_at
+        );
+        promptsImported++;
+      }
+    });
+
+    doImport();
+
+    return { sessions_imported: sessionsImported, observations_imported: observationsImported, prompts_imported: promptsImported, skipped };
+  }
+
   /**
    * Expose the raw database for use by utility functions (e.g., dedup checks).
-   * This is intentional — the Store is the single owner of the DB connection,
+   * This is the single owner of the DB connection,
    * but utility functions may need direct access for specific queries.
    */
   getDb(): Database.Database {

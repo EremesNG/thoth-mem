@@ -23,6 +23,7 @@ export interface Session {
 
 export interface Observation {
   id: number;
+  sync_id: string | null;
   session_id: string;
   type: ObservationType;
   title: string;
@@ -52,6 +53,7 @@ export interface ObservationVersion {
 
 export interface UserPrompt {
   id: number;
+  sync_id: string | null;
   session_id: string;
   content: string;
   project: string | null;
@@ -137,4 +139,30 @@ export interface TimelineResult {
   before: Observation[];
   focus: Observation | null;
   after: Observation[];
+}
+
+// ── Export/Import/Migration Results ──
+
+export interface ExportData {
+  version: number;
+  exported_at: string;
+  project?: string;
+  sessions: Session[];
+  observations: Observation[];
+  prompts: UserPrompt[];
+}
+
+export interface ImportResult {
+  sessions_imported: number;
+  observations_imported: number;
+  prompts_imported: number;
+  skipped: number;
+}
+
+export interface MigrateProjectResult {
+  old_project: string;
+  new_project: string;
+  sessions_updated: number;
+  observations_updated: number;
+  prompts_updated: number;
 }

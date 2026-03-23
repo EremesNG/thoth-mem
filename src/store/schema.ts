@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Observations table (core data store) with strict type taxonomy
 CREATE TABLE IF NOT EXISTS observations (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  sync_id         TEXT,
   session_id      TEXT NOT NULL,
   type            TEXT NOT NULL CHECK(type IN ('decision','architecture','bugfix','pattern','config','discovery','learning','session_summary','manual')),
   title           TEXT NOT NULL,
@@ -69,6 +70,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
 -- User prompts table
 CREATE TABLE IF NOT EXISTS user_prompts (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  sync_id    TEXT,
   session_id TEXT NOT NULL,
   content    TEXT NOT NULL,
   project    TEXT,
@@ -126,4 +128,15 @@ CREATE INDEX IF NOT EXISTS idx_obs_dedupe ON observations(normalized_hash, proje
 CREATE INDEX IF NOT EXISTS idx_obs_versions_obs ON observation_versions(observation_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_project ON user_prompts(project);
+CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);
+CREATE INDEX IF NOT EXISTS idx_prompts_sync_id ON user_prompts(sync_id);
 `;
+
+/**
+ * Idempotent migrations for schema evolution on existing databases.
+ * Each statement is wrapped in try/catch at runtime — safe to re-run on every startup.
+ */
+export const MIGRATIONS_SQL = [
+  'ALTER TABLE observations ADD COLUMN sync_id TEXT',
+  'ALTER TABLE user_prompts ADD COLUMN sync_id TEXT',
+];
