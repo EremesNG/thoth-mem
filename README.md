@@ -50,7 +50,7 @@ Agent Session 1                    Agent Session 2
 
 ```bash
 # Run directly (no install needed)
-npx thoth-mem
+npx thoth-mem@latest
 
 # Or install globally
 npm install -g thoth-mem
@@ -63,7 +63,7 @@ Requires Node.js >= 18.
 ### Claude Code
 
 ```bash
-claude mcp add thoth-mem -- npx -y thoth-mem
+claude mcp add thoth-mem -- npx -y thoth-mem@latest
 ```
 
 ### OpenCode
@@ -76,7 +76,7 @@ Add to `~/.config/opencode/config.json`:
     "thoth": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "thoth-mem"]
+      "args": ["-y", "thoth-mem@latest"]
     }
   }
 }
@@ -91,7 +91,7 @@ Add to `~/.gemini/settings.json`:
   "mcpServers": {
     "thoth": {
       "command": "npx",
-      "args": ["-y", "thoth-mem"]
+      "args": ["-y", "thoth-mem@latest"]
     }
   }
 }
@@ -103,7 +103,7 @@ Only expose agent tools (hides admin/curation tools):
 
 ```json
 {
-  "args": ["-y", "thoth-mem", "--tools=agent"]
+  "args": ["-y", "thoth-mem@latest", "--tools=agent"]
 }
 ```
 
