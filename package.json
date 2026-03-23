@@ -1,15 +1,15 @@
 {
   "name": "thoth-mem",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Persistent memory MCP server for AI coding agents",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EremesNG/thoth.git"
+    "url": "git+https://github.com/EremesNG/thoth-mem.git"
   },
-  "homepage": "https://github.com/EremesNG/thoth#readme",
+  "homepage": "https://github.com/EremesNG/thoth-mem#readme",
   "bugs": {
-    "url": "https://github.com/EremesNG/thoth/issues"
+    "url": "https://github.com/EremesNG/thoth-mem/issues"
   },
   "main": "dist/index.js",
   "bin": {
