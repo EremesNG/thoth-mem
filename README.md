@@ -141,8 +141,8 @@ thoth-mem search "auth pattern" -p my-project
 | Tool | Purpose |
 |------|---------|
 | `mem_save` | Save structured observations (decisions, bugs, patterns, configs) |
-| `mem_search` | Full-text search across all observations |
-| `mem_context` | Get recent session context — sessions, prompts, observations, stats |
+| `mem_search` | Full-text search across observations (optionally scoped to a session) |
+| `mem_context` | Get recent context — sessions, prompts, observations, stats (optionally scoped to a session) |
 | `mem_get_observation` | Retrieve full observation by ID with pagination support |
 | `mem_session_start` | Register a new coding session (idempotent) |
 | `mem_session_summary` | Save session summary AND close session in one call |

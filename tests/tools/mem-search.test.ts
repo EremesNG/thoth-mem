@@ -45,4 +45,28 @@ describe('mem_search tool (via Store)', () => {
     expect(results[0].preview).toBeDefined();
     expect(typeof results[0].preview).toBe('string');
   });
+
+  it('filters search results by session_id', () => {
+    store.saveObservation({
+      title: 'Session scoped auth',
+      content: 'Scoped JWT authentication result',
+      session_id: 'session-a',
+      project: 'auth-project',
+    });
+    store.saveObservation({
+      title: 'Other session auth',
+      content: 'Scoped JWT authentication result',
+      session_id: 'session-b',
+      project: 'auth-project',
+    });
+
+    const results = store.searchObservations({
+      query: 'Scoped JWT authentication',
+      session_id: 'session-a',
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].session_id).toBe('session-a');
+    expect(results[0].title).toBe('Session scoped auth');
+  });
 });

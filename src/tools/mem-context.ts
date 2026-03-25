@@ -16,12 +16,13 @@ Returns formatted Markdown with:
 - Memory stats (total counts)`,
     {
       project: z.string().optional().describe("Filter by project name"),
+      session_id: z.string().optional().describe('Filter to a specific session'),
       scope: z.enum(['project', 'personal'] as const).optional().describe("Filter by scope"),
       limit: z.number().optional().describe("Number of observations to retrieve (default: 20)"),
     },
-    async ({ project, scope, limit }) => {
+    async ({ project, session_id, scope, limit }) => {
       try {
-        const context = store.getContext({ project, scope, limit });
+        const context = store.getContext({ project, session_id, scope, limit });
 
         if (!context || context.trim().length === 0) {
           return {

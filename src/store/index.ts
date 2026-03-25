@@ -116,18 +116,27 @@ export class Store {
     return (this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session | undefined) ?? null;
   }
 
-  recentSessions(limit: number = 5): Session[] {
-    return this.db.prepare(
-      `SELECT s.*
-       FROM sessions s
-       WHERE EXISTS (
-         SELECT 1
-         FROM observations o
-         WHERE o.session_id = s.id AND o.deleted_at IS NULL
-       )
-        ORDER BY s.started_at DESC
-        LIMIT ?`
-    ).all(limit) as Session[];
+  recentSessions(limit: number = 5, sessionId?: string): Session[] {
+    const sql = [
+      'SELECT s.*',
+      'FROM sessions s',
+      'WHERE EXISTS (',
+      '  SELECT 1',
+      '  FROM observations o',
+      '  WHERE o.session_id = s.id AND o.deleted_at IS NULL',
+      ')',
+    ];
+    const params: Array<string | number> = [];
+
+    if (sessionId) {
+      sql.push('AND s.id = ?');
+      params.push(sessionId);
+    }
+
+    sql.push('ORDER BY s.started_at DESC LIMIT ?');
+    params.push(limit);
+
+    return this.db.prepare(sql.join(' ')).all(...params) as Session[];
   }
 
   allSessions(): Session[] {
@@ -135,8 +144,8 @@ export class Store {
   }
 
   getContext(input: ContextInput): string {
-    const recentSessions = this.recentSessions(5);
-    const recentPrompts = this.recentPrompts(10, input.project);
+    const recentSessions = this.recentSessions(5, input.session_id);
+    const recentPrompts = this.recentPrompts(10, input.project, input.session_id);
     const limit = input.limit || this.config.maxContextResults;
 
     const observationsSql = [
@@ -152,6 +161,11 @@ export class Store {
     if (input.scope) {
       observationsSql.push('AND scope = ?');
       params.push(input.scope);
+    }
+
+    if (input.session_id) {
+      observationsSql.push('AND session_id = ?');
+      params.push(input.session_id);
     }
 
     observationsSql.push('ORDER BY created_at DESC LIMIT ?');
@@ -241,13 +255,18 @@ export class Store {
     return prompt;
   }
 
-  recentPrompts(limit: number = 10, project?: string): UserPrompt[] {
+  recentPrompts(limit: number = 10, project?: string, sessionId?: string): UserPrompt[] {
     const sql = ['SELECT * FROM user_prompts'];
     const params: Array<string | number> = [];
 
     if (project) {
       sql.push('WHERE project = ?');
       params.push(project);
+    }
+
+    if (sessionId) {
+      sql.push(project ? 'AND session_id = ?' : 'WHERE session_id = ?');
+      params.push(sessionId);
     }
 
     sql.push('ORDER BY created_at DESC LIMIT ?');
@@ -455,6 +474,11 @@ export class Store {
     if (input.project) {
       sql.push('AND o.project = ?');
       params.push(input.project);
+    }
+
+    if (input.session_id) {
+      sql.push('AND o.session_id = ?');
+      params.push(input.session_id);
     }
 
     if (input.scope) {

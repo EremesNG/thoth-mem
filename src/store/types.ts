@@ -81,12 +81,14 @@ export interface SearchInput {
   query: string;
   type?: ObservationType;
   project?: string;
+  session_id?: string;
   scope?: ObservationScope;
   limit?: number;
 }
 
 export interface ContextInput {
   project?: string;
+  session_id?: string;
   scope?: ObservationScope;
   limit?: number;
 }

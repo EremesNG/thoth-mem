@@ -39,4 +39,33 @@ describe('mem_context tool (via Store)', () => {
     const context = store.getContext({ limit: 2 });
     expect(typeof context).toBe('string');
   });
+
+  it('filters observations and prompts by session_id', () => {
+    store.startSession('session-a', 'test-project');
+    store.startSession('session-b', 'test-project');
+
+    store.saveObservation({
+      title: 'Session A obs',
+      content: 'Only session A content',
+      session_id: 'session-a',
+      project: 'test-project',
+    });
+    store.saveObservation({
+      title: 'Session B obs',
+      content: 'Only session B content',
+      session_id: 'session-b',
+      project: 'test-project',
+    });
+
+    store.savePrompt('session-a', 'Prompt from session A', 'test-project');
+    store.savePrompt('session-b', 'Prompt from session B', 'test-project');
+
+    const context = store.getContext({ session_id: 'session-a' });
+
+    expect(context).toContain('Session A obs');
+    expect(context).toContain('Prompt from session A');
+    expect(context).toContain('test-project');
+    expect(context).not.toContain('Session B obs');
+    expect(context).not.toContain('Prompt from session B');
+  });
 });

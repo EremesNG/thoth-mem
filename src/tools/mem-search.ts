@@ -20,12 +20,13 @@ Tips:
       query: z.string().describe("Search query — natural language or keywords"),
       type: z.enum(OBSERVATION_TYPES).optional().describe("Filter by observation type"),
       project: z.string().optional().describe("Filter by project name"),
+      session_id: z.string().optional().describe('Filter to a specific session'),
       scope: z.enum(['project', 'personal'] as const).optional().describe("Filter by scope"),
       limit: z.number().min(1).max(20).optional().describe("Max results (default: 10, max: 20)"),
     },
-    async ({ query, type, project, scope, limit }) => {
+    async ({ query, type, project, session_id, scope, limit }) => {
       try {
-        const results = store.searchObservations({ query, type, project, scope, limit });
+        const results = store.searchObservations({ query, type, project, session_id, scope, limit });
 
         if (results.length === 0) {
           return {
