@@ -16,7 +16,7 @@ Give your AI coding agent a brain that survives across sessions, compactions, an
 
 ---
 
-Thoth-Mem is an MCP server that stores what your agent learns — architecture decisions, bug fixes, patterns, preferences — in a local SQLite database with full-text search. When a new session starts, the agent picks up right where it left off.
+Thoth-Mem is an MCP server with an optional HTTP REST API that stores what your agent learns — architecture decisions, bug fixes, patterns, preferences — in a local SQLite database with full-text search. When a new session starts, the agent picks up right where it left off.
 
 ```
 Agent Session 1                    Agent Session 2
@@ -32,6 +32,7 @@ Agent Session 1                    Agent Session 2
 ## Features
 
 - **18 MCP tools** across agent and admin profiles
+- **HTTP REST API** with OpenAPI 3.0 docs and interactive `/docs` interface
 - **CLI + MCP dual mode** — use as a server or directly from the terminal
 - **SQLite + FTS5** full-text search (fast, zero external dependencies)
 - **Git-friendly sync** — export memory as gzipped chunks for version control
@@ -109,10 +110,10 @@ Only expose agent tools (hides admin/curation tools):
 
 ## CLI Commands
 
-Thoth-Mem also works as a standalone CLI. When no subcommand is given, it starts the MCP server.
+Thoth-Mem also works as a standalone CLI. When no subcommand is given, it starts the MCP server (and HTTP bridge by default).
 
 ```bash
-thoth-mem                              # Start MCP server (default)
+thoth-mem                              # Start MCP server + HTTP bridge (default)
 thoth-mem mcp                          # Start MCP server (explicit)
 thoth-mem search <query>               # Search memories
 thoth-mem save <title> <content>       # Save a memory
@@ -132,7 +133,38 @@ Global flags work with any command:
 ```bash
 thoth-mem stats --data-dir=/custom/path
 thoth-mem search "auth pattern" -p my-project
+thoth-mem --no-http                    # Disable HTTP bridge
 ```
+
+## HTTP REST API
+
+Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The bridge listens on port `7438` and provides full access to memory operations via standard HTTP.
+
+**Interactive Documentation:**
+- OpenAPI spec: `http://localhost:7438/openapi.json`
+- Interactive docs: `http://localhost:7438/docs`
+
+**Disable the HTTP bridge:**
+
+```bash
+thoth-mem --no-http
+# or
+THOTH_HTTP_DISABLED=true thoth-mem
+```
+
+**Example: Search memories via HTTP**
+
+```bash
+curl http://localhost:7438/search?query=auth+pattern
+```
+
+**Example: Get memory statistics**
+
+```bash
+curl http://localhost:7438/stats
+```
+
+The HTTP API supports all memory operations: sessions, observations, prompts, search, export/import, and sync. See the interactive `/docs` interface for the full API reference.
 
 ## MCP Tools
 
@@ -224,6 +256,8 @@ Updates sessions, observations, and prompts atomically.
 | `THOTH_MAX_SEARCH_RESULTS` | `20` | Max search results returned |
 | `THOTH_DEDUPE_WINDOW_MINUTES` | `15` | Rolling deduplication window |
 | `THOTH_PREVIEW_LENGTH` | `300` | Search result preview length |
+| `THOTH_HTTP_PORT` | `7438` | HTTP REST API port |
+| `THOTH_HTTP_DISABLED` | `false` | Disable HTTP REST API bridge |
 
 ## Storage
 
