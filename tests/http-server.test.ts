@@ -2,12 +2,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getConfig } from '../src/config.js';
 import { createHttpBridge } from '../src/http-server.js';
 import { Store } from '../src/store/index.js';
 
+type HttpBridge = ReturnType<typeof createHttpBridge>;
+
 interface RunningBridge {
+  bridge: HttpBridge;
   port: number;
   store: Store;
   stop(): Promise<void>;
@@ -15,6 +19,7 @@ interface RunningBridge {
 
 const bridges: RunningBridge[] = [];
 const tempDirs: string[] = [];
+const dummyServers: Server[] = [];
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -57,6 +62,7 @@ async function startBridge(): Promise<RunningBridge> {
   await bridge.start();
 
   const running: RunningBridge = {
+    bridge,
     port,
     store,
     async stop(): Promise<void> {
@@ -70,6 +76,56 @@ async function startBridge(): Promise<RunningBridge> {
 
 function getUrl(port: number, path: string): string {
   return `http://127.0.0.1:${port}${path}`;
+}
+
+async function startDummyHttpServer(port: number): Promise<Server> {
+  const server = createHttpServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ status: 'dummy' }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+
+  dummyServers.push(server);
+  return server;
+}
+
+async function stopDummyHttpServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  const index = dummyServers.indexOf(server);
+  if (index >= 0) {
+    dummyServers.splice(index, 1);
+  }
+}
+
+async function waitForCondition(predicate: () => Promise<boolean>, timeoutMs: number, intervalMs = 100): Promise<void> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
 }
 
 async function fetchJson(path: string, init?: RequestInit, port?: number): Promise<{ response: Response; body: any }> {
@@ -100,6 +156,29 @@ afterEach(async () => {
     }
   }
 
+  while (dummyServers.length > 0) {
+    const server = dummyServers.pop();
+
+    if (!server) {
+      continue;
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
+    } catch {
+      // Dummy server may already be closed.
+    }
+  }
+
   while (tempDirs.length > 0) {
     const directory = tempDirs.pop();
 
@@ -112,6 +191,106 @@ afterEach(async () => {
 });
 
 describe('createHttpBridge', () => {
+  describe('owner/non-owner pattern', () => {
+    it('starts as owner when the configured port is available', async () => {
+      const bridge = await startBridge();
+
+      expect(bridge.bridge.isOwner).toBe(true);
+      expect(bridge.bridge.isRunning).toBe(true);
+
+      const health = await fetchJson('/health', undefined, bridge.port);
+      expect(health.response.status).toBe(200);
+      expect(health.body).toEqual({ status: 'ok' });
+    });
+
+    it('degrades gracefully to non-owner mode when the port is already in use', async () => {
+      const port = await getAvailablePort();
+      const dummyServer = await startDummyHttpServer(port);
+      const store = new Store(':memory:');
+      const config = { ...getConfig(), httpPort: port };
+      const bridge = createHttpBridge(store, config);
+
+      await expect(bridge.start()).resolves.toBeNull();
+
+      bridges.push({
+        bridge,
+        port,
+        store,
+        async stop(): Promise<void> {
+          await bridge.stop();
+        },
+      });
+
+      expect(dummyServer.listening).toBe(true);
+      expect(bridge.isOwner).toBe(false);
+      expect(bridge.isRunning).toBe(false);
+    });
+
+    it('takes over the port after the owner goes away', async () => {
+      const port = await getAvailablePort();
+      const dummyServer = await startDummyHttpServer(port);
+      const store = new Store(':memory:');
+      const config = { ...getConfig(), httpPort: port };
+      const bridge = createHttpBridge(store, config);
+
+      await bridge.start();
+
+      bridges.push({
+        bridge,
+        port,
+        store,
+        async stop(): Promise<void> {
+          await bridge.stop();
+        },
+      });
+
+      expect(bridge.isOwner).toBe(false);
+
+      await stopDummyHttpServer(dummyServer);
+
+      await waitForCondition(async () => {
+        if (!bridge.isOwner) {
+          return false;
+        }
+
+        try {
+          const response = await fetch(getUrl(port, '/health'));
+          return response.ok;
+        } catch {
+          return false;
+        }
+      }, 9000);
+
+      expect(bridge.isOwner).toBe(true);
+
+      const health = await fetchJson('/health', undefined, port);
+      expect(health.response.status).toBe(200);
+      expect(health.body).toEqual({ status: 'ok' });
+    }, 15000);
+
+    it('does not start when HTTP is disabled', async () => {
+      const port = await getAvailablePort();
+      const store = new Store(':memory:');
+      const config = { ...getConfig(), httpPort: port, httpDisabled: true };
+      const bridge = createHttpBridge(store, config);
+
+      await expect(bridge.start()).resolves.toBeNull();
+
+      bridges.push({
+        bridge,
+        port,
+        store,
+        async stop(): Promise<void> {
+          await bridge.stop();
+        },
+      });
+
+      expect(bridge.isOwner).toBe(false);
+      expect(bridge.isRunning).toBe(false);
+      await expect(fetch(getUrl(port, '/health'))).rejects.toThrow();
+    });
+  });
+
   it('serves health, OpenAPI, and Swagger docs', async () => {
     const bridge = await startBridge();
 

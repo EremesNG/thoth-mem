@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Server as HttpServer } from 'node:http';
 import { createHttpBridge } from './http-server.js';
 import { createServer } from './server.js';
 
@@ -82,7 +81,6 @@ async function startMcpServer(argv: string[]): Promise<void> {
 
   const transport = new StdioServerTransport();
   let httpBridge: ReturnType<typeof createHttpBridge> | null = null;
-  let httpServer: HttpServer | null = null;
   let isShuttingDown = false;
 
   const shutdown = async (): Promise<void> => {
@@ -93,7 +91,7 @@ async function startMcpServer(argv: string[]): Promise<void> {
     isShuttingDown = true;
 
     try {
-      if (httpServer && httpBridge) {
+      if (httpBridge) {
         await httpBridge.stop();
       }
     } finally {
@@ -118,7 +116,12 @@ async function startMcpServer(argv: string[]): Promise<void> {
 
     if (!config.httpDisabled) {
       httpBridge = createHttpBridge(store, config);
-      httpServer = await httpBridge.start();
+
+      try {
+        await httpBridge.start();
+      } catch (error) {
+        process.stderr.write(`[thoth-http] HTTP bridge failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
     }
   } catch (error) {
     await shutdown();
