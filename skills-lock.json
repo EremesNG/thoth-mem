@@ -5,6 +5,11 @@
       "source": "oriolrius/pki-manager-web",
       "sourceType": "github",
       "computedHash": "0d4decc610dd4dd4ee5656d4c30d58fc3404adace71eb7921c808cc572f1bab1"
+    },
+    "api-design-principles": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "b242f962d5f78bf8bc147e92f2aa0341459b9f5f2f955e9867a8c41b85f22648"
     }
   }
 }

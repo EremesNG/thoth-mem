@@ -33,6 +33,8 @@ const DEFAULT_CONFIG: ThothConfig = {
   maxSearchResults: 20,
   dedupeWindowMinutes: 15,
   previewLength: 300,
+  httpPort: 7438,
+  httpDisabled: false,
 };
 
 export class Store {

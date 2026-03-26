@@ -18,6 +18,8 @@ describe('getConfig', () => {
     expect(config.maxSearchResults).toBe(20);
     expect(config.dedupeWindowMinutes).toBe(15);
     expect(config.previewLength).toBe(300);
+    expect(config.httpPort).toBe(7438);
+    expect(config.httpDisabled).toBe(false);
     expect(config.dataDir).toContain('.thoth');
     expect(config.dbPath).toContain('thoth.db');
   });
@@ -35,12 +37,16 @@ describe('getConfig', () => {
     process.env.THOTH_MAX_SEARCH_RESULTS = '5';
     process.env.THOTH_DEDUPE_WINDOW_MINUTES = '30';
     process.env.THOTH_PREVIEW_LENGTH = '500';
+    process.env.THOTH_HTTP_PORT = '9000';
+    process.env.THOTH_HTTP_DISABLED = 'true';
     const config = getConfig();
     expect(config.maxContentLength).toBe(50000);
     expect(config.maxContextResults).toBe(10);
     expect(config.maxSearchResults).toBe(5);
     expect(config.dedupeWindowMinutes).toBe(30);
     expect(config.previewLength).toBe(500);
+    expect(config.httpPort).toBe(9000);
+    expect(config.httpDisabled).toBe(true);
   });
 
   it('dbPath is derived from dataDir', () => {

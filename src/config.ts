@@ -10,6 +10,8 @@ export interface ThothConfig {
   maxSearchResults: number;
   dedupeWindowMinutes: number;
   previewLength: number;
+  httpPort: number;
+  httpDisabled: boolean;
 }
 
 /**
@@ -47,6 +49,8 @@ export function getConfig(): ThothConfig {
     maxSearchResults: parseInt(process.env.THOTH_MAX_SEARCH_RESULTS || '20', 10),
     dedupeWindowMinutes: parseInt(process.env.THOTH_DEDUPE_WINDOW_MINUTES || '15', 10),
     previewLength: parseInt(process.env.THOTH_PREVIEW_LENGTH || '300', 10),
+    httpPort: parseInt(process.env.THOTH_HTTP_PORT || '7438', 10),
+    httpDisabled: process.env.THOTH_HTTP_DISABLED === 'true',
   };
 }
 

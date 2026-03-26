@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { Server as HttpServer } from 'node:http';
+import { createHttpBridge } from './http-server.js';
 import { createServer } from './server.js';
 
 const CLI_SUBCOMMANDS = new Set([
@@ -15,10 +17,11 @@ const CLI_SUBCOMMANDS = new Set([
   'help',
 ]);
 
-function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string } {
+function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string; httpDisabled: boolean } {
   const args = argv.slice(2);
   let profiles = ['agent', 'admin'];
   let dataDir: string | undefined;
+  let httpDisabled = false;
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -33,10 +36,12 @@ function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string } {
       profiles = arg.slice('--tools='.length).split(',').map((s) => s.trim()).filter(Boolean);
     } else if (arg.startsWith('--data-dir=')) {
       dataDir = arg.slice('--data-dir='.length);
+    } else if (arg === '--no-http') {
+      httpDisabled = true;
     }
   }
 
-  return { profiles, dataDir };
+  return { profiles, dataDir, httpDisabled };
 }
 
 function shouldRunCli(args: string[]): boolean {
@@ -67,22 +72,58 @@ function shouldRunCli(args: string[]): boolean {
 }
 
 async function startMcpServer(argv: string[]): Promise<void> {
-  const { profiles, dataDir } = parseArgs(argv);
+  const { profiles, dataDir, httpDisabled } = parseArgs(argv);
 
-  const { server, store } = createServer({ profiles, dataDir });
+  const { server, store, config } = createServer({ profiles, dataDir });
+
+  if (httpDisabled) {
+    config.httpDisabled = true;
+  }
 
   const transport = new StdioServerTransport();
+  let httpBridge: ReturnType<typeof createHttpBridge> | null = null;
+  let httpServer: HttpServer | null = null;
+  let isShuttingDown = false;
 
-  const shutdown = () => {
-    store.close();
-    process.exit(0);
+  const shutdown = async (): Promise<void> => {
+    if (isShuttingDown) {
+      return;
+    }
+
+    isShuttingDown = true;
+
+    try {
+      if (httpServer && httpBridge) {
+        await httpBridge.stop();
+      }
+    } finally {
+      store.close();
+    }
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+
+  process.on('SIGINT', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+  process.on('SIGTERM', () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+  process.on('exit', () => {
+    void shutdown();
+  });
 
   process.stderr.write(`thoth-mem MCP server started (tools: ${profiles.join(', ')})\n`);
 
-  await server.connect(transport);
+  try {
+    await server.connect(transport);
+
+    if (!config.httpDisabled) {
+      httpBridge = createHttpBridge(store, config);
+      httpServer = await httpBridge.start();
+    }
+  } catch (error) {
+    await shutdown();
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
