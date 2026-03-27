@@ -84,6 +84,7 @@ describe('Store - Observation CRUD', () => {
       const session = store.getSession('manual-save-myproject');
       expect(session).not.toBeNull();
     });
+
   });
 
   describe('getObservation', () => {
@@ -152,6 +153,25 @@ describe('Store - Observation CRUD', () => {
       }
       const results = store.searchObservations({ query: 'Content', limit: 2 });
       expect(results).toHaveLength(2);
+    });
+
+    it('formats search results in compact mode by default', () => {
+      store.saveObservation({ title: 'Compact formatting', content: 'mode formatting token' });
+
+      const text = store.searchObservationsFormatted({ query: 'mode formatting token' });
+
+      expect(text).toContain('Found');
+      expect(text).toContain('memory');
+      expect(text).toContain('(manual) Compact formatting');
+      expect(text).not.toContain('### [manual]');
+    });
+
+    it('formats search results in preview mode when requested', () => {
+      store.saveObservation({ title: 'Preview formatting', content: 'mode formatting preview token' });
+
+      const text = store.searchObservationsFormatted({ query: 'mode formatting preview token', mode: 'preview' });
+
+      expect(text).toContain('### [manual] Preview formatting');
     });
   });
 });

@@ -242,6 +242,47 @@ describe('Store — exportData/importData', () => {
     expect(imported.sync_id).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
+  it('importData accepts legacy exports without metadata fields', () => {
+    const legacyData = {
+      version: 1,
+      exported_at: '2026-03-23T10:00:00.000Z',
+      sessions: [{
+        id: 'legacy-session',
+        project: 'legacy-project',
+        directory: null,
+        started_at: '2026-03-23 10:00:00',
+        ended_at: null,
+        summary: null,
+      }],
+      observations: [{
+        id: 1,
+        sync_id: '33333333-3333-4333-8333-333333333333',
+        session_id: 'legacy-session',
+        type: 'manual',
+        title: 'Legacy observation',
+        content: 'Legacy content',
+        tool_name: null,
+        project: 'legacy-project',
+        scope: 'project',
+        topic_key: null,
+        normalized_hash: null,
+        revision_count: 1,
+        duplicate_count: 1,
+        last_seen_at: null,
+        created_at: '2026-03-23 10:00:00',
+        updated_at: '2026-03-23 10:00:00',
+        deleted_at: null,
+      }],
+      prompts: [],
+    } as unknown as ExportData;
+
+    const result = store.importData(legacyData);
+    const imported = store.exportData().observations[0];
+
+    expect(result.observations_imported).toBe(1);
+    expect(imported.title).toBe('Legacy observation');
+  });
+
   it('round-trips exported data into a fresh store without losing content', () => {
     const sourceStore = new Store(':memory:');
     const targetStore = new Store(':memory:');

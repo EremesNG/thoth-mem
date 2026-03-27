@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMemUpdate } from '../../src/tools/mem-update.js';
 import { Store } from '../../src/store/index.js';
@@ -6,13 +7,28 @@ import { Store } from '../../src/store/index.js';
 describe('mem_update tool', () => {
   let store: Store;
   let toolHandler: (input: any) => Promise<any>;
+  let toolSchema: Record<string, z.ZodTypeAny>;
+
+  async function invokeMemUpdate(input: Record<string, unknown>): Promise<any> {
+    const parsed = z.object(toolSchema).safeParse(input);
+
+    if (!parsed.success) {
+      return {
+        isError: true,
+        content: [{ type: 'text' as const, text: parsed.error.issues.map((issue) => issue.message).join('; ') }],
+      };
+    }
+
+    return toolHandler(parsed.data);
+  }
 
   beforeEach(() => {
     store = new Store(':memory:');
 
     const server = {
-      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+      tool: vi.fn((name: string, _description: string, schema: Record<string, z.ZodTypeAny>, handler: (input: any) => Promise<any>) => {
         if (name === 'mem_update') {
+          toolSchema = schema;
           toolHandler = handler;
         }
       }),
@@ -108,4 +124,5 @@ describe('mem_update tool', () => {
     expect(versions[0].content).toBe('Original content');
     expect(versions[0].type).toBe('bugfix');
   });
+
 });

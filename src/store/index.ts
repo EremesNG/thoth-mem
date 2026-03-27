@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { PRAGMAS, SCHEMA_SQL, MIGRATIONS_SQL } from './schema.js';
+import { MIGRATIONS_SQL, PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { ThothConfig } from '../config.js';
 import type {
   ContextInput,
@@ -23,7 +23,11 @@ import type {
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeFTS } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
-import { formatObservationMarkdown, truncateForPreview, validateContentLength } from '../utils/content.js';
+import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
+
+type ObservationRow = Observation;
+
+type SearchRow = ObservationRow & { rank: number };
 
 const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
@@ -65,6 +69,20 @@ export class Store {
         // Already applied — safe to ignore (e.g., "duplicate column name")
       }
     }
+  }
+
+  private mapObservationRow(row: ObservationRow | undefined): Observation | null {
+    if (!row) {
+      return null;
+    }
+
+    return row;
+  }
+
+  private mapObservationRows(rows: ObservationRow[]): Observation[] {
+    return rows
+      .map((row) => this.mapObservationRow(row))
+      .filter((row): row is Observation => row !== null);
   }
 
   /**
@@ -173,7 +191,8 @@ export class Store {
     observationsSql.push('ORDER BY created_at DESC LIMIT ?');
     params.push(limit);
 
-    const observations = this.db.prepare(observationsSql.join(' ')).all(...params) as Observation[];
+    const observationRows = this.db.prepare(observationsSql.join(' ')).all(...params) as ObservationRow[];
+    const observations = this.mapObservationRows(observationRows);
 
     const sessionLines = recentSessions.map((session) => {
       const count = this.db.prepare(
@@ -220,7 +239,10 @@ export class Store {
   }
 
   getTimeline(input: TimelineInput): TimelineResult {
-    const focus = (this.db.prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL').get(input.observation_id) as Observation | undefined) ?? null;
+    const focusRow = this.db
+      .prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL')
+      .get(input.observation_id) as ObservationRow | undefined;
+    const focus = this.mapObservationRow(focusRow);
 
     if (!focus) {
       return { before: [], focus: null, after: [] };
@@ -229,13 +251,16 @@ export class Store {
     const beforeLimit = input.before ?? 5;
     const afterLimit = input.after ?? 5;
 
-    const before = (this.db.prepare(
+    const beforeRows = (this.db.prepare(
       'SELECT * FROM observations WHERE session_id = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?'
-    ).all(focus.session_id, focus.id, beforeLimit) as Observation[]).reverse();
+    ).all(focus.session_id, focus.id, beforeLimit) as ObservationRow[]).reverse();
 
-    const after = this.db.prepare(
+    const afterRows = this.db.prepare(
       'SELECT * FROM observations WHERE session_id = ? AND id > ? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?'
-    ).all(focus.session_id, focus.id, afterLimit) as Observation[];
+    ).all(focus.session_id, focus.id, afterLimit) as ObservationRow[];
+
+    const before = this.mapObservationRows(beforeRows);
+    const after = this.mapObservationRows(afterRows);
 
     return { before, focus, after };
   }
@@ -329,7 +354,7 @@ export class Store {
     }
 
     if (input.topic_key) {
-      const existing = this.db.prepare(
+      const existingRow = this.db.prepare(
         `SELECT *
          FROM observations
          WHERE topic_key = ?
@@ -337,8 +362,10 @@ export class Store {
            AND scope = ?
            AND deleted_at IS NULL
          ORDER BY updated_at DESC
-         LIMIT 1`
-      ).get(input.topic_key, input.project ?? null, input.project ?? null, scope) as Observation | undefined;
+          LIMIT 1`
+      ).get(input.topic_key, input.project ?? null, input.project ?? null, scope) as ObservationRow | undefined;
+
+      const existing = this.mapObservationRow(existingRow);
 
       if (existing) {
         this.db.prepare(
@@ -385,7 +412,8 @@ export class Store {
   }
 
   getObservation(id: number): Observation | null {
-    return (this.db.prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL').get(id) as Observation | undefined) ?? null;
+    const row = this.db.prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL').get(id) as ObservationRow | undefined;
+    return this.mapObservationRow(row);
   }
 
   deleteObservation(id: number, hardDelete: boolean = false): boolean {
@@ -400,7 +428,7 @@ export class Store {
   }
 
   updateObservation(input: UpdateObservationInput): Observation | null {
-    const current = (this.db.prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL').get(input.id) as Observation | undefined) ?? null;
+    const current = this.getObservation(input.id);
 
     if (!current) {
       return null;
@@ -411,7 +439,7 @@ export class Store {
     ).run(current.id, current.title, current.content, current.type, current.revision_count);
 
     const setClauses = ['revision_count = revision_count + 1', "updated_at = datetime('now')"];
-    const params: Array<string | number> = [];
+    const params: Array<string | number | null> = [];
 
     if (input.title !== undefined) {
       setClauses.push('title = ?');
@@ -493,12 +521,26 @@ export class Store {
     sql.push('LIMIT ?');
     params.push(limit);
 
-    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<Observation & { rank: number }>;
+    const rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
 
-    return rows.map((row) => ({
-      ...row,
-      preview: truncateForPreview(row.content, this.config.previewLength),
-    }));
+    return rows.map((row) => {
+      const observation = this.mapObservationRow(row);
+
+      if (!observation) {
+        throw new Error('Failed to map search result observation');
+      }
+
+      return {
+        ...observation,
+        rank: row.rank,
+        preview: truncateForPreview(observation.content, this.config.previewLength),
+      };
+    });
+  }
+
+  searchObservationsFormatted(input: SearchInput): string {
+    const observations = this.searchObservations(input);
+    return formatSearchResults(observations, input.mode ?? 'compact', this.config.previewLength);
   }
 
   getObservationVersions(observationId: number): ObservationVersion[] {
@@ -539,16 +581,16 @@ export class Store {
 
   exportData(project?: string): ExportData {
     let sessions: Session[];
-    let observations: Observation[];
+    let observationRows: ObservationRow[];
     let prompts: UserPrompt[];
 
     if (project) {
       sessions = this.db.prepare(
         'SELECT * FROM sessions WHERE project = ? ORDER BY started_at'
       ).all(project) as Session[];
-      observations = this.db.prepare(
+      observationRows = this.db.prepare(
         'SELECT * FROM observations WHERE project = ? AND deleted_at IS NULL ORDER BY id'
-      ).all(project) as Observation[];
+      ).all(project) as ObservationRow[];
       prompts = this.db.prepare(
         'SELECT * FROM user_prompts WHERE project = ? ORDER BY id'
       ).all(project) as UserPrompt[];
@@ -556,13 +598,15 @@ export class Store {
       sessions = this.db.prepare(
         'SELECT * FROM sessions ORDER BY started_at'
       ).all() as Session[];
-      observations = this.db.prepare(
+      observationRows = this.db.prepare(
         'SELECT * FROM observations WHERE deleted_at IS NULL ORDER BY id'
-      ).all() as Observation[];
+      ).all() as ObservationRow[];
       prompts = this.db.prepare(
         'SELECT * FROM user_prompts ORDER BY id'
       ).all() as UserPrompt[];
     }
+
+    const observations = this.mapObservationRows(observationRows);
 
     return {
       version: 1,

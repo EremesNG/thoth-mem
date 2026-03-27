@@ -1,9 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Store } from '../../src/store/index.js';
+import { registerMemGetObservation } from '../../src/tools/mem-get-observation.js';
 
 describe('mem_get_observation tool (via Store)', () => {
   let store: Store;
-  beforeEach(() => { store = new Store(':memory:'); });
+  let toolHandler: ((input: any) => Promise<any>) | undefined;
+
+  beforeEach(() => {
+    store = new Store(':memory:');
+    toolHandler = undefined;
+
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_get_observation') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer;
+
+    registerMemGetObservation(server, store);
+  });
+
   afterEach(() => { store.close(); });
 
   it('returns full observation for small content', () => {
@@ -47,5 +65,27 @@ describe('mem_get_observation tool (via Store)', () => {
     expect(result!.topic_key).toBe('decision/test');
     expect(result!.revision_count).toBe(1);
     expect(result!.duplicate_count).toBe(1);
+  });
+
+  it('works directly without prior search/timeline', async () => {
+    const { observation } = store.saveObservation({
+      title: 'Direct retrieval',
+      content: '**What**: Retrieve directly\n**Where**: src/tools/mem-get-observation.ts',
+      type: 'manual',
+      project: 'metadata-project',
+      topic_key: 'regression/direct-get',
+    });
+
+    const toolResult = await toolHandler?.({ id: observation.id });
+
+    expect(toolResult?.isError).not.toBe(true);
+    expect(toolResult?.content[0].text).toContain('### [manual] Direct retrieval (ID:');
+    expect(toolResult?.content[0].text).toContain('**Project:** metadata-project');
+    expect(toolResult?.content[0].text).toContain('**Topic:** regression/direct-get');
+    expect(toolResult?.content[0].text).toContain('**What**: Retrieve directly');
+
+    const loaded = store.getObservation(observation.id);
+    expect(loaded).not.toBeNull();
+    expect(loaded?.title).toBe('Direct retrieval');
   });
 });

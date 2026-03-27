@@ -9,6 +9,7 @@ export const OBSERVATION_TYPES = [
 export type ObservationType = typeof OBSERVATION_TYPES[number];
 
 export type ObservationScope = 'project' | 'personal';
+export type SearchMode = 'compact' | 'preview';
 
 // ── Database Entities ──
 
@@ -84,6 +85,7 @@ export interface SearchInput {
   session_id?: string;
   scope?: ObservationScope;
   limit?: number;
+  mode?: SearchMode;
 }
 
 export interface ContextInput {

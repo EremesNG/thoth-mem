@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { Store } from '../src/store/index.js';
 import type { ExportData } from '../src/store/types.js';
 import { runCli } from '../src/cli.js';
+import { parseArgs, shouldRunCli } from '../src/index.js';
+import { ALL_TOOLS } from '../src/tools/index.js';
 
 function createTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'thoth-mem-cli-'));
@@ -281,5 +283,38 @@ describe('runCli', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('Unknown command');
+  });
+
+  describe('--tools= flag removal', () => {
+    it('--tools=agent does not change registered tool set', () => {
+      const withoutToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp']);
+      const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=agent']);
+
+      expect(withToolsFlag).toEqual(withoutToolsFlag);
+      expect(ALL_TOOLS).toHaveLength(13);
+    });
+
+    it('--tools=admin does not change registered tool set', () => {
+      const withoutToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--data-dir', '/tmp/mem']);
+      const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=admin', '--data-dir', '/tmp/mem']);
+
+      expect(withToolsFlag).toEqual(withoutToolsFlag);
+      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(13);
+    });
+
+    it('startup without --tools= registers all 13 tools', () => {
+      const parsed = parseArgs(['node', 'thoth-mem', 'mcp']);
+
+      expect(parsed).toEqual({ dataDir: undefined, httpDisabled: false });
+      expect(shouldRunCli(['mcp'])).toBe(false);
+      expect(ALL_TOOLS).toHaveLength(13);
+    });
+
+    it('--tools= flag is silently ignored', () => {
+      const parsed = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=agent', '--no-http']);
+
+      expect(parsed).toEqual({ dataDir: undefined, httpDisabled: true });
+      expect(shouldRunCli(['mcp', '--tools=agent'])).toBe(false);
+    });
   });
 });

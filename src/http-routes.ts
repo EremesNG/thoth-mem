@@ -4,6 +4,7 @@ import type {
   Observation,
   ObservationScope,
   ObservationType,
+  SearchMode,
   Session,
   UserPrompt,
 } from './store/types.js';
@@ -13,6 +14,7 @@ import { syncExport, syncImport } from './sync/index.js';
 import { suggestTopicKey } from './utils/topic-key.js';
 
 const OBSERVATION_SCOPES: ObservationScope[] = ['project', 'personal'];
+const SEARCH_MODES: SearchMode[] = ['compact', 'preview'];
 
 export interface HttpRouteRequest<TBody = unknown> {
   body?: TBody;
@@ -122,6 +124,18 @@ function parseObservationScope(value: unknown, fieldName: string): ObservationSc
   }
 
   return value as ObservationScope;
+}
+
+function parseSearchMode(value: string | null, fieldName: string): SearchMode {
+  if (value === null || value === '') {
+    return 'compact';
+  }
+
+  if (!SEARCH_MODES.includes(value as SearchMode)) {
+    throw new HttpRouteError(400, `Invalid field: ${fieldName}`);
+  }
+
+  return value as SearchMode;
 }
 
 function parseObservationId(params: Record<string, string>): number {
@@ -300,6 +314,7 @@ export async function handleSearchObservations(store: Store, request: HttpRouteR
     throw new HttpRouteError(400, 'Missing required field: query');
   }
 
+  const mode = parseSearchMode(request.query.get('mode'), 'mode');
   const results = store.searchObservations({
     query,
     type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
@@ -307,13 +322,32 @@ export async function handleSearchObservations(store: Store, request: HttpRouteR
     session_id: request.query.get('session_id') ?? undefined,
     scope: parseObservationScope(request.query.get('scope') ?? undefined, 'scope'),
     limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
+    mode,
   });
+
+  const shapedResults = mode === 'compact'
+    ? results.map((result) => ({
+        id: result.id,
+        title: result.title,
+        type: result.type,
+        created_at: result.created_at,
+      }))
+    : results.map((result) => ({
+        id: result.id,
+        title: result.title,
+        type: result.type,
+        project: result.project,
+        scope: result.scope,
+        topic_key: result.topic_key,
+        created_at: result.created_at,
+        preview: result.preview,
+      }));
 
   return {
     status: 200,
     body: {
-      results,
-      total: results.length,
+      results: shapedResults,
+      total: shapedResults.length,
     },
   };
 }

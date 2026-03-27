@@ -373,11 +373,37 @@ describe('createHttpBridge', () => {
     expect(updated.response.status).toBe(200);
     expect(updated.body).toEqual({ id: created.body.id, revision: 2 });
 
-    const search = await fetchJson('/observations/search?query=updated&project=http-api-v2&scope=personal&limit=5', undefined, bridge.port);
-    expect(search.response.status).toBe(200);
-    expect(search.body.total).toBe(1);
-    expect(search.body.results[0].id).toBe(created.body.id);
-    expect(search.body.results[0].preview).toContain('updated content');
+    const updatedObservation = await fetchJson(`/observations/${created.body.id}`, undefined, bridge.port);
+    expect(updatedObservation.response.status).toBe(200);
+
+    const compactSearch = await fetchJson(
+      '/observations/search?query=updated&project=http-api-v2&scope=personal&limit=5',
+      undefined,
+      bridge.port,
+    );
+    expect(compactSearch.response.status).toBe(200);
+    expect(compactSearch.body.total).toBe(1);
+    expect(compactSearch.body.results[0]).toEqual({
+      id: created.body.id,
+      title: 'REST API observation updated',
+      type: 'architecture',
+      created_at: expect.any(String),
+    });
+    expect(compactSearch.body.results[0].preview).toBeUndefined();
+    expect(compactSearch.body.results[0].project).toBeUndefined();
+
+    const previewSearch = await fetchJson(
+      '/observations/search?query=updated&mode=preview&project=http-api-v2&scope=personal&limit=5',
+      undefined,
+      bridge.port,
+    );
+    expect(previewSearch.response.status).toBe(200);
+    expect(previewSearch.body.total).toBe(1);
+    expect(previewSearch.body.results[0].id).toBe(created.body.id);
+    expect(previewSearch.body.results[0].project).toBe('http-api-v2');
+    expect(previewSearch.body.results[0].scope).toBe('personal');
+    expect(previewSearch.body.results[0].topic_key).toBe('architecture/rest-api');
+    expect(previewSearch.body.results[0].preview).toContain('updated content');
 
     const softDeleted = await fetchJson(`/observations/${created.body.id}`, { method: 'DELETE' }, bridge.port);
     expect(softDeleted.response.status).toBe(200);
@@ -546,7 +572,7 @@ describe('createHttpBridge', () => {
     expect(endedSession?.summary).toBe('Ship the REST API');
   });
 
-  it('supports topic key suggestion and passive capture extraction', async () => {
+  it('supports topic key suggestion', async () => {
     const bridge = await startBridge();
 
     const topicKey = await fetchJson(
@@ -561,35 +587,6 @@ describe('createHttpBridge', () => {
 
     expect(topicKey.response.status).toBe(200);
     expect(topicKey.body).toEqual({ topic_key: 'architecture/auth-model' });
-
-    bridge.store.saveObservation({
-      title: 'Use stable topic keys for evolving topics.',
-      content: 'Use stable topic keys for evolving topics.',
-      type: 'learning',
-      project: 'alpha',
-      session_id: 'capture-session',
-    });
-
-    const capture = await fetchJson(
-      '/capture-passive',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project: 'alpha',
-          session_id: 'capture-session',
-          content: [
-            '## Key Learnings:',
-            '- Use stable topic keys for evolving topics.',
-            '- HTTP handlers should return structured JSON.',
-          ].join('\n'),
-        }),
-      },
-      bridge.port,
-    );
-
-    expect(capture.response.status).toBe(200);
-    expect(capture.body).toEqual({ extracted: 2, saved: 1, duplicates: 1 });
   });
 
   it('supports export/import and sync export/import flows', async () => {
@@ -765,6 +762,7 @@ describe('createHttpBridge', () => {
     const missingObservation = await fetchJson('/observations/999', undefined, bridge.port);
     expect(missingObservation.response.status).toBe(404);
     expect(missingObservation.body).toEqual({ error: 'Observation 999 not found' });
+
   });
 
   it('stop() closes the server', async () => {
@@ -776,5 +774,151 @@ describe('createHttpBridge', () => {
     bridges.pop();
 
     await expect(fetch(url)).rejects.toThrow();
+  });
+
+  describe('capture-passive support', () => {
+    it('POST /capture-passive extracts learnings and reports deduplicates', async () => {
+      const bridge = await startBridge();
+
+      await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Keep tests focused.',
+            content: 'Keep tests focused.',
+            type: 'learning',
+            project: 'passive-project',
+            session_id: 'passive-session',
+          }),
+        },
+        bridge.port,
+      );
+
+      const result = await fetchJson(
+        '/capture-passive',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: [
+              '## Key Learnings:',
+              '- Keep tests focused.',
+              '- Keep payloads minimal.',
+            ].join('\n'),
+            project: 'passive-project',
+            session_id: 'passive-session',
+          }),
+        },
+        bridge.port,
+      );
+
+      expect(result.response.status).toBe(200);
+      expect(result.body).toEqual({ extracted: 2, saved: 1, duplicates: 1 });
+    });
+
+    it('OpenAPI spec includes /capture-passive path', async () => {
+      const bridge = await startBridge();
+
+      const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+
+      expect(openapi.response.status).toBe(200);
+      expect(openapi.body.paths['/capture-passive']).toBeDefined();
+    });
+  });
+
+  describe('search mode via HTTP', () => {
+    it('GET /observations/search accepts mode query param', async () => {
+      const bridge = await startBridge();
+
+      await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Mode target',
+            content: 'mode target content',
+            project: 'mode-project',
+            scope: 'project',
+          }),
+        },
+        bridge.port,
+      );
+
+      const compact = await fetchJson('/observations/search?query=mode&mode=compact&project=mode-project', undefined, bridge.port);
+      expect(compact.response.status).toBe(200);
+
+      const preview = await fetchJson('/observations/search?query=mode&mode=preview&project=mode-project', undefined, bridge.port);
+      expect(preview.response.status).toBe(200);
+      expect(preview.body.results[0].preview).toBeTypeOf('string');
+    });
+
+    it('compact mode returns minimal JSON response', async () => {
+      const bridge = await startBridge();
+
+      await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Compact response target',
+            content: 'compact result body',
+            project: 'compact-project',
+          }),
+        },
+        bridge.port,
+      );
+
+      const compact = await fetchJson('/observations/search?query=compact&mode=compact&project=compact-project', undefined, bridge.port);
+      expect(compact.response.status).toBe(200);
+      expect(compact.body.total).toBe(1);
+      expect(compact.body.results[0]).toEqual({
+        id: expect.any(Number),
+        title: 'Compact response target',
+        type: expect.any(String),
+        created_at: expect.any(String),
+      });
+      expect(compact.body.results[0].preview).toBeUndefined();
+      expect(compact.body.results[0].project).toBeUndefined();
+      expect(compact.body.results[0].scope).toBeUndefined();
+      expect(compact.body.results[0].topic_key).toBeUndefined();
+    });
+
+    it('preview mode returns full JSON response with preview', async () => {
+      const bridge = await startBridge();
+
+      const created = await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Preview response target',
+            content: 'preview result body',
+            project: 'preview-project',
+            scope: 'personal',
+            topic_key: 'reference/preview-target',
+          }),
+        },
+        bridge.port,
+      );
+
+      const preview = await fetchJson('/observations/search?query=preview&mode=preview&project=preview-project&scope=personal', undefined, bridge.port);
+      expect(preview.response.status).toBe(200);
+      expect(preview.body.total).toBe(1);
+      expect(preview.body.results[0]).toEqual({
+        id: created.body.id,
+        title: 'Preview response target',
+        type: expect.any(String),
+        project: 'preview-project',
+        scope: 'personal',
+        topic_key: 'reference/preview-target',
+        created_at: expect.any(String),
+        preview: expect.any(String),
+      });
+    });
   });
 });
