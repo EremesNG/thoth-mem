@@ -88,30 +88,36 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
-      '/observations/search': {
-        get: {
-          summary: 'Search observations',
-          parameters: [
-            { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
-            { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
-            { name: 'project', in: 'query', schema: { type: 'string' } },
-            { name: 'session_id', in: 'query', schema: { type: 'string' } },
-            { name: 'scope', in: 'query', schema: OBSERVATION_SCOPE_SCHEMA },
-            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
-          ],
-          responses: {
-            '200': {
-              description: 'Search results',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/SearchObservationsResponse' },
-                },
-              },
-            },
-            '400': { $ref: '#/components/responses/Error' },
-          },
-        },
-      },
+       '/observations/search': {
+         get: {
+           summary: 'Search observations',
+           parameters: [
+             { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
+             { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+             { name: 'project', in: 'query', schema: { type: 'string' } },
+             { name: 'session_id', in: 'query', schema: { type: 'string' } },
+             { name: 'scope', in: 'query', schema: OBSERVATION_SCOPE_SCHEMA },
+             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
+             { name: 'mode', in: 'query', schema: { type: 'string', enum: ['compact', 'preview'], default: 'compact' } },
+           ],
+           responses: {
+             '200': {
+               description: 'Search results',
+               content: {
+                 'application/json': {
+                   schema: {
+                     oneOf: [
+                       { $ref: '#/components/schemas/CompactSearchResponse' },
+                       { $ref: '#/components/schemas/PreviewSearchResponse' },
+                     ],
+                   },
+                 },
+               },
+             },
+             '400': { $ref: '#/components/responses/Error' },
+           },
+         },
+       },
       '/observations/{id}': {
         get: {
           summary: 'Get observation by ID',
@@ -742,30 +748,30 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           ],
         },
-        CreateObservationRequest: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            content: { type: 'string' },
-            type: OBSERVATION_TYPE_SCHEMA,
-            session_id: { type: 'string' },
-            project: { type: 'string' },
-            scope: OBSERVATION_SCOPE_SCHEMA,
-            topic_key: { type: 'string' },
-          },
-          required: ['title', 'content'],
-        },
-        UpdateObservationRequest: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            content: { type: 'string' },
-            type: OBSERVATION_TYPE_SCHEMA,
-            project: { type: 'string' },
-            scope: OBSERVATION_SCOPE_SCHEMA,
-            topic_key: { type: 'string' },
-          },
-        },
+         CreateObservationRequest: {
+           type: 'object',
+           properties: {
+             title: { type: 'string' },
+             content: { type: 'string' },
+             type: OBSERVATION_TYPE_SCHEMA,
+             session_id: { type: 'string' },
+             project: { type: 'string' },
+             scope: OBSERVATION_SCOPE_SCHEMA,
+             topic_key: { type: 'string' },
+           },
+           required: ['title', 'content'],
+         },
+         UpdateObservationRequest: {
+           type: 'object',
+           properties: {
+             title: { type: 'string' },
+             content: { type: 'string' },
+             type: OBSERVATION_TYPE_SCHEMA,
+             project: { type: 'string' },
+             scope: OBSERVATION_SCOPE_SCHEMA,
+             topic_key: { type: 'string' },
+           },
+         },
         ObservationMutationResult: {
           type: 'object',
           properties: {
@@ -775,17 +781,63 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
           required: ['id', 'action', 'revision'],
         },
-        SearchObservationsResponse: {
-          type: 'object',
-          properties: {
-            results: {
-              type: 'array',
-              items: { $ref: '#/components/schemas/SearchResult' },
-            },
-            total: { type: 'integer' },
-          },
-          required: ['results', 'total'],
-        },
+         CompactSearchResult: {
+           type: 'object',
+           properties: {
+             id: { type: 'integer' },
+             title: { type: 'string' },
+             type: OBSERVATION_TYPE_SCHEMA,
+             created_at: { type: 'string' },
+           },
+           required: ['id', 'title', 'type', 'created_at'],
+         },
+         PreviewSearchResult: {
+           type: 'object',
+           properties: {
+             id: { type: 'integer' },
+             title: { type: 'string' },
+             type: OBSERVATION_TYPE_SCHEMA,
+             project: { type: 'string', nullable: true },
+             scope: OBSERVATION_SCOPE_SCHEMA,
+             topic_key: { type: 'string', nullable: true },
+             created_at: { type: 'string' },
+             preview: { type: 'string' },
+           },
+           required: ['id', 'title', 'type', 'project', 'scope', 'topic_key', 'created_at', 'preview'],
+         },
+         CompactSearchResponse: {
+           type: 'object',
+           properties: {
+             results: {
+               type: 'array',
+               items: { $ref: '#/components/schemas/CompactSearchResult' },
+             },
+             total: { type: 'integer' },
+           },
+           required: ['results', 'total'],
+         },
+         PreviewSearchResponse: {
+           type: 'object',
+           properties: {
+             results: {
+               type: 'array',
+               items: { $ref: '#/components/schemas/PreviewSearchResult' },
+             },
+             total: { type: 'integer' },
+           },
+           required: ['results', 'total'],
+         },
+         SearchObservationsResponse: {
+           type: 'object',
+           properties: {
+             results: {
+               type: 'array',
+               items: { $ref: '#/components/schemas/SearchResult' },
+             },
+             total: { type: 'integer' },
+           },
+           required: ['results', 'total'],
+         },
         Stats: {
           type: 'object',
           properties: {

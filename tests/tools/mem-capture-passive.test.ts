@@ -15,9 +15,7 @@ describe('mem_capture_passive tool', () => {
 
   it('parses English header with bulleted items', () => {
     const result = capturePassiveLearnings(store, {
-      content: `## Key Learnings:
-- First lesson
-- Second lesson`,
+      content: `## Key Learnings:\n- First lesson\n- Second lesson`,
       project: 'demo',
     });
 
@@ -27,9 +25,7 @@ describe('mem_capture_passive tool', () => {
 
   it('parses Spanish header', () => {
     const result = capturePassiveLearnings(store, {
-      content: `## Aprendizajes Clave
-* Leccion uno
-* Leccion dos`,
+      content: `## Aprendizajes Clave\n* Leccion uno\n* Leccion dos`,
       project: 'demo',
     });
 
@@ -38,9 +34,7 @@ describe('mem_capture_passive tool', () => {
 
   it('parses numbered items', () => {
     const result = capturePassiveLearnings(store, {
-      content: `## Key Learnings
-1. Numbered one
-2. Numbered two`,
+      content: `## Key Learnings\n1. Numbered one\n2. Numbered two`,
       project: 'demo',
     });
 
@@ -58,9 +52,7 @@ describe('mem_capture_passive tool', () => {
   });
 
   it('deduplicates repeated captures', () => {
-    const content = `## Key Learnings:
-- Shared lesson
-- Another lesson`;
+    const content = `## Key Learnings:\n- Shared lesson\n- Another lesson`;
 
     const first = capturePassiveLearnings(store, { content, project: 'demo' });
     const second = capturePassiveLearnings(store, { content, project: 'demo' });
@@ -71,10 +63,7 @@ describe('mem_capture_passive tool', () => {
 
   it('parses mixed bullets and numbers in the same section', () => {
     const result = capturePassiveLearnings(store, {
-      content: `## Key Learnings:
-- Bullet one
-2. Numbered two
-* Bullet three`,
+      content: `## Key Learnings:\n- Bullet one\n2. Numbered two\n* Bullet three`,
       project: 'demo',
     });
 

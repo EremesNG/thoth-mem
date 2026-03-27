@@ -13,50 +13,36 @@ import { registerMemUpdate } from "./mem-update.js";
 import { registerMemDelete } from "./mem-delete.js";
 import { registerMemStats } from "./mem-stats.js";
 import { registerMemTimeline } from "./mem-timeline.js";
-import { registerMemMigrateProject } from "./mem-migrate-project.js";
-import { registerMemExport } from "./mem-export.js";
-import { registerMemImport } from "./mem-import.js";
-import { registerMemSyncExport } from "./mem-sync-export.js";
-import { registerMemSyncImport } from "./mem-sync-import.js";
-
-export type ToolProfile = 'agent' | 'admin';
 
 interface ToolRegistration {
   name: string;
-  profile: ToolProfile;
   register: (server: McpServer, store: Store) => void;
 }
 
 const ALL_TOOLS: ToolRegistration[] = [
-  { name: 'mem_save', profile: 'agent', register: registerMemSave },
-  { name: 'mem_search', profile: 'agent', register: registerMemSearch },
-  { name: 'mem_context', profile: 'agent', register: registerMemContext },
-  { name: 'mem_get_observation', profile: 'agent', register: registerMemGetObservation },
-  { name: 'mem_session_start', profile: 'agent', register: registerMemSessionStart },
-  { name: 'mem_session_summary', profile: 'agent', register: registerMemSessionSummary },
-  { name: 'mem_suggest_topic_key', profile: 'agent', register: registerMemSuggestTopicKey },
-  { name: 'mem_capture_passive', profile: 'agent', register: registerMemCapturePassive },
-  { name: 'mem_save_prompt', profile: 'agent', register: registerMemSavePrompt },
-  { name: 'mem_update', profile: 'agent', register: registerMemUpdate },
-  { name: 'mem_delete', profile: 'admin', register: registerMemDelete },
-  { name: 'mem_stats', profile: 'admin', register: registerMemStats },
-  { name: 'mem_timeline', profile: 'admin', register: registerMemTimeline },
-  { name: 'mem_migrate_project', profile: 'admin', register: registerMemMigrateProject },
-  { name: 'mem_export', profile: 'admin', register: registerMemExport },
-  { name: 'mem_import', profile: 'admin', register: registerMemImport },
-  { name: 'mem_sync_export', profile: 'admin', register: registerMemSyncExport },
-  { name: 'mem_sync_import', profile: 'admin', register: registerMemSyncImport },
+  { name: 'mem_save', register: registerMemSave },
+  { name: 'mem_search', register: registerMemSearch },
+  { name: 'mem_context', register: registerMemContext },
+  { name: 'mem_get_observation', register: registerMemGetObservation },
+  { name: 'mem_session_start', register: registerMemSessionStart },
+  { name: 'mem_session_summary', register: registerMemSessionSummary },
+  { name: 'mem_suggest_topic_key', register: registerMemSuggestTopicKey },
+  { name: 'mem_capture_passive', register: registerMemCapturePassive },
+  { name: 'mem_save_prompt', register: registerMemSavePrompt },
+  { name: 'mem_update', register: registerMemUpdate },
+  { name: 'mem_delete', register: registerMemDelete },
+  { name: 'mem_stats', register: registerMemStats },
+  { name: 'mem_timeline', register: registerMemTimeline },
 ];
 
-export function registerTools(server: McpServer, store: Store, profiles: string[]): void {
-  const filtered = ALL_TOOLS.filter(t => profiles.includes(t.profile));
-  for (const tool of filtered) {
+export function registerTools(server: McpServer, store: Store): void {
+  for (const tool of ALL_TOOLS) {
     tool.register(server, store);
   }
 }
 
-export function getToolCount(profiles: string[]): number {
-  return ALL_TOOLS.filter(t => profiles.includes(t.profile)).length;
+export function getToolCount(): number {
+  return ALL_TOOLS.length;
 }
 
 export { ALL_TOOLS };

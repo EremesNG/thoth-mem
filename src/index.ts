@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createHttpBridge } from './http-server.js';
 import { createServer } from './server.js';
@@ -16,9 +18,8 @@ const CLI_SUBCOMMANDS = new Set([
   'help',
 ]);
 
-function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string; httpDisabled: boolean } {
+export function parseArgs(argv: string[]): { dataDir?: string; httpDisabled: boolean } {
   const args = argv.slice(2);
-  let profiles = ['agent', 'admin'];
   let dataDir: string | undefined;
   let httpDisabled = false;
 
@@ -31,8 +32,6 @@ function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string; http
         dataDir = nextValue;
         index++;
       }
-    } else if (arg.startsWith('--tools=')) {
-      profiles = arg.slice('--tools='.length).split(',').map((s) => s.trim()).filter(Boolean);
     } else if (arg.startsWith('--data-dir=')) {
       dataDir = arg.slice('--data-dir='.length);
     } else if (arg === '--no-http') {
@@ -40,10 +39,10 @@ function parseArgs(argv: string[]): { profiles: string[]; dataDir?: string; http
     }
   }
 
-  return { profiles, dataDir, httpDisabled };
+  return { dataDir, httpDisabled };
 }
 
-function shouldRunCli(args: string[]): boolean {
+export function shouldRunCli(args: string[]): boolean {
   if (args.includes('--help')) {
     return true;
   }
@@ -70,10 +69,10 @@ function shouldRunCli(args: string[]): boolean {
   return false;
 }
 
-async function startMcpServer(argv: string[]): Promise<void> {
-  const { profiles, dataDir, httpDisabled } = parseArgs(argv);
+export async function startMcpServer(argv: string[]): Promise<void> {
+  const { dataDir, httpDisabled } = parseArgs(argv);
 
-  const { server, store, config } = createServer({ profiles, dataDir });
+  const { server, store, config } = createServer({ dataDir });
 
   if (httpDisabled) {
     config.httpDisabled = true;
@@ -109,7 +108,7 @@ async function startMcpServer(argv: string[]): Promise<void> {
     void shutdown();
   });
 
-  process.stderr.write(`thoth-mem MCP server started (tools: ${profiles.join(', ')})\n`);
+  process.stderr.write('thoth-mem MCP server started\n');
 
   try {
     await server.connect(transport);
@@ -129,7 +128,7 @@ async function startMcpServer(argv: string[]): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (shouldRunCli(args)) {
@@ -146,7 +145,17 @@ async function main(): Promise<void> {
   await startMcpServer(mcpArgs);
 }
 
-main().catch((err) => {
-  process.stderr.write(`Fatal error: ${err}\n`);
-  process.exit(1);
-});
+function isExecutedAsEntryPoint(): boolean {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  return resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+}
+
+if (isExecutedAsEntryPoint()) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal error: ${err}\n`);
+    process.exit(1);
+  });
+}

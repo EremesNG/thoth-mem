@@ -11,6 +11,33 @@ export const PRAGMAS_SQL = [
 
 export const PRAGMAS = PRAGMAS_SQL;
 
+export const OBSERVATIONS_FTS_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+  title, content, tool_name, type, project,
+  content='observations',
+  content_rowid='id'
+);
+`;
+
+export const OBSERVATIONS_FTS_TRIGGERS_SQL = `
+CREATE TRIGGER IF NOT EXISTS obs_fts_insert AFTER INSERT ON observations BEGIN
+  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
+  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
+END;
+
+CREATE TRIGGER IF NOT EXISTS obs_fts_delete AFTER DELETE ON observations BEGIN
+  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
+  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
+END;
+
+CREATE TRIGGER IF NOT EXISTS obs_fts_update AFTER UPDATE ON observations BEGIN
+  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
+  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
+  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
+  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
+END;
+`;
+
 /**
  * Complete database schema — uses CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS
  * for idempotent setup. Safe to run on every startup.
@@ -61,11 +88,7 @@ CREATE TABLE IF NOT EXISTS observation_versions (
 );
 
 -- FTS5 virtual table for full-text search on observations
-CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-  title, content, tool_name, type, project,
-  content='observations',
-  content_rowid='id'
-);
+${OBSERVATIONS_FTS_SQL}
 
 -- User prompts table
 CREATE TABLE IF NOT EXISTS user_prompts (
@@ -86,22 +109,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS prompts_fts USING fts5(
 
 -- ── FTS5 Sync Triggers (observations) ──
 
-CREATE TRIGGER IF NOT EXISTS obs_fts_insert AFTER INSERT ON observations BEGIN
-  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
-  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
-END;
-
-CREATE TRIGGER IF NOT EXISTS obs_fts_delete AFTER DELETE ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
-  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
-END;
-
-CREATE TRIGGER IF NOT EXISTS obs_fts_update AFTER UPDATE ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
-  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
-  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
-  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
-END;
+${OBSERVATIONS_FTS_TRIGGERS_SQL}
 
 -- ── FTS5 Sync Triggers (prompts) ──
 

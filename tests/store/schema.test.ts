@@ -128,4 +128,5 @@ describe('Database Schema', () => {
 
     db.close();
   });
+
 });

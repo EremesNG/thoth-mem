@@ -69,4 +69,51 @@ describe('mem_search tool (via Store)', () => {
     expect(results[0].session_id).toBe('session-a');
     expect(results[0].title).toBe('Session scoped auth');
   });
+
+  describe('progressive disclosure mode', () => {
+    it('defaults to compact mode when mode is omitted', () => {
+      store.saveObservation({
+        title: 'Default compact mode',
+        content: 'default-mode-token and no preview snippet needed',
+      });
+
+      const defaultMode = store.searchObservationsFormatted({ query: 'default-mode-token' });
+      const explicitCompact = store.searchObservationsFormatted({ query: 'default-mode-token', mode: 'compact' });
+
+      expect(defaultMode).toBe(explicitCompact);
+    });
+
+    it('compact mode returns only id, title, type, created_at', () => {
+      store.saveObservation({
+        title: 'Compact output observation',
+        content: 'compact-mode-token compact-snippet-should-not-appear',
+        type: 'manual',
+        project: 'compact-project',
+      });
+
+      const text = store.searchObservationsFormatted({ query: 'compact-mode-token', mode: 'compact' });
+      const resultLine = text.split('\n').find((line) => line.startsWith('['));
+
+      expect(resultLine).toMatch(/^\[\d+\] \(manual\) Compact output observation — /);
+      expect(text).not.toContain('### [manual]');
+      expect(text).not.toContain('**Project:**');
+      expect(text).not.toContain('compact-snippet-should-not-appear');
+    });
+
+    it('preview mode returns current behavior with snippets', () => {
+      store.saveObservation({
+        title: 'Preview output observation',
+        content: 'preview-mode-token preview-unique-snippet-here',
+        type: 'manual',
+      });
+
+      const text = store.searchObservationsFormatted({ query: 'preview-mode-token', mode: 'preview' });
+
+      expect(text).toContain('### [manual] Preview output observation');
+      expect(text).toContain('preview-unique-snippet-here');
+      expect(text).toContain('**Project:**');
+    });
+  });
+
+  
 });

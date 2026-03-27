@@ -117,4 +117,5 @@ describe('Store — Migration behaviors', () => {
     expect(session?.project).toBe('kept-project');
     expect(session?.directory).toBe('/workspace/kept-project');
   });
+
 });

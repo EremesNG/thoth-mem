@@ -221,6 +221,34 @@ describe('Integration', () => {
     expect(stats.projects).toContain('thoth');
     expect(stats.projects).toEqual(['atlas', 'thoth']);
   });
+
+  it('keeps session lifecycle compatible with start → save → summary flow', () => {
+    const session = store.startSession('session-lifecycle', 'thoth', '/dev/thoth');
+    expect(session.id).toBe('session-lifecycle');
+
+    const saved = store.saveObservation({
+      title: 'Lifecycle observation',
+      content: 'Lifecycle content',
+      session_id: 'session-lifecycle',
+      project: 'thoth',
+    });
+
+    const summary = store.saveObservation({
+      title: 'Session summary',
+      content: '## Goal\nLifecycle test\n## Accomplished\n- Saved observations',
+      type: 'session_summary',
+      session_id: 'session-lifecycle',
+      project: 'thoth',
+    });
+
+    const ended = store.endSession('session-lifecycle', 'Lifecycle complete');
+
+    expect(saved.action).toBe('created');
+    expect(summary.action).toBe('created');
+    expect(ended).not.toBeNull();
+    expect(ended?.summary).toBe('Lifecycle complete');
+    expect(ended?.ended_at).not.toBeNull();
+  });
 });
 
 function populateStoreForContext(store: Store): {
