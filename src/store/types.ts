@@ -86,6 +86,7 @@ export interface SearchInput {
   scope?: ObservationScope;
   limit?: number;
   mode?: SearchMode;
+  topic_key_exact?: string;
 }
 
 export interface ContextInput {
@@ -110,6 +111,63 @@ export interface UpdateObservationInput {
   scope?: ObservationScope;
   topic_key?: string;
 }
+
+// ── Sync Mutation Types ──
+
+export type SyncOperation = 'create' | 'update' | 'delete';
+export type SyncEntityType = 'observation' | 'prompt' | 'session';
+
+export interface SyncMutation {
+  id: number;
+  operation: SyncOperation;
+  entity_type: SyncEntityType;
+  entity_id: number;
+  sync_id: string | null;
+  created_at: string;
+}
+
+// ── Sync Chunk Tracking Types ──
+
+export type SyncChunkStatus = 'applied' | 'skipped' | 'failed';
+
+export interface SyncChunkRecord {
+  id: number;
+  chunk_id: string;
+  payload_hash: string | null;
+  status: SyncChunkStatus;
+  from_mutation_id: number | null;
+  to_mutation_id: number | null;
+  chunk_version: number;
+  created_at: string;
+}
+
+// ── V2 Chunk Format Types ──
+
+export interface SyncMutationEnvelopeV2 {
+  operation: SyncOperation;
+  entity_type: SyncEntityType;
+  entity_id: number;
+  sync_id: string | null;
+  data: Record<string, unknown> | null;
+}
+
+export interface SyncChunkV2 {
+  version: 2;
+  chunk_id: string;
+  from_mutation_id: number;
+  to_mutation_id: number;
+  created_at: string;
+  mutations: SyncMutationEnvelopeV2[];
+}
+
+export interface SyncChunkV1 {
+  version?: 1;
+  sessions: unknown[];
+  observations: unknown[];
+  prompts: unknown[];
+}
+
+export type SyncChunk = SyncChunkV1 | SyncChunkV2;
 
 // ── Operation Results ──
 
