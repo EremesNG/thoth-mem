@@ -1,6 +1,12 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { syncExport, syncImport } from '../src/sync/index.js';
 import { Store } from '../src/store/index.js';
-import { OBSERVATION_TYPES, type SaveObservationInput } from '../src/store/types.js';
+import { OBSERVATION_TYPES, type SaveObservationInput, type SyncChunkV2 } from '../src/store/types.js';
+import { VERSION } from '../src/version.js';
 
 describe('Integration', () => {
   let store: Store;
@@ -248,6 +254,168 @@ describe('Integration', () => {
     expect(ended).not.toBeNull();
     expect(ended?.summary).toBe('Lifecycle complete');
     expect(ended?.ended_at).not.toBeNull();
+  });
+
+  describe('sync-and-resilience integration', () => {
+    it('converges full lifecycle sync with updates and tombstones', () => {
+      const storeA = new Store(':memory:');
+      const storeB = new Store(':memory:');
+      const syncDir = mkdtempSync(join(tmpdir(), 'thoth-mem-integration-sync-'));
+
+      try {
+        storeA.startSession('sync-session-1', 'sync-project', '/dev/sync-project');
+
+        const kept = storeA.saveObservation({
+          session_id: 'sync-session-1',
+          project: 'sync-project',
+          title: 'Lifecycle kept',
+          content: 'Original keep content',
+          type: 'manual',
+        });
+        const updated = storeA.saveObservation({
+          session_id: 'sync-session-1',
+          project: 'sync-project',
+          title: 'Lifecycle updated',
+          content: 'Original update content',
+          type: 'manual',
+        });
+        const deleted = storeA.saveObservation({
+          session_id: 'sync-session-1',
+          project: 'sync-project',
+          title: 'Lifecycle deleted',
+          content: 'Content that should be tombstoned',
+          type: 'manual',
+        });
+
+        storeA.savePrompt('sync-session-1', 'Prompt from store A', 'sync-project');
+        storeA.updateObservation({
+          id: updated.observation.id,
+          content: 'Updated content from store A',
+        });
+        storeA.deleteObservation(deleted.observation.id);
+
+        const exportResult = syncExport(storeA, syncDir, 'sync-project');
+        expect(exportResult.exported).toBeGreaterThan(0);
+        expect(exportResult.chunks).toBe(1);
+
+        const importResult = syncImport(storeB, syncDir);
+
+        expect(importResult.chunks_processed).toBe(1);
+        expect(importResult.imported).toBe(1);
+
+        const importedKept = storeB.getObservation(kept.observation.id);
+        const importedUpdated = storeB.getObservation(updated.observation.id);
+
+        expect(importedKept).not.toBeNull();
+        expect(importedUpdated).not.toBeNull();
+        expect(importedUpdated?.content).toBe('Updated content from store A');
+
+        const deletedRow = storeB
+          .getDb()
+          .prepare('SELECT deleted_at FROM observations WHERE sync_id = ? LIMIT 1')
+          .get(deleted.observation.sync_id) as { deleted_at: string | null } | undefined;
+
+        expect(deletedRow).toBeDefined();
+        expect(deletedRow?.deleted_at).not.toBeNull();
+        expect(storeB.getSession('sync-session-1')).not.toBeNull();
+        expect(storeB.exportData('sync-project').prompts.map((prompt) => prompt.content)).toContain('Prompt from store A');
+      } finally {
+        storeA.close();
+        storeB.close();
+        rmSync(syncDir, { recursive: true, force: true });
+      }
+    });
+
+    it('exports only new deltas after a previous incremental export', () => {
+      const storeA = new Store(':memory:');
+      const syncDir = mkdtempSync(join(tmpdir(), 'thoth-mem-integration-sync-'));
+
+      try {
+        storeA.startSession('delta-session', 'delta-project', '/dev/delta');
+
+        const firstObservation = storeA.saveObservation({
+          session_id: 'delta-session',
+          project: 'delta-project',
+          title: 'First export observation',
+          content: 'First export content',
+          type: 'manual',
+        });
+        const firstPrompt = storeA.savePrompt('delta-session', 'First export prompt', 'delta-project');
+
+        const firstExport = syncExport(storeA, syncDir, 'delta-project');
+        expect(firstExport.exported).toBeGreaterThan(0);
+
+        const secondObservation = storeA.saveObservation({
+          session_id: 'delta-session',
+          project: 'delta-project',
+          title: 'Second export observation',
+          content: 'Second export content',
+          type: 'manual',
+        });
+        const secondPrompt = storeA.savePrompt('delta-session', 'Second export prompt', 'delta-project');
+
+        const secondExport = syncExport(storeA, syncDir, 'delta-project');
+
+        expect(secondExport.exported).toBe(2);
+        expect(secondExport.sessions).toBe(0);
+        expect(secondExport.observations).toBe(1);
+        expect(secondExport.prompts).toBe(1);
+        expect((secondExport.from_mutation_id as number) > (firstExport.to_mutation_id as number)).toBe(true);
+
+        const secondChunk = JSON.parse(
+          gunzipSync(readFileSync(join(syncDir, 'chunks', secondExport.filename))).toString('utf-8')
+        ) as SyncChunkV2;
+
+        const secondChunkSyncIds = secondChunk.mutations.map((mutation) => mutation.sync_id);
+
+        expect(secondChunk.mutations).toHaveLength(2);
+        expect(secondChunkSyncIds).toContain(secondObservation.observation.sync_id);
+        expect(secondChunkSyncIds).toContain(secondPrompt.sync_id);
+        expect(secondChunkSyncIds).not.toContain(firstObservation.observation.sync_id);
+        expect(secondChunkSyncIds).not.toContain(firstPrompt.sync_id);
+      } finally {
+        storeA.close();
+        rmSync(syncDir, { recursive: true, force: true });
+      }
+    });
+
+    it('supports exact topic-key search and FTS topic-key lookup end-to-end', () => {
+      store.startSession('topic-exact-session', 'topic-project', '/dev/topic');
+
+      const saved = store.saveObservation({
+        session_id: 'topic-exact-session',
+        project: 'topic-project',
+        title: 'Topic exact observation',
+        content: 'Observation used for topic-key exact integration test',
+        topic_key: 'architecture/syncexacttoken',
+        type: 'manual',
+      });
+
+      const exact = store.searchObservations({
+        query: 'ignored',
+        topic_key_exact: 'architecture/syncexacttoken',
+        project: 'topic-project',
+      });
+      const fts = store.searchObservations({ query: 'syncexacttoken', project: 'topic-project' });
+      const wrongExact = store.searchObservations({
+        query: 'ignored',
+        topic_key_exact: 'architecture/not-found',
+        project: 'topic-project',
+      });
+
+      expect(exact).toHaveLength(1);
+      expect(exact[0].id).toBe(saved.observation.id);
+      expect(fts.some((result) => result.id === saved.observation.id)).toBe(true);
+      expect(wrongExact).toEqual([]);
+    });
+
+    it('keeps VERSION constant aligned with package.json version', () => {
+      const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')) as {
+        version: string;
+      };
+
+      expect(VERSION).toBe(pkg.version);
+    });
   });
 });
 

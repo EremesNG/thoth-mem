@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getConfig } from '../src/config.js';
 import { createHttpBridge } from '../src/http-server.js';
 import { Store } from '../src/store/index.js';
+import { VERSION } from '../src/version.js';
 
 type HttpBridge = ReturnType<typeof createHttpBridge>;
 
@@ -302,6 +303,7 @@ describe('createHttpBridge', () => {
     expect(openapi.response.status).toBe(200);
     expect(openapi.body.openapi).toBe('3.0.0');
     expect(openapi.body.info.title).toBe('thoth-mem HTTP API');
+    expect(openapi.body.info.version).toBe(VERSION);
     expect(openapi.body.servers[0].url).toBe(`http://127.0.0.1:${bridge.port}`);
     expect(openapi.body.paths['/observations']).toBeDefined();
     expect(openapi.body.paths['/docs']).toBeDefined();
@@ -662,6 +664,8 @@ describe('createHttpBridge', () => {
     expect(syncExport.body.sessions).toBe(1);
     expect(syncExport.body.observations).toBe(1);
     expect(syncExport.body.prompts).toBe(1);
+    expect(syncExport.body.from_mutation_id).toBeTypeOf('number');
+    expect(syncExport.body.to_mutation_id).toBeTypeOf('number');
 
     const syncTarget = await startBridge();
     const syncImport = await fetchJson(
@@ -674,7 +678,75 @@ describe('createHttpBridge', () => {
       syncTarget.port,
     );
     expect(syncImport.response.status).toBe(200);
-    expect(syncImport.body).toEqual({ imported: 3, skipped: 0 });
+    expect(syncImport.body).toEqual({
+      chunks_processed: 1,
+      imported: 1,
+      skipped: 0,
+      failed: 0,
+    });
+  });
+
+  it('returns incremental v2 fields in HTTP sync export responses', async () => {
+    const bridge = await startBridge();
+    const syncDir = createTempDir();
+
+    await fetchJson(
+      '/sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'incremental-session', project: 'incremental-project' }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Incremental observation',
+          content: 'Incremental sync content',
+          session_id: 'incremental-session',
+          project: 'incremental-project',
+        }),
+      },
+      bridge.port,
+    );
+
+    const first = await fetchJson(
+      '/sync/export',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sync_dir: syncDir, project: 'incremental-project' }),
+      },
+      bridge.port,
+    );
+
+    expect(first.response.status).toBe(200);
+    expect(first.body.chunk_id).toContain('chunk-');
+    expect(first.body.filename).toContain('.json.gz');
+    expect(first.body.from_mutation_id).toBeTypeOf('number');
+    expect(first.body.to_mutation_id).toBeTypeOf('number');
+    expect(first.body.exported).toBeGreaterThan(0);
+
+    const second = await fetchJson(
+      '/sync/export',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sync_dir: syncDir, project: 'incremental-project' }),
+      },
+      bridge.port,
+    );
+
+    expect(second.response.status).toBe(200);
+    expect(second.body.chunk_id).toBe('');
+    expect(second.body.filename).toBe('');
+    expect(second.body.from_mutation_id).toBeNull();
+    expect(second.body.to_mutation_id).toBeNull();
+    expect(second.body.message).toBe('No new changes to export');
   });
 
   it('supports project migration', async () => {
@@ -919,6 +991,52 @@ describe('createHttpBridge', () => {
         created_at: expect.any(String),
         preview: expect.any(String),
       });
+    });
+
+    it('GET /observations/search supports topic_key_exact for exact key matches', async () => {
+      const bridge = await startBridge();
+
+      const exact = await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Exact key match',
+            content: 'Exact key content',
+            project: 'topic-project',
+            topic_key: 'architecture/auth-model',
+          }),
+        },
+        bridge.port,
+      );
+
+      await fetchJson(
+        '/observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: 'Different key',
+            content: 'Different key content',
+            project: 'topic-project',
+            topic_key: 'architecture/other-model',
+          }),
+        },
+        bridge.port,
+      );
+
+      const response = await fetchJson(
+        '/observations/search?query=ignored&topic_key_exact=architecture/auth-model&project=topic-project&mode=preview',
+        undefined,
+        bridge.port,
+      );
+
+      expect(response.response.status).toBe(200);
+      expect(response.body.total).toBe(1);
+      expect(response.body.results[0].id).toBe(exact.body.id);
+      expect(response.body.results[0].topic_key).toBe('architecture/auth-model');
+      expect(response.body.results[0].title).toBe('Exact key match');
     });
   });
 });
