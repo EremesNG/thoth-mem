@@ -1,4 +1,5 @@
 import { OBSERVATION_TYPES } from './store/types.js';
+import { VERSION } from './version.js';
 
 const OBSERVATION_TYPE_SCHEMA = {
   type: 'string',
@@ -15,7 +16,7 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
     openapi: '3.0.0',
     info: {
       title: 'thoth-mem HTTP API',
-      version: '0.1.4',
+      version: VERSION,
       description: 'Structured REST API for thoth-mem sessions, observations, prompts, and sync utilities.',
     },
     servers: [{ url: `http://127.0.0.1:${port}` }],
@@ -88,18 +89,19 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
-       '/observations/search': {
-         get: {
-           summary: 'Search observations',
-           parameters: [
-             { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
-             { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
-             { name: 'project', in: 'query', schema: { type: 'string' } },
-             { name: 'session_id', in: 'query', schema: { type: 'string' } },
-             { name: 'scope', in: 'query', schema: OBSERVATION_SCOPE_SCHEMA },
-             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
-             { name: 'mode', in: 'query', schema: { type: 'string', enum: ['compact', 'preview'], default: 'compact' } },
-           ],
+        '/observations/search': {
+          get: {
+            summary: 'Search observations',
+            parameters: [
+              { name: 'query', in: 'query', required: true, schema: { type: 'string' } },
+              { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+              { name: 'project', in: 'query', schema: { type: 'string' } },
+              { name: 'session_id', in: 'query', schema: { type: 'string' } },
+              { name: 'scope', in: 'query', schema: OBSERVATION_SCOPE_SCHEMA },
+              { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
+              { name: 'mode', in: 'query', schema: { type: 'string', enum: ['compact', 'preview'], default: 'compact' } },
+              { name: 'topic_key_exact', in: 'query', schema: { type: 'string' } },
+            ],
            responses: {
              '200': {
                description: 'Search results',
@@ -507,80 +509,88 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
-      '/sync/export': {
-        post: {
-          summary: 'Export sync chunk',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    sync_dir: { type: 'string' },
-                    project: { type: 'string' },
-                  },
-                  required: ['sync_dir'],
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Sync export result',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      chunk_id: { type: 'string' },
-                      chunk_file: { type: 'string' },
-                      sessions: { type: 'integer' },
-                      observations: { type: 'integer' },
-                      prompts: { type: 'integer' },
-                    },
-                    required: ['chunk_id', 'chunk_file', 'sessions', 'observations', 'prompts'],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/sync/import': {
-        post: {
-          summary: 'Import sync chunks',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { sync_dir: { type: 'string' } },
-                  required: ['sync_dir'],
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Sync import result',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      imported: { type: 'integer' },
-                      skipped: { type: 'integer' },
-                    },
-                    required: ['imported', 'skipped'],
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+       '/sync/export': {
+         post: {
+           summary: 'Export sync chunk',
+           requestBody: {
+             required: true,
+             content: {
+               'application/json': {
+                 schema: {
+                   type: 'object',
+                   properties: {
+                     sync_dir: { type: 'string' },
+                     project: { type: 'string' },
+                   },
+                   required: ['sync_dir'],
+                 },
+               },
+             },
+           },
+           responses: {
+             '200': {
+               description: 'Sync export result',
+               content: {
+                 'application/json': {
+                   schema: {
+                     type: 'object',
+                     properties: {
+                       chunk_id: { type: 'string' },
+                       filename: { type: 'string' },
+                       sessions: { type: 'integer' },
+                       observations: { type: 'integer' },
+                       prompts: { type: 'integer' },
+                       exported: { type: 'integer' },
+                       skipped: { type: 'integer' },
+                       chunks: { type: 'integer' },
+                       from_mutation_id: { type: 'integer', nullable: true },
+                       to_mutation_id: { type: 'integer', nullable: true },
+                       message: { type: 'string' },
+                     },
+                     required: ['chunk_id', 'filename', 'sessions', 'observations', 'prompts', 'exported', 'skipped', 'chunks', 'from_mutation_id', 'to_mutation_id'],
+                   },
+                 },
+               },
+             },
+           },
+         },
+       },
+       '/sync/import': {
+         post: {
+           summary: 'Import sync chunks',
+           requestBody: {
+             required: true,
+             content: {
+               'application/json': {
+                 schema: {
+                   type: 'object',
+                   properties: { sync_dir: { type: 'string' } },
+                   required: ['sync_dir'],
+                 },
+               },
+             },
+           },
+           responses: {
+             '200': {
+               description: 'Sync import result',
+               content: {
+                 'application/json': {
+                   schema: {
+                     type: 'object',
+                     properties: {
+                       chunks_processed: { type: 'integer' },
+                       imported: { type: 'integer' },
+                       skipped: { type: 'integer' },
+                       failed: { type: 'integer' },
+                     },
+                     required: ['chunks_processed', 'imported', 'skipped', 'failed'],
+                   },
+                 },
+               },
+             },
+           },
+         },
+       },
       '/projects/migrate': {
         post: {
           summary: 'Migrate project name',

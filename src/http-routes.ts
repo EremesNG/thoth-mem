@@ -321,6 +321,7 @@ export async function handleSearchObservations(store: Store, request: HttpRouteR
     project: request.query.get('project') ?? undefined,
     session_id: request.query.get('session_id') ?? undefined,
     scope: parseObservationScope(request.query.get('scope') ?? undefined, 'scope'),
+    topic_key_exact: request.query.get('topic_key_exact') ?? undefined,
     limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
     mode,
   });
@@ -633,10 +634,17 @@ export async function handleSyncExport(store: Store, request: HttpRouteRequest):
     status: 200,
     body: {
       chunk_id: result.chunk_id,
+      filename: result.filename,
       chunk_file: result.filename,
       sessions: result.sessions,
       observations: result.observations,
       prompts: result.prompts,
+      exported: result.exported,
+      skipped: result.skipped,
+      chunks: result.chunks,
+      from_mutation_id: result.from_mutation_id,
+      to_mutation_id: result.to_mutation_id,
+      ...(result.message ? { message: result.message } : {}),
     },
   };
 }
@@ -648,8 +656,10 @@ export async function handleSyncImport(store: Store, request: HttpRouteRequest):
   return {
     status: 200,
     body: {
-      imported: result.sessions_imported + result.observations_imported + result.prompts_imported,
+      chunks_processed: result.chunks_processed,
+      imported: result.imported,
       skipped: result.skipped,
+      failed: result.failed,
     },
   };
 }
