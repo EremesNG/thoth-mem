@@ -20,6 +20,30 @@ describe('mem_session_start tool (via Store)', () => {
     // Should not throw
   });
 
+  it('session_start is idempotent', () => {
+    store.startSession('same-id', 'project-a', '/dir/a');
+    store.startSession('same-id', 'project-a', '/dir/a');
+
+    const sessions = store.allSessions().filter((session) => session.id === 'same-id');
+    expect(sessions).toHaveLength(1);
+  });
+
+  it('second call preserves original values', () => {
+    store.startSession('keep-values', 'foo', '/dir/foo');
+    const session = store.startSession('keep-values', 'bar', '/dir/bar');
+
+    expect(session.project).toBe('foo');
+    expect(session.directory).toBe('/dir/foo');
+  });
+
+  it('second call fills empty values', () => {
+    store.startSession('fill-empty', '', '');
+    const session = store.startSession('fill-empty', 'bar', '/dir/bar');
+
+    expect(session.project).toBe('bar');
+    expect(session.directory).toBe('/dir/bar');
+  });
+
   it('works without directory', () => {
     const session = store.startSession('test-2', 'my-project');
     expect(session.id).toBe('test-2');

@@ -13,7 +13,7 @@ export const PRAGMAS = PRAGMAS_SQL;
 
 export const OBSERVATIONS_FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-  title, content, tool_name, type, project,
+  title, content, tool_name, type, project, topic_key,
   content='observations',
   content_rowid='id'
 );
@@ -21,21 +21,54 @@ CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
 
 export const OBSERVATIONS_FTS_TRIGGERS_SQL = `
 CREATE TRIGGER IF NOT EXISTS obs_fts_insert AFTER INSERT ON observations BEGIN
-  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
-  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
+  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
+  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
 END;
 
 CREATE TRIGGER IF NOT EXISTS obs_fts_delete AFTER DELETE ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
-  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
+  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
+  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
 END;
 
 CREATE TRIGGER IF NOT EXISTS obs_fts_update AFTER UPDATE ON observations BEGIN
-  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project)
-  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project);
-  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project)
-  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project);
+  INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
+  VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
+  INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
+  VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
 END;
+`;
+
+export const SYNC_CHUNKS_SQL = `
+CREATE TABLE IF NOT EXISTS sync_chunks (
+  id               INTEGER PRIMARY KEY,
+  chunk_id         TEXT NOT NULL UNIQUE,
+  payload_hash     TEXT,
+  status           TEXT NOT NULL CHECK(status IN ('applied', 'skipped', 'failed')),
+  from_mutation_id INTEGER,
+  to_mutation_id   INTEGER,
+  chunk_version    INTEGER NOT NULL DEFAULT 1,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
+export const SYNC_CHUNKS_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_sync_chunks_chunk_id ON sync_chunks(chunk_id);
+`;
+
+export const SYNC_MUTATIONS_SQL = `
+CREATE TABLE IF NOT EXISTS sync_mutations (
+  id          INTEGER PRIMARY KEY,
+  operation   TEXT NOT NULL CHECK(operation IN ('create', 'update', 'delete')),
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('observation', 'prompt', 'session')),
+  entity_id   INTEGER NOT NULL,
+  sync_id     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
+export const SYNC_MUTATIONS_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_sync_mutations_entity ON sync_mutations(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_sync_mutations_created_at ON sync_mutations(created_at);
 `;
 
 /**
@@ -100,6 +133,12 @@ CREATE TABLE IF NOT EXISTS user_prompts (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Sync chunk state
+${SYNC_CHUNKS_SQL}
+
+-- Sync mutation journal
+${SYNC_MUTATIONS_SQL}
+
 -- FTS5 virtual table for prompt search
 CREATE VIRTUAL TABLE IF NOT EXISTS prompts_fts USING fts5(
   content, project,
@@ -138,6 +177,8 @@ CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_project ON user_prompts(project);
 CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_sync_id ON user_prompts(sync_id);
+${SYNC_CHUNKS_INDEXES_SQL}
+${SYNC_MUTATIONS_INDEXES_SQL}
 `;
 
 /**

@@ -7,6 +7,7 @@ import type { ExportData } from '../src/store/types.js';
 import { runCli } from '../src/cli.js';
 import { parseArgs, shouldRunCli } from '../src/index.js';
 import { ALL_TOOLS } from '../src/tools/index.js';
+import { VERSION } from '../src/version.js';
 
 function createTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'thoth-mem-cli-'));
@@ -270,7 +271,7 @@ describe('runCli', () => {
     const { stdout, stderr } = await captureCli(['version']);
 
     expect(stderr).toBe('');
-    expect(stdout.trim()).toBe('0.1.2');
+    expect(stdout.trim()).toBe(VERSION);
   });
 
   it('writes errors to stderr for invalid commands', async () => {

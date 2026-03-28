@@ -5,10 +5,11 @@ import { getConfig, resolveDataDir } from './config.js';
 import { Store } from './store/index.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { ExportData, Observation, ObservationScope, ObservationType } from './store/types.js';
-import { syncExport } from './sync/index.js';
+import { syncExport, syncImport } from './sync/index.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
+import { VERSION } from './version.js';
 
-export const VERSION = '0.1.2';
+export { VERSION };
 
 const HELP_TEXT = `thoth-mem — Persistent memory for AI coding agents
 
@@ -16,18 +17,19 @@ Usage:
   thoth-mem [command] [options]
 
 Commands:
-  mcp                    Start MCP server (default)
-  search <query>         Search memories
-  save <title> <content> Save a memory
-  timeline <obs_id>      Chronological context
-  context [project]      Recent session context
-  stats                  Memory statistics
-  export [file]          Export to JSON
-  import <file>          Import from JSON
-  sync                   Git sync export
-  migrate-project <old> <new>  Rename a project
-  version                Show version
-  help                   Show this help
+   mcp                    Start MCP server (default)
+   search <query>         Search memories
+   save <title> <content> Save a memory
+   timeline <obs_id>      Chronological context
+   context [project]      Recent session context
+   stats                  Memory statistics
+   export [file]          Export to JSON
+   import <file>          Import from JSON
+   sync                   Git sync export
+   sync-import            Git sync import
+   migrate-project <old> <new>  Rename a project
+   version                Show version
+   help                   Show this help
 
 Global Options:
   --data-dir=<path>      Data directory (default: ~/.thoth)
@@ -403,22 +405,42 @@ async function handleImport(positionals: string[], globals: GlobalOptions): Prom
 }
 
 async function handleSync(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsedDir = parseOptionValue(positionals, ['--dir']);
-  ensureNoExtraArgs(parsedDir.rest, 'sync');
+   const parsedDir = parseOptionValue(positionals, ['--dir']);
+   ensureNoExtraArgs(parsedDir.rest, 'sync');
 
-  const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
+   const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
 
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = syncExport(store, syncDir, globals.project);
-    printStdout([
-      '## Sync Export Complete',
-      `- **Directory:** ${syncDir}`,
-      `- **Chunk:** ${result.filename || 'none'}`,
-      `- **Sessions:** ${result.sessions}`,
-      `- **Observations:** ${result.observations}`,
-      `- **Prompts:** ${result.prompts}`,
-    ].join('\n'));
-  });
+   await withStore(globals.dataDir, ({ store }) => {
+     const result = syncExport(store, syncDir, globals.project);
+     printStdout([
+       '## Sync Export Complete',
+       `- **Directory:** ${syncDir}`,
+       `- **Chunk:** ${result.filename || 'none'}`,
+       `- **Sessions:** ${result.sessions}`,
+       `- **Observations:** ${result.observations}`,
+       `- **Prompts:** ${result.prompts}`,
+     ].join('\n'));
+   });
+}
+
+async function handleSyncImport(positionals: string[], globals: GlobalOptions): Promise<void> {
+   const parsedDir = parseOptionValue(positionals, ['--dir']);
+   ensureNoExtraArgs(parsedDir.rest, 'sync-import');
+
+   const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
+
+   await withStore(globals.dataDir, ({ store }) => {
+     const result = syncImport(store, syncDir);
+     printStdout([
+       '## Sync Import Complete',
+       `- **Directory:** ${syncDir}`,
+       `- **Chunks processed:** ${result.chunks_processed}`,
+       `- **Sessions imported:** ${result.sessions_imported}`,
+       `- **Observations imported:** ${result.observations_imported}`,
+       `- **Prompts imported:** ${result.prompts_imported}`,
+       `- **Skipped (duplicates):** ${result.skipped}`,
+     ].join('\n'));
+   });
 }
 
 async function handleMigrateProject(positionals: string[], globals: GlobalOptions): Promise<void> {
@@ -482,9 +504,12 @@ export async function runCli(args: string[]): Promise<void> {
         await handleImport(parsed.positionals, parsed.globals);
         return;
       case 'sync':
-        await handleSync(parsed.positionals, parsed.globals);
-        return;
-      case 'migrate-project':
+         await handleSync(parsed.positionals, parsed.globals);
+         return;
+       case 'sync-import':
+         await handleSyncImport(parsed.positionals, parsed.globals);
+         return;
+       case 'migrate-project':
         await handleMigrateProject(parsed.positionals, parsed.globals);
         return;
       case 'version':
