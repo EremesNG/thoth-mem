@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { MIGRATIONS_SQL, PRAGMAS, SCHEMA_SQL } from './schema.js';
+import { PRAGMAS, SCHEMA_SQL } from './schema.js';
+import { runMigrations } from './migrations.js';
 import { ThothConfig } from '../config.js';
 import type {
   ContextInput,
@@ -14,6 +15,12 @@ import type {
   SearchInput,
   SearchResult,
   Session,
+  SyncChunkV2,
+  SyncChunkRecord,
+  SyncChunkStatus,
+  SyncEntityType,
+  SyncMutation,
+  SyncOperation,
   StatsResult,
   TimelineInput,
   TimelineResult,
@@ -54,21 +61,7 @@ export class Store {
     }
 
     this.db.exec(SCHEMA_SQL);
-    this.runMigrations();
-  }
-
-  /**
-   * Run idempotent schema migrations for existing databases.
-   * Each migration is wrapped in try/catch — already-applied migrations are silently skipped.
-   */
-  private runMigrations(): void {
-    for (const sql of MIGRATIONS_SQL) {
-      try {
-        this.db.exec(sql);
-      } catch {
-        // Already applied — safe to ignore (e.g., "duplicate column name")
-      }
-    }
+    runMigrations(this.db);
   }
 
   private mapObservationRow(row: ObservationRow | undefined): Observation | null {
@@ -85,6 +78,18 @@ export class Store {
       .filter((row): row is Observation => row !== null);
   }
 
+  private recordMutation(operation: SyncOperation, entityType: SyncEntityType, entityId: number, syncId: string | null): void {
+    try {
+      this.db.prepare(
+        'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id) VALUES (?, ?, ?, ?)'
+      ).run(operation, entityType, entityId, syncId);
+    } catch (error) {
+      process.stderr.write(
+        `[store] Failed to record sync mutation (${operation} ${entityType}#${entityId}): ${error instanceof Error ? error.message : String(error)}\n`
+      );
+    }
+  }
+
   /**
    * Close the database connection.
    */
@@ -97,6 +102,10 @@ export class Store {
    * Replaces empty/unknown project and null/empty directory with provided values.
    */
   ensureSession(sessionId: string, project: string, directory?: string): void {
+    // Check if session already exists
+    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId);
+    const isNew = !existing;
+
     this.db
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
@@ -105,17 +114,30 @@ export class Store {
            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(sessionId, project, directory ?? null);
+
+    // Record mutation only for new sessions
+    if (isNew) {
+      this.recordMutation('create', 'session', 0, sessionId);
+    }
   }
 
   startSession(id: string, project: string, directory?: string): Session {
-    this.db
+    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
+    const isNew = !existing;
+
+    const result = this.db
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
-           directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
+            project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
+            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(id, project, directory ?? null);
+
+    // Record mutation only for newly created sessions.
+    if (isNew && result.changes > 0) {
+      this.recordMutation('create', 'session', 0, id);
+    }
 
     return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
   }
@@ -128,6 +150,9 @@ export class Store {
     if (result.changes === 0) {
       return null;
     }
+
+    // Record mutation for session update
+    this.recordMutation('update', 'session', 0, id);
 
     return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
   }
@@ -268,6 +293,21 @@ export class Store {
   savePrompt(sessionId: string, content: string, project?: string): UserPrompt {
     this.ensureSession(sessionId, project || 'unknown');
 
+    const contentHash = computeHash(content);
+    const recentPrompts = this.db.prepare(
+      `SELECT *
+       FROM user_prompts
+       WHERE session_id = ?
+         AND created_at > datetime('now', '-30 seconds')
+       ORDER BY created_at DESC`
+    ).all(sessionId) as UserPrompt[];
+
+    const duplicatePrompt = recentPrompts.find((prompt) => computeHash(prompt.content) === contentHash);
+
+    if (duplicatePrompt) {
+      return duplicatePrompt;
+    }
+
     const syncId = randomUUID();
     const result = this.db.prepare(
       'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
@@ -278,6 +318,8 @@ export class Store {
     if (!prompt) {
       throw new Error('Failed to load created prompt');
     }
+
+    this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id);
 
     return prompt;
   }
@@ -350,6 +392,8 @@ export class Store {
         throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
       }
 
+      this.recordMutation('update', 'observation', observation.id, observation.sync_id);
+
       return { observation, action: 'deduplicated' };
     }
 
@@ -382,6 +426,8 @@ export class Store {
           throw new Error(`Failed to load upserted observation ${existing.id}`);
         }
 
+        this.recordMutation('update', 'observation', observation.id, observation.sync_id);
+
         return { observation, action: 'upserted' };
       }
     }
@@ -408,6 +454,8 @@ export class Store {
       throw new Error('Failed to load created observation');
     }
 
+    this.recordMutation('create', 'observation', observation.id, observation.sync_id);
+
     return { observation, action: 'created' };
   }
 
@@ -418,12 +466,30 @@ export class Store {
 
   deleteObservation(id: number, hardDelete: boolean = false): boolean {
     if (hardDelete) {
+      const existing = this.db.prepare(
+        'SELECT sync_id FROM observations WHERE id = ?'
+      ).get(id) as { sync_id: string | null } | undefined;
+
       this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
       const result = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+
+      if (result.changes > 0) {
+        this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null);
+      }
+
       return result.changes > 0;
     }
 
+    const existing = this.db.prepare(
+      'SELECT sync_id FROM observations WHERE id = ? AND deleted_at IS NULL'
+    ).get(id) as { sync_id: string | null } | undefined;
+
     const result = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
+
+    if (result.changes > 0) {
+      this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null);
+    }
+
     return result.changes > 0;
   }
 
@@ -477,51 +543,95 @@ export class Store {
 
     this.db.prepare(`UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
-    return this.getObservation(input.id);
+    const updated = this.getObservation(input.id);
+
+    if (updated) {
+      this.recordMutation('update', 'observation', updated.id, updated.sync_id);
+    }
+
+    return updated;
   }
 
   searchObservations(input: SearchInput): SearchResult[] {
-    const sanitizedQuery = sanitizeFTS(input.query);
-
-    if (sanitizedQuery === '') {
-      return [];
-    }
-
-    const sql = [
-      'SELECT o.*, fts.rank',
-      'FROM observations_fts fts',
-      'JOIN observations o ON o.id = fts.rowid',
-      'WHERE observations_fts MATCH ?',
-      'AND o.deleted_at IS NULL',
-    ];
-    const params: Array<string | number> = [sanitizedQuery];
-
-    if (input.type) {
-      sql.push('AND o.type = ?');
-      params.push(input.type);
-    }
-
-    if (input.project) {
-      sql.push('AND o.project = ?');
-      params.push(input.project);
-    }
-
-    if (input.session_id) {
-      sql.push('AND o.session_id = ?');
-      params.push(input.session_id);
-    }
-
-    if (input.scope) {
-      sql.push('AND o.scope = ?');
-      params.push(input.scope);
-    }
-
     const limit = Math.min(input.limit ?? this.config.maxSearchResults, 20);
-    sql.push('ORDER BY fts.rank');
-    sql.push('LIMIT ?');
-    params.push(limit);
+    let rows: SearchRow[];
 
-    const rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
+    if (input.topic_key_exact !== undefined) {
+      const sql = [
+        'SELECT o.*, 0 as rank',
+        'FROM observations o',
+        'WHERE o.topic_key = ?',
+        'AND o.deleted_at IS NULL',
+      ];
+      const params: Array<string | number> = [input.topic_key_exact];
+
+      if (input.type) {
+        sql.push('AND o.type = ?');
+        params.push(input.type);
+      }
+
+      if (input.project) {
+        sql.push('AND o.project = ?');
+        params.push(input.project);
+      }
+
+      if (input.session_id) {
+        sql.push('AND o.session_id = ?');
+        params.push(input.session_id);
+      }
+
+      if (input.scope) {
+        sql.push('AND o.scope = ?');
+        params.push(input.scope);
+      }
+
+      sql.push('ORDER BY o.updated_at DESC, o.id DESC');
+      sql.push('LIMIT ?');
+      params.push(limit);
+
+      rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
+    } else {
+      const sanitizedQuery = sanitizeFTS(input.query);
+
+      if (sanitizedQuery === '') {
+        return [];
+      }
+
+      const sql = [
+        'SELECT o.*, fts.rank',
+        'FROM observations_fts fts',
+        'JOIN observations o ON o.id = fts.rowid',
+        'WHERE observations_fts MATCH ?',
+        'AND o.deleted_at IS NULL',
+      ];
+      const params: Array<string | number> = [sanitizedQuery];
+
+      if (input.type) {
+        sql.push('AND o.type = ?');
+        params.push(input.type);
+      }
+
+      if (input.project) {
+        sql.push('AND o.project = ?');
+        params.push(input.project);
+      }
+
+      if (input.session_id) {
+        sql.push('AND o.session_id = ?');
+        params.push(input.session_id);
+      }
+
+      if (input.scope) {
+        sql.push('AND o.scope = ?');
+        params.push(input.scope);
+      }
+
+      sql.push('ORDER BY fts.rank');
+      sql.push('LIMIT ?');
+      params.push(limit);
+
+      rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
+    }
 
     return rows.map((row) => {
       const observation = this.mapObservationRow(row);
@@ -691,6 +801,575 @@ export class Store {
     doImport();
 
     return { sessions_imported: sessionsImported, observations_imported: observationsImported, prompts_imported: promptsImported, skipped };
+  }
+
+  applyV2Chunk(chunk: SyncChunkV2): { applied: number; skipped: number; deleted: number } {
+    let applied = 0;
+    let skipped = 0;
+    let deleted = 0;
+
+    const isRecord = (value: unknown): value is Record<string, unknown> => {
+      return typeof value === 'object' && value !== null;
+    };
+
+    const asNullableString = (value: unknown): string | null => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      return typeof value === 'string' ? value : null;
+    };
+
+    const asPositiveInteger = (value: unknown, fallback: number): number => {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+        return fallback;
+      }
+
+      return value;
+    };
+
+    const isObservationType = (value: unknown): value is Observation['type'] => {
+      return value === 'decision'
+        || value === 'architecture'
+        || value === 'bugfix'
+        || value === 'pattern'
+        || value === 'config'
+        || value === 'discovery'
+        || value === 'learning'
+        || value === 'session_summary'
+        || value === 'manual';
+    };
+
+    const isObservationScope = (value: unknown): value is Observation['scope'] => {
+      return value === 'project' || value === 'personal';
+    };
+
+    const applyChunk = this.db.transaction((mutations: SyncChunkV2['mutations']) => {
+      for (const mutation of mutations) {
+        const syncId = mutation.sync_id;
+
+        if (!syncId) {
+          skipped++;
+          continue;
+        }
+
+        if (mutation.operation === 'delete') {
+          if (mutation.entity_type !== 'observation') {
+            skipped++;
+            continue;
+          }
+
+          const result = this.db.prepare(
+            "UPDATE observations SET deleted_at = datetime('now') WHERE sync_id = ? AND deleted_at IS NULL"
+          ).run(syncId);
+
+          if (result.changes > 0) {
+            applied++;
+            deleted++;
+          } else {
+            skipped++;
+          }
+
+          continue;
+        }
+
+        if (!isRecord(mutation.data)) {
+          skipped++;
+          continue;
+        }
+
+        const data = mutation.data;
+
+        if (mutation.operation === 'create') {
+          if (mutation.entity_type === 'observation') {
+            const existingObservation = this.db.prepare(
+              'SELECT id FROM observations WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number } | undefined;
+
+            if (existingObservation) {
+              skipped++;
+              continue;
+            }
+
+            const sessionId = asNullableString(data.session_id);
+            const typeValue = data.type;
+            const title = asNullableString(data.title);
+            const content = asNullableString(data.content);
+
+            if (!sessionId || !title || !content || !isObservationType(typeValue)) {
+              skipped++;
+              continue;
+            }
+
+            const project = asNullableString(data.project);
+            const scopeValue = data.scope;
+            const scope = isObservationScope(scopeValue) ? scopeValue : 'project';
+            const normalizedHash = asNullableString(data.normalized_hash) ?? computeHash(content);
+
+            this.ensureSession(sessionId, project || 'unknown');
+
+            this.db.prepare(
+              `INSERT INTO observations (
+                 session_id,
+                 type,
+                 title,
+                 content,
+                 tool_name,
+                 project,
+                 scope,
+                 topic_key,
+                 normalized_hash,
+                 sync_id,
+                 revision_count,
+                 duplicate_count,
+                 last_seen_at,
+                 created_at,
+                 updated_at,
+                 deleted_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?)`
+            ).run(
+              sessionId,
+              typeValue,
+              title,
+              content,
+              asNullableString(data.tool_name),
+              project,
+              scope,
+              asNullableString(data.topic_key),
+              normalizedHash,
+              syncId,
+              asPositiveInteger(data.revision_count, 1),
+              asPositiveInteger(data.duplicate_count, 1),
+              asNullableString(data.last_seen_at),
+              asNullableString(data.created_at),
+              asNullableString(data.updated_at),
+              asNullableString(data.deleted_at)
+            );
+
+            applied++;
+            continue;
+          }
+
+          if (mutation.entity_type === 'prompt') {
+            const existingPrompt = this.db.prepare(
+              'SELECT id FROM user_prompts WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number } | undefined;
+
+            if (existingPrompt) {
+              skipped++;
+              continue;
+            }
+
+            const sessionId = asNullableString(data.session_id);
+            const content = asNullableString(data.content);
+
+            if (!sessionId || !content) {
+              skipped++;
+              continue;
+            }
+
+            const project = asNullableString(data.project);
+            this.ensureSession(sessionId, project || 'unknown');
+
+            this.db.prepare(
+              `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
+               VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))`
+            ).run(
+              sessionId,
+              content,
+              project,
+              syncId,
+              asNullableString(data.created_at)
+            );
+
+            applied++;
+            continue;
+          }
+
+          if (mutation.entity_type === 'session') {
+            const existingSession = this.db.prepare(
+              'SELECT id FROM sessions WHERE id = ? LIMIT 1'
+            ).get(syncId) as { id: string } | undefined;
+
+            if (existingSession) {
+              skipped++;
+              continue;
+            }
+
+            const project = asNullableString(data.project) ?? 'unknown';
+
+            this.db.prepare(
+              `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
+               VALUES (?, ?, ?, COALESCE(?, datetime('now')), ?, ?)`
+            ).run(
+              syncId,
+              project,
+              asNullableString(data.directory),
+              asNullableString(data.started_at),
+              asNullableString(data.ended_at),
+              asNullableString(data.summary)
+            );
+
+            applied++;
+            continue;
+          }
+
+          skipped++;
+          continue;
+        }
+
+        if (mutation.operation === 'update') {
+          if (mutation.entity_type === 'observation') {
+            const existingObservation = this.db.prepare(
+              'SELECT id FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
+            ).get(syncId) as { id: number } | undefined;
+
+            if (!existingObservation) {
+              skipped++;
+              continue;
+            }
+
+            const setClauses: string[] = [];
+            const params: Array<string | number | null> = [];
+            const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(data, key);
+
+            if (has('session_id')) {
+              const sessionId = asNullableString(data.session_id);
+              if (!sessionId) {
+                skipped++;
+                continue;
+              }
+
+              const projectForSession = has('project') ? asNullableString(data.project) : null;
+              this.ensureSession(sessionId, projectForSession || 'unknown');
+
+              setClauses.push('session_id = ?');
+              params.push(sessionId);
+            }
+
+            if (has('type')) {
+              const typeValue = data.type;
+              if (!isObservationType(typeValue)) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('type = ?');
+              params.push(typeValue);
+            }
+
+            if (has('title')) {
+              const title = asNullableString(data.title);
+              if (!title) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('title = ?');
+              params.push(title);
+            }
+
+            if (has('content')) {
+              const content = asNullableString(data.content);
+              if (!content) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('content = ?');
+              params.push(content);
+
+              if (!has('normalized_hash')) {
+                setClauses.push('normalized_hash = ?');
+                params.push(computeHash(content));
+              }
+            }
+
+            if (has('tool_name')) {
+              setClauses.push('tool_name = ?');
+              params.push(asNullableString(data.tool_name));
+            }
+
+            if (has('project')) {
+              setClauses.push('project = ?');
+              params.push(asNullableString(data.project));
+            }
+
+            if (has('scope')) {
+              const scopeValue = data.scope;
+              if (!isObservationScope(scopeValue)) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('scope = ?');
+              params.push(scopeValue);
+            }
+
+            if (has('topic_key')) {
+              setClauses.push('topic_key = ?');
+              params.push(asNullableString(data.topic_key));
+            }
+
+            if (has('normalized_hash')) {
+              setClauses.push('normalized_hash = ?');
+              params.push(asNullableString(data.normalized_hash));
+            }
+
+            if (has('revision_count')) {
+              setClauses.push('revision_count = ?');
+              params.push(asPositiveInteger(data.revision_count, 1));
+            }
+
+            if (has('duplicate_count')) {
+              setClauses.push('duplicate_count = ?');
+              params.push(asPositiveInteger(data.duplicate_count, 1));
+            }
+
+            if (has('last_seen_at')) {
+              setClauses.push('last_seen_at = ?');
+              params.push(asNullableString(data.last_seen_at));
+            }
+
+            if (has('created_at')) {
+              const createdAt = asNullableString(data.created_at);
+              if (!createdAt) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('created_at = ?');
+              params.push(createdAt);
+            }
+
+            if (has('updated_at')) {
+              const updatedAt = asNullableString(data.updated_at);
+              if (!updatedAt) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('updated_at = ?');
+              params.push(updatedAt);
+            } else {
+              setClauses.push("updated_at = datetime('now')");
+            }
+
+            if (setClauses.length === 0) {
+              skipped++;
+              continue;
+            }
+
+            params.push(existingObservation.id);
+            const result = this.db.prepare(
+              `UPDATE observations SET ${setClauses.join(', ')} WHERE id = ? AND deleted_at IS NULL`
+            ).run(...params);
+
+            if (result.changes > 0) {
+              applied++;
+            } else {
+              skipped++;
+            }
+
+            continue;
+          }
+
+          if (mutation.entity_type === 'prompt') {
+            const existingPrompt = this.db.prepare(
+              'SELECT id FROM user_prompts WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number } | undefined;
+
+            if (!existingPrompt) {
+              skipped++;
+              continue;
+            }
+
+            const setClauses: string[] = [];
+            const params: Array<string | null> = [];
+            const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(data, key);
+
+            if (has('session_id')) {
+              const sessionId = asNullableString(data.session_id);
+              if (!sessionId) {
+                skipped++;
+                continue;
+              }
+
+              const projectForSession = has('project') ? asNullableString(data.project) : null;
+              this.ensureSession(sessionId, projectForSession || 'unknown');
+
+              setClauses.push('session_id = ?');
+              params.push(sessionId);
+            }
+
+            if (has('content')) {
+              const content = asNullableString(data.content);
+              if (!content) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('content = ?');
+              params.push(content);
+            }
+
+            if (has('project')) {
+              setClauses.push('project = ?');
+              params.push(asNullableString(data.project));
+            }
+
+            if (has('created_at')) {
+              const createdAt = asNullableString(data.created_at);
+              if (!createdAt) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('created_at = ?');
+              params.push(createdAt);
+            }
+
+            if (setClauses.length === 0) {
+              skipped++;
+              continue;
+            }
+
+            params.push(String(existingPrompt.id));
+            const result = this.db.prepare(`UPDATE user_prompts SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+
+            if (result.changes > 0) {
+              applied++;
+            } else {
+              skipped++;
+            }
+
+            continue;
+          }
+
+          if (mutation.entity_type === 'session') {
+            const existingSession = this.db.prepare(
+              'SELECT id FROM sessions WHERE id = ? LIMIT 1'
+            ).get(syncId) as { id: string } | undefined;
+
+            if (!existingSession) {
+              skipped++;
+              continue;
+            }
+
+            const setClauses: string[] = [];
+            const params: Array<string | null> = [];
+            const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(data, key);
+
+            if (has('project')) {
+              const project = asNullableString(data.project);
+              if (!project) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('project = ?');
+              params.push(project);
+            }
+
+            if (has('directory')) {
+              setClauses.push('directory = ?');
+              params.push(asNullableString(data.directory));
+            }
+
+            if (has('started_at')) {
+              const startedAt = asNullableString(data.started_at);
+              if (!startedAt) {
+                skipped++;
+                continue;
+              }
+              setClauses.push('started_at = ?');
+              params.push(startedAt);
+            }
+
+            if (has('ended_at')) {
+              setClauses.push('ended_at = ?');
+              params.push(asNullableString(data.ended_at));
+            }
+
+            if (has('summary')) {
+              setClauses.push('summary = ?');
+              params.push(asNullableString(data.summary));
+            }
+
+            if (setClauses.length === 0) {
+              skipped++;
+              continue;
+            }
+
+            params.push(syncId);
+            const result = this.db.prepare(`UPDATE sessions SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+
+            if (result.changes > 0) {
+              applied++;
+            } else {
+              skipped++;
+            }
+
+            continue;
+          }
+
+          skipped++;
+          continue;
+        }
+
+        skipped++;
+      }
+    });
+
+    applyChunk(chunk.mutations);
+
+    return { applied, skipped, deleted };
+  }
+
+  isChunkImported(chunkId: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 as imported FROM sync_chunks WHERE chunk_id = ? AND status = 'applied' LIMIT 1"
+    ).get(chunkId) as { imported: number } | undefined;
+
+    return row !== undefined;
+  }
+
+  recordSyncChunk(record: {
+    chunk_id: string;
+    payload_hash?: string;
+    status: SyncChunkStatus;
+    from_mutation_id?: number;
+    to_mutation_id?: number;
+    chunk_version?: number;
+  }): void {
+    this.db.prepare(
+      `INSERT OR REPLACE INTO sync_chunks (
+         chunk_id,
+         payload_hash,
+         status,
+         from_mutation_id,
+         to_mutation_id,
+         chunk_version
+       ) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      record.chunk_id,
+      record.payload_hash ?? null,
+      record.status,
+      record.from_mutation_id ?? null,
+      record.to_mutation_id ?? null,
+      record.chunk_version ?? 1
+    );
+  }
+
+  getExportWatermark(): number {
+    const row = this.db.prepare(
+      "SELECT MAX(to_mutation_id) as watermark FROM sync_chunks WHERE status = 'applied' AND chunk_version = 2"
+    ).get() as { watermark: number | null };
+
+    return row.watermark ?? 0;
+  }
+
+  getMutationsSince(fromId: number): SyncMutation[] {
+    return this.db.prepare(
+      'SELECT * FROM sync_mutations WHERE id > ? ORDER BY id ASC'
+    ).all(fromId) as SyncMutation[];
+  }
+
+  getSyncChunks(): SyncChunkRecord[] {
+    return this.db.prepare(
+      'SELECT * FROM sync_chunks ORDER BY created_at ASC'
+    ).all() as SyncChunkRecord[];
   }
 
   /**
