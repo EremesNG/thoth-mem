@@ -6,7 +6,7 @@ import { OBSERVATION_TYPES } from "../store/types.js";
 export function registerMemSearch(server: McpServer, store: Store): void {
   server.tool(
     "mem_search",
-    `Search persistent memory for past observations using full-text search.
+    `Search persistent memory for past observations using full-text search or exact topic-key lookup.
 
 Returns compact results by default (IDs + titles). Use the 3-layer pattern:
 1. mem_search → scan compact index
@@ -16,7 +16,8 @@ Returns compact results by default (IDs + titles). Use the 3-layer pattern:
 Tips:
 - Use specific keywords for better results
 - Filter by type to narrow results
-- Use mode="preview" for snippets when needed`,
+- Use mode="preview" for snippets when needed
+- Use topic_key_exact to bypass FTS and match exact topic keys`,
     {
       query: z.string().describe("Search query — natural language or keywords"),
       type: z.enum(OBSERVATION_TYPES).optional().describe("Filter by observation type"),
@@ -25,10 +26,11 @@ Tips:
       scope: z.enum(['project', 'personal'] as const).optional().describe("Filter by scope"),
       limit: z.number().min(1).max(20).optional().describe("Max results (default: 10, max: 20)"),
       mode: z.enum(['compact', 'preview']).optional().describe("Search result format: compact (default, IDs+titles) or preview (with snippets)"),
+      topic_key_exact: z.string().optional().describe("Exact topic key match (bypasses FTS)"),
     },
-    async ({ query, type, project, session_id, scope, limit, mode }) => {
+    async ({ query, type, project, session_id, scope, limit, mode, topic_key_exact }) => {
       try {
-        const markdown = store.searchObservationsFormatted({ query, type, project, session_id, scope, limit, mode });
+        const markdown = store.searchObservationsFormatted({ query, type, project, session_id, scope, limit, mode, topic_key_exact });
 
         if (markdown.trim() === '') {
           return {

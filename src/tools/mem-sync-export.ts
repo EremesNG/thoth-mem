@@ -7,7 +7,8 @@ export function registerMemSyncExport(server: McpServer, store: Store): void {
   server.tool(
     "mem_sync_export",
     `Export memory to a git-friendly sync directory as an append-only compressed chunk.
-Each export creates a new .json.gz chunk file and updates the manifest.
+Incremental v2 exports: each chunk includes only mutations newer than the last export watermark.
+If no new mutations exist, no chunk is emitted (no-op).
 The sync directory can be committed to git for cross-machine memory sharing.
 Deduplication on import is handled by sync_id — safe to export repeatedly.`,
     {
@@ -18,18 +19,34 @@ Deduplication on import is handled by sync_id — safe to export repeatedly.`,
       try {
         const result = syncExport(store, sync_dir, project);
 
+        // Handle no-op case
+        if (result.message === 'No new changes to export') {
+          return {
+            content: [{ type: "text" as const, text: "No new changes to export — all mutations already synced." }],
+          };
+        }
+
+        // Handle successful export
         if (!result.chunk_id) {
           return {
             content: [{ type: "text" as const, text: "Nothing to export — no data found." }],
           };
         }
 
+        const mutationRange = result.from_mutation_id !== null && result.to_mutation_id !== null
+          ? `${result.from_mutation_id} → ${result.to_mutation_id}`
+          : 'N/A';
+
         return {
           content: [{
             type: "text" as const,
             text: [
               '## Sync Export Complete',
-              `- **Chunk:** ${result.filename}`,
+              `- **Chunk ID:** ${result.chunk_id}`,
+              `- **Filename:** ${result.filename}`,
+              `- **Mutations Exported:** ${result.exported}`,
+              `- **Mutation Range:** ${mutationRange}`,
+              `- **Chunks Created:** ${result.chunks}`,
               `- **Sessions:** ${result.sessions}`,
               `- **Observations:** ${result.observations}`,
               `- **Prompts:** ${result.prompts}`,
