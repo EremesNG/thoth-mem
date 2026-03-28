@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Store } from "./store/index.js";
 import { getConfig, resolveDataDir, ThothConfig } from "./config.js";
 import { registerTools } from "./tools/index.js";
+import { VERSION } from "./version.js";
 
 /**
  * MCP server instructions — returned during initialization to guide
@@ -56,7 +57,7 @@ export function createServer(options: ServerOptions): { server: McpServer; store
 
   const server = new McpServer({
     name: "thoth-mem",
-    version: "0.1.0",
+    version: VERSION,
   }, {
     instructions: SERVER_INSTRUCTIONS,
   });

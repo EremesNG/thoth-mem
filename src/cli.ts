@@ -7,8 +7,9 @@ import { OBSERVATION_TYPES } from './store/types.js';
 import type { ExportData, Observation, ObservationScope, ObservationType } from './store/types.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
+import { VERSION } from './version.js';
 
-export const VERSION = '0.1.2';
+export { VERSION };
 
 const HELP_TEXT = `thoth-mem — Persistent memory for AI coding agents
 
