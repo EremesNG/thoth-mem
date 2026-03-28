@@ -114,6 +114,7 @@ thoth-mem stats                        # Memory statistics
 thoth-mem export [file]                # Export to JSON (stdout if no file)
 thoth-mem import <file>                # Import from JSON
 thoth-mem sync [--sync-dir=<path>]     # Git sync export
+thoth-mem sync-import [--sync-dir=<path>]  # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
@@ -164,7 +165,7 @@ The HTTP API supports all memory operations: sessions, observations, prompts, se
 | Tool                    | Purpose                                                           |
 | ----------------------- | ----------------------------------------------------------------- |
 | `mem_save`              | Save structured observations (decisions, bugs, patterns, configs) |
-| `mem_search`            | Full-text search with compact (default) or preview mode           |
+| `mem_search`            | Full-text search with compact/preview mode and exact topic_key lookup |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get_observation`   | Retrieve full observation by ID with pagination support           |
 | `mem_session_start`     | Register a new coding session (idempotent)                        |
@@ -198,7 +199,7 @@ thoth-mem import backup.json
 
 ### Git Sync
 
-Append-only gzipped chunks designed for version control — no merge conflicts:
+Incremental, append-only gzipped chunks designed for version control — no merge conflicts:
 
 ```bash
 # Export a chunk to the sync directory
@@ -214,10 +215,16 @@ thoth-mem sync --sync-dir=.thoth-sync
 Import on another machine:
 
 ```bash
-thoth-mem import --sync-dir=.thoth-sync
+thoth-mem sync-import --sync-dir=.thoth-sync
 ```
 
 Each observation and prompt carries a `sync_id` (UUID) that prevents duplicates on re-import.
+
+**Incremental exports:** Only changes since the last sync are exported, tracked via mutation journal for efficiency.
+
+**Tombstones:** Deleted observations propagate correctly across synced instances, ensuring consistency.
+
+**Replay safety:** Re-importing the same data is safe; duplicates are detected and skipped automatically via `sync_id`.
 
 ### Project Migration
 
