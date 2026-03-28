@@ -1,23 +1,23 @@
 # Tasks: Sync and Resilience for thoth-mem
 
 ## Phase 1: Foundation / Infrastructure
-- [ ] 1.1 Create structured migration helpers in `src/store/migrations.ts` (`tableExists`, `columnExists`, `triggerExists`, `ftsHasColumn`, `addColumnIfMissing`, `rebuildObservationsFts`, `runMigrations`) and wire helper exports for reuse (Store spec: **Startup Migrations MUST Be Structured and Idempotent**).
+- [x] 1.1 Create structured migration helpers in `src/store/migrations.ts` (`tableExists`, `columnExists`, `triggerExists`, `ftsHasColumn`, `addColumnIfMissing`, `rebuildObservationsFts`, `runMigrations`) and wire helper exports for reuse (Store spec: **Startup Migrations MUST Be Structured and Idempotent**).
   - **Verification**
     - Run: `npm run build`
     - Expected: Compiles without errors.
-- [ ] 1.2 Refactor startup migration flow in `src/store/index.ts` to call `runMigrations(this.db)` and remove blind `try/catch` migration loops (Store spec scenario: **Partially migrated database startup**). **Sequential file constraint:** begin ordered `src/store/index.ts` edits here.
+- [x] 1.2 Refactor startup migration flow in `src/store/index.ts` to call `runMigrations(this.db)` and remove blind `try/catch` migration loops (Store spec scenario: **Partially migrated database startup**). **Sequential file constraint:** begin ordered `src/store/index.ts` edits here.
   - **Verification**
     - Run: `npm test -- tests/store/migration.test.ts`
     - Expected: Migration tests pass, including partially migrated startup behavior.
-- [ ] 1.3 Add unified runtime version utility in `src/version.ts` and replace hardcoded runtime versions in `src/cli.ts`, `src/server.ts`, and `src/http-openapi.ts` (Config spec: **Runtime Version Source MUST Be Unified**, **Public Version Surfaces MUST Stay Consistent**).
+- [x] 1.3 Add unified runtime version utility in `src/version.ts` and replace hardcoded runtime versions in `src/cli.ts`, `src/server.ts`, and `src/http-openapi.ts` (Config spec: **Runtime Version Source MUST Be Unified**, **Public Version Surfaces MUST Stay Consistent**).
   - **Verification**
     - Run: `npm run build`
     - Expected: Compiles without errors.
-- [ ] 1.4 Add/adjust version consistency tests in `tests/cli.test.ts` and `tests/http-server.test.ts` so CLI, MCP server identity, and OpenAPI all match `package.json` (Config spec scenarios: **CLI version output**, **MCP server identity version**, **OpenAPI info version**).
+- [x] 1.4 Add/adjust version consistency tests in `tests/cli.test.ts` and `tests/http-server.test.ts` so CLI, MCP server identity, and OpenAPI all match `package.json` (Config spec scenarios: **CLI version output**, **MCP server identity version**, **OpenAPI info version**).
   - **Verification**
     - Run: `npm test -- tests/cli.test.ts tests/http-server.test.ts`
     - Expected: All listed tests pass and version outputs remain consistent with `package.json`.
-- [ ] 1.5 Run focused verification for foundation changes: `npm test -- tests/store/migration.test.ts tests/cli.test.ts tests/http-server.test.ts` and `npm run build` (repository has no lint script; treat build/typecheck as lint-equivalent gate).
+- [x] 1.5 Run focused verification for foundation changes: `npm test -- tests/store/migration.test.ts tests/cli.test.ts tests/http-server.test.ts` and `npm run build` (repository has no lint script; treat build/typecheck as lint-equivalent gate).
   - **Verification**
     - Run: `npm test -- tests/store/migration.test.ts tests/cli.test.ts tests/http-server.test.ts`
     - Expected: All listed tests pass.
@@ -25,35 +25,35 @@
     - Expected: Compiles without errors.
 
 ## Phase 2: Store Schema, Search, and Mutation Journal
-- [ ] 2.1 Extend `src/store/schema.ts` FTS definition/triggers to include `topic_key` and make rebuild-safe constants reusable by migrations (Store spec: **Topic Key MUST Be Search-Indexed**, **FTS Rebuild MUST Preserve Search Integrity**).
+- [x] 2.1 Extend `src/store/schema.ts` FTS definition/triggers to include `topic_key` and make rebuild-safe constants reusable by migrations (Store spec: **Topic Key MUST Be Search-Indexed**, **FTS Rebuild MUST Preserve Search Integrity**).
   - **Verification**
     - Run: `npm test -- tests/store/schema.test.ts`
     - Expected: Schema tests pass with `topic_key` indexed in FTS and rebuild-safe behavior intact.
-- [ ] 2.2 Extend store contracts in `src/store/types.ts` for `topic_key_exact` search input and v2 sync entities/chunks (`SyncMutationEnvelopeV2`, `SyncTombstoneV2`, `SyncChunkV2`) (Store/Sync design contracts).
+- [x] 2.2 Extend store contracts in `src/store/types.ts` for `topic_key_exact` search input and v2 sync entities/chunks (`SyncMutationEnvelopeV2`, `SyncTombstoneV2`, `SyncChunkV2`) (Store/Sync design contracts).
   - **Verification**
     - Run: `npm run build`
     - Expected: Compiles without errors and updated store contracts typecheck.
-- [ ] 2.3 Add exact topic-key lookup branch in `Store.searchObservations()` inside `src/store/index.ts` (`WHERE topic_key = ?`), preserving project/scope/type/session filters and fallback FTS behavior (Store spec: **Exact Topic Key Lookup MUST Be Deterministic**; Tools spec: **mem_search MUST Preserve Backward-Compatible General Search**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
+- [x] 2.3 Add exact topic-key lookup branch in `Store.searchObservations()` inside `src/store/index.ts` (`WHERE topic_key = ?`), preserving project/scope/type/session filters and fallback FTS behavior (Store spec: **Exact Topic Key Lookup MUST Be Deterministic**; Tools spec: **mem_search MUST Preserve Backward-Compatible General Search**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
     - Run: `npm test -- tests/tools/mem-search.test.ts`
     - Expected: Search tests pass, including exact topic-key lookup and backward-compatible general search behavior.
-- [ ] 2.4 Add `sync_chunks` table/indexes in `src/store/schema.ts` plus Store helpers in `src/store/index.ts` for chunk dedupe checks, status recording, and export watermark lookup (Store spec: **Sync Chunk State MUST Be Persisted Idempotently**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
+- [x] 2.4 Add `sync_chunks` table/indexes in `src/store/schema.ts` plus Store helpers in `src/store/index.ts` for chunk dedupe checks, status recording, and export watermark lookup (Store spec: **Sync Chunk State MUST Be Persisted Idempotently**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
     - Run: `npm test -- tests/store/schema.test.ts`
     - Expected: Schema tests pass with `sync_chunks` table/indexes and idempotent persistence assumptions intact.
-- [ ] 2.5 Add `sync_mutations` table/indexes in `src/store/schema.ts` and mutation journaling in `saveObservation`, `updateObservation`, `deleteObservation`, and `savePrompt` within `src/store/index.ts` (Store spec: **Mutation Journal MUST Record Convergence Events**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
+- [x] 2.5 Add `sync_mutations` table/indexes in `src/store/schema.ts` and mutation journaling in `saveObservation`, `updateObservation`, `deleteObservation`, and `savePrompt` within `src/store/index.ts` (Store spec: **Mutation Journal MUST Record Convergence Events**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
     - Run: `npm test -- tests/store/schema.test.ts`
     - Expected: Schema tests pass with `sync_mutations` structures present and migration-safe.
-- [ ] 2.6 Add store apply path for v2 mutation chunks/tombstones in `src/store/index.ts` with idempotent delete convergence by stable `sync_id` (Sync spec: **Sync Format MUST Propagate Deletions**, scenario: **Tombstone replay remains safe**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
+- [x] 2.6 Add store apply path for v2 mutation chunks/tombstones in `src/store/index.ts` with idempotent delete convergence by stable `sync_id` (Sync spec: **Sync Format MUST Propagate Deletions**, scenario: **Tombstone replay remains safe**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass, including tombstone replay safety and idempotent convergence.
-- [ ] 2.7 Expand store/schema tests in `tests/store/schema.test.ts`, `tests/store/migration.test.ts`, and `tests/tools/mem-search.test.ts` for FTS topic_key coverage, rebuild continuity, exact lookup semantics, and idempotent migration reruns (Store spec scenarios: **Rebuild after topic-key index evolution**, **Exact key bypasses tokenization edge cases**).
+- [x] 2.7 Expand store/schema tests in `tests/store/schema.test.ts`, `tests/store/migration.test.ts`, and `tests/tools/mem-search.test.ts` for FTS topic_key coverage, rebuild continuity, exact lookup semantics, and idempotent migration reruns (Store spec scenarios: **Rebuild after topic-key index evolution**, **Exact key bypasses tokenization edge cases**).
   - **Verification**
     - Run: `npm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts`
     - Expected: All listed tests pass and cover topic_key FTS/rebuild/exact-lookup/idempotent migration cases.
-- [ ] 2.8 Run focused verification for store phase: `npm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts` and `npm run build`.
+- [x] 2.8 Run focused verification for store phase: `npm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts` and `npm run build`.
   - **Verification**
     - Run: `npm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts`
     - Expected: All listed tests pass.
@@ -61,31 +61,31 @@
     - Expected: Compiles without errors.
 
 ## Phase 3: Sync Incremental + Resilience Core
-- [ ] 3.1 Refactor sync export flow in `src/sync/index.ts` to use mutation watermark (`last successful export`) and emit no chunk when no new mutations exist (Sync spec: **Export MUST Be Incremental**, scenario: **No new mutations yields no replay chunk**).
+- [x] 3.1 Refactor sync export flow in `src/sync/index.ts` to use mutation watermark (`last successful export`) and emit no chunk when no new mutations exist (Sync spec: **Export MUST Be Incremental**, scenario: **No new mutations yields no replay chunk**).
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass for incremental export watermark behavior and no-op export when no new mutations exist.
-- [ ] 3.2 Implement v2 chunk writer in `src/sync/index.ts` with cursor range (`from_mutation_id`, `to_mutation_id`), mutation envelopes, tombstones, and deterministic chunk metadata updates.
+- [x] 3.2 Implement v2 chunk writer in `src/sync/index.ts` with cursor range (`from_mutation_id`, `to_mutation_id`), mutation envelopes, tombstones, and deterministic chunk metadata updates.
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass with v2 chunk metadata, mutation envelopes, and tombstones produced deterministically.
-- [ ] 3.3 Implement importer dedupe in `src/sync/index.ts` using both prior `chunk_id` and payload hash from `sync_chunks`, recording `applied/skipped/failed` status (Sync spec: **Import MUST Be Idempotent Across Chunk Replays**).
+- [x] 3.3 Implement importer dedupe in `src/sync/index.ts` using both prior `chunk_id` and payload hash from `sync_chunks`, recording `applied/skipped/failed` status (Sync spec: **Import MUST Be Idempotent Across Chunk Replays**).
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass with replay-safe dedupe by `chunk_id` and payload hash plus status recording.
-- [ ] 3.4 Implement dual-format parser in `src/sync/index.ts` for legacy v1 snapshot chunks and v2 mutation+tombstone chunks; preserve manifest-first ordering and sorted fallback (Sync spec: **Import MUST Be Backward Compatible**, **Processing Order MUST Be Deterministic**).
+- [x] 3.4 Implement dual-format parser in `src/sync/index.ts` for legacy v1 snapshot chunks and v2 mutation+tombstone chunks; preserve manifest-first ordering and sorted fallback (Sync spec: **Import MUST Be Backward Compatible**, **Processing Order MUST Be Deterministic**).
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass for mixed v1/v2 imports with deterministic processing order.
-- [ ] 3.5 Add explicit error propagation in sync import/export for unreadable/corrupt artifacts and ensure failure status is persisted (Tools spec: **Tool Error Handling MUST Remain Explicit**, scenario: **Invalid sync artifact**).
+- [x] 3.5 Add explicit error propagation in sync import/export for unreadable/corrupt artifacts and ensure failure status is persisted (Tools spec: **Tool Error Handling MUST Remain Explicit**, scenario: **Invalid sync artifact**).
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass with explicit error handling and persisted failure status for invalid artifacts.
-- [ ] 3.6 Expand `tests/sync/sync.test.ts` for incremental export no-op/new-delta, replay-safe id/hash dedupe, tombstone convergence, mixed v1+v2 import, and deterministic order.
+- [x] 3.6 Expand `tests/sync/sync.test.ts` for incremental export no-op/new-delta, replay-safe id/hash dedupe, tombstone convergence, mixed v1+v2 import, and deterministic order.
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts`
     - Expected: `tests/sync/sync.test.ts` passes with coverage for incremental, replay, tombstone, mixed-format, and ordering scenarios.
-- [ ] 3.7 Run focused sync verification: `npm test -- tests/sync/sync.test.ts tests/store/export-import.test.ts` and `npm run build`.
+- [x] 3.7 Run focused sync verification: `npm test -- tests/sync/sync.test.ts tests/store/export-import.test.ts` and `npm run build`.
   - **Verification**
     - Run: `npm test -- tests/sync/sync.test.ts tests/store/export-import.test.ts`
     - Expected: All listed sync/export-import tests pass.
@@ -93,35 +93,35 @@
     - Expected: Compiles without errors.
 
 ## Phase 4: Tools & HTTP Surface Updates
-- [ ] 4.1 Update `src/tools/mem-search.ts` to accept exact topic-key lookup intent (explicit field and/or exact-query parsing) and pass `topic_key_exact` to Store while preserving compact/preview behavior (Tools spec: **mem_search MUST Support Exact Topic Key Lookup Intent**).
+- [x] 4.1 Update `src/tools/mem-search.ts` to accept exact topic-key lookup intent (explicit field and/or exact-query parsing) and pass `topic_key_exact` to Store while preserving compact/preview behavior (Tools spec: **mem_search MUST Support Exact Topic Key Lookup Intent**).
   - **Verification**
     - Run: `npm test -- tests/tools/mem-search.test.ts`
     - Expected: `mem-search` tool tests pass, including exact topic-key intent and compact/preview compatibility.
-- [ ] 4.2 Update `src/tools/mem-sync-export.ts` to report incremental no-op/exported delta semantics aligned with v2 sync output (Tools spec: **mem_sync_export MUST Use Incremental Sync Semantics**).
+- [x] 4.2 Update `src/tools/mem-sync-export.ts` to report incremental no-op/exported delta semantics aligned with v2 sync output (Tools spec: **mem_sync_export MUST Use Incremental Sync Semantics**).
    - **Verification**
      - Run: `npm run build`
      - Expected: Compiles without errors. (Full test coverage added in task 4.7.)
-- [ ] 4.3 Update `src/tools/mem-sync-import.ts` to report replay-safe skipped/applied totals and explicit errors for corrupt chunks (Tools spec: **mem_sync_import MUST Be Replay-Safe and Compatible**, **Tool Error Handling MUST Remain Explicit**).
+- [x] 4.3 Update `src/tools/mem-sync-import.ts` to report replay-safe skipped/applied totals and explicit errors for corrupt chunks (Tools spec: **mem_sync_import MUST Be Replay-Safe and Compatible**, **Tool Error Handling MUST Remain Explicit**).
    - **Verification**
      - Run: `npm run build`
      - Expected: Compiles without errors. (Full test coverage added in task 4.7.)
-- [ ] 4.4 Register/validate tool exposure updates in `src/tools/index.ts` and `tests/tools/registry.test.ts` (ensure sync tools are intentionally exposed).
+- [x] 4.4 Register/validate tool exposure updates in `src/tools/index.ts` and `tests/tools/registry.test.ts` (ensure sync tools are intentionally exposed).
   - **Verification**
     - Run: `npm test -- tests/tools/registry.test.ts`
     - Expected: Registry tests pass with intended sync tool exposure.
-- [ ] 4.5 Update HTTP route handlers in `src/http-routes.ts` for exact topic-key search parameter handling and new sync import/export response semantics. **Sequential file constraint:** all `src/http-routes.ts` tasks remain ordered, no parallel edits.
+- [x] 4.5 Update HTTP route handlers in `src/http-routes.ts` for exact topic-key search parameter handling and new sync import/export response semantics. **Sequential file constraint:** all `src/http-routes.ts` tasks remain ordered, no parallel edits.
   - **Verification**
     - Run: `npm test -- tests/http-server.test.ts`
     - Expected: HTTP server tests pass for exact topic-key query handling and updated sync response semantics.
-- [ ] 4.6 Update `src/http-openapi.ts` request/response schemas for exact topic-key search and incremental sync summaries so OpenAPI matches runtime behavior.
+- [x] 4.6 Update `src/http-openapi.ts` request/response schemas for exact topic-key search and incremental sync summaries so OpenAPI matches runtime behavior.
   - **Verification**
     - Run: `npm test -- tests/http-server.test.ts`
     - Expected: HTTP/OpenAPI tests pass with schema/runtime contract consistency.
-- [ ] 4.7 Expand endpoint/tool regression tests in `tests/http-server.test.ts`, `tests/tools/mem-search.test.ts`, `tests/tools/mem-sync-export.test.ts` (create), and `tests/tools/mem-sync-import.test.ts` (create) for new contracts and error behavior.
+- [x] 4.7 Expand endpoint/tool regression tests in `tests/http-server.test.ts`, `tests/tools/mem-search.test.ts`, `tests/tools/mem-sync-export.test.ts` (create), and `tests/tools/mem-sync-import.test.ts` (create) for new contracts and error behavior.
   - **Verification**
     - Run: `npm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts`
     - Expected: All listed endpoint/tool regression tests pass.
-- [ ] 4.8 Run focused tool/HTTP verification: `npm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/registry.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts` and `npm run build`.
+- [x] 4.8 Run focused tool/HTTP verification: `npm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/registry.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts` and `npm run build`.
   - **Verification**
     - Run: `npm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/registry.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts`
     - Expected: All listed tool/HTTP tests pass.
@@ -129,23 +129,23 @@
     - Expected: Compiles without errors.
 
 ## Phase 5: Integration, Regression, and Release Readiness
-- [ ] 5.1 Add end-to-end integration coverage in `tests/integration.test.ts` for cross-surface flow: create/update/delete -> incremental export -> import -> convergence with tombstones.
+- [x] 5.1 Add end-to-end integration coverage in `tests/integration.test.ts` for cross-surface flow: create/update/delete -> incremental export -> import -> convergence with tombstones.
   - **Verification**
     - Run: `npm test`
     - Expected: Full suite passes with cross-surface convergence coverage included.
     - Run: `npm run build`
     - Expected: Compiles without errors.
-- [ ] 5.2 Add migration regression coverage for fresh DB + partially migrated DB + repeated startup convergence in `tests/store/migration.test.ts` and `tests/store/schema.test.ts` (Store spec scenarios: **Fresh database startup**, **Partially migrated database startup**).
+- [x] 5.2 Add migration regression coverage for fresh DB + partially migrated DB + repeated startup convergence in `tests/store/migration.test.ts` and `tests/store/schema.test.ts` (Store spec scenarios: **Fresh database startup**, **Partially migrated database startup**).
   - **Verification**
     - Run: `npm test -- tests/store/migration.test.ts tests/store/schema.test.ts`
     - Expected: Migration and schema regression tests pass for fresh, partial, and repeated-startup convergence cases.
-- [ ] 5.3 Run full verification suite: `npm run build` then `npm test`.
+- [x] 5.3 Run full verification suite: `npm run build` then `npm test`.
   - **Verification**
     - Run: `npm run build`
     - Expected: Compiles without errors.
     - Run: `npm test`
     - Expected: Full test suite passes.
-- [ ] 5.4 Run final type/lint-equivalent gate and summarize results: `npx tsc --noEmit` (no dedicated lint script in this repository) plus targeted smoke checks for CLI `version`, MCP server metadata version, and `/openapi.json` `info.version` consistency.
+- [x] 5.4 Run final type/lint-equivalent gate and summarize results: `npx tsc --noEmit` (no dedicated lint script in this repository) plus targeted smoke checks for CLI `version`, MCP server metadata version, and `/openapi.json` `info.version` consistency.
   - **Verification**
     - Run: `npx tsc --noEmit`
     - Expected: Typecheck passes with no errors.
