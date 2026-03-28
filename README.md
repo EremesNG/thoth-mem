@@ -1,4 +1,4 @@
-span
+<div align="center">
 
 <img src="img/thoth-mem.png" alt="Thoth-Mem" width="400" />
 
