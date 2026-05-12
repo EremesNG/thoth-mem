@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -199,7 +200,18 @@ function isExecutedAsEntryPoint(): boolean {
     return false;
   }
 
-  return resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+  const argvPath = getRealPath(process.argv[1]);
+  const modulePath = getRealPath(fileURLToPath(import.meta.url));
+
+  return argvPath !== null && argvPath === modulePath;
+}
+
+function getRealPath(filePath: string): string | null {
+  try {
+    return realpathSync.native(resolve(filePath));
+  } catch {
+    return null;
+  }
 }
 
 if (isExecutedAsEntryPoint()) {

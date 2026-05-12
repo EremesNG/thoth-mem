@@ -25,6 +25,119 @@ vi.mock('../src/server.js', () => ({
 
 import { startMcpServer } from '../src/index.js';
 
+describe('index entrypoint execution', () => {
+  const originalArgv = process.argv;
+
+  async function importIndexWithEntrypointMocks(options: {
+    importKey: 'symlink' | 'missing';
+    argv: string[];
+    modulePath: string;
+    resolvedPaths?: Record<string, string>;
+    realpaths?: Record<string, string>;
+    missingPaths?: string[];
+  }): Promise<ReturnType<typeof vi.fn>> {
+    const runCli = vi.fn().mockResolvedValue(undefined);
+    const realpathNative = vi.fn((inputPath: string) => {
+      if (options.missingPaths?.includes(inputPath)) {
+        const error = new Error(`ENOENT: no such file or directory, realpath '${inputPath}'`) as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      }
+
+      return options.realpaths?.[inputPath] ?? inputPath;
+    });
+
+    vi.resetModules();
+    vi.doMock('node:path', async () => {
+      const actual = await vi.importActual<typeof import('node:path')>('node:path');
+      return {
+        ...actual,
+        resolve: vi.fn((inputPath: string) => {
+          if (options.resolvedPaths?.[inputPath]) {
+            return options.resolvedPaths[inputPath];
+          }
+
+          return actual.resolve(inputPath);
+        }),
+      };
+    });
+    vi.doMock('node:url', async () => {
+      const actual = await vi.importActual<typeof import('node:url')>('node:url');
+      return {
+        ...actual,
+        fileURLToPath: vi.fn(() => options.modulePath),
+      };
+    });
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        realpathSync: Object.assign(realpathNative, {
+          native: realpathNative,
+        }),
+      };
+    });
+    vi.doMock('../src/cli.js', () => ({ runCli }));
+
+    process.argv = options.argv;
+    if (options.importKey === 'symlink') {
+      await import('../src/index.js?entrypoint-symlink');
+    } else {
+      await import('../src/index.js?entrypoint-missing');
+    }
+    await Promise.resolve();
+
+    return runCli;
+  }
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.resetModules();
+    vi.doUnmock('node:path');
+    vi.doUnmock('node:url');
+    vi.doUnmock('node:fs');
+    vi.doUnmock('../src/cli.js');
+  });
+
+  it('runs the CLI when argv[1] is a symlinked entrypoint path to the same file', async () => {
+    const runCli = await importIndexWithEntrypointMocks({
+      importKey: 'symlink',
+      argv: ['node', 'C:/nvm4w/nodejs/thoth-mem', 'help'],
+      modulePath: 'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js',
+      resolvedPaths: {
+        'C:/nvm4w/nodejs/thoth-mem': 'C:/nvm4w/nodejs/thoth-mem',
+        'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js': 'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js',
+      },
+      realpaths: {
+        'C:/nvm4w/nodejs/thoth-mem': 'C:/Program Files/nodejs/thoth-mem',
+        'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js': 'C:/Program Files/nodejs/thoth-mem',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(runCli).toHaveBeenCalledWith(['help']);
+    });
+  });
+
+  it('does not crash or execute when the entrypoint path cannot be resolved', async () => {
+    const runCli = await importIndexWithEntrypointMocks({
+      importKey: 'missing',
+      argv: ['node', 'C:/missing/thoth-mem', 'help'],
+      modulePath: 'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js',
+      resolvedPaths: {
+        'C:/missing/thoth-mem': 'C:/missing/thoth-mem',
+        'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js': 'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js',
+      },
+      missingPaths: ['C:/missing/thoth-mem'],
+      realpaths: {
+        'C:/Users/Eremes/AppData/Roaming/npm/node_modules/thoth-mem/dist/index.js': 'C:/Program Files/nodejs/thoth-mem',
+      },
+    });
+
+    expect(runCli).not.toHaveBeenCalled();
+  });
+});
+
 describe('startMcpServer lifecycle shutdown', () => {
   const processHandlers = new Map<string, (...args: unknown[]) => void>();
   const stdinHandlers = new Map<string, (...args: unknown[]) => void>();
