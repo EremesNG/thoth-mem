@@ -80,14 +80,26 @@ export async function startMcpServer(argv: string[]): Promise<void> {
 
   const transport = new StdioServerTransport();
   let httpBridge: ReturnType<typeof createHttpBridge> | null = null;
+  let orphanCheck: NodeJS.Timeout | null = null;
   let isShuttingDown = false;
+  const DISCONNECT_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED']);
 
-  const shutdown = async (): Promise<void> => {
+  const clearOrphanCheck = (): void => {
+    if (!orphanCheck) {
+      return;
+    }
+
+    clearInterval(orphanCheck);
+    orphanCheck = null;
+  };
+
+  const shutdown = async (options: { exit?: boolean } = {}): Promise<void> => {
     if (isShuttingDown) {
       return;
     }
 
     isShuttingDown = true;
+    clearOrphanCheck();
 
     try {
       if (httpBridge) {
@@ -96,16 +108,53 @@ export async function startMcpServer(argv: string[]): Promise<void> {
     } finally {
       store.close();
     }
+
+    if (options.exit !== false) {
+      process.exit(0);
+    }
+  };
+
+  const requestShutdown = (message: string): void => {
+    if (isShuttingDown) {
+      return;
+    }
+
+    process.stderr.write(`${message}\n`);
+    void shutdown();
   };
 
   process.on('SIGINT', () => {
-    void shutdown().finally(() => process.exit(0));
+    void shutdown();
   });
   process.on('SIGTERM', () => {
-    void shutdown().finally(() => process.exit(0));
+    void shutdown();
   });
   process.on('exit', () => {
+    void shutdown({ exit: false });
+  });
+
+  process.stdin.once('end', () => {
+    requestShutdown('[thoth-mem] stdin EOF detected, shutting down');
+  });
+  process.stdin.once('close', () => {
+    requestShutdown('[thoth-mem] stdin closed, shutting down');
+  });
+
+  const initialPpid = process.ppid;
+  orphanCheck = setInterval(() => {
+    if (process.ppid === 1 || process.ppid !== initialPpid) {
+      requestShutdown(`[thoth-mem] parent process changed from ${initialPpid} to ${process.ppid}, shutting down`);
+    }
+  }, 30_000);
+  orphanCheck.unref();
+
+  process.stdin.once('error', () => {
     void shutdown();
+  });
+  process.stdout.once('error', (error) => {
+    if (error && DISCONNECT_CODES.has((error as NodeJS.ErrnoException).code ?? '')) {
+      void shutdown();
+    }
   });
 
   process.stderr.write('thoth-mem MCP server started\n');
@@ -123,7 +172,7 @@ export async function startMcpServer(argv: string[]): Promise<void> {
       }
     }
   } catch (error) {
-    await shutdown();
+    await shutdown({ exit: false });
     throw error;
   }
 }
