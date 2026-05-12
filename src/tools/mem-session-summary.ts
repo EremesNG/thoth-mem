@@ -13,12 +13,16 @@ function extractFirstContentLine(content: string): string {
   return 'Session completed';
 }
 
+function getSessionSummaryTopicKey(sessionId: string): string {
+  return `session/${sessionId}/summary`;
+}
+
 export function registerMemSessionSummary(server: McpServer, store: Store): void {
   server.tool(
     "mem_session_summary",
-    `Save a comprehensive end-of-session summary AND close the session in one call.
+    `Save a comprehensive session summary checkpoint and refresh the session in one call.
 
-This replaces the need for separate "session end" and "session summary" calls.
+This replaces the need for separate "session end" and "session summary" calls while keeping one rolling summary per session.
 
 FORMAT — use this exact structure in the content field:
 
@@ -56,13 +60,14 @@ This is NOT optional. If you skip this, the next session starts blind.`,
           session_id: effectiveSessionId,
           project,
           scope: 'project',
+          topic_key: getSessionSummaryTopicKey(effectiveSessionId),
         });
 
         const briefSummary = extractFirstContentLine(content);
-        store.endSession(effectiveSessionId, briefSummary);
+        store.checkpointSession(effectiveSessionId, briefSummary);
 
         return {
-          content: [{ type: "text" as const, text: `Session summary saved (observation ID: ${result.observation.id}) and session '${effectiveSessionId}' closed.` }],
+          content: [{ type: "text" as const, text: `Session summary saved (observation ID: ${result.observation.id}) and session '${effectiveSessionId}' checkpointed.` }],
         };
       } catch (error) {
         return {

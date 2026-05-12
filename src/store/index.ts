@@ -166,6 +166,22 @@ export class Store {
     return session;
   }
 
+  checkpointSession(id: string, summary?: string): Session | null {
+    const result = this.db
+      .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?")
+      .run(summary ?? null, id);
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+
+    this.recordMutation('update', 'session', 0, id, session.project);
+
+    return session;
+  }
+
   getSession(id: string): Session | null {
     return (this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session | undefined) ?? null;
   }
