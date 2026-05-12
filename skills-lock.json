@@ -10,6 +10,11 @@
       "source": "wshobson/agents",
       "sourceType": "github",
       "computedHash": "b242f962d5f78bf8bc147e92f2aa0341459b9f5f2f955e9867a8c41b85f22648"
+    },
+    "ide-index-mcp": {
+      "source": "C:\\Users\\EremesNG\\Downloads\\ide-index-mcp",
+      "sourceType": "local",
+      "computedHash": "86d31fe3ce06415c004ed37e659d56b71f7f9a81be6237a2e863f4737104d88d"
     }
   }
 }
