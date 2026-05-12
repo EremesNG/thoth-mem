@@ -10,6 +10,7 @@ import {
   handleCapturePassive,
   handleContext,
   handleCreateObservation,
+  handleDeleteProject,
   handleDeleteObservation,
   handleDocs,
   handleExport,
@@ -67,6 +68,7 @@ const ROUTES: RouteDefinition[] = [
   { method: 'POST', pattern: '/import', handler: handleImport },
   { method: 'POST', pattern: '/sync/export', handler: handleSyncExport },
   { method: 'POST', pattern: '/sync/import', handler: handleSyncImport },
+  { method: 'POST', pattern: '/projects/delete', handler: handleDeleteProject },
   { method: 'POST', pattern: '/projects/migrate', handler: handleMigrateProject },
 ];
 
@@ -207,7 +209,7 @@ export function createHttpBridge(store: Store, config: ThothConfig): HttpBridge 
         sendJson(response, result.status, result.body ?? null);
       } catch (error) {
         if (error instanceof HttpRouteError) {
-          sendError(response, error.status, error.message);
+          sendJson(response, error.status, error.body ?? { error: error.message });
           return;
         }
 

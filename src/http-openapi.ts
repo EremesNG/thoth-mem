@@ -637,6 +637,31 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/projects/delete': {
+        post: {
+          summary: 'Delete project data safely',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeleteProjectRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Project deletion result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DeleteProjectResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+            '409': { $ref: '#/components/responses/DeleteProjectConflict' },
+          },
+        },
+      },
     },
     components: {
       responses: {
@@ -648,6 +673,14 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
         },
+        DeleteProjectConflict: {
+          description: 'Project deletion conflict response',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeleteProjectConflict' },
+            },
+          },
+        },
       },
       schemas: {
         Error: {
@@ -656,6 +689,48 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             error: { type: 'string' },
           },
           required: ['error'],
+        },
+        DeleteProjectRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+          },
+          required: ['project'],
+        },
+        DeleteProjectConflict: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            code: { type: 'string', enum: ['project_delete_conflict'] },
+            project: { type: 'string' },
+            conflict: {
+              type: 'object',
+              properties: {
+                session_id: { type: 'string' },
+                entity_type: { type: 'string', enum: ['prompt', 'observation'] },
+                foreign_project: { type: 'string' },
+              },
+              required: ['session_id', 'entity_type', 'foreign_project'],
+            },
+          },
+          required: ['error', 'code', 'project', 'conflict'],
+        },
+        DeleteProjectResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            deleted: {
+              type: 'object',
+              properties: {
+                observations: { type: 'integer' },
+                observation_versions: { type: 'integer' },
+                prompts: { type: 'integer' },
+                sessions: { type: 'integer' },
+              },
+              required: ['observations', 'observation_versions', 'prompts', 'sessions'],
+            },
+          },
+          required: ['project', 'deleted'],
         },
         Observation: {
           type: 'object',

@@ -123,6 +123,7 @@ export interface SyncMutation {
   entity_type: SyncEntityType;
   entity_id: number;
   sync_id: string | null;
+  project: string | null;
   created_at: string;
 }
 
@@ -227,4 +228,12 @@ export interface MigrateProjectResult {
   sessions_updated: number;
   observations_updated: number;
   prompts_updated: number;
+}
+
+export interface DeleteProjectResult {
+  project: string;
+  observations_deleted: number;
+  observation_versions_deleted: number;
+  prompts_deleted: number;
+  sessions_deleted: number;
 }

@@ -803,6 +803,138 @@ describe('createHttpBridge', () => {
     });
   });
 
+  it('deletes an isolated project and returns deletion counts', async () => {
+    const bridge = await startBridge();
+
+    await fetchJson(
+      '/sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'delete-session', project: 'delete-project' }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Delete observation',
+          content: 'Delete me safely',
+          session_id: 'delete-session',
+          project: 'delete-project',
+        }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/prompts',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Delete prompt', session_id: 'delete-session', project: 'delete-project' }),
+      },
+      bridge.port,
+    );
+
+    const deleted = await fetchJson(
+      '/projects/delete',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'delete-project' }),
+      },
+      bridge.port,
+    );
+
+    expect(deleted.response.status).toBe(200);
+    expect(deleted.body).toEqual({
+      project: 'delete-project',
+      deleted: {
+        observations: 1,
+        observation_versions: 0,
+        prompts: 1,
+        sessions: 1,
+      },
+    });
+    expect(bridge.store.exportData('delete-project')).toEqual({
+      version: 1,
+      exported_at: expect.any(String),
+      project: 'delete-project',
+      sessions: [],
+      observations: [],
+      prompts: [],
+    });
+  });
+
+  it('maps delete-project guardrail conflicts to HTTP 409 without deleting data', async () => {
+    const bridge = await startBridge();
+
+    await fetchJson(
+      '/sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'shared-session', project: 'delete-project' }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Owned observation',
+          content: 'Still owned by delete-project',
+          session_id: 'shared-session',
+          project: 'delete-project',
+        }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/prompts',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Foreign prompt', session_id: 'shared-session', project: 'other-project' }),
+      },
+      bridge.port,
+    );
+
+    const conflict = await fetchJson(
+      '/projects/delete',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'delete-project' }),
+      },
+      bridge.port,
+    );
+
+    expect(conflict.response.status).toBe(409);
+    expect(conflict.body).toEqual({
+      error: expect.stringMatching(/Cannot delete project delete-project/i),
+      code: 'project_delete_conflict',
+      project: 'delete-project',
+      conflict: {
+        session_id: 'shared-session',
+        entity_type: 'prompt',
+        foreign_project: 'other-project',
+      },
+    });
+    expect(bridge.store.exportData('delete-project').sessions).toHaveLength(1);
+    expect(bridge.store.exportData('delete-project').observations).toHaveLength(1);
+    expect(bridge.store.exportData('other-project').prompts).toHaveLength(1);
+    const deleteMutationCount = bridge.store.getDb().prepare(
+      "SELECT COUNT(*) as count FROM sync_mutations WHERE operation = 'delete'"
+    ).get() as { count: number };
+    expect(deleteMutationCount.count).toBe(0);
+  });
+
   it('returns structured errors for bad routes, bad JSON, invalid input, and missing observations', async () => {
     const bridge = await startBridge();
 
@@ -897,6 +1029,93 @@ describe('createHttpBridge', () => {
 
       expect(openapi.response.status).toBe(200);
       expect(openapi.body.paths['/capture-passive']).toBeDefined();
+    });
+
+    it('OpenAPI spec documents the /projects/delete contract', async () => {
+      const bridge = await startBridge();
+
+      const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+
+      expect(openapi.response.status).toBe(200);
+      expect(openapi.body.paths['/projects/delete']).toEqual({
+        post: {
+          summary: 'Delete project data safely',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DeleteProjectRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Project deletion result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DeleteProjectResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+            '409': { $ref: '#/components/responses/DeleteProjectConflict' },
+          },
+        },
+      });
+
+      expect(openapi.body.components.schemas.DeleteProjectRequest).toEqual({
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+        },
+        required: ['project'],
+      });
+
+      expect(openapi.body.components.schemas.DeleteProjectResponse).toEqual({
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          deleted: {
+            type: 'object',
+            properties: {
+              observations: { type: 'integer' },
+              observation_versions: { type: 'integer' },
+              prompts: { type: 'integer' },
+              sessions: { type: 'integer' },
+            },
+            required: ['observations', 'observation_versions', 'prompts', 'sessions'],
+          },
+        },
+        required: ['project', 'deleted'],
+      });
+
+      expect(openapi.body.components.responses.DeleteProjectConflict).toEqual({
+        description: 'Project deletion conflict response',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/DeleteProjectConflict' },
+          },
+        },
+      });
+
+      expect(openapi.body.components.schemas.DeleteProjectConflict).toEqual({
+        type: 'object',
+        properties: {
+          error: { type: 'string' },
+          code: { type: 'string', enum: ['project_delete_conflict'] },
+          project: { type: 'string' },
+          conflict: {
+            type: 'object',
+            properties: {
+              session_id: { type: 'string' },
+              entity_type: { type: 'string', enum: ['prompt', 'observation'] },
+              foreign_project: { type: 'string' },
+            },
+            required: ['session_id', 'entity_type', 'foreign_project'],
+          },
+        },
+        required: ['error', 'code', 'project', 'conflict'],
+      });
     });
   });
 

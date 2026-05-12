@@ -31,11 +31,51 @@ export interface HttpRouteResponse {
 
 export class HttpRouteError extends Error {
   public readonly status: number;
+  public readonly body?: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
+}
+
+function mapDeleteProjectConflict(project: string, error: Error): HttpRouteError | null {
+  const promptConflict = error.message.match(
+    /^Cannot delete project (.+): shared session (.+) contains cross-project prompt data \((.+)\)$/
+  );
+
+  if (promptConflict) {
+    return new HttpRouteError(409, error.message, {
+      error: error.message,
+      code: 'project_delete_conflict',
+      project,
+      conflict: {
+        session_id: promptConflict[2],
+        entity_type: 'prompt',
+        foreign_project: promptConflict[3],
+      },
+    });
+  }
+
+  const observationConflict = error.message.match(
+    /^Cannot delete project (.+): shared session (.+) contains cross-project observation data \((.+)\)$/
+  );
+
+  if (observationConflict) {
+    return new HttpRouteError(409, error.message, {
+      error: error.message,
+      code: 'project_delete_conflict',
+      project,
+      conflict: {
+        session_id: observationConflict[2],
+        entity_type: 'observation',
+        foreign_project: observationConflict[3],
+      },
+    });
+  }
+
+  return null;
 }
 
 function requireString(value: unknown, fieldName: string): string {
@@ -687,6 +727,38 @@ export async function handleMigrateProject(store: Store, request: HttpRouteReque
       },
     },
   };
+}
+
+export async function handleDeleteProject(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  const project = requireString(body?.project, 'project');
+
+  try {
+    const result = store.deleteProject(project);
+
+    return {
+      status: 200,
+      body: {
+        project: result.project,
+        deleted: {
+          observations: result.observations_deleted,
+          observation_versions: result.observation_versions_deleted,
+          prompts: result.prompts_deleted,
+          sessions: result.sessions_deleted,
+        },
+      },
+    };
+  } catch (error) {
+    if (error instanceof Error) {
+      const conflict = mapDeleteProjectConflict(project, error);
+
+      if (conflict) {
+        throw conflict;
+      }
+    }
+
+    throw error;
+  }
 }
 
 export type HttpRouteHandler = (store: Store, request: HttpRouteRequest, port: number) => Promise<HttpRouteResponse>;

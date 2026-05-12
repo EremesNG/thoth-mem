@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS sync_mutations (
   entity_type TEXT NOT NULL CHECK(entity_type IN ('observation', 'prompt', 'session')),
   entity_id   INTEGER NOT NULL,
   sync_id     TEXT,
+  project     TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;
@@ -188,4 +189,5 @@ ${SYNC_MUTATIONS_INDEXES_SQL}
 export const MIGRATIONS_SQL = [
   'ALTER TABLE observations ADD COLUMN sync_id TEXT',
   'ALTER TABLE user_prompts ADD COLUMN sync_id TEXT',
+  'ALTER TABLE sync_mutations ADD COLUMN project TEXT',
 ];

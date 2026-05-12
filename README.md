@@ -116,6 +116,7 @@ thoth-mem import <file>                # Import from JSON
 thoth-mem sync [--sync-dir=<path>]     # Git sync export
 thoth-mem sync-import [--sync-dir=<path>]  # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
+thoth-mem delete-project <project>     # Delete a project and its related data
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -235,6 +236,16 @@ thoth-mem migrate-project old-name new-name
 ```
 
 Updates sessions, observations, and prompts atomically.
+
+### Project Deletion
+
+Delete a project and its related data safely:
+
+```bash
+thoth-mem delete-project project-name
+```
+
+This runs as a transaction, blocks deletion if shared sessions or data are detected in another project, and keeps sync tombstones consistent.
 
 ## Configuration
 

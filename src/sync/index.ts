@@ -189,14 +189,22 @@ function toRecord(value: Observation | Session | UserPrompt): Record<string, unk
   return value as unknown as Record<string, unknown>;
 }
 
-function resolveMutationEnvelope(store: Store, mutation: SyncMutation, project?: string): SyncMutationEnvelopeV2 | null {
+function getMutationEntityKey(mutation: SyncMutation): string {
+  return `${mutation.entity_type}:${mutation.sync_id ?? mutation.entity_id}`;
+}
+
+function resolveMutationEnvelope(store: Store, mutation: SyncMutation, project?: string): SyncMutationEnvelopeV2 | null | undefined {
   const db = store.getDb();
 
   if (mutation.entity_type === 'observation') {
     const observation = db.prepare('SELECT * FROM observations WHERE id = ?').get(mutation.entity_id) as Observation | undefined;
 
-    if (project && (!observation || observation.project !== project)) {
-      return null;
+    if (project && mutation.operation === 'delete' && mutation.project !== project) {
+      return undefined;
+    }
+
+    if (project && mutation.operation !== 'delete' && (!observation || observation.project !== project)) {
+      return observation ? undefined : null;
     }
 
     if (mutation.operation === 'delete') {
@@ -229,8 +237,12 @@ function resolveMutationEnvelope(store: Store, mutation: SyncMutation, project?:
   if (mutation.entity_type === 'prompt') {
     const prompt = db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(mutation.entity_id) as UserPrompt | undefined;
 
-    if (project && (!prompt || prompt.project !== project)) {
-      return null;
+    if (project && mutation.operation === 'delete' && mutation.project !== project) {
+      return undefined;
+    }
+
+    if (project && mutation.operation !== 'delete' && (!prompt || prompt.project !== project)) {
+      return prompt ? undefined : null;
     }
 
     if (mutation.operation === 'delete') {
@@ -263,8 +275,12 @@ function resolveMutationEnvelope(store: Store, mutation: SyncMutation, project?:
   const sessionId = mutation.sync_id ?? String(mutation.entity_id);
   const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
 
-  if (project && (!session || session.project !== project)) {
-    return null;
+  if (project && mutation.operation === 'delete' && mutation.project !== project) {
+    return undefined;
+  }
+
+  if (project && mutation.operation !== 'delete' && (!session || session.project !== project)) {
+    return session ? undefined : null;
   }
 
   if (mutation.operation === 'delete') {
@@ -453,11 +469,26 @@ export function syncExport(store: Store, syncDir: string, project?: string): Syn
   const envelopes: SyncMutationEnvelopeV2[] = [];
   const mutationIds: number[] = [];
   let skipped = 0;
+  const deletedEntityKeys = new Set(
+    project
+      ? mutations
+          .filter((mutation) => mutation.operation === 'delete' && mutation.project === project)
+          .map((mutation) => getMutationEntityKey(mutation))
+      : []
+  );
 
   for (const mutation of mutations) {
     const envelope = resolveMutationEnvelope(store, mutation, project);
 
-    if (!envelope) {
+    if (envelope === undefined) {
+      continue;
+    }
+
+    if (envelope === null) {
+      if (project && mutation.operation !== 'delete' && deletedEntityKeys.has(getMutationEntityKey(mutation))) {
+        continue;
+      }
+
       skipped++;
       continue;
     }

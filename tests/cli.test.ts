@@ -43,6 +43,52 @@ function seedStore(dataDir: string): void {
   }
 }
 
+function seedDeleteProjectStore(dataDir: string): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    store.startSession('delete-session', 'delete-me', '/workspace/delete-me');
+    store.startSession('keep-session', 'keep-me', '/workspace/keep-me');
+
+    store.saveObservation({
+      session_id: 'delete-session',
+      title: 'Delete observation',
+      content: 'Delete project observation content',
+      project: 'delete-me',
+    });
+    store.savePrompt('delete-session', 'Delete project prompt', 'delete-me');
+
+    store.saveObservation({
+      session_id: 'keep-session',
+      title: 'Keep observation',
+      content: 'Keep project observation content',
+      project: 'keep-me',
+    });
+    store.savePrompt('keep-session', 'Keep project prompt', 'keep-me');
+  } finally {
+    store.close();
+  }
+}
+
+function seedBlockedDeleteProjectStore(dataDir: string): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    store.startSession('shared-session', 'delete-me', '/workspace/delete-me');
+    store.saveObservation({
+      session_id: 'shared-session',
+      title: 'Target observation',
+      content: 'Owned by delete-me',
+      project: 'delete-me',
+    });
+    store.savePrompt('shared-session', 'Foreign prompt', 'other-project');
+  } finally {
+    store.close();
+  }
+}
+
 async function captureCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
   let stdout = '';
   let stderr = '';
@@ -83,6 +129,7 @@ describe('runCli', () => {
     expect(stderr).toBe('');
     expect(stdout).toContain('thoth-mem — Persistent memory for AI coding agents');
     expect(stdout).toContain('search <query>');
+    expect(stdout).toContain('delete-project <project>');
     expect(stdout).toContain('--data-dir=<path>');
   });
 
@@ -262,6 +309,84 @@ describe('runCli', () => {
     try {
       const results = store.searchObservations({ query: 'CLI content', project: 'renamed-project' });
       expect(results.length).toBeGreaterThan(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('fails clearly when delete-project is missing or has an invalid project argument', async () => {
+    let missingError: unknown;
+    try {
+      await captureCli(['delete-project']);
+    } catch (caught) {
+      missingError = caught;
+    }
+
+    expect(missingError).toBeInstanceOf(Error);
+    expect((missingError as Error).message).toContain('delete-project requires <project>');
+
+    let invalidError: unknown;
+    try {
+      await captureCli(['delete-project', '   ']);
+    } catch (caught) {
+      invalidError = caught;
+    }
+
+    expect(invalidError).toBeInstanceOf(Error);
+    expect((invalidError as Error).message).toContain('delete-project requires a non-empty <project>');
+  });
+
+  it('deletes a project and prints deterministic deletion counts', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedDeleteProjectStore(dataDir);
+
+    const { stdout, stderr } = await captureCli(['delete-project', 'delete-me', '--data-dir', dataDir]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('## Project Deletion Complete');
+    expect(stdout).toContain('- **Project:** delete-me');
+    expect(stdout).toContain('- **Observations deleted:** 1');
+    expect(stdout).toContain('- **Observation versions deleted:** 0');
+    expect(stdout).toContain('- **Prompts deleted:** 1');
+    expect(stdout).toContain('- **Sessions deleted:** 1');
+
+    const store = new Store(join(dataDir, 'thoth.db'));
+    try {
+      expect(store.exportData('delete-me').sessions).toHaveLength(0);
+      expect(store.exportData('delete-me').observations).toHaveLength(0);
+      expect(store.exportData('delete-me').prompts).toHaveLength(0);
+      expect(store.exportData('keep-me').sessions).toHaveLength(1);
+      expect(store.exportData('keep-me').observations).toHaveLength(1);
+      expect(store.exportData('keep-me').prompts).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('surfaces the delete-project guardrail error without partial removal', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedBlockedDeleteProjectStore(dataDir);
+
+    let error: unknown;
+    try {
+      await captureCli(['delete-project', 'delete-me', '--data-dir', dataDir]);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/delete blocked|cross-project|shared session|other-project/i);
+
+    const store = new Store(join(dataDir, 'thoth.db'));
+    try {
+      expect(store.exportData('delete-me').sessions).toHaveLength(1);
+      expect(store.exportData('delete-me').observations).toHaveLength(1);
+      expect(store.exportData('other-project').prompts).toHaveLength(1);
+      expect(store.getSession('shared-session')?.project).toBe('delete-me');
+      const deleteMutations = store.getDb().prepare(
+        "SELECT COUNT(*) as count FROM sync_mutations WHERE operation = 'delete'"
+      ).get() as { count: number };
+      expect(deleteMutations.count).toBe(0);
     } finally {
       store.close();
     }

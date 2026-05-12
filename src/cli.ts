@@ -4,7 +4,7 @@ import type { ThothConfig } from './config.js';
 import { getConfig, resolveDataDir } from './config.js';
 import { Store } from './store/index.js';
 import { OBSERVATION_TYPES } from './store/types.js';
-import type { ExportData, Observation, ObservationScope, ObservationType } from './store/types.js';
+import type { DeleteProjectResult, ExportData, Observation, ObservationScope, ObservationType } from './store/types.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
 import { VERSION } from './version.js';
@@ -28,6 +28,7 @@ Commands:
    sync                   Git sync export
    sync-import            Git sync import
    migrate-project <old> <new>  Rename a project
+   delete-project <project>     Delete a project safely
    version                Show version
    help                   Show this help
 
@@ -193,6 +194,19 @@ function parseScope(value: string): ObservationScope {
   }
 
   fail(`Invalid scope: ${value}. Expected one of: project, personal`);
+}
+
+function parseRequiredProjectName(value: string | undefined, command: string): string {
+  if (value === undefined) {
+    fail(`${command} requires <project>`);
+  }
+
+  const project = value.trim();
+  if (!project) {
+    fail(`${command} requires a non-empty <project>`);
+  }
+
+  return project;
 }
 
 function createStoreContext(dataDir?: string): StoreContext {
@@ -467,6 +481,41 @@ async function handleMigrateProject(positionals: string[], globals: GlobalOption
   });
 }
 
+function formatDeleteProjectOutput(result: DeleteProjectResult & { sync_mutations_deleted?: number }): string {
+  const lines = [
+    '## Project Deletion Complete',
+    `- **Project:** ${result.project}`,
+    `- **Observations deleted:** ${result.observations_deleted}`,
+    `- **Observation versions deleted:** ${result.observation_versions_deleted}`,
+    `- **Prompts deleted:** ${result.prompts_deleted}`,
+    `- **Sessions deleted:** ${result.sessions_deleted}`,
+  ];
+
+  if (typeof result.sync_mutations_deleted === 'number') {
+    lines.push(`- **Sync mutations deleted:** ${result.sync_mutations_deleted}`);
+  }
+
+  return lines.join('\n');
+}
+
+async function handleDeleteProject(positionals: string[], globals: GlobalOptions): Promise<void> {
+  if (positionals.length !== 1) {
+    fail('delete-project requires <project>');
+  }
+
+  const project = parseRequiredProjectName(positionals[0], 'delete-project');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    try {
+      const result = store.deleteProject(project);
+      printStdout(formatDeleteProjectOutput(result));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      fail(`Project delete blocked: ${message}`);
+    }
+  });
+}
+
 async function handleVersion(positionals: string[]): Promise<void> {
   ensureNoExtraArgs(positionals, 'version');
   printStdout(VERSION);
@@ -510,11 +559,14 @@ export async function runCli(args: string[]): Promise<void> {
          await handleSyncImport(parsed.positionals, parsed.globals);
          return;
        case 'migrate-project':
-        await handleMigrateProject(parsed.positionals, parsed.globals);
-        return;
-      case 'version':
-        await handleVersion(parsed.positionals);
-        return;
+         await handleMigrateProject(parsed.positionals, parsed.globals);
+         return;
+       case 'delete-project':
+         await handleDeleteProject(parsed.positionals, parsed.globals);
+         return;
+       case 'version':
+         await handleVersion(parsed.positionals);
+         return;
       default:
         fail(`Unknown command: ${parsed.command}`);
     }

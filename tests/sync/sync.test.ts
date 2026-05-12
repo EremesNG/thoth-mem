@@ -78,6 +78,11 @@ function sha256Hex(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function readV2Chunk(syncDir: string, filename: string): SyncChunkV2 {
+  const compressed = readFileSync(join(syncDir, 'chunks', filename));
+  return JSON.parse(gunzipSync(compressed).toString('utf-8')) as SyncChunkV2;
+}
+
 describe('sync export/import', () => {
   let store: Store;
   let tempDirs: string[];
@@ -262,12 +267,68 @@ describe('sync export/import', () => {
     tempDirs.push(syncDir);
 
     const result = syncExport(store, syncDir);
-    const compressed = readFileSync(join(syncDir, 'chunks', result.filename));
-    const chunk = JSON.parse(gunzipSync(compressed).toString('utf-8')) as SyncChunkV2;
+    const chunk = readV2Chunk(syncDir, result.filename);
 
     const tombstones = chunk.mutations.filter((mutation) => mutation.operation === 'delete');
     expect(tombstones.length).toBeGreaterThan(0);
     expect(tombstones.every((mutation) => mutation.data === null)).toBe(true);
+  });
+
+  it('syncExport keeps project deletion tombstones exportable for the deleted project', () => {
+    store.startSession('session-target', 'project-a', '/workspace/project-a');
+    store.startSession('session-other', 'project-b', '/workspace/project-b');
+
+    const saved = store.saveObservation({
+      session_id: 'session-target',
+      title: 'Delete me with project',
+      content: 'Project deletion should emit a tombstone',
+      project: 'project-a',
+    });
+    const prompt = store.savePrompt('session-target', 'Prompt to delete with project', 'project-a');
+
+    store.saveObservation({
+      session_id: 'session-other',
+      title: 'Keep me',
+      content: 'Other project data survives',
+      project: 'project-b',
+    });
+
+    store.deleteProject('project-a');
+
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+
+    const result = syncExport(store, syncDir, 'project-a');
+    const chunk = readV2Chunk(syncDir, result.filename);
+    const tombstones = chunk.mutations.filter((mutation) => mutation.operation === 'delete');
+
+    expect(result).toMatchObject({
+      sessions: 0,
+      observations: 0,
+      prompts: 0,
+      exported: 3,
+      skipped: 0,
+    });
+    expect(tombstones).toEqual([
+      expect.objectContaining({
+        entity_type: 'observation',
+        entity_id: saved.observation.id,
+        sync_id: saved.observation.sync_id,
+        data: null,
+      }),
+      expect.objectContaining({
+        entity_type: 'prompt',
+        entity_id: prompt.id,
+        sync_id: prompt.sync_id,
+        data: null,
+      }),
+      expect.objectContaining({
+        entity_type: 'session',
+        entity_id: 0,
+        sync_id: 'session-target',
+        data: null,
+      }),
+    ]);
   });
 
   it('syncExport appends to manifest while preserving existing entries', () => {

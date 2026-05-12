@@ -5,6 +5,7 @@ import { runMigrations } from './migrations.js';
 import { ThothConfig } from '../config.js';
 import type {
   ContextInput,
+  DeleteProjectResult,
   ExportData,
   ImportResult,
   MigrateProjectResult,
@@ -78,11 +79,17 @@ export class Store {
       .filter((row): row is Observation => row !== null);
   }
 
-  private recordMutation(operation: SyncOperation, entityType: SyncEntityType, entityId: number, syncId: string | null): void {
+  private recordMutation(
+    operation: SyncOperation,
+    entityType: SyncEntityType,
+    entityId: number,
+    syncId: string | null,
+    project: string | null = null
+  ): void {
     try {
       this.db.prepare(
-        'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id) VALUES (?, ?, ?, ?)'
-      ).run(operation, entityType, entityId, syncId);
+        'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id, project) VALUES (?, ?, ?, ?, ?)'
+      ).run(operation, entityType, entityId, syncId, project);
     } catch (error) {
       process.stderr.write(
         `[store] Failed to record sync mutation (${operation} ${entityType}#${entityId}): ${error instanceof Error ? error.message : String(error)}\n`
@@ -117,7 +124,7 @@ export class Store {
 
     // Record mutation only for new sessions
     if (isNew) {
-      this.recordMutation('create', 'session', 0, sessionId);
+      this.recordMutation('create', 'session', 0, sessionId, project);
     }
   }
 
@@ -136,7 +143,7 @@ export class Store {
 
     // Record mutation only for newly created sessions.
     if (isNew && result.changes > 0) {
-      this.recordMutation('create', 'session', 0, id);
+      this.recordMutation('create', 'session', 0, id, project);
     }
 
     return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
@@ -151,10 +158,12 @@ export class Store {
       return null;
     }
 
-    // Record mutation for session update
-    this.recordMutation('update', 'session', 0, id);
+    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 
-    return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+    // Record mutation for session update
+    this.recordMutation('update', 'session', 0, id, session.project);
+
+    return session;
   }
 
   getSession(id: string): Session | null {
@@ -319,7 +328,7 @@ export class Store {
       throw new Error('Failed to load created prompt');
     }
 
-    this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id);
+    this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
 
     return prompt;
   }
@@ -392,7 +401,7 @@ export class Store {
         throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
       }
 
-      this.recordMutation('update', 'observation', observation.id, observation.sync_id);
+      this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
 
       return { observation, action: 'deduplicated' };
     }
@@ -426,7 +435,7 @@ export class Store {
           throw new Error(`Failed to load upserted observation ${existing.id}`);
         }
 
-        this.recordMutation('update', 'observation', observation.id, observation.sync_id);
+        this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
 
         return { observation, action: 'upserted' };
       }
@@ -454,7 +463,7 @@ export class Store {
       throw new Error('Failed to load created observation');
     }
 
-    this.recordMutation('create', 'observation', observation.id, observation.sync_id);
+    this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
 
     return { observation, action: 'created' };
   }
@@ -467,27 +476,27 @@ export class Store {
   deleteObservation(id: number, hardDelete: boolean = false): boolean {
     if (hardDelete) {
       const existing = this.db.prepare(
-        'SELECT sync_id FROM observations WHERE id = ?'
-      ).get(id) as { sync_id: string | null } | undefined;
+        'SELECT sync_id, project FROM observations WHERE id = ?'
+      ).get(id) as { sync_id: string | null; project: string | null } | undefined;
 
       this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
       const result = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
 
       if (result.changes > 0) {
-        this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null);
+        this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
       }
 
       return result.changes > 0;
     }
 
     const existing = this.db.prepare(
-      'SELECT sync_id FROM observations WHERE id = ? AND deleted_at IS NULL'
-    ).get(id) as { sync_id: string | null } | undefined;
+      'SELECT sync_id, project FROM observations WHERE id = ? AND deleted_at IS NULL'
+    ).get(id) as { sync_id: string | null; project: string | null } | undefined;
 
     const result = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
 
     if (result.changes > 0) {
-      this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null);
+      this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
     }
 
     return result.changes > 0;
@@ -546,7 +555,7 @@ export class Store {
     const updated = this.getObservation(input.id);
 
     if (updated) {
-      this.recordMutation('update', 'observation', updated.id, updated.sync_id);
+      this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
     }
 
     return updated;
@@ -685,6 +694,94 @@ export class Store {
     });
 
     return migrate();
+  }
+
+  deleteProject(project: string): DeleteProjectResult {
+    const deleteProjectTxn = this.db.transaction((targetProject: string): DeleteProjectResult => {
+      const sessions = this.db.prepare(
+        'SELECT id FROM sessions WHERE project = ? ORDER BY id'
+      ).all(targetProject) as Array<{ id: string }>;
+      const sessionIds = sessions.map((session) => session.id);
+
+      if (sessionIds.length > 0) {
+        const placeholders = sessionIds.map(() => '?').join(', ');
+        const sharedObservation = this.db.prepare(
+          `SELECT session_id, project
+           FROM observations
+           WHERE session_id IN (${placeholders})
+             AND (project IS NULL OR project != ?)
+           LIMIT 1`
+        ).get(...sessionIds, targetProject) as { session_id: string; project: string | null } | undefined;
+
+        if (sharedObservation) {
+          const foreignProject = sharedObservation.project ?? 'unknown';
+          throw new Error(
+            `Cannot delete project ${targetProject}: shared session ${sharedObservation.session_id} contains cross-project observation data (${foreignProject})`
+          );
+        }
+
+        const sharedPrompt = this.db.prepare(
+          `SELECT session_id, project
+           FROM user_prompts
+           WHERE session_id IN (${placeholders})
+             AND (project IS NULL OR project != ?)
+           LIMIT 1`
+        ).get(...sessionIds, targetProject) as { session_id: string; project: string | null } | undefined;
+
+        if (sharedPrompt) {
+          const foreignProject = sharedPrompt.project ?? 'unknown';
+          throw new Error(
+            `Cannot delete project ${targetProject}: shared session ${sharedPrompt.session_id} contains cross-project prompt data (${foreignProject})`
+          );
+        }
+      }
+
+      const observations = this.db.prepare(
+        'SELECT id, sync_id FROM observations WHERE project = ? ORDER BY id'
+      ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+      const prompts = this.db.prepare(
+        'SELECT id, sync_id FROM user_prompts WHERE project = ? ORDER BY id'
+      ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+
+      const observationVersionsDeleted = (this.db.prepare(
+        `SELECT COUNT(*) as count
+         FROM observation_versions ov
+         JOIN observations o ON o.id = ov.observation_id
+         WHERE o.project = ?`
+      ).get(targetProject) as { count: number }).count;
+
+      for (const observation of observations) {
+        this.recordMutation('delete', 'observation', observation.id, observation.sync_id, targetProject);
+      }
+
+      for (const prompt of prompts) {
+        this.recordMutation('delete', 'prompt', prompt.id, prompt.sync_id, targetProject);
+      }
+
+      for (const session of sessions) {
+        this.recordMutation('delete', 'session', 0, session.id, targetProject);
+      }
+
+      const deletedObservations = this.db.prepare(
+        'DELETE FROM observations WHERE project = ?'
+      ).run(targetProject);
+      const deletedPrompts = this.db.prepare(
+        'DELETE FROM user_prompts WHERE project = ?'
+      ).run(targetProject);
+      const deletedSessions = this.db.prepare(
+        'DELETE FROM sessions WHERE project = ?'
+      ).run(targetProject);
+
+      return {
+        project: targetProject,
+        observations_deleted: deletedObservations.changes,
+        observation_versions_deleted: observationVersionsDeleted,
+        prompts_deleted: deletedPrompts.changes,
+        sessions_deleted: deletedSessions.changes,
+      };
+    });
+
+    return deleteProjectTxn(project);
   }
 
   // ── JSON Export/Import ──
