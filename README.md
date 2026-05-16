@@ -76,9 +76,12 @@ Add to `~/.config/opencode/config.json`:
 {
   "mcp": {
     "thoth": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "thoth-mem@latest"]
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "thoth-mem@latest"
+      ]
     }
   }
 }
