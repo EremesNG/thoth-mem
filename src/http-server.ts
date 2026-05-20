@@ -4,7 +4,10 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
-import { URL } from 'node:url';
+import { existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { dirname, extname, resolve, sep } from 'node:path';
+import { fileURLToPath, URL } from 'node:url';
 import type { ThothConfig } from './config.js';
 import {
   handleCapturePassive,
@@ -19,6 +22,9 @@ import {
   handleImport,
   handleMigrateProject,
   handleOpenApi,
+  handleProjectGraph,
+  handleProjectSummary,
+  handleProjectTopicKeys,
   handleSavePrompt,
   handleSearchObservations,
   handleSessionSummary,
@@ -38,6 +44,10 @@ interface RouteDefinition {
   handler: HttpRouteHandler;
   method: string;
   pattern: string;
+}
+
+interface HttpBridgeConfig extends ThothConfig {
+  dashboardDistDir?: string;
 }
 
 export interface HttpBridge {
@@ -61,6 +71,9 @@ const ROUTES: RouteDefinition[] = [
   { method: 'GET', pattern: '/context', handler: handleContext },
   { method: 'GET', pattern: '/timeline', handler: handleTimeline },
   { method: 'GET', pattern: '/stats', handler: handleStats },
+  { method: 'GET', pattern: '/projects/:project/summary', handler: handleProjectSummary },
+  { method: 'GET', pattern: '/projects/:project/graph', handler: handleProjectGraph },
+  { method: 'GET', pattern: '/projects/:project/topic-keys', handler: handleProjectTopicKeys },
   { method: 'POST', pattern: '/prompts', handler: handleSavePrompt },
   { method: 'POST', pattern: '/suggest-topic-key', handler: handleSuggestTopicKey },
   { method: 'POST', pattern: '/capture-passive', handler: handleCapturePassive },
@@ -71,6 +84,31 @@ const ROUTES: RouteDefinition[] = [
   { method: 'POST', pattern: '/projects/delete', handler: handleDeleteProject },
   { method: 'POST', pattern: '/projects/migrate', handler: handleMigrateProject },
 ];
+
+const DASHBOARD_MIME_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.gif': 'image/gif',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.webp': 'image/webp',
+};
+
+const DASHBOARD_MISSING_MESSAGE = [
+  'Dashboard assets are not built yet for Thoth-Mem.',
+  'Run `npm run dashboard:build` from the package root to generate dist/dashboard/.',
+  'The HTTP API remains available at /docs, /openapi.json, and the REST endpoints.',
+].join('\n');
+
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
 async function parseBody<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
@@ -108,6 +146,114 @@ function sendText(response: ServerResponse, statusCode: number, contentType: str
 
 function sendError(response: ServerResponse, statusCode: number, message: string): void {
   sendJson(response, statusCode, { error: message });
+}
+
+function getDefaultDashboardDistDir(): string {
+  const compiledPackagePath = resolve(moduleDirectory, 'dashboard');
+
+  if (existsSync(compiledPackagePath)) {
+    return compiledPackagePath;
+  }
+
+  return resolve(moduleDirectory, '..', 'dist', 'dashboard');
+}
+
+function hasDashboardIndex(dashboardDistDir: string): boolean {
+  const indexPath = resolve(dashboardDistDir, 'index.html');
+
+  return existsSync(indexPath) && statSync(indexPath).isFile();
+}
+
+function isPathContained(root: string, target: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(target);
+
+  return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${sep}`);
+}
+
+function resolveDashboardFile(dashboardDistDir: string, pathname: string): { error?: string; path?: string } {
+  let decodedPath: string;
+
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    return { error: 'Invalid dashboard asset path' };
+  }
+
+  if (decodedPath.includes('\0')) {
+    return { error: 'Invalid dashboard asset path' };
+  }
+
+  if (decodedPath.split('/').includes('..')) {
+    return { error: 'Invalid dashboard asset path' };
+  }
+
+  const relativePath = decodedPath.replace(/^\/+/, '');
+  const filePath = resolve(dashboardDistDir, relativePath === '' ? 'index.html' : relativePath);
+
+  if (!isPathContained(dashboardDistDir, filePath)) {
+    return { error: 'Invalid dashboard asset path' };
+  }
+
+  return { path: filePath };
+}
+
+function isDashboardFallbackPath(pathname: string): boolean {
+  if (pathname === '/' || pathname === '/search' || pathname === '/topic-keys' || pathname === '/graph') {
+    return true;
+  }
+
+  return /^\/projects\/[^/]+$/.test(pathname) || /^\/memory\/[^/]+$/.test(pathname);
+}
+
+function getDashboardContentType(filePath: string): string {
+  return DASHBOARD_MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+}
+
+async function sendDashboardFile(response: ServerResponse, filePath: string): Promise<void> {
+  const file = await readFile(filePath);
+  response.writeHead(200, { 'Content-Type': getDashboardContentType(filePath) });
+  response.end(file);
+}
+
+async function tryServeDashboard(response: ServerResponse, dashboardDistDir: string, pathname: string): Promise<boolean> {
+  if (pathname === '/') {
+    if (!hasDashboardIndex(dashboardDistDir)) {
+      sendText(response, 200, 'text/plain; charset=utf-8', DASHBOARD_MISSING_MESSAGE);
+      return true;
+    }
+
+    await sendDashboardFile(response, resolve(dashboardDistDir, 'index.html'));
+    return true;
+  }
+
+  const resolved = resolveDashboardFile(dashboardDistDir, pathname);
+
+  if (resolved.error) {
+    sendError(response, 400, resolved.error);
+    return true;
+  }
+
+  if (resolved.path && existsSync(resolved.path) && statSync(resolved.path).isFile()) {
+    await sendDashboardFile(response, resolved.path);
+    return true;
+  }
+
+  if (pathname.startsWith('/assets/')) {
+    return false;
+  }
+
+  if (!isDashboardFallbackPath(pathname)) {
+    return false;
+  }
+
+  if (!hasDashboardIndex(dashboardDistDir)) {
+    sendText(response, 200, 'text/plain; charset=utf-8', DASHBOARD_MISSING_MESSAGE);
+    return true;
+  }
+
+  await sendDashboardFile(response, resolve(dashboardDistDir, 'index.html'));
+  return true;
 }
 
 export function matchRoute(pathname: string, pattern: string): Record<string, string> | null {
@@ -154,12 +300,13 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-export function createHttpBridge(store: Store, config: ThothConfig): HttpBridge {
+export function createHttpBridge(store: Store, config: HttpBridgeConfig): HttpBridge {
   let server: Server | null = null;
   let isOwner = false;
   let healthCheckInterval: NodeJS.Timeout | null = null;
   let isStopped = false;
   let takeoverPromise: Promise<void> | null = null;
+  const dashboardDistDir = config.dashboardDistDir ?? getDefaultDashboardDistDir();
 
   function clearHealthCheckLoop(): void {
     if (!healthCheckInterval) {
@@ -185,12 +332,17 @@ export function createHttpBridge(store: Store, config: ThothConfig): HttpBridge 
   function createListenerServer(): Server {
     return createHttpServer(async (request, response) => {
       const method = request.method ?? 'GET';
+      const rawPathname = (request.url ?? '/').split('?')[0] || '/';
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
 
       try {
         const route = ROUTES.find((candidate) => candidate.method === method && matchRoute(url.pathname, candidate.pattern) !== null);
 
         if (!route) {
+          if (method === 'GET' && await tryServeDashboard(response, dashboardDistDir, rawPathname)) {
+            return;
+          }
+
           sendError(response, 404, 'Not Found');
           return;
         }

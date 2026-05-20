@@ -1,6 +1,6 @@
 {
   "name": "thoth-mem",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "type": "module",
   "description": "Persistent memory MCP server for AI coding agents",
   "repository": {
@@ -20,8 +20,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run dashboard:build",
+    "dashboard:build": "npm run build --prefix dashboard",
+    "dashboard:typecheck": "npm run typecheck --prefix dashboard",
     "dev": "tsx watch src/index.ts",
+    "eval:retrieval": "tsx src/evals/retrieval.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build && npm test"

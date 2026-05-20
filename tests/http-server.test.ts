@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
-import { createServer as createHttpServer, type Server } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getConfig } from '../src/config.js';
 import { createHttpBridge } from '../src/http-server.js';
@@ -54,10 +54,10 @@ function createTempDir(): string {
   return directory;
 }
 
-async function startBridge(): Promise<RunningBridge> {
+async function startBridge(options?: { dashboardDistDir?: string }): Promise<RunningBridge> {
   const port = await getAvailablePort();
   const store = new Store(':memory:');
-  const config = { ...getConfig(), httpPort: port };
+  const config = { ...getConfig(), httpPort: port, ...options };
   const bridge = createHttpBridge(store, config);
 
   await bridge.start();
@@ -73,6 +73,18 @@ async function startBridge(): Promise<RunningBridge> {
 
   bridges.push(running);
   return running;
+}
+
+function createDashboardFixture(): string {
+  const directory = createTempDir();
+  mkdirSync(join(directory, 'assets'), { recursive: true });
+  writeFileSync(
+    join(directory, 'index.html'),
+    '<!doctype html><html><head><title>Thoth Dashboard</title><script type="module" src="./assets/app.js"></script></head><body><div id="root"></div></body></html>',
+  );
+  writeFileSync(join(directory, 'assets', 'app.js'), 'console.log("dashboard");');
+  writeFileSync(join(directory, 'assets', 'style.css'), 'body { color: #111; }');
+  return directory;
 }
 
 function getUrl(port: number, path: string): string {
@@ -134,6 +146,26 @@ async function fetchJson(path: string, init?: RequestInit, port?: number): Promi
   const response = await fetch(getUrl(bridgePort, path), init);
   const body = await response.json();
   return { response, body };
+}
+
+async function requestRawJson(port: number, path: string): Promise<{ status: number | undefined; body: any }> {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({ host: '127.0.0.1', port, path, method: 'GET' }, (response) => {
+      const chunks: Buffer[] = [];
+
+      response.on('data', (chunk) => chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
+      response.on('end', () => {
+        try {
+          resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf-8')) });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 afterEach(async () => {
@@ -572,6 +604,162 @@ describe('createHttpBridge', () => {
     const endedSession = bridge.store.getSession('session-1');
     expect(endedSession?.ended_at).not.toBeNull();
     expect(endedSession?.summary).toBe('Ship the REST API');
+  });
+
+  it('serves the dashboard root, concrete assets, and known SPA deep links without shadowing HTTP routes', async () => {
+    const dashboardDistDir = createDashboardFixture();
+    const bridge = await startBridge({ dashboardDistDir });
+
+    const rootResponse = await fetch(getUrl(bridge.port, '/'));
+    const rootHtml = await rootResponse.text();
+    expect(rootResponse.status).toBe(200);
+    expect(rootResponse.headers.get('content-type')).toContain('text/html');
+    expect(rootHtml).toContain('Thoth Dashboard');
+
+    const assetResponse = await fetch(getUrl(bridge.port, '/assets/app.js'));
+    expect(assetResponse.status).toBe(200);
+    expect(assetResponse.headers.get('content-type')).toContain('text/javascript');
+    expect(await assetResponse.text()).toContain('dashboard');
+
+    const projectDeepLink = await fetch(getUrl(bridge.port, '/projects/http-project'));
+    expect(projectDeepLink.status).toBe(200);
+    expect(projectDeepLink.headers.get('content-type')).toContain('text/html');
+
+    const observationDeepLink = await fetch(getUrl(bridge.port, '/memory/123'));
+    expect(observationDeepLink.status).toBe(200);
+    expect(observationDeepLink.headers.get('content-type')).toContain('text/html');
+
+    const docsResponse = await fetch(getUrl(bridge.port, '/docs'));
+    expect(docsResponse.status).toBe(200);
+    expect(await docsResponse.text()).toContain('SwaggerUIBundle');
+
+    const stats = await fetchJson('/stats', undefined, bridge.port);
+    expect(stats.response.status).toBe(200);
+    expect(stats.body).toEqual({ sessions: 0, observations: 0, prompts: 0, projects: [] });
+  });
+
+  it('returns a local dashboard build message when root assets are missing while APIs stay available', async () => {
+    const dashboardDistDir = createTempDir();
+    const bridge = await startBridge({ dashboardDistDir });
+
+    const rootResponse = await fetch(getUrl(bridge.port, '/'));
+    const rootText = await rootResponse.text();
+    expect(rootResponse.status).toBe(200);
+    expect(rootResponse.headers.get('content-type')).toContain('text/plain');
+    expect(rootText).toContain('Dashboard assets are not built');
+    expect(rootText).toContain('npm run dashboard:build');
+
+    const health = await fetchJson('/health', undefined, bridge.port);
+    expect(health.response.status).toBe(200);
+    expect(health.body).toEqual({ status: 'ok' });
+  });
+
+  it('rejects dashboard path traversal and does not fallback for unknown API-like paths', async () => {
+    const dashboardDistDir = createDashboardFixture();
+    const bridge = await startBridge({ dashboardDistDir });
+
+    const traversal = await requestRawJson(bridge.port, '/assets/%2e%2e/index.html');
+    expect(traversal.status).toBe(400);
+    expect(traversal.body).toEqual({ error: 'Invalid dashboard asset path' });
+
+    const unknownObservationApi = await fetchJson('/observations/123/extra', undefined, bridge.port);
+    expect(unknownObservationApi.response.status).toBe(404);
+    expect(unknownObservationApi.body).toEqual({ error: 'Not Found' });
+
+    const unknownProjectApi = await fetchJson('/projects/http-project/unknown', undefined, bridge.port);
+    expect(unknownProjectApi.response.status).toBe(404);
+    expect(unknownProjectApi.body).toEqual({ error: 'Not Found' });
+  });
+
+  it('serves project view tools through HTTP endpoints', async () => {
+    const bridge = await startBridge();
+
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP project graph topic',
+          content: '**What**: HTTP graph fact content',
+          project: 'http-project',
+          topic_key: 'architecture/http-graph',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/prompts',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Inspect HTTP project views', project: 'http-project' }),
+      },
+      bridge.port,
+    );
+
+    const summary = await fetchJson('/projects/http-project/summary?limit=5', undefined, bridge.port);
+    expect(summary.response.status).toBe(200);
+    expect(summary.body.project).toBe('http-project');
+    expect(summary.body.text).toContain('## Project Summary: http-project');
+    expect(summary.body.text).toContain('HTTP project graph topic');
+
+    const topicKeys = await fetchJson('/projects/http-project/topic-keys', undefined, bridge.port);
+    expect(topicKeys.response.status).toBe(200);
+    expect(topicKeys.body.project).toBe('http-project');
+    expect(topicKeys.body.topics).toHaveLength(1);
+    expect(topicKeys.body.topics[0].topic_key).toBe('architecture/http-graph');
+    expect(topicKeys.body.text).toContain('architecture/http-graph');
+
+    const topicContext = await fetchJson(
+      '/projects/http-project/topic-keys?topic_key=architecture%2Fhttp-graph&max_chars=1000',
+      undefined,
+      bridge.port,
+    );
+    expect(topicContext.response.status).toBe(200);
+    expect(topicContext.body.project).toBe('http-project');
+    expect(topicContext.body.topic_key).toBe('architecture/http-graph');
+    expect(topicContext.body.text).toContain('## Topic Key: architecture/http-graph');
+    expect(topicContext.body.text).toContain('HTTP graph fact content');
+
+    const graph = await fetchJson(
+      '/projects/http-project/graph?topic_key=architecture%2Fhttp-graph&relation=HAS_WHAT&limit=2&max_chars=1000',
+      undefined,
+      bridge.port,
+    );
+    expect(graph.response.status).toBe(200);
+    expect(graph.body.project).toBe('http-project');
+    expect(graph.body.text).toContain('## Graph Lite: http-project');
+    expect(graph.body.text).toContain('Filters: topic_key=architecture/http-graph, relation=HAS_WHAT');
+    expect(graph.body.text).toContain('HTTP project graph topic -- HAS_WHAT --> HTTP graph fact content');
+    expect(graph.body.text).not.toContain('HAS_TOPIC_KEY');
+    expect(graph.body.facts).toEqual([
+      {
+        id: expect.any(Number),
+        observation_id: expect.any(Number),
+        subject: 'HTTP project graph topic',
+        relation: 'HAS_WHAT',
+        object: 'HTTP graph fact content',
+        project: 'http-project',
+        topic_key: 'architecture/http-graph',
+        type: 'decision',
+        created_at: expect.any(String),
+      },
+    ]);
+    expect(graph.body.summary).toEqual({
+      shown: 1,
+      total: 1,
+      omitted: 0,
+      truncated: false,
+      text_truncated: false,
+      limit: 2,
+      max_chars: 1000,
+      filters: {
+        topic_key: 'architecture/http-graph',
+        relation: 'HAS_WHAT',
+      },
+    });
   });
 
   it('supports topic key suggestion', async () => {
@@ -1116,6 +1304,32 @@ describe('createHttpBridge', () => {
         },
         required: ['error', 'code', 'project', 'conflict'],
       });
+    });
+
+    it('OpenAPI spec documents project view endpoints', async () => {
+      const bridge = await startBridge();
+
+      const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+
+      expect(openapi.response.status).toBe(200);
+      expect(openapi.body.paths['/projects/{project}/summary']).toBeDefined();
+      expect(openapi.body.paths['/projects/{project}/graph']).toBeDefined();
+      expect(openapi.body.paths['/projects/{project}/topic-keys']).toBeDefined();
+      expect(openapi.body.paths['/projects/{project}/graph'].get.parameters.map((parameter: any) => parameter.name)).toEqual([
+        'project',
+        'topic_key',
+        'relation',
+        'limit',
+        'max_chars',
+      ]);
+      expect(openapi.body.paths['/projects/{project}/graph'].get.responses['200'].content['application/json'].schema).toEqual({
+        $ref: '#/components/schemas/ProjectGraphResponse',
+      });
+      expect(openapi.body.components.schemas.ProjectTextResponse).toBeDefined();
+      expect(openapi.body.components.schemas.ProjectGraphFact).toBeDefined();
+      expect(openapi.body.components.schemas.ProjectGraphSummary).toBeDefined();
+      expect(openapi.body.components.schemas.ProjectGraphResponse).toBeDefined();
+      expect(openapi.body.components.schemas.TopicKeysResponse).toBeDefined();
     });
   });
 

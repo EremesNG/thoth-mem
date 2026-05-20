@@ -7,14 +7,41 @@ import type {
   SearchMode,
   Session,
   UserPrompt,
+  ObservationFact,
 } from './store/types.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
+import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from './tools/project-views.js';
 import { suggestTopicKey } from './utils/topic-key.js';
 
 const OBSERVATION_SCOPES: ObservationScope[] = ['project', 'personal'];
 const SEARCH_MODES: SearchMode[] = ['compact', 'preview'];
+const GRAPH_RELATIONS = [
+  'HAS_TYPE',
+  'IN_PROJECT',
+  'HAS_TOPIC_KEY',
+  'HAS_WHAT',
+  'HAS_WHY',
+  'HAS_WHERE',
+  'HAS_LEARNED',
+] as const;
+
+type GraphRelation = typeof GRAPH_RELATIONS[number];
+
+interface ProjectGraphSummary {
+  shown: number;
+  total: number;
+  omitted: number;
+  truncated: boolean;
+  text_truncated: boolean;
+  limit: number;
+  max_chars: number;
+  filters: {
+    topic_key?: string;
+    relation?: GraphRelation;
+  };
+}
 
 export interface HttpRouteRequest<TBody = unknown> {
   body?: TBody;
@@ -178,8 +205,63 @@ function parseSearchMode(value: string | null, fieldName: string): SearchMode {
   return value as SearchMode;
 }
 
+function parseGraphRelation(value: string | null, fieldName: string): GraphRelation | undefined {
+  if (value === null || value === '') {
+    return undefined;
+  }
+
+  if (!GRAPH_RELATIONS.includes(value as GraphRelation)) {
+    throw new HttpRouteError(400, `Invalid field: ${fieldName}`);
+  }
+
+  return value as GraphRelation;
+}
+
 function parseObservationId(params: Record<string, string>): number {
   return parseRequiredInteger(params.id, 'id', 1);
+}
+
+function parseProjectParam(params: Record<string, string>): string {
+  const project = params.project;
+
+  if (!project) {
+    throw new HttpRouteError(400, 'Missing required field: project');
+  }
+
+  return decodeURIComponent(project);
+}
+
+function getProjectGraphFacts(store: Store, project: string, topicKey?: string, relation?: GraphRelation): ObservationFact[] {
+  return store
+    .getObservationFacts({ project, topic_key: topicKey })
+    .filter((fact) => !relation || fact.relation === relation);
+}
+
+function createProjectGraphSummary(input: {
+  facts: ObservationFact[];
+  shown: number;
+  limit: number;
+  maxChars: number;
+  topicKey?: string;
+  relation?: GraphRelation;
+  text: string;
+}): ProjectGraphSummary {
+  const omitted = Math.max(input.facts.length - input.shown, 0);
+  const textTruncated = input.text.includes('Output truncated by max_chars.');
+
+  return {
+    shown: input.shown,
+    total: input.facts.length,
+    omitted,
+    truncated: omitted > 0 || textTruncated,
+    text_truncated: textTruncated,
+    limit: input.limit,
+    max_chars: input.maxChars,
+    filters: {
+      ...(input.topicKey ? { topic_key: input.topicKey } : {}),
+      ...(input.relation ? { relation: input.relation } : {}),
+    },
+  };
 }
 
 function toStatsResponse(store: Store): { sessions: number; observations: number; prompts: number; projects: string[] } {
@@ -561,6 +643,82 @@ export async function handleTimeline(store: Store, request: HttpRouteRequest): P
 
 export async function handleStats(store: Store): Promise<HttpRouteResponse> {
   return { status: 200, body: toStatsResponse(store) };
+}
+
+export async function handleProjectSummary(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = parseProjectParam(request.params);
+  const limit = parseOptionalInteger(request.query.get('limit'), 'limit', 1);
+
+  return {
+    status: 200,
+    body: {
+      project,
+      text: formatProjectSummary(store, project, limit),
+    },
+  };
+}
+
+export async function handleProjectGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = parseProjectParam(request.params);
+  const topicKey = request.query.get('topic_key') ?? undefined;
+  const limit = parseOptionalInteger(request.query.get('limit'), 'limit', 1);
+  const maxChars = parseOptionalInteger(request.query.get('max_chars'), 'max_chars', 200) ?? 6000;
+  const relation = parseGraphRelation(request.query.get('relation'), 'relation');
+  const effectiveLimit = limit ?? 100;
+  const facts = getProjectGraphFacts(store, project, topicKey, relation);
+  const limitedFacts = facts.slice(0, effectiveLimit);
+  const text = formatProjectGraph(store, project, {
+    topicKey,
+    relation,
+    limit: effectiveLimit,
+    maxChars,
+  });
+
+  return {
+    status: 200,
+    body: {
+      project,
+      text,
+      facts: limitedFacts,
+      summary: createProjectGraphSummary({
+        facts,
+        shown: limitedFacts.length,
+        limit: effectiveLimit,
+        maxChars,
+        topicKey,
+        relation,
+        text,
+      }),
+    },
+  };
+}
+
+export async function handleProjectTopicKeys(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = parseProjectParam(request.params);
+  const topicKey = request.query.get('topic_key') ?? undefined;
+
+  if (topicKey) {
+    const limit = parseOptionalInteger(request.query.get('limit'), 'limit', 1);
+    const maxChars = parseOptionalInteger(request.query.get('max_chars'), 'max_chars', 200);
+
+    return {
+      status: 200,
+      body: {
+        project,
+        topic_key: topicKey,
+        text: formatTopicKeyContext(store, project, topicKey, maxChars, limit),
+      },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      project,
+      topics: store.listTopicKeys(project),
+      text: formatTopicKeyList(store, project),
+    },
+  };
 }
 
 export async function handleSavePrompt(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {

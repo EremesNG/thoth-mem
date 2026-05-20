@@ -11,6 +11,11 @@ const OBSERVATION_SCOPE_SCHEMA = {
   enum: ['project', 'personal'],
 };
 
+const GRAPH_RELATION_SCHEMA = {
+  type: 'string',
+  enum: ['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED'],
+};
+
 export function getOpenApiSpec(port: number): Record<string, unknown> {
   return {
     openapi: '3.0.0',
@@ -333,6 +338,76 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
                 },
               },
             },
+          },
+        },
+      },
+      '/projects/{project}/summary': {
+        get: {
+          summary: 'Get project summary',
+          parameters: [
+            { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 20 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Project summary markdown payload',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ProjectTextResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/projects/{project}/graph': {
+        get: {
+          summary: 'Get project graph-lite facts',
+          parameters: [
+            { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'relation', in: 'query', schema: GRAPH_RELATION_SCHEMA },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+            { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 200, maximum: 20000, default: 6000 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Project graph-lite structured facts and compatible markdown payload',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ProjectGraphResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/projects/{project}/topic-keys': {
+        get: {
+          summary: 'List project topic keys or read exact topic-key context',
+          parameters: [
+            { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 20, default: 10 } },
+            { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 200, maximum: 20000, default: 6000 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Topic-key listing or exact topic-key context',
+              content: {
+                'application/json': {
+                  schema: {
+                    oneOf: [
+                      { $ref: '#/components/schemas/TopicKeysResponse' },
+                      { $ref: '#/components/schemas/TopicKeyContextResponse' },
+                    ],
+                  },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
           },
         },
       },
@@ -935,6 +1010,95 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
           required: ['sessions', 'observations', 'prompts', 'projects'],
+        },
+        ProjectTextResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            text: { type: 'string' },
+          },
+          required: ['project', 'text'],
+        },
+        ProjectGraphFact: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            observation_id: { type: 'integer' },
+            subject: { type: 'string' },
+            relation: GRAPH_RELATION_SCHEMA,
+            object: { type: 'string' },
+            project: { type: 'string', nullable: true },
+            topic_key: { type: 'string', nullable: true },
+            type: OBSERVATION_TYPE_SCHEMA,
+            created_at: { type: 'string' },
+          },
+          required: ['id', 'observation_id', 'subject', 'relation', 'object', 'project', 'topic_key', 'type', 'created_at'],
+        },
+        ProjectGraphSummary: {
+          type: 'object',
+          properties: {
+            shown: { type: 'integer' },
+            total: { type: 'integer' },
+            omitted: { type: 'integer' },
+            truncated: { type: 'boolean' },
+            text_truncated: { type: 'boolean' },
+            limit: { type: 'integer' },
+            max_chars: { type: 'integer' },
+            filters: {
+              type: 'object',
+              properties: {
+                topic_key: { type: 'string' },
+                relation: GRAPH_RELATION_SCHEMA,
+              },
+            },
+          },
+          required: ['shown', 'total', 'omitted', 'truncated', 'text_truncated', 'limit', 'max_chars', 'filters'],
+        },
+        ProjectGraphResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            text: { type: 'string' },
+            facts: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/ProjectGraphFact' },
+            },
+            summary: { $ref: '#/components/schemas/ProjectGraphSummary' },
+          },
+          required: ['project', 'text', 'facts', 'summary'],
+        },
+        TopicKeySummary: {
+          type: 'object',
+          properties: {
+            topic_key: { type: 'string' },
+            project: { type: 'string', nullable: true },
+            title: { type: 'string' },
+            type: OBSERVATION_TYPE_SCHEMA,
+            observation_count: { type: 'integer' },
+            updated_at: { type: 'string' },
+          },
+          required: ['topic_key', 'project', 'title', 'type', 'observation_count', 'updated_at'],
+        },
+        TopicKeysResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            topics: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/TopicKeySummary' },
+            },
+            text: { type: 'string' },
+          },
+          required: ['project', 'topics', 'text'],
+        },
+        TopicKeyContextResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            topic_key: { type: 'string' },
+            text: { type: 'string' },
+          },
+          required: ['project', 'topic_key', 'text'],
         },
         ContextResponse: {
           type: 'object',
