@@ -146,6 +146,19 @@ describe('mem_search tool (via Store)', () => {
     expect(results.some((result) => result.id === saved.id)).toBe(true);
   });
 
+  it('finds inflected technical terms with prefix fallback', () => {
+    const saved = store.saveObservation({
+      title: 'Encryption migration',
+      content: 'We migrated token encryption to envelope keys.',
+      type: 'architecture',
+      project: 'security-project',
+    }).observation;
+
+    const results = store.searchObservations({ query: 'encrypt token', project: 'security-project' });
+
+    expect(results.some((result) => result.id === saved.id)).toBe(true);
+  });
+
   describe('progressive disclosure mode', () => {
     it('defaults to compact mode when mode is omitted', () => {
       store.saveObservation({
@@ -188,6 +201,43 @@ describe('mem_search tool (via Store)', () => {
       expect(text).toContain('### [manual] Preview output observation');
       expect(text).toContain('preview-unique-snippet-here');
       expect(text).toContain('**Project:**');
+    });
+
+    it('context mode returns delimited agent-ready context', () => {
+      store.saveObservation({
+        title: 'Context output observation',
+        content: 'context-mode-token full agent context content',
+        type: 'decision',
+        project: 'context-project',
+      });
+
+      const text = store.searchObservationsFormatted({
+        query: 'context-mode-token',
+        mode: 'context',
+      });
+
+      expect(text).toContain('<thoth_retrieved_context>');
+      expect(text).toContain('</thoth_retrieved_context>');
+      expect(text).toContain('Context output observation');
+      expect(text).toContain('full agent context content');
+    });
+
+    it('context mode respects max_chars budget', () => {
+      store.saveObservation({
+        title: 'Budgeted context observation',
+        content: `budget-context-token ${'x'.repeat(500)}`,
+        type: 'decision',
+      });
+
+      const text = store.searchObservationsFormatted({
+        query: 'budget-context-token',
+        mode: 'context',
+        max_chars: 240,
+      });
+
+      expect(text.length).toBeLessThanOrEqual(240);
+      expect(text).toContain('<thoth_retrieved_context>');
+      expect(text).toContain('</thoth_retrieved_context>');
     });
   });
 

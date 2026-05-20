@@ -4,8 +4,8 @@ import { ALL_TOOLS, registerTools } from '../../src/tools/index.js';
 import { Store } from '../../src/store/index.js';
 
 describe('MCP tool registration', () => {
-  it('registers exactly 13 MCP tools', () => {
-    expect(ALL_TOOLS).toHaveLength(13);
+  it('registers exactly 16 MCP tools', () => {
+    expect(ALL_TOOLS).toHaveLength(16);
   });
 
   it('includes mem_timeline in registered tools', () => {
@@ -14,6 +14,14 @@ describe('MCP tool registration', () => {
 
   it('includes mem_capture_passive in registered tools', () => {
     expect(ALL_TOOLS.map((tool) => tool.name)).toContain('mem_capture_passive');
+  });
+
+  it('includes OpenCode-facing project view tools', () => {
+    const names = ALL_TOOLS.map((tool) => tool.name);
+
+    expect(names).toContain('mem_project_summary');
+    expect(names).toContain('mem_project_graph');
+    expect(names).toContain('mem_topic_keys');
   });
 
   it('does not include excluded admin/sync tools', () => {
@@ -37,7 +45,7 @@ describe('MCP tool registration', () => {
     try {
       registerTools(server, store);
 
-      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(13);
+      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(16);
     } finally {
       store.close();
     }

@@ -10,7 +10,11 @@ import type {
   ImportResult,
   MigrateProjectResult,
   Observation,
+  ObservationFact,
+  ObservationFactsInput,
   ObservationVersion,
+  RebuildObservationFactsInput,
+  RebuildObservationFactsResult,
   SaveObservationInput,
   SaveResult,
   SearchInput,
@@ -25,17 +29,27 @@ import type {
   StatsResult,
   TimelineInput,
   TimelineResult,
+  TopicKeySummary,
   UpdateObservationInput,
   UserPrompt,
 } from './types.js';
 import { stripPrivateTags } from '../utils/privacy.js';
-import { sanitizeFTS } from '../utils/sanitize.js';
+import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
 import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
 
 type ObservationRow = Observation;
 
 type SearchRow = ObservationRow & { rank: number };
+
+const STRUCTURED_FACT_RELATIONS = {
+  what: 'HAS_WHAT',
+  why: 'HAS_WHY',
+  where: 'HAS_WHERE',
+  learned: 'HAS_LEARNED',
+} as const;
+
+type StructuredFactKey = keyof typeof STRUCTURED_FACT_RELATIONS;
 
 const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
@@ -164,6 +178,82 @@ export class Store {
     this.recordMutation('update', 'session', 0, id, session.project);
 
     return session;
+  }
+
+  private extractStructuredFacts(content: string): Array<{ relation: string; object: string }> {
+    const facts: Array<{ relation: string; object: string }> = [];
+    let currentKey: StructuredFactKey | null = null;
+    let currentValue: string[] = [];
+
+    const flush = (): void => {
+      if (!currentKey) {
+        return;
+      }
+
+      const object = currentValue.join('\n').trim();
+
+      if (object.length > 0) {
+        facts.push({ relation: STRUCTURED_FACT_RELATIONS[currentKey], object });
+      }
+    };
+
+    for (const line of content.split(/\r?\n/)) {
+      const match = line.match(/^\*\*(What|Why|Where|Learned)\*\*:\s*(.*)$/i);
+
+      if (match) {
+        flush();
+        currentKey = match[1].toLowerCase() as StructuredFactKey;
+        currentValue = [match[2] ?? ''];
+        continue;
+      }
+
+      if (currentKey) {
+        currentValue.push(line);
+      }
+    }
+
+    flush();
+
+    return facts;
+  }
+
+  private buildObservationFacts(observation: Observation): Array<{ relation: string; object: string }> {
+    return [
+      { relation: 'HAS_TYPE', object: observation.type },
+      ...(observation.project ? [{ relation: 'IN_PROJECT', object: observation.project }] : []),
+      ...(observation.topic_key ? [{ relation: 'HAS_TOPIC_KEY', object: observation.topic_key }] : []),
+      ...this.extractStructuredFacts(observation.content),
+    ];
+  }
+
+  private replaceObservationFacts(observation: Observation): { deleted: number; created: number } {
+    const insert = this.db.prepare(
+      `INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    const facts = this.buildObservationFacts(observation);
+
+    return this.db.transaction(() => {
+      const deleteResult = this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observation.id);
+
+      for (const fact of facts) {
+        insert.run(
+          observation.id,
+          observation.title,
+          fact.relation,
+          fact.object,
+          observation.project,
+          observation.topic_key,
+          observation.type
+        );
+      }
+
+      return { deleted: deleteResult.changes, created: facts.length };
+    })();
+  }
+
+  private refreshObservationFacts(observation: Observation): void {
+    this.replaceObservationFacts(observation);
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
@@ -452,6 +542,7 @@ export class Store {
         }
 
         this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
+        this.refreshObservationFacts(observation);
 
         return { observation, action: 'upserted' };
       }
@@ -480,6 +571,7 @@ export class Store {
     }
 
     this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
+    this.refreshObservationFacts(observation);
 
     return { observation, action: 'created' };
   }
@@ -572,6 +664,7 @@ export class Store {
 
     if (updated) {
       this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
+      this.refreshObservationFacts(updated);
     }
 
     return updated;
@@ -616,46 +709,72 @@ export class Store {
 
       rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
     } else {
+      const buildFtsQuery = (matchQuery: string, rowLimit: number): { sql: string; params: Array<string | number> } => {
+        const sql = [
+          'SELECT o.*, fts.rank',
+          'FROM observations_fts fts',
+          'JOIN observations o ON o.id = fts.rowid',
+          'WHERE observations_fts MATCH ?',
+          'AND o.deleted_at IS NULL',
+        ];
+        const params: Array<string | number> = [matchQuery];
+
+        if (input.type) {
+          sql.push('AND o.type = ?');
+          params.push(input.type);
+        }
+
+        if (input.project) {
+          sql.push('AND o.project = ?');
+          params.push(input.project);
+        }
+
+        if (input.session_id) {
+          sql.push('AND o.session_id = ?');
+          params.push(input.session_id);
+        }
+
+        if (input.scope) {
+          sql.push('AND o.scope = ?');
+          params.push(input.scope);
+        }
+
+        sql.push('ORDER BY fts.rank');
+        sql.push('LIMIT ?');
+        params.push(rowLimit);
+
+        return { sql: sql.join(' '), params };
+      };
+
       const sanitizedQuery = sanitizeFTS(input.query);
 
       if (sanitizedQuery === '') {
         return [];
       }
 
-      const sql = [
-        'SELECT o.*, fts.rank',
-        'FROM observations_fts fts',
-        'JOIN observations o ON o.id = fts.rowid',
-        'WHERE observations_fts MATCH ?',
-        'AND o.deleted_at IS NULL',
-      ];
-      const params: Array<string | number> = [sanitizedQuery];
+      const exact = buildFtsQuery(sanitizedQuery, limit);
+      rows = this.db.prepare(exact.sql).all(...exact.params) as SearchRow[];
 
-      if (input.type) {
-        sql.push('AND o.type = ?');
-        params.push(input.type);
+      if (rows.length < limit) {
+        const prefixQuery = sanitizeFTSPrefix(input.query);
+
+        if (prefixQuery !== '') {
+          const prefix = buildFtsQuery(prefixQuery, limit);
+          const prefixRows = this.db.prepare(prefix.sql).all(...prefix.params) as SearchRow[];
+          const seen = new Set(rows.map((row) => row.id));
+
+          for (const row of prefixRows) {
+            if (!seen.has(row.id)) {
+              rows.push(row);
+              seen.add(row.id);
+            }
+
+            if (rows.length >= limit) {
+              break;
+            }
+          }
+        }
       }
-
-      if (input.project) {
-        sql.push('AND o.project = ?');
-        params.push(input.project);
-      }
-
-      if (input.session_id) {
-        sql.push('AND o.session_id = ?');
-        params.push(input.session_id);
-      }
-
-      if (input.scope) {
-        sql.push('AND o.scope = ?');
-        params.push(input.scope);
-      }
-
-      sql.push('ORDER BY fts.rank');
-      sql.push('LIMIT ?');
-      params.push(limit);
-
-      rows = this.db.prepare(sql.join(' ')).all(...params) as SearchRow[];
     }
 
     return rows.map((row) => {
@@ -675,7 +794,97 @@ export class Store {
 
   searchObservationsFormatted(input: SearchInput): string {
     const observations = this.searchObservations(input);
-    return formatSearchResults(observations, input.mode ?? 'compact', this.config.previewLength);
+    return formatSearchResults(observations, input.mode ?? 'compact', this.config.previewLength, input.max_chars);
+  }
+
+  listTopicKeys(project?: string): TopicKeySummary[] {
+    const sql = [
+      'SELECT',
+      '  o.topic_key,',
+      '  o.project,',
+      '  o.title,',
+      '  o.type,',
+      '  COUNT(*) as observation_count,',
+      '  MAX(o.updated_at) as updated_at',
+      'FROM observations o',
+      'WHERE o.topic_key IS NOT NULL',
+      "AND o.topic_key != ''",
+      'AND o.deleted_at IS NULL',
+    ];
+    const params: string[] = [];
+
+    if (project) {
+      sql.push('AND o.project = ?');
+      params.push(project);
+    }
+
+    sql.push('GROUP BY o.topic_key, o.project');
+    sql.push('ORDER BY o.project ASC, o.topic_key ASC');
+
+    return this.db.prepare(sql.join(' ')).all(...params) as TopicKeySummary[];
+  }
+
+  getObservationFacts(input: ObservationFactsInput = {}): ObservationFact[] {
+    const sql = [
+      'SELECT f.*',
+      'FROM observation_facts f',
+      'JOIN observations o ON o.id = f.observation_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    const params: Array<string | number> = [];
+
+    if (input.observation_id !== undefined) {
+      sql.push('AND f.observation_id = ?');
+      params.push(input.observation_id);
+    }
+
+    if (input.project) {
+      sql.push('AND f.project = ?');
+      params.push(input.project);
+    }
+
+    if (input.topic_key) {
+      sql.push('AND f.topic_key = ?');
+      params.push(input.topic_key);
+    }
+
+    sql.push('ORDER BY f.id ASC');
+
+    return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
+  }
+
+  rebuildObservationFacts(input: RebuildObservationFactsInput = {}): RebuildObservationFactsResult {
+    const sql = [
+      'SELECT * FROM observations',
+      'WHERE deleted_at IS NULL',
+    ];
+    const params: string[] = [];
+
+    if (input.project) {
+      sql.push('AND project = ?');
+      params.push(input.project);
+    }
+
+    sql.push('ORDER BY id ASC');
+
+    const observations = this.mapObservationRows(
+      this.db.prepare(sql.join(' ')).all(...params) as ObservationRow[]
+    );
+    let factsDeleted = 0;
+    let factsCreated = 0;
+
+    for (const observation of observations) {
+      const result = this.replaceObservationFacts(observation);
+      factsDeleted += result.deleted;
+      factsCreated += result.created;
+    }
+
+    return {
+      project: input.project ?? null,
+      observations_scanned: observations.length,
+      facts_deleted: factsDeleted,
+      facts_created: factsCreated,
+    };
   }
 
   getObservationVersions(observationId: number): ObservationVersion[] {

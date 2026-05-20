@@ -29,6 +29,7 @@ Commands:
    sync-import            Git sync import
    migrate-project <old> <new>  Rename a project
    delete-project <project>     Delete a project safely
+   rebuild-graph          Rebuild derived graph facts
    version                Show version
    help                   Show this help
 
@@ -516,6 +517,37 @@ async function handleDeleteProject(positionals: string[], globals: GlobalOptions
   });
 }
 
+async function handleRebuildGraph(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const all = positionals.includes('--all');
+  const rest = positionals.filter((arg) => arg !== '--all');
+  const hasProject = globals.project !== undefined;
+
+  if (all && hasProject) {
+    fail('Use either --project or --all, not both');
+  }
+
+  if (!all && !hasProject) {
+    fail('rebuild-graph requires --project <name> or --all');
+  }
+
+  ensureNoExtraArgs(rest, 'rebuild-graph');
+
+  const project = hasProject
+    ? parseRequiredProjectName(globals.project, 'rebuild-graph --project')
+    : undefined;
+
+  await withStore(globals.dataDir, ({ store }) => {
+    const result = store.rebuildObservationFacts({ project });
+    printStdout([
+      '## Graph Rebuild Complete',
+      `- **Scope:** ${result.project ? `project ${result.project}` : 'all projects'}`,
+      `- **Observations scanned:** ${result.observations_scanned}`,
+      `- **Facts deleted:** ${result.facts_deleted}`,
+      `- **Facts created:** ${result.facts_created}`,
+    ].join('\n'));
+  });
+}
+
 async function handleVersion(positionals: string[]): Promise<void> {
   ensureNoExtraArgs(positionals, 'version');
   printStdout(VERSION);
@@ -563,6 +595,9 @@ export async function runCli(args: string[]): Promise<void> {
          return;
        case 'delete-project':
          await handleDeleteProject(parsed.positionals, parsed.globals);
+         return;
+       case 'rebuild-graph':
+         await handleRebuildGraph(parsed.positionals, parsed.globals);
          return;
        case 'version':
          await handleVersion(parsed.positionals);

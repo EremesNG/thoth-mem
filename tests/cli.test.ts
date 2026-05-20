@@ -43,6 +43,16 @@ function seedStore(dataDir: string): void {
   }
 }
 
+function clearObservationFacts(dataDir: string): void {
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    store.getDb().prepare('DELETE FROM observation_facts').run();
+  } finally {
+    store.close();
+  }
+}
+
 function seedDeleteProjectStore(dataDir: string): void {
   ensureDir(dataDir);
   const store = new Store(join(dataDir, 'thoth.db'));
@@ -314,6 +324,64 @@ describe('runCli', () => {
     }
   });
 
+  it('rebuilds graph facts for a project from the CLI', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedStore(dataDir);
+    clearObservationFacts(dataDir);
+
+    const { stdout, stderr } = await captureCli(['rebuild-graph', '--project', 'cli-project', '--data-dir', dataDir]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('## Graph Rebuild Complete');
+    expect(stdout).toContain('- **Scope:** project cli-project');
+    expect(stdout).toContain('- **Observations scanned:** 2');
+    expect(stdout).toContain('- **Facts deleted:** 0');
+    expect(stdout).toContain('- **Facts created:** 4');
+
+    const store = new Store(join(dataDir, 'thoth.db'));
+    try {
+      expect(store.getObservationFacts({ project: 'cli-project' })).toHaveLength(4);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rebuilds graph facts for all projects from the CLI', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedDeleteProjectStore(dataDir);
+    clearObservationFacts(dataDir);
+
+    const { stdout, stderr } = await captureCli(['rebuild-graph', '--all', '--data-dir', dataDir]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('## Graph Rebuild Complete');
+    expect(stdout).toContain('- **Scope:** all projects');
+    expect(stdout).toContain('- **Observations scanned:** 2');
+    expect(stdout).toContain('- **Facts created:** 4');
+  });
+
+  it('requires exactly one rebuild-graph scope', async () => {
+    let missingScopeError: unknown;
+    try {
+      await captureCli(['rebuild-graph']);
+    } catch (caught) {
+      missingScopeError = caught;
+    }
+
+    expect(missingScopeError).toBeInstanceOf(Error);
+    expect((missingScopeError as Error).message).toContain('rebuild-graph requires --project <name> or --all');
+
+    let conflictingScopeError: unknown;
+    try {
+      await captureCli(['rebuild-graph', '--all', '--project', 'cli-project']);
+    } catch (caught) {
+      conflictingScopeError = caught;
+    }
+
+    expect(conflictingScopeError).toBeInstanceOf(Error);
+    expect((conflictingScopeError as Error).message).toContain('Use either --project or --all, not both');
+  });
+
   it('fails clearly when delete-project is missing or has an invalid project argument', async () => {
     let missingError: unknown;
     try {
@@ -417,7 +485,7 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=agent']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS).toHaveLength(13);
+      expect(ALL_TOOLS).toHaveLength(16);
     });
 
     it('--tools=admin does not change registered tool set', () => {
@@ -425,15 +493,15 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=admin', '--data-dir', '/tmp/mem']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(13);
+      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(16);
     });
 
-    it('startup without --tools= registers all 13 tools', () => {
+    it('startup without --tools= registers all 16 tools', () => {
       const parsed = parseArgs(['node', 'thoth-mem', 'mcp']);
 
       expect(parsed).toEqual({ dataDir: undefined, httpDisabled: false });
       expect(shouldRunCli(['mcp'])).toBe(false);
-      expect(ALL_TOOLS).toHaveLength(13);
+      expect(ALL_TOOLS).toHaveLength(16);
     });
 
     it('--tools= flag is silently ignored', () => {

@@ -40,6 +40,7 @@ describe('Database Schema', () => {
     expect(tableNames).toContain('prompts_fts');
     expect(tableNames).toContain('sync_chunks');
     expect(tableNames).toContain('sync_mutations');
+    expect(tableNames).toContain('observation_facts');
     db.close();
   });
 
@@ -74,6 +75,9 @@ describe('Database Schema', () => {
     expect(indexNames).toContain('idx_obs_deleted');
     expect(indexNames).toContain('idx_obs_dedupe');
     expect(indexNames).toContain('idx_obs_versions_obs');
+    expect(indexNames).toContain('idx_observation_facts_observation');
+    expect(indexNames).toContain('idx_observation_facts_project');
+    expect(indexNames).toContain('idx_observation_facts_topic');
     expect(indexNames).toContain('idx_prompts_session');
     expect(indexNames).toContain('idx_prompts_project');
     db.close();

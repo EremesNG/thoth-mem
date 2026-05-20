@@ -13,6 +13,9 @@ import { registerMemUpdate } from "./mem-update.js";
 import { registerMemDelete } from "./mem-delete.js";
 import { registerMemStats } from "./mem-stats.js";
 import { registerMemTimeline } from "./mem-timeline.js";
+import { registerMemProjectSummary } from "./mem-project-summary.js";
+import { registerMemProjectGraph } from "./mem-project-graph.js";
+import { registerMemTopicKeys } from "./mem-topic-keys.js";
 
 interface ToolRegistration {
   name: string;
@@ -33,6 +36,9 @@ const ALL_TOOLS: ToolRegistration[] = [
   { name: 'mem_delete', register: registerMemDelete },
   { name: 'mem_stats', register: registerMemStats },
   { name: 'mem_timeline', register: registerMemTimeline },
+  { name: 'mem_project_summary', register: registerMemProjectSummary },
+  { name: 'mem_project_graph', register: registerMemProjectGraph },
+  { name: 'mem_topic_keys', register: registerMemTopicKeys },
 ];
 
 export function registerTools(server: McpServer, store: Store): void {

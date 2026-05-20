@@ -37,6 +37,7 @@ Start compact, filter, then expand. Never fetch full content for broad searches.
 - Use topic_key with mem_save for evolving topics (call mem_suggest_topic_key first if unsure)
 - Use mem_save_prompt to record significant user requests
 - Use mem_capture_passive when output contains '## Key Learnings:' sections
+- Use mem_project_summary, mem_project_graph, and mem_topic_keys for project-level navigation in OpenCode
 - Search memory proactively when starting work that might overlap with past sessions
 `;
 

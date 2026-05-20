@@ -9,7 +9,7 @@ export const OBSERVATION_TYPES = [
 export type ObservationType = typeof OBSERVATION_TYPES[number];
 
 export type ObservationScope = 'project' | 'personal';
-export type SearchMode = 'compact' | 'preview';
+export type SearchMode = 'compact' | 'preview' | 'context';
 
 // ── Database Entities ──
 
@@ -66,6 +66,27 @@ export interface SearchResult extends Observation {
   preview: string;
 }
 
+export interface ObservationFact {
+  id: number;
+  observation_id: number;
+  subject: string;
+  relation: string;
+  object: string;
+  project: string | null;
+  topic_key: string | null;
+  type: ObservationType;
+  created_at: string;
+}
+
+export interface TopicKeySummary {
+  topic_key: string;
+  project: string | null;
+  title: string;
+  type: ObservationType;
+  observation_count: number;
+  updated_at: string;
+}
+
 // ── Operation Inputs ──
 
 export interface SaveObservationInput {
@@ -86,7 +107,18 @@ export interface SearchInput {
   scope?: ObservationScope;
   limit?: number;
   mode?: SearchMode;
+  max_chars?: number;
   topic_key_exact?: string;
+}
+
+export interface ObservationFactsInput {
+  observation_id?: number;
+  project?: string;
+  topic_key?: string;
+}
+
+export interface RebuildObservationFactsInput {
+  project?: string;
 }
 
 export interface ContextInput {
@@ -236,4 +268,11 @@ export interface DeleteProjectResult {
   observation_versions_deleted: number;
   prompts_deleted: number;
   sessions_deleted: number;
+}
+
+export interface RebuildObservationFactsResult {
+  project: string | null;
+  observations_scanned: number;
+  facts_deleted: number;
+  facts_created: number;
 }

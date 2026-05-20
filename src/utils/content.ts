@@ -84,15 +84,58 @@ export function formatPreviewResult(obs: Observation, previewLength: number = 30
   ].join('\n');
 }
 
+export function formatContextResults(observations: Observation[], maxChars: number = 4000): string {
+  const openTag = '<thoth_retrieved_context>';
+  const closeTag = '</thoth_retrieved_context>';
+  const maxLength = Math.max(maxChars, openTag.length + closeTag.length + 2);
+  const available = maxLength - openTag.length - closeTag.length - 2;
+  let body = '';
+
+  for (const obs of observations) {
+    const block = [
+      `[${obs.id}] (${obs.type}) ${obs.title}`,
+      `Project: ${obs.project || 'none'} | Scope: ${obs.scope} | Created: ${obs.created_at}`,
+      obs.topic_key ? `Topic: ${obs.topic_key}` : null,
+      'Content:',
+      obs.content,
+    ].filter((line): line is string => line !== null).join('\n');
+
+    const separator = body.length > 0 ? '\n\n---\n\n' : '';
+    const candidate = `${separator}${block}`;
+
+    if (body.length + candidate.length <= available) {
+      body += candidate;
+      continue;
+    }
+
+    const remaining = available - body.length - separator.length;
+    if (remaining > 3) {
+      body += `${separator}${candidate.slice(separator.length, separator.length + remaining - 3)}...`;
+    }
+    break;
+  }
+
+  return [openTag, body, closeTag].join('\n');
+}
+
 /**
  * Main dispatcher for formatting search results based on mode.
  * - compact: minimal one-liner format per result
  * - preview: full preview format per result
  * Includes header with result count.
  */
-export function formatSearchResults(observations: Observation[], mode: SearchMode = 'compact', previewLength: number = 300): string {
+export function formatSearchResults(
+  observations: Observation[],
+  mode: SearchMode = 'compact',
+  previewLength: number = 300,
+  maxChars: number = 4000
+): string {
   if (observations.length === 0) {
     return 'No memories found.';
+  }
+
+  if (mode === 'context') {
+    return formatContextResults(observations, maxChars);
   }
 
   const header = `Found ${observations.length} ${observations.length === 1 ? 'memory' : 'memories'}:`;
