@@ -1,6 +1,6 @@
 ---
 name: thoth-mem
-description: Use thoth-mem correctly as persistent memory for coding agents. Use this skill whenever starting or resuming work, recovering prior project context, searching memory, saving durable learnings, writing session summaries, or deciding whether to call mem_search, mem_context, mem_timeline, mem_get_observation, mem_save, mem_save_prompt, mem_session_start, or mem_session_summary. Strongly prefer this skill for any task involving memory recall, cross-session continuity, previous decisions, project history, or the 3-layer recall protocol.
+description: Use thoth-mem correctly as persistent memory for coding agents. Use this skill whenever starting or resuming work, recovering prior project context, searching memory, browsing project summaries, graph-lite facts, or topic keys, saving durable learnings, writing session summaries, or deciding whether to call mem_search, mem_context, mem_project_summary, mem_project_graph, mem_topic_keys, mem_timeline, mem_get_observation, mem_save, mem_save_prompt, mem_session_start, or mem_session_summary. Strongly prefer this skill for any task involving memory recall, cross-session continuity, previous decisions, project history, or the 3-layer recall protocol.
 ---
 
 # thoth-mem Usage
@@ -9,16 +9,21 @@ thoth-mem is a persistent memory MCP server for coding agents. Use it to recover
 
 The most important habit is to treat memory as a token-efficient index first, not as a dump of full notes. Start narrow, expand only the promising hits, and save only information that will matter later.
 
+Project navigation is exposed through three focused tools: `mem_project_summary` for orientation, `mem_topic_keys` for stable decision areas, and `mem_project_graph` for derived graph-lite facts.
+
 ## Start-of-Session Protocol
 
 At the beginning of a meaningful work session:
 
 1. Call `mem_session_start` with a stable session ID, the project name, and the working directory.
-2. Call `mem_context` for the current project to get recent sessions, prompts, observations, and memory stats.
-3. If the task sounds related to previous work, use the 3-layer recall protocol before editing code or making architecture decisions.
-4. Save the user's significant request with `mem_save_prompt` when it defines intent that future sessions should remember.
+2. Call `mem_project_summary` for the current project when project-level context is available; otherwise call `mem_context` with the project filter.
+3. Call `mem_topic_keys` when you need to discover stable decision areas before searching.
+4. If the task sounds related to previous work, use the 3-layer recall protocol before editing code or making architecture decisions.
+5. Save the user's significant request with `mem_save_prompt` when it defines intent that future sessions should remember.
 
 Use `mem_context` as the orientation pass. It is good for recent continuity, but it is not a replacement for targeted search when the task depends on a specific prior decision or bug.
+
+Use `mem_project_summary` as the preferred project overview. It gives you a scoped starting point before targeted search.
 
 ## 3-Layer Recall Protocol
 
@@ -36,6 +41,7 @@ Good search patterns:
 - Filter by `project` when you know it.
 - Filter by `type` when the intent is clear, such as `bugfix`, `decision`, `architecture`, `config`, `pattern`, `discovery`, `learning`, or `session_summary`.
 - Use `topic_key_exact` when the user or prior context gives a stable topic key.
+- Use `mode="context"` when you need agent-ready delimited context and can set an explicit `max_chars` budget.
 - Try 2-3 focused searches instead of one broad search when the first search is noisy.
 
 Do not fetch full observations during broad exploration. First identify the few IDs that look promising.
@@ -68,6 +74,25 @@ Use `mem_context` when:
 - Starting a session.
 - The user asks what happened recently.
 - You need recent prompts, observations, and session summaries.
+
+Use `mem_project_summary` when:
+
+- You are working inside a known project.
+- You want a project-scoped overview before targeted recall.
+- You need recent sessions, prompts, observations, and stats for one project.
+
+Use `mem_project_graph` when:
+
+- You need graph-lite facts derived from structured observations.
+- You want to scan `What/Why/Where/Learned`, type, topic key, and project relationships.
+- You are investigating architecture or decision relationships before deeper fetches.
+- Use `topic_key`, `relation`, `limit`, and `max_chars` to keep graph output focused.
+
+Use `mem_topic_keys` when:
+
+- You need to discover stable topic keys for a project.
+- You want to inspect an exact topic key as agent-ready context.
+- You are deciding whether a new learning should update an existing topic-key memory.
 
 Use `mem_search` when:
 
@@ -169,11 +194,12 @@ Prefer saving the reason a thing matters, where it applies, and how a future age
 ### Resume a Feature
 
 1. `mem_session_start`
-2. `mem_context(project="...")`
-3. `mem_search(query="feature-name architecture decision", project="...", type="decision")`
-4. `mem_timeline(observation_id=<best-id>)`
-5. `mem_get_observation(id=<final-id>)`
-6. Continue the work using the recovered context.
+2. `mem_project_summary(project="...")`
+3. `mem_topic_keys(project="...")`
+4. `mem_search(query="feature-name architecture decision", project="...", type="decision")`
+5. `mem_timeline(observation_id=<best-id>)`
+6. `mem_get_observation(id=<final-id>)`
+7. Continue the work using the recovered context.
 
 ### Investigate a Recurring Bug
 
@@ -185,9 +211,17 @@ Prefer saving the reason a thing matters, where it applies, and how a future age
 
 ### Preserve an Evolving Decision
 
-1. `mem_suggest_topic_key(title="...")`
-2. `mem_save` with `topic_key`, `type="decision"` or `type="architecture"`.
-3. Later sessions update the same topic key instead of creating scattered near-duplicates.
+1. `mem_topic_keys(project="...")` to see whether a stable topic already exists.
+2. `mem_suggest_topic_key(title="...")` if no existing topic key fits.
+3. `mem_save` with `topic_key`, `type="decision"` or `type="architecture"`.
+4. Later sessions update the same topic key instead of creating scattered near-duplicates.
+
+### Inspect Project Structure
+
+1. `mem_project_summary(project="...")`
+2. `mem_topic_keys(project="...")`
+3. `mem_project_graph(project="...", limit=50, max_chars=6000)`
+4. Use `mem_search(mode="context", project="...", query="...")` only for the most relevant follow-up areas.
 
 ## Quality Bar
 

@@ -31,13 +31,14 @@ Agent Session 1                    Agent Session 2
 
 ## Features
 
-- **13 MCP tools** — always registered, no profiles to configure
-- **HTTP REST API** with OpenAPI 3.0 docs and interactive `/docs` interface
+- **16 MCP tools** — always registered, no profiles to configure
+- **Local read-only dashboard** served by the HTTP bridge at `/`, with OpenAPI docs preserved at `/docs`
 - **CLI + MCP dual mode** — use as a server or directly from the terminal
 - **SQLite + FTS5** full-text search (fast, zero external dependencies)
 - **Git-friendly sync** — export memory as gzipped chunks for version control
 - **JSON export/import** — portable memory backup and transfer
 - **Project migration** — rename projects across all entities in one operation
+- **Graph fact rebuild** — backfill derived graph-lite facts for existing memories
 - **MCP Server Instructions** — built-in protocol guidance for connected agents
 - **Observation versioning** — full history preserved on topic_key upserts
 - **Session enrichment** — sessions auto-fill missing project/directory on reconnect
@@ -46,6 +47,8 @@ Agent Session 1                    Agent Session 2
 - **Paginated retrieval** — large observations served in chunks via offset/max_length
 - **Privacy defense** — `<private>` tags stripped before storage
 - **Token-efficient search** — compact results by default, preview mode optional, 3-layer recall protocol
+- **Retrieval eval baseline** — deterministic recall benchmark before adding embeddings or semantic search
+- **Agent-first MCP tools** — project summaries, graph-lite facts, and topic keys are exposed as tools instead of MCP Resources
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
 
 ## Quick Start
@@ -120,6 +123,8 @@ thoth-mem sync [--sync-dir=<path>]     # Git sync export
 thoth-mem sync-import [--sync-dir=<path>]  # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem delete-project <project>     # Delete a project and its related data
+thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
+thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -134,7 +139,14 @@ thoth-mem --no-http                    # Disable HTTP bridge
 
 ## HTTP REST API
 
-Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The bridge listens on port `7438` and provides full access to memory operations via standard HTTP.
+Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The bridge listens on port `7438`, serves a local read-only dashboard at `/` when dashboard assets are built, and provides full access to memory operations via standard HTTP.
+
+**Local dashboard:**
+
+- Dashboard: `http://localhost:7438/`
+- Build assets locally with `npm run dashboard:build` during development or release packaging.
+- If `dist/dashboard/index.html` is missing, `/` returns a clear local build message while `/docs`, `/openapi.json`, and REST APIs remain available.
+- The dashboard is read-only and local-first: it uses existing GET endpoints only, adds no auth/multi-user mode, and does not create, update, delete, sync, migrate, or vector-search memories.
 
 **Interactive Documentation:**
 
@@ -152,7 +164,7 @@ THOTH_HTTP_DISABLED=true thoth-mem
 **Example: Search memories via HTTP**
 
 ```bash
-curl http://localhost:7438/search?query=auth+pattern
+curl http://localhost:7438/observations/search?query=auth+pattern
 ```
 
 **Example: Get memory statistics**
@@ -163,7 +175,19 @@ curl http://localhost:7438/stats
 
 The HTTP API supports all memory operations: sessions, observations, prompts, search, export/import, and sync. See the interactive `/docs` interface for the full API reference.
 
-## MCP Tools (13)
+## Development Checks
+
+```bash
+npm run build
+npm run dashboard:typecheck
+npm run dashboard:build
+npm test
+npm run eval:retrieval
+```
+
+`npm run eval:retrieval` runs a deterministic retrieval baseline against seeded in-memory observations. Use it before changing retrieval behavior or introducing embeddings so recall, ranking, and context payload metrics have a comparable baseline.
+
+## MCP Tools (16)
 
 
 | Tool                    | Purpose                                                           |
@@ -181,8 +205,11 @@ The HTTP API supports all memory operations: sessions, observations, prompts, se
 | `mem_delete`            | Delete observation (soft by default, hard optional)               |
 | `mem_stats`             | Memory statistics — sessions, observations, prompts, projects    |
 | `mem_timeline`          | Chronological context around a specific observation               |
+| `mem_project_summary`   | Project-focused summary for Agent workflows                    |
+| `mem_project_graph`     | Filtered graph-lite facts derived from structured project observations |
+| `mem_topic_keys`        | List topic keys or read exact topic-key context                   |
 
-> **Admin operations** (export, import, sync, migrate-project) are available via the [CLI](#cli-commands) and [HTTP REST API](#http-rest-api) — they are not registered as MCP tools to keep the agent's tool surface lean.
+> **Admin operations** (export, import, sync, migrate-project, rebuild-graph) are available via the [CLI](#cli-commands). Export, import, sync, and migration are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Sync & Portability
 
