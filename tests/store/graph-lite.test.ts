@@ -35,6 +35,37 @@ describe('Store graph-lite facts', () => {
     }
   });
 
+  it('derives facts from plain structured observation labels', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Plain structured memory',
+        type: 'learning',
+        project: 'plain-project',
+        content: [
+          'What: Plain labels create graph facts',
+          'Why: Agents may save non-bold structured content',
+          'Where: src/store/index.ts',
+          'Learned: Support both structured formats',
+        ].join('\n'),
+      }).observation;
+
+      const facts = store.getObservationFacts({ observation_id: saved.id });
+
+      expect(facts.map((fact) => [fact.subject, fact.relation, fact.object])).toEqual([
+        ['Plain structured memory', 'HAS_TYPE', 'learning'],
+        ['Plain structured memory', 'IN_PROJECT', 'plain-project'],
+        ['Plain structured memory', 'HAS_WHAT', 'Plain labels create graph facts'],
+        ['Plain structured memory', 'HAS_WHY', 'Agents may save non-bold structured content'],
+        ['Plain structured memory', 'HAS_WHERE', 'src/store/index.ts'],
+        ['Plain structured memory', 'HAS_LEARNED', 'Support both structured formats'],
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   it('filters facts by project and topic key', () => {
     const store = new Store(':memory:');
 

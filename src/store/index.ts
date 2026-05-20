@@ -198,12 +198,12 @@ export class Store {
     };
 
     for (const line of content.split(/\r?\n/)) {
-      const match = line.match(/^\*\*(What|Why|Where|Learned)\*\*:\s*(.*)$/i);
+      const match = line.match(/^(?:\*\*(What|Why|Where|Learned)\*\*|(What|Why|Where|Learned)):\s*(.*)$/i);
 
       if (match) {
         flush();
-        currentKey = match[1].toLowerCase() as StructuredFactKey;
-        currentValue = [match[2] ?? ''];
+        currentKey = (match[1] ?? match[2]).toLowerCase() as StructuredFactKey;
+        currentValue = [match[3] ?? ''];
         continue;
       }
 
