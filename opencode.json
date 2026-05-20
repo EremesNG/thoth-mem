@@ -5,11 +5,6 @@
       "type": "remote",
       "url": "http://127.0.0.1:29173/index-mcp/streamable-http",
       "enabled": true
-    },
-    "webstorm-debugger": {
-      "type": "remote",
-      "url": "http://127.0.0.1:29193/debugger-mcp/streamable-http",
-      "enabled": true
     }
   }
 }
