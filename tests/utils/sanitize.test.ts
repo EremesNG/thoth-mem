@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeFTS, normalizeForHash } from '../../src/utils/sanitize.js';
+import { normalizeForHash, sanitizeFTS, sanitizeFTSPrefix } from '../../src/utils/sanitize.js';
 
 describe('sanitizeFTS', () => {
   it('quotes simple words', () => {
@@ -29,6 +29,24 @@ describe('sanitizeFTS', () => {
 
   it('handles a single token', () => {
     expect(sanitizeFTS('hello')).toBe('"hello"');
+  });
+});
+
+describe('sanitizeFTSPrefix', () => {
+  it('builds an OR query with prefix terms for lexical recall', () => {
+    expect(sanitizeFTSPrefix('encrypt token')).toBe('"encrypt"* OR "token"*');
+  });
+
+  it('drops short low-signal tokens', () => {
+    expect(sanitizeFTSPrefix('to an jwt api')).toBe('"jwt"* OR "api"*');
+  });
+
+  it('escapes quotes before adding prefix markers', () => {
+    expect(sanitizeFTSPrefix('"auth" token')).toBe('"\"\"auth\"\""* OR "token"*');
+  });
+
+  it('returns empty string when no usable terms remain', () => {
+    expect(sanitizeFTSPrefix('to an')).toBe('');
   });
 });
 
