@@ -3,6 +3,7 @@
   "version": "0.2.1",
   "type": "module",
   "description": "Persistent memory MCP server for AI coding agents",
+  "packageManager": "pnpm@11.1.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/EremesNG/thoth-mem.git"
@@ -20,14 +21,14 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && npm run dashboard:build",
-    "dashboard:build": "npm run build --prefix dashboard",
-    "dashboard:typecheck": "npm run typecheck --prefix dashboard",
+    "build": "tsc && pnpm --dir dashboard build",
+    "dashboard:build": "pnpm --dir dashboard build",
+    "dashboard:typecheck": "pnpm --dir dashboard typecheck",
     "dev": "tsx watch src/index.ts",
     "eval:retrieval": "tsx src/evals/retrieval.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "pnpm run build && pnpm test"
   },
   "engines": {
     "node": ">=18"
