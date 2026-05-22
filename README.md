@@ -55,10 +55,10 @@ Agent Session 1                    Agent Session 2
 
 ```bash
 # Run directly (no install needed)
-npx thoth-mem@latest
+npx -y thoth-mem@latest
 
 # Or install globally
-npm install -g thoth-mem
+pnpm add -g thoth-mem
 ```
 
 Requires Node.js >= 18.
@@ -144,7 +144,7 @@ Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The 
 **Local dashboard:**
 
 - Dashboard: `http://localhost:7438/`
-- Build assets locally with `npm run dashboard:build` during development or release packaging.
+- Build assets locally with `pnpm run dashboard:build` during development or release packaging.
 - If `dist/dashboard/index.html` is missing, `/` returns a clear local build message while `/docs`, `/openapi.json`, and REST APIs remain available.
 - The dashboard is read-only and local-first: it uses existing GET endpoints only, adds no auth/multi-user mode, and does not create, update, delete, sync, migrate, or vector-search memories.
 
@@ -178,14 +178,14 @@ The HTTP API supports all memory operations: sessions, observations, prompts, se
 ## Development Checks
 
 ```bash
-npm run build
-npm run dashboard:typecheck
-npm run dashboard:build
-npm test
-npm run eval:retrieval
+pnpm run build
+pnpm run dashboard:typecheck
+pnpm run dashboard:build
+pnpm test
+pnpm run eval:retrieval
 ```
 
-`npm run eval:retrieval` runs a deterministic retrieval baseline against seeded in-memory observations. Use it before changing retrieval behavior or introducing embeddings so recall, ranking, and context payload metrics have a comparable baseline.
+`pnpm run eval:retrieval` runs a deterministic retrieval baseline against seeded in-memory observations. Use it before changing retrieval behavior or introducing embeddings so recall, ranking, and context payload metrics have a comparable baseline.
 
 ## MCP Tools (16)
 
