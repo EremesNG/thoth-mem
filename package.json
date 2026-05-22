@@ -26,9 +26,13 @@
     "dashboard:typecheck": "pnpm --dir dashboard typecheck",
     "dev": "tsx watch src/index.ts",
     "eval:retrieval": "tsx src/evals/retrieval.ts",
+    "release:notes": "tsx scripts/generate-release-notes.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "pnpm run build && pnpm test"
+    "prepublishOnly": "pnpm run build && pnpm test",
+    "release:patch": "npm version patch && git push --follow-tags",
+    "release:minor": "npm version minor && git push --follow-tags",
+    "release:major": "npm version major && git push --follow-tags"
   },
   "engines": {
     "node": ">=18"
