@@ -647,7 +647,7 @@ describe('createHttpBridge', () => {
     expect(rootResponse.status).toBe(200);
     expect(rootResponse.headers.get('content-type')).toContain('text/plain');
     expect(rootText).toContain('Dashboard assets are not built');
-    expect(rootText).toContain('npm run dashboard:build');
+    expect(rootText).toContain('pnpm run dashboard:build');
 
     const health = await fetchJson('/health', undefined, bridge.port);
     expect(health.response.status).toBe(200);

@@ -104,7 +104,7 @@ const DASHBOARD_MIME_TYPES: Record<string, string> = {
 
 const DASHBOARD_MISSING_MESSAGE = [
   'Dashboard assets are not built yet for Thoth-Mem.',
-  'Run `npm run dashboard:build` from the package root to generate dist/dashboard/.',
+  'Run `pnpm run dashboard:build` from the package root to generate dist/dashboard/.',
   'The HTTP API remains available at /docs, /openapi.json, and the REST endpoints.',
 ].join('\n');
 
