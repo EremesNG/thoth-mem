@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useRouter } from '../router.js';
 import { Home, Search, Key, Network, Shield, Check, Database } from 'lucide-react';
+import { api } from '../api/client.js';
+import { DASHBOARD_VERSION } from '../version.js';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -9,6 +11,7 @@ interface LayoutProps {
 export default function Layout({ children }: LayoutProps) {
   const { path } = useRouter();
   const [toast, setToast] = useState<string | null>(null);
+  const [mcpVersion, setMcpVersion] = useState<string>('unknown');
 
   const showToast = (message: string) => {
     setToast(message);
@@ -27,6 +30,16 @@ export default function Layout({ children }: LayoutProps) {
     return () => {
       delete (window as any).__showToast;
     };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    api.getMcpVersion(controller.signal)
+      .then(setMcpVersion)
+      .catch(() => setMcpVersion('unknown'));
+
+    return () => controller.abort();
   }, []);
 
   const isLinkActive = (to: string) => {
@@ -83,7 +96,10 @@ export default function Layout({ children }: LayoutProps) {
             <Shield size={14} />
             <span>Local-First Privacy</span>
           </div>
-          <div style={{ marginTop: '8px' }}>v0.2.0</div>
+          <div className="version-stack">
+            <span>Dashboard v{DASHBOARD_VERSION}</span>
+            <span>MCP v{mcpVersion}</span>
+          </div>
         </div>
       </aside>
 

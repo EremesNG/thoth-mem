@@ -1,7 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeProjectGraphResponse } from '../../dashboard/src/api/client.js';
+import { api, normalizeProjectGraphResponse } from '../../dashboard/src/api/client.js';
 import type { ProjectGraphFact, ProjectGraphResponse } from '../../dashboard/src/api/client.js';
+
+describe('api.getMcpVersion', () => {
+  it('reads the MCP version from the OpenAPI info payload', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      expect(input).toBe('/openapi.json');
+
+      return new Response(JSON.stringify({
+        openapi: '3.0.0',
+        info: {
+          title: 'thoth-mem HTTP API',
+          version: '0.2.1',
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      await expect(api.getMcpVersion()).resolves.toBe('0.2.1');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
 
 describe('normalizeProjectGraphResponse', () => {
   it('normalizes legacy text-only graph responses to a safe structured shape', () => {

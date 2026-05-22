@@ -24,6 +24,7 @@ export default defineConfig({
       '/observations': 'http://localhost:7438',
       '/timeline': 'http://localhost:7438',
       '/projects': 'http://localhost:7438',
+      '/openapi.json': 'http://localhost:7438',
     },
   },
 });

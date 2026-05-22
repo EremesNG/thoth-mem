@@ -133,6 +133,13 @@ body {
   color: var(--text-dark);
 }
 
+.version-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
 .main-content {
   flex: 1;
   margin-left: 260px;

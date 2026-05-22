@@ -55,6 +55,12 @@ export interface Stats {
   projects: string[];
 }
 
+interface OpenApiInfoResponse {
+  info?: {
+    version?: unknown;
+  };
+}
+
 export interface ContextResponse {
   sessions: Session[];
   observations: Observation[];
@@ -233,6 +239,14 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /**
+   * Get MCP server version from the HTTP bridge OpenAPI metadata
+   */
+  getMcpVersion: async (signal?: AbortSignal): Promise<string> => {
+    const payload = await apiFetch<OpenApiInfoResponse>('/openapi.json', { signal });
+    return typeof payload.info?.version === 'string' ? payload.info.version : 'unknown';
+  },
+
   /**
    * Get global stats
    */
