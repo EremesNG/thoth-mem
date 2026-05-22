@@ -20,8 +20,8 @@ SQLite is a lightweight, embedded SQL database engine:
 
 ```bash
 # Install better-sqlite3
-npm install better-sqlite3
-npm install --save-dev @types/better-sqlite3
+pnpm add better-sqlite3
+pnpm add -D @types/better-sqlite3
 
 # Optional: SQLite CLI tools
 # Ubuntu/Debian

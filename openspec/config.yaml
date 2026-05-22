@@ -24,10 +24,10 @@ rules:
   apply:
     - Follow existing code patterns and conventions
     tdd: false
-    test_command: 'npm test'
+    test_command: 'pnpm test'
   verify:
-    test_command: 'npm test'
-    build_command: 'npm run build'
+    test_command: 'pnpm test'
+    build_command: 'pnpm run build'
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

@@ -9,7 +9,7 @@
 
 ## Repository Snapshot
 
-- Package manager: `npm` (`package-lock.json` is present).
+- Package manager: `pnpm` (`pnpm-lock.yaml` is present).
 - Runtime: Node.js `>=18`.
 - Stack: TypeScript, ESM, `tsc`, `vitest`, SQLite via `better-sqlite3`, `zod`.
 
@@ -23,42 +23,42 @@
 
 ## Build, Test, and Dev Commands
 
-Use the existing npm scripts first.
+Use the existing pnpm scripts first.
 
 ```bash
-npm install
-npm run dev
-npm run build
-npm test
-npm run test:watch
+pnpm install
+pnpm run dev
+pnpm run build
+pnpm test
+pnpm run test:watch
 ```
 
-- `npm run dev` - runs `tsx watch src/index.ts` for local development.
-- `npm run build` - compiles `src/` to `dist/` with TypeScript.
-- `npm test` - runs the full Vitest suite once.
-- `npm run test:watch` - starts Vitest in watch mode.
-- `npm run prepublishOnly` - repository release gate; runs build and tests.
+- `pnpm run dev` - runs `tsx watch src/index.ts` for local development.
+- `pnpm run build` - compiles `src/` to `dist/` with TypeScript.
+- `pnpm test` - runs the full Vitest suite once.
+- `pnpm run test:watch` - starts Vitest in watch mode.
+- `pnpm run prepublishOnly` - repository release gate; runs build and tests.
 
 ## Single-Test and Focused-Test Commands
 
-There is no dedicated npm script for a single test file, so use Vitest directly or pass args through `npm test`.
+There is no dedicated pnpm script for a single test file, so use Vitest directly or pass args through `pnpm test`.
 
 Run one test file:
 
 ```bash
-npm test -- tests/tools/mem-save.test.ts
+pnpm test -- tests/tools/mem-save.test.ts
 ```
 
 Equivalent direct Vitest form:
 
 ```bash
-npx vitest run tests/tools/mem-save.test.ts
+pnpm exec vitest run tests/tools/mem-save.test.ts
 ```
 
 Run one named test inside a file:
 
 ```bash
-npx vitest run tests/tools/mem-save.test.ts -t "saves a new observation and returns created action"
+pnpm exec vitest run tests/tools/mem-save.test.ts -t "saves a new observation and returns created action"
 ```
 
 Useful notes:
@@ -70,9 +70,9 @@ Useful notes:
 ## Lint and Typecheck Reality
 
 - There is currently no lint script in `package.json`.
-- Do not invent `npm run lint` in automation unless you add and document it.
-- For verification, use `npm run build` and `npm test` as the current baseline.
-- If you need a type-only check without emit, prefer `npx tsc --noEmit` as an ad hoc command, but note it is not a packaged script.
+- Do not invent `pnpm run lint` in automation unless you add and document it.
+- For verification, use `pnpm run build` and `pnpm test` as the current baseline.
+- If you need a type-only check without emit, prefer `pnpm exec tsc --noEmit` as an ad hoc command, but note it is not a packaged script.
 
 ## Existing Agent-Instruction Files
 
@@ -163,10 +163,10 @@ For deep work on a specific folder, also read that folder's `codemap.md`.
 - Do not claim a new lint command exists unless you also add it to `package.json`.
 - When documenting commands, prefer commands already codified in `package.json`.
 - Before finishing code changes, run the narrowest relevant test first, then broader verification as needed.
-- If you change build behavior, test discovery, schema logic, or tool registration, run `npm run build` and `npm test`.
+- If you change build behavior, test discovery, schema logic, or tool registration, run `pnpm run build` and `pnpm test`.
 
 ## Good Defaults
 
-- Start with `npm test -- <target-file>` for the area you changed, then escalate to `npm test` for shared logic.
-- Run `npm run build` for TypeScript API, module, or export changes.
+- Start with `pnpm test -- <target-file>` for the area you changed, then escalate to `pnpm test` for shared logic.
+- Run `pnpm run build` for TypeScript API, module, or export changes.
 - Keep docs and agent instructions aligned with actual scripts and config files.

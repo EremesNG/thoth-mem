@@ -4,7 +4,7 @@
 Provides a persistent memory MCP server for coding agents. The system stores prompts, observations, and session summaries in SQLite, exposes them through MCP tools, and is optimized for durable cross-session recall with FTS-backed retrieval.
 
 ## System Entry Points
-- `package.json` - package metadata, npm scripts, runtime floor, and CLI bin target.
+- `package.json` - package metadata, pnpm scripts, runtime floor, and CLI bin target.
 - `src/index.ts` - CLI entrypoint that parses args, creates the server, attaches stdio transport, and manages shutdown.
 - `src/cli.ts` - CLI command dispatch for search, save, timeline, context, stats, sync, and data management operations.
 - `src/server.ts` - composition root that resolves config, instantiates the store, and registers MCP tools.
