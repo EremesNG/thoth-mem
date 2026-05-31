@@ -47,17 +47,17 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@huggingface/transformers": "^3.7.6",
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "better-sqlite3": "^12.8.0",
-    "sqlite-vec": "^0.1.6-alpha.2",
-    "zod": "^3.24.0"
+    "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0",
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }
