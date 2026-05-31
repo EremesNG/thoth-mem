@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   createHttpBridge: vi.fn(),
   createServer: vi.fn(),
+  processSemanticJobs: vi.fn(),
   stderrWrite: vi.fn(),
   stdioTransport: vi.fn(),
   storeClose: vi.fn(),
@@ -148,7 +149,9 @@ describe('startMcpServer lifecycle shutdown', () => {
 
   let currentPpid = 4242;
   let orphanCheckCallback: (() => void) | undefined;
+  let semanticWorkerCallback: (() => void) | undefined;
   let orphanTimer: NodeJS.Timeout;
+  let semanticTimer: NodeJS.Timeout;
 
   beforeEach(() => {
     processHandlers.clear();
@@ -156,16 +159,20 @@ describe('startMcpServer lifecycle shutdown', () => {
     stdoutHandlers.clear();
     currentPpid = 4242;
     orphanCheckCallback = undefined;
+    semanticWorkerCallback = undefined;
     orphanTimer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    semanticTimer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
 
     mocks.connect.mockReset().mockResolvedValue(undefined);
+    mocks.processSemanticJobs.mockReset().mockResolvedValue(0);
     mocks.storeClose.mockReset();
     mocks.bridgeStart.mockReset().mockResolvedValue(null);
     mocks.bridgeStop.mockReset().mockResolvedValue(undefined);
     mocks.createServer.mockReset().mockImplementation(() => ({
       server: { connect: mocks.connect },
-      store: { close: mocks.storeClose },
+      store: { close: mocks.storeClose, processSemanticJobs: mocks.processSemanticJobs },
       config: { httpDisabled: false, httpPort: 4545 },
+      embeddingProvider: null,
     }));
     mocks.createHttpBridge.mockReset().mockImplementation(() => ({
       start: mocks.bridgeStart,
@@ -177,7 +184,9 @@ describe('startMcpServer lifecycle shutdown', () => {
         return true;
       },
     }));
-    mocks.stdioTransport.mockReset().mockImplementation(() => ({}));
+    mocks.stdioTransport.mockReset().mockImplementation(function StdioServerTransport() {
+      return {};
+    });
     mocks.stderrWrite.mockReset();
 
     vi.spyOn(process, 'on').mockImplementation(((event: string, listener: (...args: unknown[]) => void) => {
@@ -198,9 +207,18 @@ describe('startMcpServer lifecycle shutdown', () => {
     }) as typeof process.stderr.write);
     vi.spyOn(process, 'exit').mockImplementation(((code?: number) => code as never) as typeof process.exit);
     vi.spyOn(process, 'ppid', 'get').mockImplementation(() => currentPpid);
-    vi.spyOn(global, 'setInterval').mockImplementation(((callback: () => void) => {
-      orphanCheckCallback = callback;
-      return orphanTimer;
+    vi.spyOn(global, 'setInterval').mockImplementation(((callback: () => void, delay?: number) => {
+      if (delay === 30_000) {
+        orphanCheckCallback = callback;
+        return orphanTimer;
+      }
+
+      if (delay === 2_000) {
+        semanticWorkerCallback = callback;
+        return semanticTimer;
+      }
+
+      throw new Error(`Unexpected interval delay: ${String(delay)}`);
     }) as typeof setInterval);
     vi.spyOn(global, 'clearInterval').mockImplementation((() => undefined) as typeof clearInterval);
   });
@@ -219,7 +237,10 @@ describe('startMcpServer lifecycle shutdown', () => {
     expect(processHandlers.has('SIGTERM')).toBe(true);
     expect(processHandlers.has('exit')).toBe(true);
     expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 30_000);
+    expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 2_000);
     expect((orphanTimer.unref as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+    expect((semanticTimer.unref as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
+    expect(mocks.processSemanticJobs).toHaveBeenCalledWith({ limit: 25, embeddingProvider: null });
 
     stdinHandlers.get('end')?.();
 
@@ -227,6 +248,7 @@ describe('startMcpServer lifecycle shutdown', () => {
       expect(mocks.bridgeStop).toHaveBeenCalledOnce();
       expect(mocks.storeClose).toHaveBeenCalledOnce();
       expect(clearInterval).toHaveBeenCalledWith(orphanTimer);
+      expect(clearInterval).toHaveBeenCalledWith(semanticTimer);
       expect(process.exit).toHaveBeenCalledWith(0);
     });
 
@@ -246,6 +268,29 @@ describe('startMcpServer lifecycle shutdown', () => {
     });
 
     expect(mocks.stderrWrite).toHaveBeenCalledWith('[thoth-mem] parent process changed from 4242 to 1, shutting down\n');
+  });
+
+  it('runs semantic background batches periodically without overlapping', async () => {
+    let finishInitialBatch: (value: number) => void = () => {};
+    const initialBatch = new Promise<number>((resolve) => {
+      finishInitialBatch = resolve;
+    });
+    mocks.processSemanticJobs.mockReturnValueOnce(initialBatch).mockResolvedValue(0);
+
+    await startMcpServer(['node', 'thoth-mem', 'mcp']);
+
+    expect(mocks.processSemanticJobs).toHaveBeenCalledTimes(1);
+    semanticWorkerCallback?.();
+    expect(mocks.processSemanticJobs).toHaveBeenCalledTimes(1);
+
+    finishInitialBatch(1);
+    await initialBatch;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    semanticWorkerCallback?.();
+    expect(mocks.processSemanticJobs).toHaveBeenCalledTimes(2);
+    expect(mocks.processSemanticJobs).toHaveBeenLastCalledWith({ limit: 25, embeddingProvider: null });
   });
 
   it('shuts down on disconnect-related stdout errors but ignores other codes', async () => {

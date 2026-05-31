@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { Store } from '../../src/store/index.js';
-import { runMigrations } from '../../src/store/migrations.js';
+import { runMigrations, runMigrationsWithSemantic } from '../../src/store/migrations.js';
 import { MIGRATIONS_SQL, PRAGMAS } from '../../src/store/schema.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -326,6 +326,32 @@ describe('Store — Migration behaviors', () => {
       ).get() as { c: number };
 
       expect(staleCount.c).toBeGreaterThan(0);
+    });
+
+    it('sqlite-vec: recreates vector tables when embedding dimensions change', () => {
+      const db = store.getDb();
+
+      runMigrationsWithSemantic(db, {
+        sqliteVecReady: true,
+        embeddingDimensions: 384,
+        embeddingConfigHash: 'dim-384',
+      });
+      runMigrationsWithSemantic(db, {
+        sqliteVecReady: true,
+        embeddingDimensions: 768,
+        embeddingConfigHash: 'dim-768',
+      });
+
+      const vecTables = db.prepare(
+        "SELECT name, sql FROM sqlite_master WHERE name IN ('vec_chunks', 'vec_sentences') ORDER BY name"
+      ).all() as Array<{ name: string; sql: string }>;
+      const staleCount = db.prepare(
+        "SELECT COUNT(*) AS c FROM semantic_index_state WHERE stale = 1 AND pending = 1"
+      ).get() as { c: number };
+
+      expect(vecTables).toHaveLength(2);
+      expect(vecTables.every((table) => table.sql.includes('float[768]'))).toBe(true);
+      expect(staleCount.c).toBe(2);
     });
   });
 });

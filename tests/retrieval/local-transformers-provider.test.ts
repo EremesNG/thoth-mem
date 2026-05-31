@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatLocalEmbeddingInput } from '../../src/retrieval/local-transformers-provider.js';
+import { formatLocalEmbeddingInput, resolveLocalPipelineOptions } from '../../src/retrieval/local-transformers-provider.js';
 
 describe('formatLocalEmbeddingInput', () => {
   it('adds Nomic task prefixes for query and document embeddings', () => {
@@ -14,5 +14,10 @@ describe('formatLocalEmbeddingInput', () => {
       .toBe('search_query: existing');
     expect(formatLocalEmbeddingInput('plain text', 'Xenova/all-MiniLM-L6-v2', 'query'))
       .toBe('plain text');
+  });
+
+  it('uses q8 dtype for Nomic local embeddings', () => {
+    expect(resolveLocalPipelineOptions('nomic-ai/nomic-embed-text-v1.5')).toEqual({ dtype: 'q8' });
+    expect(resolveLocalPipelineOptions('Xenova/all-MiniLM-L6-v2')).toEqual({});
   });
 });

@@ -404,6 +404,27 @@ describe('runCli', () => {
     expect(stdout).toContain('- **Scope:** project cli-project');
     expect(stdout).toContain('- **Queued key:** rebuild:test:cli-project');
     expect(stdout).toContain('- **Jobs processed:** 0');
+    expect(stdout).toContain('## Semantic Index Status');
+    expect(stdout).toContain('- **Pending jobs:**');
+  });
+
+  it('reports semantic rebuild-index status without queueing work', async () => {
+    const dataDir = join(tempDir, 'status-data');
+    seedStore(dataDir);
+
+    const { stdout, stderr } = await captureCli([
+      'rebuild-index',
+      '--status',
+      '--data-dir',
+      dataDir,
+    ]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('## Semantic Index Status');
+    expect(stdout).toContain('- **Scope:** all projects');
+    expect(stdout).toContain('- **Queue by state/kind:**');
+    expect(stdout).toContain('- **Chunk coverage:**');
+    expect(stdout).not.toContain('## Semantic Index Rebuild');
   });
 
   it('fails clearly when delete-project is missing or has an invalid project argument', async () => {

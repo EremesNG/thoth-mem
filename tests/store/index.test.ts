@@ -126,6 +126,39 @@ describe('Store', () => {
       expect(plan?.map((job: { kind: string }) => job.kind)).toEqual(['chunk', 'sentence']);
     });
 
+    it('semantic index: writes vectors with sqlite-vec integer rowids', async () => {
+      const embedding = {
+        provider: 'transformers_local' as const,
+        model: 'mock-embedding',
+        baseUrl: null,
+        dimensions: 3,
+        hyde: { enabled: false, model: null, baseUrl: null, timeoutMs: 4000 },
+        configHash: 'mock-embedding-hash',
+      };
+      store = new Store(':memory:', { embedding });
+      const provider = {
+        config: embedding,
+        embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+      };
+      const saved = store.saveObservation({
+        title: 'Vector rowid',
+        content: 'Chunk vectors should be inserted into sqlite-vec.',
+        project: 'hybrid-test',
+      });
+      const runtime = store as any;
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: provider });
+
+      const db = store.getDb();
+      const vectorRows = db.prepare("SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE lane = 'chunk' AND observation_id = ?")
+        .get(saved.observation.id) as { count: number };
+      const vecRows = db.prepare('SELECT COUNT(*) AS count FROM vec_chunks')
+        .get() as { count: number };
+
+      expect(vectorRows.count).toBeGreaterThan(0);
+      expect(vecRows.count).toBeGreaterThan(0);
+    });
+
     it('hybrid retrieval: uses Hybrid Retrieval defaults, fuses semantic/lexical/KG lanes, and degrades gracefully', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
@@ -381,6 +414,29 @@ describe('Store', () => {
       const state = runtime.getSemanticIndexState?.();
       expect(state?.pending).toBe(true);
       expect(state?.stale).toBe(true);
+    });
+
+    it('rebuild: requeues existing semantic jobs even when previous attempts are done', async () => {
+      store = new Store(':memory:');
+      const saved = store.saveObservation({
+        title: 'Requeue semantic job',
+        content: 'Rebuild should retry chunk vectors after provider changes.',
+        project: 'hybrid-test',
+      });
+      const runtime = store as any;
+      const db = store.getDb();
+
+      db.prepare(
+        "UPDATE semantic_jobs SET state = 'done', attempt_count = 2, finished_at = datetime('now') WHERE job_key = ?"
+      ).run(`chunk:${saved.observation.id}`);
+
+      runtime.enqueueManualSemanticRebuild?.({ scope: 'all', reason: 'manual' });
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null });
+
+      const row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
+        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
+      expect(row.state).toBe('pending');
+      expect(row.attempt_count).toBe(0);
     });
 
     it('degraded: returns lexical+kg lanes when semantic runtime is pending', async () => {

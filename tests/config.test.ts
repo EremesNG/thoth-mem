@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -73,8 +73,19 @@ describe('resolveDataDir', () => {
 
 describe('embedding config (hybrid retrieval baseline)', () => {
   const originalEnv = { ...process.env };
+  let tmpDataDir: string | null = null;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    tmpDataDir = mkdtempSync(join(tmpdir(), 'thoth-config-test-'));
+    process.env.THOTH_DATA_DIR = tmpDataDir;
+  });
 
   afterEach(() => {
+    if (tmpDataDir) {
+      rmSync(tmpDataDir, { recursive: true, force: true });
+      tmpDataDir = null;
+    }
     process.env = { ...originalEnv };
   });
 
@@ -100,6 +111,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(config.embedding.provider).toBe('ollama');
     expect(config.embedding.model).toBe('nomic-embed-text');
     expect(config.embedding.baseUrl).toBe('http://127.0.0.1:11434');
+    expect(config.embedding.dimensions).toBe(768);
   });
 
   it('embedding: falls back to local transformers only when provider is unset', () => {
@@ -111,6 +123,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
 
     expect(config.embedding.provider).toBe('transformers_local');
     expect(config.embedding.model).toBe('nomic-ai/nomic-embed-text-v1.5');
+    expect(config.embedding.dimensions).toBe(768);
   });
 
   it('embedding: exposes canonical config hash that is stable for same inputs and changes when provider changes', () => {
