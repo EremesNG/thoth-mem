@@ -121,7 +121,7 @@ describe('formatSearchResultMarkdown', () => {
       '**Project:** none | **Scope:** personal | **Created:** 2026-03-22T11:00:00.000Z\n' +
       'Second preview\n' +
       '---\n\n' +
-      '> Use `mem_get_observation` with an ID for full content.',
+      '> Use `mem_get` with an ID for full content.',
     );
   });
 
@@ -129,7 +129,7 @@ describe('formatSearchResultMarkdown', () => {
     expect(formatSearchResultMarkdown([])).toBe('No results found.');
   });
 
-  it('includes instruction to use mem_get_observation', () => {
-    expect(formatSearchResultMarkdown([result])).toContain('> Use `mem_get_observation` with an ID for full content.');
+  it('includes instruction to use mem_get', () => {
+    expect(formatSearchResultMarkdown([result])).toContain('> Use `mem_get` with an ID for full content.');
   });
 });

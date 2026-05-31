@@ -4,29 +4,27 @@ import { ALL_TOOLS, registerTools } from '../../src/tools/index.js';
 import { Store } from '../../src/store/index.js';
 
 describe('MCP tool registration', () => {
-  it('registers exactly 17 MCP tools', () => {
-    expect(ALL_TOOLS).toHaveLength(17);
+  it('registers exactly 6 compact MCP tools', () => {
+    expect(ALL_TOOLS.map((tool) => tool.name)).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
   });
 
-  it('includes mem_timeline in registered tools', () => {
-    expect(ALL_TOOLS.map((tool) => tool.name)).toContain('mem_timeline');
-  });
-
-  it('includes mem_capture_passive in registered tools', () => {
-    expect(ALL_TOOLS.map((tool) => tool.name)).toContain('mem_capture_passive');
-  });
-
-  it('includes OpenCode-facing project view tools', () => {
+  it('does not expose legacy or admin tools in the MCP surface', () => {
     const names = ALL_TOOLS.map((tool) => tool.name);
 
-    expect(names).toContain('mem_project_summary');
-    expect(names).toContain('mem_project_graph');
-    expect(names).toContain('mem_topic_keys');
-  });
-
-  it('does not include excluded admin/sync tools', () => {
-    const names = ALL_TOOLS.map((tool) => tool.name);
-
+    expect(names).not.toContain('mem_search');
+    expect(names).not.toContain('mem_get_observation');
+    expect(names).not.toContain('mem_session_start');
+    expect(names).not.toContain('mem_session_summary');
+    expect(names).not.toContain('mem_update');
+    expect(names).not.toContain('mem_delete');
+    expect(names).not.toContain('mem_stats');
     expect(names).not.toContain('mem_import');
     expect(names).not.toContain('mem_export');
     expect(names).not.toContain('mem_migrate_project');
@@ -45,7 +43,7 @@ describe('MCP tool registration', () => {
     try {
       registerTools(server, store);
 
-      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(17);
+      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
     } finally {
       store.close();
     }

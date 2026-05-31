@@ -20,24 +20,24 @@ FORMAT for content — use structured format:
   **Learned**: [gotchas, edge cases — omit if none]
 
 ## Recall Protocol — 3-Layer (Token-Efficient)
-ALWAYS follow this layered approach to minimize token usage:
-1. SEARCH: mem_search(query) → scan compact index of IDs + titles
-2. EXPLORE: mem_timeline(observation_id) → chronological context around promising results
-3. FETCH: mem_get_observation(id) → full content ONLY for the 1-3 most relevant
+Use the compact MCP surface:
+1. RECALL: mem_recall(query, mode="compact") → fused hybrid evidence across semantic, lexical, and graph lanes
+2. EXPAND: mem_recall(query, mode="context") → concise retrieved text for the strongest hits
+3. FETCH: mem_get(id) → full content ONLY for the 1-3 records that truly need full detail
 
 Start compact, filter, then expand. Never fetch full content for broad searches.
 
 ## Session Protocol
-1. Call mem_session_start at session beginning
+1. Call mem_session(action="start") at session beginning
 2. Call mem_context to recover context from previous sessions
 3. Save observations throughout the session with mem_save
-4. Call mem_session_summary before ending (format: Goal/Discoveries/Accomplished/Next Steps/Relevant Files)
+4. Call mem_session(action="summary") or mem_save(kind="session_summary") before ending
 
 ## Key Behaviors
-- Use topic_key with mem_save for evolving topics (call mem_suggest_topic_key first if unsure)
-- Use mem_save_prompt to record significant user requests
-- Use mem_capture_passive when output contains '## Key Learnings:' sections
-- Use mem_project_summary, mem_project_graph, and mem_topic_keys for project-level navigation in OpenCode
+- Use topic_key with mem_save for evolving topics.
+- Use mem_save(kind="prompt") to record significant user requests.
+- Use mem_save(kind="passive_learnings") when output contains '## Key Learnings:' sections.
+- Use mem_project(action="summary"|"graph"|"topics"|"topic") for project-level navigation.
 - Search memory proactively when starting work that might overlap with past sessions
 `;
 

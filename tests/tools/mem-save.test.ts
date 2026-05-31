@@ -87,4 +87,40 @@ describe('mem_save tool (via Store)', () => {
     expect(result.observation.type).toBe('manual');
   });
 
+  it('handler saves prompts through kind=prompt', async () => {
+    const result = await invokeMemSave({
+      kind: 'prompt',
+      content: 'User asked to simplify the MCP surface',
+      session_id: 'save-session',
+      project: 'save-project',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Prompt saved');
+  });
+
+  it('handler captures passive learnings through kind=passive_learnings', async () => {
+    const result = await invokeMemSave({
+      kind: 'passive_learnings',
+      content: '## Key Learnings:\n- Compact MCP tools reduce agent confusion',
+      session_id: 'save-session',
+      project: 'save-project',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Extracted 1 learnings');
+  });
+
+  it('handler saves session summaries through kind=session_summary', async () => {
+    const result = await invokeMemSave({
+      kind: 'session_summary',
+      content: '## Goal\nCompact tools\n\n## Accomplished\n- Done',
+      session_id: 'save-session',
+      project: 'save-project',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Session summary saved');
+  });
+
 });

@@ -54,7 +54,7 @@ export function formatSearchResultMarkdown(results: SearchResult[]): string {
     '',
     ...blocks,
     '',
-    '> Use `mem_get_observation` with an ID for full content.',
+    '> Use `mem_get` with an ID for full content.',
   ].join('\n');
 }
 

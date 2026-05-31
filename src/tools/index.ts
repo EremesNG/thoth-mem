@@ -1,22 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Store } from "../store/index.js";
 import { registerMemSave } from "./mem-save.js";
-import { registerMemSearch } from "./mem-search.js";
 import { registerMemContext } from "./mem-context.js";
-import { registerMemGetObservation } from "./mem-get-observation.js";
-import { registerMemSessionStart } from "./mem-session-start.js";
-import { registerMemSessionSummary } from "./mem-session-summary.js";
-import { registerMemSuggestTopicKey } from "./mem-suggest-topic-key.js";
-import { registerMemCapturePassive } from "./mem-capture-passive.js";
-import { registerMemSavePrompt } from "./mem-save-prompt.js";
-import { registerMemUpdate } from "./mem-update.js";
-import { registerMemDelete } from "./mem-delete.js";
-import { registerMemStats } from "./mem-stats.js";
-import { registerMemTimeline } from "./mem-timeline.js";
-import { registerMemProjectSummary } from "./mem-project-summary.js";
-import { registerMemProjectGraph } from "./mem-project-graph.js";
-import { registerMemTopicKeys } from "./mem-topic-keys.js";
 import { registerMemRecall } from "./mem-recall.js";
+import { registerMemGet } from "./mem-get.js";
+import { registerMemProject } from "./mem-project.js";
+import { registerMemSession } from "./mem-session.js";
 
 interface ToolRegistration {
   name: string;
@@ -25,22 +14,11 @@ interface ToolRegistration {
 
 const ALL_TOOLS: ToolRegistration[] = [
   { name: 'mem_save', register: registerMemSave },
-  { name: 'mem_search', register: registerMemSearch },
   { name: 'mem_recall', register: registerMemRecall },
   { name: 'mem_context', register: registerMemContext },
-  { name: 'mem_get_observation', register: registerMemGetObservation },
-  { name: 'mem_session_start', register: registerMemSessionStart },
-  { name: 'mem_session_summary', register: registerMemSessionSummary },
-  { name: 'mem_suggest_topic_key', register: registerMemSuggestTopicKey },
-  { name: 'mem_capture_passive', register: registerMemCapturePassive },
-  { name: 'mem_save_prompt', register: registerMemSavePrompt },
-  { name: 'mem_update', register: registerMemUpdate },
-  { name: 'mem_delete', register: registerMemDelete },
-  { name: 'mem_stats', register: registerMemStats },
-  { name: 'mem_timeline', register: registerMemTimeline },
-  { name: 'mem_project_summary', register: registerMemProjectSummary },
-  { name: 'mem_project_graph', register: registerMemProjectGraph },
-  { name: 'mem_topic_keys', register: registerMemTopicKeys },
+  { name: 'mem_get', register: registerMemGet },
+  { name: 'mem_project', register: registerMemProject },
+  { name: 'mem_session', register: registerMemSession },
 ];
 
 export function registerTools(server: McpServer, store: Store): void {

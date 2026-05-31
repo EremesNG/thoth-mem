@@ -509,7 +509,7 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=agent']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS).toHaveLength(17);
+      expect(ALL_TOOLS).toHaveLength(6);
     });
 
     it('--tools=admin does not change registered tool set', () => {
@@ -517,15 +517,15 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=admin', '--data-dir', '/tmp/mem']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(17);
+      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(6);
     });
 
-    it('startup without --tools= registers all 17 tools', () => {
+    it('startup without --tools= registers all 6 compact tools', () => {
       const parsed = parseArgs(['node', 'thoth-mem', 'mcp']);
 
       expect(parsed).toEqual({ dataDir: undefined, httpDisabled: false });
       expect(shouldRunCli(['mcp'])).toBe(false);
-      expect(ALL_TOOLS).toHaveLength(17);
+      expect(ALL_TOOLS).toHaveLength(6);
     });
 
     it('--tools= flag is silently ignored', () => {
