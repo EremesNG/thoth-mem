@@ -72,6 +72,133 @@ CREATE INDEX IF NOT EXISTS idx_sync_mutations_entity ON sync_mutations(entity_ty
 CREATE INDEX IF NOT EXISTS idx_sync_mutations_created_at ON sync_mutations(created_at);
 `;
 
+export const SEMANTIC_METADATA_SQL = `
+CREATE TABLE IF NOT EXISTS semantic_index_state (
+  lane                 TEXT PRIMARY KEY,
+  embedding_config_hash TEXT,
+  embedding_dimensions INTEGER,
+  pending              INTEGER NOT NULL DEFAULT 0,
+  degraded             INTEGER NOT NULL DEFAULT 0,
+  stale                INTEGER NOT NULL DEFAULT 0,
+  last_ready_at        TEXT,
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS semantic_chunks (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_id INTEGER NOT NULL,
+  chunk_key      TEXT NOT NULL UNIQUE,
+  chunk_index    INTEGER NOT NULL,
+  content        TEXT NOT NULL,
+  project        TEXT,
+  topic_key      TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS semantic_sentences (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_id INTEGER NOT NULL,
+  chunk_key      TEXT NOT NULL,
+  sentence_key   TEXT NOT NULL UNIQUE,
+  sentence_index INTEGER NOT NULL,
+  content        TEXT NOT NULL,
+  project        TEXT,
+  topic_key      TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS semantic_vector_rowids (
+  lane            TEXT NOT NULL CHECK(lane IN ('chunk','sentence')),
+  source_key      TEXT NOT NULL,
+  vec_rowid       INTEGER NOT NULL,
+  observation_id  INTEGER NOT NULL,
+  lineage_hash    TEXT NOT NULL,
+  embedding_hash  TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (lane, source_key),
+  UNIQUE (lane, vec_rowid),
+  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS semantic_jobs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_key         TEXT NOT NULL UNIQUE,
+  kind            TEXT NOT NULL CHECK(kind IN ('chunk','sentence','rebuild_semantic','extract_kg')),
+  state           TEXT NOT NULL CHECK(state IN ('pending','running','done','failed')) DEFAULT 'pending',
+  priority        INTEGER NOT NULL DEFAULT 100,
+  observation_id  INTEGER,
+  source_key      TEXT,
+  attempt_count   INTEGER NOT NULL DEFAULT 0,
+  max_attempts    INTEGER NOT NULL DEFAULT 3,
+  last_error      TEXT,
+  available_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at      TEXT,
+  finished_at     TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS kg_taxonomy_metadata (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  taxonomy_version  TEXT NOT NULL,
+  entity_types_json TEXT NOT NULL,
+  relation_types_json TEXT NOT NULL,
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kg_entities (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_key     TEXT NOT NULL UNIQUE,
+  entity_type    TEXT NOT NULL,
+  canonical_name TEXT NOT NULL,
+  aliases_json   TEXT,
+  metadata_json  TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kg_triples (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject_entity_id INTEGER NOT NULL,
+  relation         TEXT NOT NULL,
+  object_entity_id INTEGER NOT NULL,
+  source_type      TEXT NOT NULL CHECK(source_type IN ('observation','prompt','session_summary','unknown')),
+  source_id        INTEGER,
+  source_sync_id   TEXT,
+  project          TEXT,
+  topic_key        TEXT,
+  provenance       TEXT NOT NULL,
+  confidence       REAL NOT NULL DEFAULT 0.0,
+  triple_hash      TEXT NOT NULL UNIQUE,
+  extractor_version TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (subject_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (object_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+);
+`;
+
+export const SEMANTIC_METADATA_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_semantic_chunks_observation ON semantic_chunks(observation_id);
+CREATE INDEX IF NOT EXISTS idx_semantic_sentences_observation ON semantic_sentences(observation_id);
+CREATE INDEX IF NOT EXISTS idx_semantic_sentences_chunk_key ON semantic_sentences(chunk_key);
+CREATE INDEX IF NOT EXISTS idx_semantic_rowids_observation ON semantic_vector_rowids(observation_id);
+CREATE INDEX IF NOT EXISTS idx_semantic_jobs_state_priority ON semantic_jobs(state, priority, available_at, id);
+CREATE INDEX IF NOT EXISTS idx_semantic_jobs_observation ON semantic_jobs(observation_id);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_type ON kg_entities(entity_type);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_subject ON kg_triples(subject_entity_id);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_object ON kg_triples(object_entity_id);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_relation ON kg_triples(relation);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_project ON kg_triples(project);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_topic ON kg_triples(topic_key);
+`;
+
 /**
  * Complete database schema — uses CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS
  * for idempotent setup. Safe to run on every startup.
@@ -197,6 +324,8 @@ CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_sync_id ON user_prompts(sync_id);
 ${SYNC_CHUNKS_INDEXES_SQL}
 ${SYNC_MUTATIONS_INDEXES_SQL}
+${SEMANTIC_METADATA_SQL}
+${SEMANTIC_METADATA_INDEXES_SQL}
 `;
 
 /**

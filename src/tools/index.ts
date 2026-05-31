@@ -16,6 +16,7 @@ import { registerMemTimeline } from "./mem-timeline.js";
 import { registerMemProjectSummary } from "./mem-project-summary.js";
 import { registerMemProjectGraph } from "./mem-project-graph.js";
 import { registerMemTopicKeys } from "./mem-topic-keys.js";
+import { registerMemRecall } from "./mem-recall.js";
 
 interface ToolRegistration {
   name: string;
@@ -25,6 +26,7 @@ interface ToolRegistration {
 const ALL_TOOLS: ToolRegistration[] = [
   { name: 'mem_save', register: registerMemSave },
   { name: 'mem_search', register: registerMemSearch },
+  { name: 'mem_recall', register: registerMemRecall },
   { name: 'mem_context', register: registerMemContext },
   { name: 'mem_get_observation', register: registerMemGetObservation },
   { name: 'mem_session_start', register: registerMemSessionStart },

@@ -15,6 +15,7 @@ const CLI_SUBCOMMANDS = new Set([
   'export',
   'import',
   'sync',
+  'rebuild-index',
   'version',
   'help',
 ]);
@@ -82,6 +83,7 @@ export async function startMcpServer(argv: string[]): Promise<void> {
   const transport = new StdioServerTransport();
   let httpBridge: ReturnType<typeof createHttpBridge> | null = null;
   let orphanCheck: NodeJS.Timeout | null = null;
+  let semanticKickoff: NodeJS.Timeout | null = null;
   let isShuttingDown = false;
   const DISCONNECT_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED']);
 
@@ -94,6 +96,14 @@ export async function startMcpServer(argv: string[]): Promise<void> {
     orphanCheck = null;
   };
 
+  const clearSemanticKickoff = (): void => {
+    if (!semanticKickoff) {
+      return;
+    }
+    clearTimeout(semanticKickoff);
+    semanticKickoff = null;
+  };
+
   const shutdown = async (options: { exit?: boolean } = {}): Promise<void> => {
     if (isShuttingDown) {
       return;
@@ -101,6 +111,7 @@ export async function startMcpServer(argv: string[]): Promise<void> {
 
     isShuttingDown = true;
     clearOrphanCheck();
+    clearSemanticKickoff();
 
     try {
       if (httpBridge) {
@@ -162,6 +173,12 @@ export async function startMcpServer(argv: string[]): Promise<void> {
 
   try {
     await server.connect(transport);
+    semanticKickoff = setTimeout(() => {
+      void store.processSemanticJobs({ limit: 10 }).catch((error: unknown) => {
+        process.stderr.write(`[thoth-mem] semantic kickoff skipped: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    }, 0);
+    semanticKickoff.unref();
 
     if (!config.httpDisabled) {
       httpBridge = createHttpBridge(store, config);

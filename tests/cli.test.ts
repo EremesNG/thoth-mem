@@ -140,6 +140,7 @@ describe('runCli', () => {
     expect(stdout).toContain('thoth-mem — Persistent memory for AI coding agents');
     expect(stdout).toContain('search <query>');
     expect(stdout).toContain('delete-project <project>');
+    expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
   });
 
@@ -382,6 +383,29 @@ describe('runCli', () => {
     expect((conflictingScopeError as Error).message).toContain('Use either --project or --all, not both');
   });
 
+  it('queues and reports semantic rebuild-index for a project', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedStore(dataDir);
+
+    const { stdout, stderr } = await captureCli([
+      'rebuild-index',
+      '--project',
+      'cli-project',
+      '--process',
+      '0',
+      '--reason',
+      'test',
+      '--data-dir',
+      dataDir,
+    ]);
+
+    expect(stderr).toBe('');
+    expect(stdout).toContain('## Semantic Index Rebuild');
+    expect(stdout).toContain('- **Scope:** project cli-project');
+    expect(stdout).toContain('- **Queued key:** rebuild:test:cli-project');
+    expect(stdout).toContain('- **Jobs processed:** 0');
+  });
+
   it('fails clearly when delete-project is missing or has an invalid project argument', async () => {
     let missingError: unknown;
     try {
@@ -485,7 +509,7 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=agent']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS).toHaveLength(16);
+      expect(ALL_TOOLS).toHaveLength(17);
     });
 
     it('--tools=admin does not change registered tool set', () => {
@@ -493,15 +517,15 @@ describe('runCli', () => {
       const withToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp', '--tools=admin', '--data-dir', '/tmp/mem']);
 
       expect(withToolsFlag).toEqual(withoutToolsFlag);
-      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(16);
+      expect(ALL_TOOLS.map((tool) => tool.name)).toHaveLength(17);
     });
 
-    it('startup without --tools= registers all 16 tools', () => {
+    it('startup without --tools= registers all 17 tools', () => {
       const parsed = parseArgs(['node', 'thoth-mem', 'mcp']);
 
       expect(parsed).toEqual({ dataDir: undefined, httpDisabled: false });
       expect(shouldRunCli(['mcp'])).toBe(false);
-      expect(ALL_TOOLS).toHaveLength(16);
+      expect(ALL_TOOLS).toHaveLength(17);
     });
 
     it('--tools= flag is silently ignored', () => {

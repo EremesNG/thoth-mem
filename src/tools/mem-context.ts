@@ -19,10 +19,32 @@ Returns formatted Markdown with:
       session_id: z.string().optional().describe('Filter to a specific session'),
       scope: z.enum(['project', 'personal'] as const).optional().describe("Filter by scope"),
       limit: z.number().optional().describe("Number of observations to retrieve (default: 20)"),
+      recall_query: z.string().optional().describe('Optional query to append fused recall evidence without changing base context sections'),
     },
-    async ({ project, session_id, scope, limit }) => {
+    async ({ project, session_id, scope, limit, recall_query }) => {
       try {
         const context = store.getContext({ project, session_id, scope, limit });
+        let recallSection = '';
+
+        if (recall_query && recall_query.trim().length > 0) {
+          const retrieval = await store.hybridRetrieve({
+            query: recall_query.trim(),
+            limit: 3,
+            project,
+          });
+          const evidence = retrieval.results.slice(0, 3).map((hit, index) => {
+            const source = hit.evidence.primary.source ?? 'unknown';
+            return `${index + 1}. [${hit.evidence.primary.lane}] ${hit.observation.title} (source: ${source})`;
+          });
+          recallSection = [
+            '',
+            '### Optional Fused Recall',
+            `- query: ${recall_query.trim()}`,
+            `- pending: ${retrieval.pending ? 'yes' : 'no'}`,
+            `- degraded_fallback: ${retrieval.degradedFallback.length > 0 ? retrieval.degradedFallback.join(', ') : 'none'}`,
+            ...(evidence.length > 0 ? ['- evidence:', ...evidence.map((line) => `  ${line}`)] : ['- evidence: none']),
+          ].join('\n');
+        }
 
         if (!context || context.trim().length === 0) {
           return {
@@ -30,7 +52,7 @@ Returns formatted Markdown with:
           };
         }
 
-        return { content: [{ type: "text" as const, text: context }] };
+        return { content: [{ type: "text" as const, text: `${context}${recallSection}` }] };
       } catch (error) {
         return {
           isError: true,

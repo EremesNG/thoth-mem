@@ -29,10 +29,41 @@ Tips:
       mode: z.enum(['compact', 'preview', 'context']).optional().describe("Search result format: compact (default), preview (snippets), or context (delimited agent-ready output)"),
       max_chars: z.number().min(200).max(20000).optional().describe('Maximum characters for mode="context" output (default: 4000)'),
       topic_key_exact: z.string().optional().describe("Exact topic key match (bypasses FTS)"),
+      hybrid_status: z.enum(['off', 'auto', 'on']).optional().describe('Add additive hybrid retrieval status metadata. Default: off'),
     },
-    async ({ query, type, project, session_id, scope, limit, mode, max_chars, topic_key_exact }) => {
+    async ({ query, type, project, session_id, scope, limit, mode, max_chars, topic_key_exact, hybrid_status }) => {
       try {
         const markdown = store.searchObservationsFormatted({ query, type, project, session_id, scope, limit, mode, max_chars, topic_key_exact });
+        const statusMode = hybrid_status ?? 'off';
+
+        const isLegacyNoResultsText = markdown.trim() === 'No memories found.';
+        let hybridSection = '';
+        if (statusMode !== 'off') {
+          const retrieval = await store.hybridRetrieve({
+            query,
+            limit: limit ?? 10,
+            project,
+          });
+          const laneCounts = retrieval.results.reduce<Record<string, number>>((acc, hit) => {
+            const lane = hit.evidence.primary.lane;
+            acc[lane] = (acc[lane] ?? 0) + 1;
+            return acc;
+          }, {});
+          const shouldAppend = statusMode === 'on'
+            || retrieval.pending
+            || retrieval.degradedFallback.length > 0;
+
+          if (shouldAppend && !isLegacyNoResultsText) {
+            hybridSection = [
+              '',
+              '---',
+              'Hybrid status:',
+              `- pending: ${retrieval.pending ? 'yes' : 'no'}`,
+              `- degraded_fallback: ${retrieval.degradedFallback.length > 0 ? retrieval.degradedFallback.join(', ') : 'none'}`,
+              `- evidence_lanes: ${Object.keys(laneCounts).length > 0 ? Object.entries(laneCounts).map(([lane, count]) => `${lane}:${count}`).join(', ') : 'none'}`,
+            ].join('\n');
+          }
+        }
 
         if (markdown.trim() === '') {
           return {
@@ -40,7 +71,7 @@ Tips:
           };
         }
 
-        return { content: [{ type: "text" as const, text: markdown }] };
+        return { content: [{ type: "text" as const, text: `${markdown}${hybridSection}` }] };
       } catch (error) {
         return {
           isError: true,

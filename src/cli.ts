@@ -30,6 +30,7 @@ Commands:
    migrate-project <old> <new>  Rename a project
    delete-project <project>     Delete a project safely
    rebuild-graph          Rebuild derived graph facts
+   rebuild-index          Queue/process semantic index rebuild jobs
    version                Show version
    help                   Show this help
 
@@ -548,6 +549,49 @@ async function handleRebuildGraph(positionals: string[], globals: GlobalOptions)
   });
 }
 
+async function handleRebuildIndex(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const parsedReason = parseOptionValue(positionals, ['--reason']);
+  const parsedProcess = parseOptionValue(parsedReason.rest, ['--process']);
+  const hasProject = globals.project !== undefined;
+  const all = parsedProcess.rest.includes('--all');
+  const rest = parsedProcess.rest.filter((arg) => arg !== '--all');
+
+  if (all && hasProject) {
+    fail('Use either --project or --all, not both');
+  }
+  if (!all && !hasProject) {
+    fail('rebuild-index requires --project <name> or --all');
+  }
+  ensureNoExtraArgs(rest, 'rebuild-index');
+
+  const processLimit = parsedProcess.value ? parseInteger(parsedProcess.value, '--process', 0) : 25;
+  const project = hasProject
+    ? parseRequiredProjectName(globals.project, 'rebuild-index --project')
+    : undefined;
+
+  await withStore(globals.dataDir, async ({ store }) => {
+    const reason = parsedReason.value?.trim() || 'cli-manual';
+    const rebuild = store.enqueueManualSemanticRebuild({
+      scope: project ?? 'all',
+      reason,
+    });
+    const processed = processLimit > 0
+      ? await store.processSemanticJobs({ limit: processLimit })
+      : 0;
+    const state = store.getSemanticIndexState();
+
+    printStdout([
+      '## Semantic Index Rebuild',
+      `- **Scope:** ${project ? `project ${project}` : 'all projects'}`,
+      `- **Queued key:** ${rebuild.dedupeKey}`,
+      `- **Jobs processed:** ${processed}`,
+      `- **Pending:** ${state.pending ? 'yes' : 'no'}`,
+      `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,
+      `- **Stale:** ${state.stale ? 'yes' : 'no'}`,
+    ].join('\n'));
+  });
+}
+
 async function handleVersion(positionals: string[]): Promise<void> {
   ensureNoExtraArgs(positionals, 'version');
   printStdout(VERSION);
@@ -598,6 +642,9 @@ export async function runCli(args: string[]): Promise<void> {
          return;
        case 'rebuild-graph':
          await handleRebuildGraph(parsed.positionals, parsed.globals);
+         return;
+       case 'rebuild-index':
+         await handleRebuildIndex(parsed.positionals, parsed.globals);
          return;
        case 'version':
          await handleVersion(parsed.positionals);

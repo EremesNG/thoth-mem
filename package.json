@@ -47,8 +47,10 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@huggingface/transformers": "^3.7.6",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "better-sqlite3": "^12.8.0",
+    "sqlite-vec": "^0.1.6-alpha.2",
     "zod": "^3.24.0"
   },
   "devDependencies": {

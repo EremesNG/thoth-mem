@@ -4,8 +4,8 @@ import { ALL_TOOLS, registerTools } from '../../src/tools/index.js';
 import { Store } from '../../src/store/index.js';
 
 describe('MCP tool registration', () => {
-  it('registers exactly 16 MCP tools', () => {
-    expect(ALL_TOOLS).toHaveLength(16);
+  it('registers exactly 17 MCP tools', () => {
+    expect(ALL_TOOLS).toHaveLength(17);
   });
 
   it('includes mem_timeline in registered tools', () => {
@@ -45,7 +45,7 @@ describe('MCP tool registration', () => {
     try {
       registerTools(server, store);
 
-      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(16);
+      expect((server.tool as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(17);
     } finally {
       store.close();
     }

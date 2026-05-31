@@ -291,4 +291,41 @@ describe('Store — Migration behaviors', () => {
     expect(indexNames).toContain('idx_sync_mutations_created_at');
   });
 
+  describe('sqlite-vec migration/readiness (hybrid retrieval baseline)', () => {
+    it('sqlite-vec: creates vec0 tables for chunk and sentence embeddings', () => {
+      const db = store.getDb();
+      const vecTables = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('vec_chunks', 'vec_sentences') ORDER BY name"
+      ).all() as Array<{ name: string }>;
+
+      expect(vecTables.map((table) => table.name)).toEqual(['vec_chunks', 'vec_sentences']);
+    });
+
+    it('sqlite-vec: tracks semantic lane readiness metadata', () => {
+      const db = store.getDb();
+      const semanticState = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = 'semantic_index_state'"
+      ).get() as { name?: string } | undefined;
+
+      expect(semanticState?.name).toBe('semantic_index_state');
+    });
+
+    it('sqlite-vec: migration remains idempotent with vec schema present', () => {
+      const db = store.getDb();
+
+      expect(() => {
+        runMigrations(db);
+        runMigrations(db);
+      }).not.toThrow();
+    });
+
+    it('sqlite-vec: marks semantic state stale on embedding dimension mismatch', () => {
+      const db = store.getDb();
+      const staleCount = db.prepare(
+        "SELECT COUNT(*) AS c FROM semantic_index_state WHERE stale = 1"
+      ).get() as { c: number };
+
+      expect(staleCount.c).toBeGreaterThan(0);
+    });
+  });
 });

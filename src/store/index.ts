@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
-import { runMigrations } from './migrations.js';
+import { runMigrationsWithSemantic } from './migrations.js';
 import { ThothConfig } from '../config.js';
+import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   ContextInput,
   DeleteProjectResult,
@@ -37,6 +38,13 @@ import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
 import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
+import { prepareHydeSemanticInputs } from '../retrieval/hyde.js';
+import type { SemanticInput } from '../retrieval/hyde.js';
+import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
+import { fuseCandidates, type HybridHit, type LaneCandidate } from '../retrieval/ranking.js';
+import { processNextSemanticJob, processSemanticJobs } from '../indexing/jobs.js';
+import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
+import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 
 type ObservationRow = Observation;
 
@@ -61,11 +69,18 @@ const DEFAULT_CONFIG: ThothConfig = {
   previewLength: 300,
   httpPort: 7438,
   httpDisabled: false,
+  retrievalDefaults: DEFAULT_RETRIEVAL_DEFAULTS,
 };
 
 export class Store {
   private db: Database.Database;
   public readonly config: ThothConfig;
+  private semanticRuntime = {
+    pending: true,
+    degraded: false,
+    stale: true,
+    degradedReason: null as string | null,
+  };
 
   constructor(dbPath: string, config?: Partial<ThothConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config, dbPath };
@@ -76,7 +91,150 @@ export class Store {
     }
 
     this.db.exec(SCHEMA_SQL);
-    runMigrations(this.db);
+    const sqliteVec = loadSqliteVec(this.db);
+    const dimensions = this.config.embedding?.dimensions ?? null;
+    this.semanticRuntime = {
+      pending: true,
+      degraded: !sqliteVec.available,
+      stale: dimensions === null,
+      degradedReason: sqliteVec.degradedReason,
+    };
+    runMigrationsWithSemantic(this.db, {
+      sqliteVecReady: sqliteVec.available,
+      embeddingDimensions: dimensions,
+      embeddingConfigHash: this.config.embedding?.configHash ?? null,
+      degradedReason: sqliteVec.degradedReason,
+    });
+    this.enqueueRebuildOnConfigMismatch();
+  }
+
+  getSemanticIndexState(): {
+    pending: boolean;
+    degraded: boolean;
+    stale: boolean;
+    degradedReason: string | null;
+  } {
+    return { ...this.semanticRuntime };
+  }
+
+  requestSemanticRebuild(input: { reason: string }): { dedupeKey: string } {
+    const dedupeKey = `rebuild:${input.reason}`;
+    this.db.prepare(
+      `INSERT INTO semantic_jobs (job_key, kind, state, priority)
+       VALUES (?, 'rebuild_semantic', 'pending', 10)
+       ON CONFLICT(job_key) DO NOTHING`
+    ).run(dedupeKey);
+    this.db.prepare(
+      "UPDATE semantic_index_state SET pending = 1, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
+    ).run();
+    this.semanticRuntime.pending = true;
+    this.semanticRuntime.stale = true;
+    return { dedupeKey };
+  }
+
+  enqueueManualSemanticRebuild(input: { scope?: string; reason?: string }): { dedupeKey: string } {
+    const scope = input.scope?.trim() || 'global';
+    const reason = input.reason?.trim() || 'manual';
+    return this.requestSemanticRebuild({ reason: `${reason}:${scope}` });
+  }
+
+  planSemanticJobsForObservation(input: { observationId: number; content: string }): Array<{ kind: 'chunk' | 'sentence' }> {
+    const observationExists = this.db.prepare('SELECT 1 as ok FROM observations WHERE id = ?').get(input.observationId) as { ok: number } | undefined;
+    const observationId = observationExists ? input.observationId : null;
+    const sourceKey = `observation:${input.observationId}`;
+    this.db.prepare(
+      `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+       VALUES (?, 'chunk', 'pending', 50, ?, ?)
+       ON CONFLICT(job_key) DO NOTHING`
+    ).run(`chunk:${input.observationId}`, observationId, sourceKey);
+    this.db.prepare(
+      `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+       VALUES (?, 'sentence', 'pending', 60, ?, ?)
+       ON CONFLICT(job_key) DO NOTHING`
+    ).run(`sentence:${input.observationId}`, observationId, sourceKey);
+    this.db.prepare(
+      `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+       VALUES (?, 'extract_kg', 'pending', 70, ?, ?)
+       ON CONFLICT(job_key) DO NOTHING`
+    ).run(`kg:${input.observationId}`, observationId, sourceKey);
+    this.db.prepare(
+      "UPDATE semantic_index_state SET pending = 1, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
+    ).run();
+    this.semanticRuntime.pending = true;
+    return [{ kind: 'chunk' }, { kind: 'sentence' }];
+  }
+
+  extractKnowledgeTriples(input: { content: string }): {
+    taxonomy: { entityTypes: string[]; relationTypes: string[] };
+    triples: Array<{ provenance: string; confidence: number }>;
+    dedupeKey: string;
+  } {
+    return extractKnowledgeTriples({ content: input.content, provenance: 'store.extractKnowledgeTriples' });
+  }
+
+  async processNextSemanticJob(input?: { embeddingProvider?: EmbeddingProviderAdapter | null }): Promise<{ processed: boolean; kind?: string }> {
+    const result = await processNextSemanticJob(this, input);
+    this.refreshSemanticRuntimeFromState();
+    return result;
+  }
+
+  async processSemanticJobs(input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }): Promise<number> {
+    const processed = await processSemanticJobs(this, input);
+    this.refreshSemanticRuntimeFromState();
+    return processed;
+  }
+
+  assembleHybridEvidence(input: {
+    sentenceHit?: { text: string; score: number };
+    parentChunk?: { text: string; id: string };
+    threshold?: number;
+  }): {
+    primary: { text: string; score: number; kind: 'sentence' };
+    promotedParent?: { text: string; id: string };
+  } | null {
+    if (!input.sentenceHit) {
+      return null;
+    }
+
+    const threshold = input.threshold ?? 0.3;
+    return {
+      primary: { text: input.sentenceHit.text, score: input.sentenceHit.score, kind: 'sentence' },
+      promotedParent: input.sentenceHit.score >= threshold ? input.parentChunk : undefined,
+    };
+  }
+
+  private refreshSemanticRuntimeFromState(): void {
+    const rows = this.db.prepare(
+      "SELECT pending, degraded, stale FROM semantic_index_state WHERE lane IN ('chunk','sentence')"
+    ).all() as Array<{ pending: number; degraded: number; stale: number }>;
+    if (rows.length === 0) return;
+    this.semanticRuntime.pending = rows.some((row) => row.pending === 1);
+    this.semanticRuntime.degraded = rows.some((row) => row.degraded === 1);
+    this.semanticRuntime.stale = rows.some((row) => row.stale === 1);
+  }
+
+  private enqueueRebuildOnConfigMismatch(): void {
+    const hash = this.config.embedding?.configHash ?? null;
+    if (!hash) {
+      return;
+    }
+
+    const rows = this.db.prepare(
+      "SELECT lane, embedding_config_hash FROM semantic_index_state WHERE lane IN ('chunk','sentence')"
+    ).all() as Array<{ lane: string; embedding_config_hash: string | null }>;
+
+    const mismatch = rows.some((row) => row.embedding_config_hash !== hash);
+    if (!mismatch) {
+      return;
+    }
+
+    this.requestSemanticRebuild({ reason: `config-hash-mismatch:${hash}` });
+    this.db.prepare(
+      "UPDATE semantic_index_state SET stale = 1, pending = 1, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
+    ).run();
+    this.db.prepare(
+      "UPDATE semantic_index_state SET embedding_config_hash = ?, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
+    ).run(hash);
   }
 
   private mapObservationRow(row: ObservationRow | undefined): Observation | null {
@@ -116,6 +274,44 @@ export class Store {
    */
   close(): void {
     this.db.close();
+  }
+
+  async prepareSemanticInputs(input: {
+    query: string;
+    hyde?: {
+      enabled?: boolean;
+      mode?: 'success' | 'timeout' | 'failure';
+      answer?: string;
+    };
+  }): Promise<{ inputs: SemanticInput[]; degradedReason?: string }> {
+    const hydeConfig = {
+      enabled: input.hyde?.enabled ?? this.config.embedding?.hyde.enabled ?? false,
+      model: this.config.embedding?.hyde.model ?? null,
+      baseUrl: this.config.embedding?.hyde.baseUrl ?? null,
+      timeoutMs: input.hyde?.mode === 'timeout'
+        ? 1
+        : this.config.embedding?.hyde.timeoutMs ?? 4000,
+    };
+
+    const mode = input.hyde?.mode;
+    const generator = mode
+      ? {
+          generate: async (): Promise<string> => {
+            if (mode === 'failure') {
+              throw new Error('HyDE generation failed');
+            }
+
+            if (mode === 'timeout') {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              return input.hyde?.answer ?? `Hypothetical answer for ${input.query}`;
+            }
+
+            return input.hyde?.answer ?? `Hypothetical answer for ${input.query}`;
+          },
+        }
+      : undefined;
+
+    return prepareHydeSemanticInputs(input.query, hydeConfig, generator);
   }
 
   /**
@@ -543,6 +739,7 @@ export class Store {
 
         this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
         this.refreshObservationFacts(observation);
+        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
         return { observation, action: 'upserted' };
       }
@@ -572,6 +769,7 @@ export class Store {
 
     this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
     this.refreshObservationFacts(observation);
+    this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
     return { observation, action: 'created' };
   }
@@ -665,9 +863,275 @@ export class Store {
     if (updated) {
       this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
       this.refreshObservationFacts(updated);
+      this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
     }
 
     return updated;
+  }
+
+  async hybridRetrieve(input: {
+    query: string;
+    limit?: number;
+    project?: string;
+    embeddingProvider?: EmbeddingProviderAdapter | null;
+    hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+  }): Promise<{
+    defaults: typeof DEFAULT_RETRIEVAL_DEFAULTS;
+    laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+    degradedFallback: string[];
+    lexicalQuery: string;
+    scoreFromDistance: (distance: number) => number;
+    semanticInputs: SemanticInput[];
+    results: HybridHit[];
+    pending: boolean;
+  }> {
+    const defaults = resolveRetrievalDefaults(this.config.retrievalDefaults);
+    const lexicalQuery = sanitizeFTSPrefix(input.query);
+    const degradedFallback: string[] = [];
+    const semanticInputsResult = await this.prepareSemanticInputs({ query: input.query, hyde: input.hyde });
+    const semanticInputs = semanticInputsResult.inputs;
+    const semanticCandidates: LaneCandidate[] = [];
+    const canRunSemantic = !this.semanticRuntime.degraded && !this.semanticRuntime.pending && !this.semanticRuntime.stale;
+
+    if (canRunSemantic && input.embeddingProvider && semanticInputs.length > 0) {
+      const embeddings = await input.embeddingProvider.embed(semanticInputs.map((item) => item.text), 'query');
+      for (let i = 0; i < semanticInputs.length; i += 1) {
+        const semanticInput = semanticInputs[i];
+        const vector = embeddings[i];
+        if (!vector || vector.length === 0) continue;
+        semanticCandidates.push(...this.querySentenceLane({
+          vector,
+          source: semanticInput.source,
+          topK: defaults.sentenceTopK,
+          minSemanticScore: defaults.minSemanticScore,
+          l2DistanceScale: defaults.l2DistanceScale,
+          project: input.project,
+        }));
+        semanticCandidates.push(...this.queryChunkLane({
+          vector,
+          source: semanticInput.source,
+          topK: defaults.chunkTopK,
+          minSemanticScore: defaults.minSemanticScore,
+          l2DistanceScale: defaults.l2DistanceScale,
+          project: input.project,
+        }));
+      }
+    } else {
+      degradedFallback.push('lexical', 'kg');
+    }
+
+    const lexicalCandidates = this.queryLexicalLane({ query: input.query, lexicalLimit: defaults.lexicalLimit, project: input.project });
+    const kgCandidates = this.queryKnowledgeLane({ query: input.query, project: input.project });
+    const allCandidates = [...semanticCandidates, ...lexicalCandidates, ...kgCandidates];
+    const observationIds = Array.from(new Set(allCandidates.map((candidate) => candidate.observationId)));
+    const observationRows = observationIds.length > 0
+      ? this.db.prepare(
+          `SELECT * FROM observations
+           WHERE deleted_at IS NULL
+           AND id IN (${observationIds.map(() => '?').join(',')})`
+        ).all(...observationIds) as ObservationRow[]
+      : [];
+    const observations = new Map(observationRows.map((row) => [row.id, row]));
+    const fused = fuseCandidates(observations, allCandidates).slice(0, input.limit ?? defaults.lexicalLimit);
+
+    for (const hit of fused) {
+      if (hit.evidence.primary.lane !== 'sentence') continue;
+      const sentenceChunkKey = hit.evidence.primary.chunkKey;
+      if (!sentenceChunkKey) continue;
+      const parent = this.db.prepare(
+        'SELECT chunk_key, content FROM semantic_chunks WHERE chunk_key = ? LIMIT 1'
+      ).get(sentenceChunkKey) as { chunk_key: string; content: string } | undefined;
+      if (parent) {
+        hit.evidence.promotedParent = { chunkKey: parent.chunk_key, text: parent.content };
+      }
+    }
+
+    return {
+      defaults,
+      laneOrder: ['sentence', 'chunk', 'lexical', 'kg'],
+      degradedFallback,
+      lexicalQuery,
+      scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
+      semanticInputs,
+      results: fused,
+      pending: this.semanticRuntime.pending,
+    };
+  }
+
+  private querySentenceLane(input: {
+    vector: number[];
+    source: 'raw_query' | 'hyde_answer';
+    topK: number;
+    minSemanticScore: number;
+    l2DistanceScale: number;
+    project?: string;
+  }): LaneCandidate[] {
+    const params: Array<string | number | Buffer> = [vectorToBuffer(input.vector), input.topK];
+    const sql = [
+      'SELECT s.observation_id, s.chunk_key, s.sentence_key, s.content, v.distance',
+      'FROM vec_sentences v',
+      'JOIN semantic_vector_rowids m ON m.vec_rowid = v.rowid AND m.lane = \'sentence\'',
+      'JOIN semantic_sentences s ON s.sentence_key = m.source_key',
+      'JOIN observations o ON o.id = s.observation_id',
+      'WHERE v.embedding MATCH ? AND k = ?',
+      'AND o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      sql.push('AND o.project = ?');
+      params.push(input.project);
+    }
+    sql.push('ORDER BY v.distance ASC');
+    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{
+      observation_id: number; chunk_key: string; sentence_key: string; content: string; distance: number;
+    }>;
+    return rows
+      .map((row) => ({ row, score: scoreFromDistance(row.distance, input.l2DistanceScale) }))
+      .filter((entry) => entry.score >= input.minSemanticScore)
+      .map((entry) => ({
+        lane: 'sentence' as const,
+        observationId: entry.row.observation_id,
+        score: entry.score,
+        source: input.source,
+        text: entry.row.content,
+        chunkKey: entry.row.chunk_key,
+        sentenceKey: entry.row.sentence_key,
+        distance: entry.row.distance,
+      }));
+  }
+
+  private queryChunkLane(input: {
+    vector: number[];
+    source: 'raw_query' | 'hyde_answer';
+    topK: number;
+    minSemanticScore: number;
+    l2DistanceScale: number;
+    project?: string;
+  }): LaneCandidate[] {
+    const params: Array<string | number | Buffer> = [vectorToBuffer(input.vector), input.topK];
+    const sql = [
+      'SELECT c.observation_id, c.chunk_key, c.content, v.distance',
+      'FROM vec_chunks v',
+      'JOIN semantic_vector_rowids m ON m.vec_rowid = v.rowid AND m.lane = \'chunk\'',
+      'JOIN semantic_chunks c ON c.chunk_key = m.source_key',
+      'JOIN observations o ON o.id = c.observation_id',
+      'WHERE v.embedding MATCH ? AND k = ?',
+      'AND o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      sql.push('AND o.project = ?');
+      params.push(input.project);
+    }
+    sql.push('ORDER BY v.distance ASC');
+    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{
+      observation_id: number; chunk_key: string; content: string; distance: number;
+    }>;
+    return rows
+      .map((row) => ({ row, score: scoreFromDistance(row.distance, input.l2DistanceScale) }))
+      .filter((entry) => entry.score >= input.minSemanticScore)
+      .map((entry) => ({
+        lane: 'chunk' as const,
+        observationId: entry.row.observation_id,
+        score: entry.score,
+        source: input.source,
+        text: entry.row.content,
+        chunkKey: entry.row.chunk_key,
+        distance: entry.row.distance,
+      }));
+  }
+
+  private queryLexicalLane(input: { query: string; lexicalLimit: number; project?: string }): LaneCandidate[] {
+    const prefixQuery = sanitizeFTSPrefix(input.query);
+    if (prefixQuery === '') return [];
+    const params: Array<string | number> = [prefixQuery];
+    const sql = [
+      'SELECT o.id as observation_id, o.content, fts.rank',
+      'FROM observations_fts fts',
+      'JOIN observations o ON o.id = fts.rowid',
+      'WHERE observations_fts MATCH ?',
+      'AND o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      sql.push('AND o.project = ?');
+      params.push(input.project);
+    }
+    sql.push('ORDER BY fts.rank ASC LIMIT ?');
+    params.push(input.lexicalLimit);
+    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; content: string; rank: number }>;
+    return rows.map((row) => ({
+      lane: 'lexical' as const,
+      observationId: row.observation_id,
+      score: 1 / (1 + Math.abs(row.rank)),
+      source: 'lexical_prefix' as const,
+      text: row.content,
+    }));
+  }
+
+  private queryKnowledgeLane(input: { query: string; project?: string }): LaneCandidate[] {
+    const sanitized = sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase();
+    if (sanitized.length === 0) return [];
+    const terms = sanitized.split(/\s+/).filter((token) => token.length >= 3);
+    if (terms.length === 0) return [];
+
+    const kgParams: Array<string> = [];
+    const kgSql = [
+      'SELECT t.source_id as observation_id, t.provenance, t.confidence, t.source_type, se.canonical_name as subject_name,',
+      '       oe.canonical_name as object_name, t.relation',
+      'FROM kg_triples t',
+      'JOIN kg_entities se ON se.id = t.subject_entity_id',
+      'JOIN kg_entities oe ON oe.id = t.object_entity_id',
+      'JOIN observations o ON o.id = t.source_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      kgSql.push('AND o.project = ?');
+      kgParams.push(input.project);
+    }
+    const rows = this.db.prepare(kgSql.join(' ')).all(...kgParams) as Array<{
+      observation_id: number; provenance: string; confidence: number; source_type: string;
+      subject_name: string; object_name: string; relation: string;
+    }>;
+    const scored = rows.flatMap((row) => {
+      const tripleText = `${row.subject_name} ${row.relation} ${row.object_name}`.toLowerCase();
+      const matches = terms.filter((term) => tripleText.includes(term)).length;
+      if (matches === 0) return [];
+      const score = Math.min(1, row.confidence + (matches / terms.length) * 0.5);
+      return [{
+        lane: 'kg' as const,
+        observationId: row.observation_id,
+        score,
+        source: 'kg_triples' as const,
+        text: `${row.subject_name} ${row.relation} ${row.object_name}`,
+        kg: { provenance: row.provenance, confidence: row.confidence, sourceType: row.source_type },
+      }];
+    });
+
+    if (scored.length > 0) return scored;
+
+    const fallbackParams: Array<string> = [];
+    const fallbackSql = [
+      'SELECT f.observation_id, f.subject, f.relation, f.object',
+      'FROM observation_facts f',
+      'JOIN observations o ON o.id = f.observation_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      fallbackSql.push('AND o.project = ?');
+      fallbackParams.push(input.project);
+    }
+    const fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
+      observation_id: number; subject: string; relation: string; object: string;
+    }>;
+    return fallbackRows.flatMap((row) => {
+      const factText = `${row.subject} ${row.relation} ${row.object}`.toLowerCase();
+      if (!terms.some((term) => factText.includes(term))) return [];
+      return [{
+        lane: 'kg' as const,
+        observationId: row.observation_id,
+        score: 0.35,
+        source: 'observation_facts' as const,
+        text: `${row.subject} ${row.relation} ${row.object}`,
+      }];
+    });
   }
 
   searchObservations(input: SearchInput): SearchResult[] {

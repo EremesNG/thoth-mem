@@ -24,6 +24,9 @@ vi.mock('../src/server.js', () => ({
 }));
 
 import { startMcpServer } from '../src/index.js';
+import { registerMemRecall } from '../src/tools/mem-recall.js';
+import { Store } from '../src/store/index.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 describe('index entrypoint execution', () => {
   const originalArgv = process.argv;
@@ -261,5 +264,29 @@ describe('startMcpServer lifecycle shutdown', () => {
       expect(mocks.storeClose).toHaveBeenCalledOnce();
       expect(process.exit).toHaveBeenCalledWith(0);
     });
+  });
+});
+
+describe('mem_recall tool registration', () => {
+  it('mem_recall registers and returns additive retrieval metadata', async () => {
+    const store = new Store(':memory:');
+    store.saveObservation({ title: 'Recallable', content: 'recall marker', project: 'recall-project' });
+    let handler: ((input: any) => Promise<any>) | undefined;
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, candidate: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          handler = candidate;
+        }
+      }),
+    } as unknown as McpServer;
+
+    registerMemRecall(server, store);
+    const result = await handler?.({ query: 'recall marker', project: 'recall-project', limit: 3 });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result?.content[0].text).toContain('Recall query: recall marker');
+    expect(result?.content[0].text).toContain('pending:');
+    expect(result?.content[0].text).toContain('degraded_fallback:');
+    store.close();
   });
 });

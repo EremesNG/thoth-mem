@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3';
 import {
   OBSERVATIONS_FTS_SQL,
   OBSERVATIONS_FTS_TRIGGERS_SQL,
+  SEMANTIC_METADATA_INDEXES_SQL,
+  SEMANTIC_METADATA_SQL,
   SYNC_CHUNKS_INDEXES_SQL,
   SYNC_CHUNKS_SQL,
   SYNC_MUTATIONS_INDEXES_SQL,
@@ -26,6 +28,15 @@ const LEGACY_COLUMN_MIGRATIONS = [
   { tableName: 'observations', columnName: 'sync_id', columnDef: 'TEXT' },
   { tableName: 'user_prompts', columnName: 'sync_id', columnDef: 'TEXT' },
 ] as const;
+
+const DEFAULT_EMBEDDING_DIMENSIONS = 384;
+
+export interface SemanticMigrationOptions {
+  sqliteVecReady?: boolean;
+  embeddingDimensions?: number | null;
+  embeddingConfigHash?: string | null;
+  degradedReason?: string | null;
+}
 
 function quoteIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
@@ -125,6 +136,10 @@ export function rebuildObservationsFts(db: SqliteDatabase): void {
 }
 
 export function runMigrations(db: SqliteDatabase): void {
+  runMigrationsWithSemantic(db, {});
+}
+
+export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticMigrationOptions): void {
   const migrate = db.transaction(() => {
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
       addColumnIfMissing(db, migration.tableName, migration.columnName, migration.columnDef);
@@ -134,6 +149,8 @@ export function runMigrations(db: SqliteDatabase): void {
     db.exec(SYNC_MUTATIONS_SQL);
     db.exec(SYNC_CHUNKS_INDEXES_SQL);
     db.exec(SYNC_MUTATIONS_INDEXES_SQL);
+    db.exec(SEMANTIC_METADATA_SQL);
+    db.exec(SEMANTIC_METADATA_INDEXES_SQL);
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);
     const missingTopicKeyFtsColumn = !ftsHasColumn(
@@ -150,6 +167,33 @@ export function runMigrations(db: SqliteDatabase): void {
 
     if (missingFtsTable || missingTopicKeyFtsColumn || missingFtsColumn || missingFtsTrigger) {
       rebuildObservationsFts(db);
+    }
+
+    const sqliteVecReady = options.sqliteVecReady ?? false;
+    const resolvedDimensions = options.embeddingDimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
+    const dimensionsKnown = options.embeddingDimensions !== null && options.embeddingDimensions !== undefined;
+    const stale = dimensionsKnown ? 0 : 1;
+    const degraded = sqliteVecReady ? 0 : 1;
+    const hash = options.embeddingConfigHash ?? null;
+    const lanes = ['sentence', 'chunk'];
+
+    for (const lane of lanes) {
+      db.prepare(
+        `INSERT INTO semantic_index_state (
+          lane, embedding_config_hash, embedding_dimensions, pending, degraded, stale, last_ready_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, NULL, datetime('now'))
+        ON CONFLICT(lane) DO UPDATE SET
+          embedding_config_hash = excluded.embedding_config_hash,
+          embedding_dimensions = excluded.embedding_dimensions,
+          degraded = excluded.degraded,
+          stale = excluded.stale,
+          updated_at = datetime('now')`
+      ).run(lane, hash, resolvedDimensions, degraded, stale);
+    }
+
+    if (sqliteVecReady) {
+      db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[${resolvedDimensions}])`);
+      db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_sentences USING vec0(embedding float[${resolvedDimensions}])`);
     }
   });
 

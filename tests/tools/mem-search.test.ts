@@ -307,4 +307,23 @@ describe('mem_search tool (handler)', () => {
     expect(result?.isError).not.toBe(true);
     expect(result?.content[0].text).toBe('No memories found.');
   });
+
+  it('appends hybrid status metadata when requested', async () => {
+    store.saveObservation({
+      title: 'Hybrid metadata sample',
+      content: 'metadata lookup sample',
+      project: 'auth-project',
+    });
+
+    const result = await toolHandler?.({
+      query: 'metadata lookup sample',
+      hybrid_status: 'on',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result?.content[0].text).toContain('Hybrid status:');
+    expect(result?.content[0].text).toContain('pending:');
+    expect(result?.content[0].text).toContain('degraded_fallback:');
+    expect(result?.content[0].text).toContain('evidence_lanes:');
+  });
 });
