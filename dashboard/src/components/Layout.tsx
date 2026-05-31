@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useRouter } from '../router.js';
-import { Home, Search, Key, Network, Shield, Check, Database } from 'lucide-react';
+import { Home, Search, Key, Network, Shield, Check, Database, Map } from 'lucide-react';
 import { api } from '../api/client.js';
 import { DASHBOARD_VERSION } from '../version.js';
 
@@ -50,7 +50,7 @@ export default function Layout({ children }: LayoutProps) {
   };
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${path === '/' ? 'map-first' : ''}`}>
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-header">
@@ -64,6 +64,13 @@ export default function Layout({ children }: LayoutProps) {
           <Link
             to="/"
             className={`sidebar-link ${isLinkActive('/') ? 'active' : ''}`}
+          >
+            <Map size={18} />
+            Memory Map
+          </Link>
+          <Link
+            to="/overview"
+            className={`sidebar-link ${isLinkActive('/overview') ? 'active' : ''}`}
           >
             <Home size={18} />
             Overview
@@ -106,7 +113,7 @@ export default function Layout({ children }: LayoutProps) {
       {/* Main Content */}
       <main className="main-content">
         {/* Privacy Banner */}
-        <div className="privacy-banner">
+        <div className="privacy-banner app-privacy-banner">
           <Shield size={18} />
           <div>
             <strong>Local-First Memory Bridge:</strong> Your memory data is stored

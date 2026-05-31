@@ -154,6 +154,16 @@ export interface ProjectGraphResponse {
   summary: ProjectGraphSummary;
 }
 
+export type VizDensityState = 'empty' | 'sparse' | 'dense';
+export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
+export interface VizHealthResponse { semantic_state: VizSemanticState; pending_jobs: number; }
+export interface VizNode { id: string; kind: 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; }
+export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'semantic' | 'metadata' | 'fact'; label: string; summary: string; }
+export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }
+export interface VizInspectNodeResponse { id: string; kind: VizNode['kind']; label: string; snippet: string; metadata: Record<string, unknown>; links: string[]; }
+export interface VizInspectEdgeResponse { id: string; source_id: string; target_id: string; relation: string; label: string; summary: string; }
+export interface VizFiltersResponse { projects: string[]; sessions: string[]; topic_keys: string[]; types: ObservationType[]; relations: string[]; }
+
 type ProjectGraphResponsePayload = Partial<Omit<ProjectGraphResponse, 'summary'>> & {
   summary?: Partial<ProjectGraphSummary>;
 };
@@ -396,5 +406,66 @@ export const api = {
       `/projects/${encodeURIComponent(project)}/graph${queryString ? `?${queryString}` : ''}`,
       { signal }
     ).then(normalizeProjectGraphResponse);
+  },
+
+  getVizSlice: (
+    params?: { project?: string; session_id?: string; topic_key?: string; type?: ObservationType; observation_type?: ObservationType; relation?: string; query?: string; depth?: number; max_nodes?: number; max_edges?: number; cursor?: string },
+    signal?: AbortSignal
+  ): Promise<VizSliceResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    if (params?.session_id) query.append('session_id', params.session_id);
+    if (params?.topic_key) query.append('topic_key', params.topic_key);
+    if (params?.type) query.append('type', params.type);
+    if (params?.observation_type) query.append('observation_type', params.observation_type);
+    if (params?.relation) query.append('relation', params.relation);
+    if (params?.query) query.append('query', params.query);
+    if (params?.depth !== undefined) query.append('depth', String(params.depth));
+    if (params?.max_nodes !== undefined) query.append('max_nodes', String(params.max_nodes));
+    if (params?.max_edges !== undefined) query.append('max_edges', String(params.max_edges));
+    if (params?.cursor) query.append('cursor', params.cursor);
+    const queryString = query.toString();
+    return apiFetch<VizSliceResponse>(`/viz/slice${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  expandVizNode: (
+    payload: { node_id: string; project?: string; session_id?: string; topic_key?: string; type?: ObservationType; observation_type?: ObservationType; relation?: string; query?: string; depth?: number; max_nodes?: number; max_edges?: number; cursor?: string },
+    signal?: AbortSignal
+  ): Promise<VizSliceResponse> => {
+    return apiFetch<VizSliceResponse>('/viz/expand', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+
+  inspectVizNode: (id: string, params?: { project?: string }, signal?: AbortSignal): Promise<VizInspectNodeResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    const queryString = query.toString();
+    return apiFetch<VizInspectNodeResponse>(`/viz/inspect/node/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  inspectVizEdge: (id: string, params?: { project?: string }, signal?: AbortSignal): Promise<VizInspectEdgeResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    const queryString = query.toString();
+    return apiFetch<VizInspectEdgeResponse>(`/viz/inspect/edge/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getVizFilters: (params?: { project?: string; session_id?: string }, signal?: AbortSignal): Promise<VizFiltersResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    if (params?.session_id) query.append('session_id', params.session_id);
+    const queryString = query.toString();
+    return apiFetch<VizFiltersResponse>(`/viz/filters${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getVizHealth: (params?: { project?: string }, signal?: AbortSignal): Promise<VizHealthResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    const queryString = query.toString();
+    return apiFetch<VizHealthResponse>(`/viz/health${queryString ? `?${queryString}` : ''}`, { signal });
   },
 };

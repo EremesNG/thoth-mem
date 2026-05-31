@@ -84,3 +84,90 @@ describe('normalizeProjectGraphResponse', () => {
     expect(normalizeProjectGraphResponse(response)).toEqual(response);
   });
 });
+
+describe('viz client routes', () => {
+  it('builds viz slice/expand/inspect/filter/health requests', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      const url = String(input);
+      if (url.startsWith('/viz/slice')) {
+        return new Response(JSON.stringify({
+          nodes: [],
+          edges: [],
+          state: 'empty',
+          continuation: null,
+          truncated: false,
+          health: { semantic_state: 'ready', pending_jobs: 0 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/viz/expand') {
+        return new Response(JSON.stringify({
+          nodes: [],
+          edges: [],
+          state: 'sparse',
+          continuation: null,
+          truncated: false,
+          health: { semantic_state: 'pending', pending_jobs: 1 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/viz/inspect/node/')) {
+        return new Response(JSON.stringify({
+          id: 'obs:1',
+          kind: 'observation',
+          label: 'Node 1',
+          snippet: 'Snippet',
+          links: [],
+          metadata: {},
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/viz/inspect/edge/')) {
+        return new Response(JSON.stringify({
+          id: 'edge:1',
+          source_id: 'obs:1',
+          target_id: 'obs:2',
+          relation: 'HAS_TOPIC_KEY',
+          label: 'Topic link',
+          summary: 'Summary',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/viz/filters')) {
+        return new Response(JSON.stringify({
+          projects: ['p1'],
+          sessions: ['s1'],
+          topic_keys: ['t1'],
+          types: ['decision'],
+          relations: ['HAS_WHAT'],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ semantic_state: 'degraded', pending_jobs: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      await api.getVizSlice({ project: 'p1', session_id: 's1', topic_key: 't1', type: 'decision', observation_type: 'decision', relation: 'HAS_WHAT', query: 'token', max_nodes: 100, max_edges: 300, depth: 1, cursor: 'c1' });
+      await api.expandVizNode({ project: 'p1', session_id: 's1', topic_key: 't1', type: 'decision', observation_type: 'decision', relation: 'HAS_WHAT', query: 'token', node_id: 'obs:1', depth: 1, max_nodes: 100, max_edges: 300, cursor: 'c1' });
+      await api.inspectVizNode('obs:1', { project: 'p1' });
+      await api.inspectVizEdge('edge:1', { project: 'p1' });
+      await api.getVizFilters({ project: 'p1', session_id: 's1' });
+      await api.getVizHealth({ project: 'p1' });
+
+      expect(String(calls[0].input)).toContain('/viz/slice?project=p1');
+      expect(String(calls[0].input)).toContain('session_id=s1');
+      expect(String(calls[0].input)).toContain('observation_type=decision');
+      expect(String(calls[0].input)).toContain('relation=HAS_WHAT');
+      expect(String(calls[0].input)).toContain('query=token');
+      expect(String(calls[1].input)).toBe('/viz/expand');
+      expect(calls[1].init?.method).toBe('POST');
+      expect(String(calls[2].input)).toContain('/viz/inspect/node/obs%3A1?project=p1');
+      expect(String(calls[3].input)).toContain('/viz/inspect/edge/edge%3A1?project=p1');
+      expect(String(calls[4].input)).toContain('/viz/filters?project=p1&session_id=s1');
+      expect(String(calls[5].input)).toContain('/viz/health?project=p1');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
