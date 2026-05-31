@@ -31,7 +31,7 @@ Agent Session 1                    Agent Session 2
 
 ## Features
 
-- **16 MCP tools** — always registered, no profiles to configure
+- **17 MCP tools** — always registered, no profiles to configure
 - **Local read-only dashboard** served by the HTTP bridge at `/`, with OpenAPI docs preserved at `/docs`
 - **CLI + MCP dual mode** — use as a server or directly from the terminal
 - **SQLite + FTS5** full-text search (fast, zero external dependencies)
@@ -47,7 +47,7 @@ Agent Session 1                    Agent Session 2
 - **Paginated retrieval** — large observations served in chunks via offset/max_length
 - **Privacy defense** — `<private>` tags stripped before storage
 - **Token-efficient search** — compact results by default, preview mode optional, 3-layer recall protocol
-- **Retrieval eval baseline** — deterministic recall benchmark before adding embeddings or semantic search
+- **Retrieval eval baseline** — deterministic hybrid retrieval benchmark (lexical, semantic raw/HyDE, KG, compression, lineage)
 - **Agent-first MCP tools** — project summaries, graph-lite facts, and topic keys are exposed as tools instead of MCP Resources
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
 
@@ -125,6 +125,8 @@ thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem delete-project <project>     # Delete a project and its related data
 thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
 thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
+thoth-mem rebuild-index --project <name> # Queue semantic index rebuild for one project
+thoth-mem rebuild-index --all          # Queue semantic index rebuild for all projects
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -185,15 +187,16 @@ pnpm test
 pnpm run eval:retrieval
 ```
 
-`pnpm run eval:retrieval` runs a deterministic retrieval baseline against seeded in-memory observations. Use it before changing retrieval behavior or introducing embeddings so recall, ranking, and context payload metrics have a comparable baseline.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations. It reports baseline lexical recall plus hybrid status metrics (pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG contribution, and evidence lineage coverage) without requiring model downloads or remote APIs.
 
-## MCP Tools (16)
+## MCP Tools (17)
 
 
 | Tool                    | Purpose                                                           |
 | ----------------------- | ----------------------------------------------------------------- |
 | `mem_save`              | Save structured observations (decisions, bugs, patterns, configs) |
 | `mem_search`            | Full-text search with compact/preview mode and exact topic_key lookup |
+| `mem_recall`            | Fused hybrid recall for agents with pending/degraded status and evidence lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get_observation`   | Retrieve full observation by ID with pagination support           |
 | `mem_session_start`     | Register a new coding session (idempotent)                        |
@@ -209,7 +212,52 @@ pnpm run eval:retrieval
 | `mem_project_graph`     | Filtered graph-lite facts derived from structured project observations |
 | `mem_topic_keys`        | List topic keys or read exact topic-key context                   |
 
-> **Admin operations** (export, import, sync, migrate-project, rebuild-graph) are available via the [CLI](#cli-commands). Export, import, sync, and migration are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+> **Admin operations** (export, import, sync, migrate-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, and migration are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+
+## Retrieval and Embeddings
+
+- `mem_search` remains backward compatible by default: existing compact/preview/context output is unchanged unless you opt into additive hybrid metadata (`hybrid_status=auto|on`).
+- Hybrid retrieval defaults use tuned lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical > kg`.
+- Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
+- Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`.
+- When semantic lanes are pending or unavailable, retrieval degrades safely to lexical + KG lanes and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
+- `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical/KG retrieval.
+- Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
+
+### Recommended Embedding Models
+
+Model choice affects vector dimensions, quality, memory use, and index compatibility. Keep the same provider/model/dimensions for an existing semantic index; changing them marks embeddings stale and queues a rebuild.
+
+| Use case | Ollama model | LM Studio model to look for | Notes |
+| --- | --- | --- | --- |
+| Lightweight local default | [`nomic-embed-text`](https://ollama.com/library/nomic-embed-text) | [`nomic-ai/nomic-embed-text-v1.5`](https://lmstudio.ai/docs/typescript/embedding) | Good first choice for local RAG. Small download, mature support, 768-dimensional embeddings in the upstream model card. |
+| Strong general retrieval | [`mxbai-embed-large`](https://ollama.com/library/mxbai-embed-large) | [`mixedbread-ai/mxbai-embed-large-v1`](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) | Good quality/performance balance for English and technical notes. Use the exact loaded model id shown by LM Studio. |
+| Multilingual / Spanish-heavy memory | [`bge-m3`](https://ollama.com/library/bge-m3) | [`BAAI/bge-m3`](https://huggingface.co/BAAI/bge-m3) | Strong multilingual option. The upstream model card highlights 100+ languages and inputs up to 8192 tokens. |
+| Higher-quality modern option | [`qwen3-embedding:0.6b`](https://ollama.com/library/qwen3-embedding) | [`Qwen/Qwen3-Embedding-0.6B`](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Better multilingual/code retrieval when you can spend more RAM/CPU than `nomic-embed-text`. Upstream lists 0.6B parameters, 32K context, and up to 1024 dimensions. |
+
+Ollama example:
+
+```bash
+ollama pull bge-m3
+THOTH_EMBEDDING_PROVIDER=ollama \
+THOTH_EMBEDDING_BASE_URL=http://127.0.0.1:11434 \
+THOTH_EMBEDDING_MODEL=bge-m3 \
+thoth-mem
+```
+
+LM Studio example:
+
+```bash
+# In LM Studio, load an embedding-capable model and start the local server.
+# Use the exact model id shown by LM Studio for THOTH_EMBEDDING_MODEL.
+THOTH_EMBEDDING_PROVIDER=lmstudio \
+THOTH_EMBEDDING_BASE_URL=http://127.0.0.1:1234 \
+THOTH_EMBEDDING_MODEL=nomic-embed-text-v1.5 \
+thoth-mem
+```
+
+`THOTH_EMBEDDING_DIMENSIONS` is optional. Set it only when the selected model/runtime supports a stable dimension override and you want to force a specific sqlite-vec table shape.
+
 
 ## Sync & Portability
 
@@ -290,6 +338,14 @@ This runs as a transaction, blocks deletion if shared sessions or data are detec
 | `THOTH_PREVIEW_LENGTH`        | `300`      | Search result preview length                |
 | `THOTH_HTTP_PORT`             | `7438`     | HTTP REST API port                          |
 | `THOTH_HTTP_DISABLED`         | `false`    | Disable HTTP REST API bridge                |
+| `THOTH_EMBEDDING_PROVIDER`    | `transformers_local` | Embedding provider (`transformers_local`, `ollama`, `lmstudio`) |
+| `THOTH_EMBEDDING_MODEL`       | `nomic-ai/nomic-embed-text-v1.5` (local) | Embedding model id |
+| `THOTH_EMBEDDING_BASE_URL`    | provider-specific | Base URL for remote/local API providers |
+| `THOTH_EMBEDDING_DIMENSIONS`  | unset      | Optional embedding dimensions override |
+| `THOTH_HYDE_ENABLED`          | `false`    | Enable HyDE dual-input semantic query expansion |
+| `THOTH_HYDE_MODEL`            | unset      | Optional HyDE generation model id |
+| `THOTH_HYDE_BASE_URL`         | unset      | Optional HyDE provider base URL |
+| `THOTH_HYDE_TIMEOUT_MS`       | `4000`     | HyDE timeout before raw-query-only fallback |
 
 ## Storage
 
