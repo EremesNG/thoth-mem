@@ -29,59 +29,52 @@ export function buildSentenceKey(observationId: number, chunkKey: string, senten
   return `sentence:${observationId}:${chunkKey}:${sentenceIndex}:${digest(content)}`;
 }
 
-export function splitIntoChunks(input: { observationId: number; text: string; maxChars?: number }): SemanticChunkUnit[] {
-  const maxChars = Math.max(200, input.maxChars ?? 900);
+export function splitIntoChunks(input: {
+  observationId: number;
+  text: string;
+  maxWords?: number;
+  overlapWords?: number;
+  minWords?: number;
+  maxChars?: number;
+}): SemanticChunkUnit[] {
   const text = normalizeText(input.text);
   if (text.length === 0) {
     return [];
   }
 
-  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter((p) => p.length > 0);
+  const maxWords = Math.max(50, input.maxWords ?? 300);
+  const overlapWords = Math.min(Math.max(0, input.overlapWords ?? 80), maxWords - 1);
+  const minWords = Math.max(1, input.minWords ?? 10);
+  const stepWords = Math.max(1, maxWords - overlapWords);
+  const words = text.replace(/\n+/g, ' ').split(/\s+/).filter((word) => word.length > 0);
   const chunks: SemanticChunkUnit[] = [];
-  let current = '';
 
-  const pushChunk = (): void => {
-    const content = current.trim();
-    if (content.length === 0) {
+  const pushChunk = (content: string): void => {
+    const normalized = content.trim();
+    if (normalized.length === 0) {
       return;
     }
     const chunkIndex = chunks.length;
     chunks.push({
       chunkIndex,
-      content,
-      chunkKey: buildChunkKey(input.observationId, chunkIndex, content),
+      content: normalized,
+      chunkKey: buildChunkKey(input.observationId, chunkIndex, normalized),
     });
-    current = '';
   };
 
-  for (const paragraph of paragraphs) {
-    const candidate = current.length > 0 ? `${current}\n\n${paragraph}` : paragraph;
-    if (candidate.length <= maxChars) {
-      current = candidate;
-      continue;
-    }
-
-    pushChunk();
-    if (paragraph.length <= maxChars) {
-      current = paragraph;
-      continue;
-    }
-
-    for (let start = 0; start < paragraph.length; start += maxChars) {
-      const slice = paragraph.slice(start, start + maxChars).trim();
-      if (slice.length === 0) {
-        continue;
-      }
-      const chunkIndex = chunks.length;
-      chunks.push({
-        chunkIndex,
-        content: slice,
-        chunkKey: buildChunkKey(input.observationId, chunkIndex, slice),
-      });
-    }
+  if (words.length <= maxWords) {
+    pushChunk(text.replace(/\n+/g, ' '));
+    return chunks;
   }
 
-  pushChunk();
+  for (let start = 0; start < words.length; start += stepWords) {
+    const sliceWords = words.slice(start, start + maxWords);
+    if (sliceWords.length < minWords && chunks.length > 0) {
+      break;
+    }
+    pushChunk(sliceWords.join(' '));
+  }
+
   return chunks;
 }
 

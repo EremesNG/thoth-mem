@@ -3,22 +3,65 @@ import { z } from "zod";
 import { Store } from "../store/index.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
+import { sanitizeRetrievedContext } from "../utils/context-safety.js";
 
-function formatRecallHit(hit: Awaited<ReturnType<Store['hybridRetrieve']>>['results'][number], index: number, mode: 'compact' | 'context'): string {
+const MAX_CONTEXT_CHARS = 6000;
+
+type RecallHit = Awaited<ReturnType<Store['hybridRetrieve']>>['results'][number];
+
+function recallHeader(hit: RecallHit, index: number): string {
   const primary = hit.evidence.primary;
   const source = primary.source ?? 'unknown';
-  const header = `${index + 1}. [${primary.lane}/${source}] obs:${hit.observation.id} "${hit.observation.title}" score:${hit.score.toFixed(3)}`;
+  return `${index + 1}. [${primary.lane}/${source}] obs:${hit.observation.id} "${hit.observation.title}" score:${hit.score.toFixed(3)}`;
+}
 
-  if (mode === 'compact') {
-    return header;
+function formatRecallHit(hit: RecallHit, index: number): string {
+  return recallHeader(hit, index);
+}
+
+function trimToBudget(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 32)).trimEnd()}\n[truncated for recall budget]`;
+}
+
+function formatRecallContextHits(hits: RecallHit[]): string[] {
+  let remaining = MAX_CONTEXT_CHARS;
+  const lines: string[] = [];
+
+  for (const [index, hit] of hits.entries()) {
+    if (remaining <= 0) {
+      break;
+    }
+
+    const primary = hit.evidence.primary;
+    const graphEvidence = hit.evidence.byLane.kg ?? [];
+    const metadata = [
+      recallHeader(hit, index),
+      `<retrieved_context observation_id="${hit.observation.id}" lane="${primary.lane}" source="${primary.source ?? 'unknown'}">`,
+      `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
+      graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
+    ];
+    const graphLines = graphEvidence.slice(0, 3).map((candidate) => `graph: ${sanitizeRetrievedContext(candidate.text)}`);
+    const metadataCost = metadata.filter((line): line is string => line !== null).join('\n').length
+      + graphLines.join('\n').length
+      + '</retrieved_context>'.length
+      + 2;
+    const content = sanitizeRetrievedContext(hit.evidence.promotedParent?.text || primary.text || hit.observation.content);
+    const budgetedContent = trimToBudget(content, Math.max(0, remaining - metadataCost));
+
+    lines.push([
+      ...metadata.filter((line): line is string => line !== null),
+      budgetedContent,
+      ...graphLines,
+      '</retrieved_context>',
+    ].join('\n'));
+
+    remaining -= metadataCost + budgetedContent.length;
   }
 
-  const content = hit.evidence.promotedParent?.text || primary.text || hit.observation.content;
-  return [
-    header,
-    `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
-    content,
-  ].join('\n');
+  return lines;
 }
 
 export function registerMemRecall(
@@ -28,7 +71,7 @@ export function registerMemRecall(
 ): void {
   server.tool(
     "mem_recall",
-    "Primary retrieval tool. Runs fused hybrid recall across sentence vectors, chunk vectors, keyword FTS, and knowledge-graph evidence.",
+    "Primary retrieval tool. Runs fused hybrid recall across sentence vectors, chunk vectors, keyword FTS, and knowledge-graph enrichment.",
     {
       query: z.string().min(1).describe("Recall/search query"),
       project: z.string().optional().describe("Optional project filter"),
@@ -49,12 +92,15 @@ export function registerMemRecall(
         });
 
         const hits = retrieval.results.slice(0, limit ?? 5);
-        const evidenceLines = hits.map((hit, index) => formatRecallHit(hit, index, mode));
+        const evidenceLines = mode === 'context'
+          ? formatRecallContextHits(hits)
+          : hits.map((hit, index) => formatRecallHit(hit, index));
         const laneCounts = hits.reduce<Record<string, number>>((acc, hit) => {
           const lane = hit.evidence.primary.lane;
           acc[lane] = (acc[lane] ?? 0) + 1;
           return acc;
         }, {});
+        const graphEnrichmentCount = hits.filter((hit) => (hit.evidence.byLane.kg?.length ?? 0) > 0).length;
 
         const text = [
           `Recall query: ${query}`,
@@ -62,6 +108,7 @@ export function registerMemRecall(
           `pending: ${retrieval.pending ? 'yes' : 'no'}`,
           `degraded_fallback: ${retrieval.degradedFallback.length > 0 ? retrieval.degradedFallback.join(', ') : 'none'}`,
           `evidence_lanes: ${Object.keys(laneCounts).length > 0 ? Object.entries(laneCounts).map(([laneName, count]) => `${laneName}:${count}`).join(', ') : 'none'}`,
+          `graph_enrichment: ${graphEnrichmentCount}`,
           debug ? `lane_order: ${retrieval.laneOrder.join(' > ')}` : null,
           debug ? `semantic_inputs: ${retrieval.semanticInputs.map((input) => input.source).join(', ') || 'none'}` : null,
           'evidence:',

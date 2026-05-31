@@ -341,6 +341,73 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/observatory/context': {
+        get: {
+          summary: 'Get observatory scoped context token and capabilities',
+          parameters: [
+            { name: 'project', in: 'query', schema: { type: 'string' } },
+            { name: 'session_id', in: 'query', schema: { type: 'string' } },
+            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'query', in: 'query', schema: { type: 'string' } },
+            { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'observation_type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'relation', in: 'query', schema: { type: 'string' } },
+            { name: 'time_from', in: 'query', schema: { type: 'string' } },
+            { name: 'time_to', in: 'query', schema: { type: 'string' } },
+          ],
+          responses: { '200': { description: 'Observatory context', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryContextResponse' } } } } },
+        },
+      },
+      '/observatory/recall': {
+        get: {
+          summary: 'Get observatory hybrid lane recall payload',
+          parameters: [
+            { name: 'context_token', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'lanes', in: 'query', schema: { type: 'string', example: 'lexical,sentence-vector' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
+          ],
+          responses: { '200': { description: 'Observatory recall', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryRecallResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+        },
+      },
+      '/observatory/pivot': {
+        post: {
+          summary: 'Resolve pivot token into scoped target context',
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryPivotRequest' } } } },
+          responses: { '200': { description: 'Pivot resolved', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryPivotResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+        },
+      },
+      '/observatory/map/frontier': {
+        post: {
+          summary: 'Get deterministic map frontier expansion payload',
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryMapFrontierRequest' } } } },
+          responses: { '200': { description: 'Frontier payload', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryMapFrontierResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+        },
+      },
+      '/observatory/ledger/{id}': {
+        get: {
+          summary: 'Get structured ledger/provenance detail for observation',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+          responses: { '200': { description: 'Ledger detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryLedgerResponse' } } } }, '404': { $ref: '#/components/responses/Error' } },
+        },
+      },
+      '/observatory/timeline': {
+        get: {
+          summary: 'Get scoped observatory timeline window',
+          parameters: [
+            { name: 'context_token', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'continuation', in: 'query', schema: { type: 'string' } },
+          ],
+          responses: { '200': { description: 'Timeline payload', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryTimelineResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+        },
+      },
+      '/observatory/health': {
+        get: {
+          summary: 'Get observatory health/index readiness',
+          parameters: [{ name: 'project', in: 'query', schema: { type: 'string' } }],
+          responses: { '200': { description: 'Health payload', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizHealthResponse' } } } } },
+        },
+      },
       '/viz/slice': {
         get: {
           summary: 'Get visualization slice',
@@ -417,7 +484,7 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
       },
       '/projects/{project}/graph': {
         get: {
-          summary: 'Get project graph-lite facts',
+          summary: 'Get project Knowledge Graph Ledger facts (legacy compatibility route)',
           parameters: [
             { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
             { name: 'topic_key', in: 'query', schema: { type: 'string' } },
@@ -427,7 +494,7 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           ],
           responses: {
             '200': {
-              description: 'Project graph-lite structured facts and compatible markdown payload',
+              description: 'Project Knowledge Graph Ledger structured facts and compatible markdown payload for the legacy graph route',
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/ProjectGraphResponse' },
@@ -1064,6 +1131,174 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
           required: ['sessions', 'observations', 'prompts', 'projects'],
+        },
+        ObservatoryScope: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            session_id: { type: 'string' },
+            topic_key: { type: 'string' },
+            query: { type: 'string' },
+            type: OBSERVATION_TYPE_SCHEMA,
+            observation_type: OBSERVATION_TYPE_SCHEMA,
+            relation: { type: 'string' },
+            time_from: { type: 'string' },
+            time_to: { type: 'string' },
+          },
+        },
+        ObservatoryContextResponse: {
+          type: 'object',
+          properties: {
+            scope: { $ref: '#/components/schemas/ObservatoryScope' },
+            context_token: { type: 'string' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+            capabilities: {
+              type: 'object',
+              properties: {
+                viz_fallback_available: { type: 'boolean' },
+                observatory_routes_available: { type: 'boolean' },
+              },
+              required: ['viz_fallback_available', 'observatory_routes_available'],
+            },
+          },
+          required: ['scope', 'context_token', 'health', 'capabilities'],
+        },
+        ObservatoryRecallHit: {
+          type: 'object',
+          properties: {
+            observation_id: { type: 'integer' },
+            title: { type: 'string' },
+            preview: { type: 'string' },
+            type: OBSERVATION_TYPE_SCHEMA,
+            project: { type: 'string', nullable: true },
+            session_id: { type: 'string' },
+            topic_key: { type: 'string', nullable: true },
+            created_at: { type: 'string' },
+            lane: { type: 'string', enum: ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'] },
+            pivot_token: { type: 'string' },
+          },
+          required: ['observation_id', 'title', 'preview', 'type', 'project', 'session_id', 'topic_key', 'created_at', 'lane', 'pivot_token'],
+        },
+        ObservatoryRecallResponse: {
+          type: 'object',
+          properties: {
+            context_token: { type: 'string' },
+            lanes: {
+              type: 'object',
+              properties: {
+                lexical: { type: 'array', items: { $ref: '#/components/schemas/ObservatoryRecallHit' } },
+                'sentence-vector': { type: 'array', items: { $ref: '#/components/schemas/ObservatoryRecallHit' } },
+                'chunk-vector': { type: 'array', items: { $ref: '#/components/schemas/ObservatoryRecallHit' } },
+                'fact-kg': { type: 'array', items: { $ref: '#/components/schemas/ObservatoryRecallHit' } },
+              },
+              required: ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'],
+            },
+            lane_states: {
+              type: 'object',
+              properties: {
+                lexical: { $ref: '#/components/schemas/ObservatoryLaneState' },
+                'sentence-vector': { $ref: '#/components/schemas/ObservatoryLaneState' },
+                'chunk-vector': { $ref: '#/components/schemas/ObservatoryLaneState' },
+                'fact-kg': { $ref: '#/components/schemas/ObservatoryLaneState' },
+              },
+            },
+          },
+          required: ['context_token', 'lanes'],
+        },
+        ObservatoryLaneState: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['ready', 'pending', 'degraded', 'unavailable'] },
+            reason: {
+              type: 'string',
+              enum: ['ok', 'no-query', 'no-evidence', 'semantic-pending', 'semantic-stale', 'semantic-degraded', 'kg-no-match', 'unsupported-sync'],
+            },
+          },
+          required: ['status', 'reason'],
+        },
+        ObservatoryPivotRequest: {
+          type: 'object',
+          properties: {
+            pivot_token: { type: 'string' },
+            target: { type: 'string', enum: ['map', 'timeline', 'ledger', 'recall'] },
+          },
+          required: ['pivot_token', 'target'],
+        },
+        ObservatoryPivotResponse: {
+          type: 'object',
+          properties: {
+            context_token: { type: 'string' },
+            scope: { $ref: '#/components/schemas/ObservatoryScope' },
+            focus_node_id: { type: 'string' },
+            target: { type: 'string', enum: ['map', 'timeline', 'ledger', 'recall'] },
+          },
+          required: ['context_token', 'scope', 'focus_node_id', 'target'],
+        },
+        ObservatoryFrontierState: {
+          type: 'object',
+          properties: {
+            added_node_ids: { type: 'array', items: { type: 'string' } },
+            already_visible_node_ids: { type: 'array', items: { type: 'string' } },
+            exhausted: { type: 'boolean' },
+            continuation: { type: 'string', nullable: true },
+            reason: { type: 'string', enum: ['limit', 'no-neighbors', 'scope-filtered'] },
+          },
+          required: ['added_node_ids', 'already_visible_node_ids', 'exhausted', 'continuation'],
+        },
+        ObservatoryMapFrontierRequest: {
+          type: 'object',
+          properties: {
+            context_token: { type: 'string' },
+            focus_node_id: { type: 'string' },
+            visible_node_ids: { type: 'array', items: { type: 'string' } },
+            max_nodes: { type: 'integer', minimum: 1, maximum: 1200 },
+            max_edges: { type: 'integer', minimum: 1, maximum: 3600 },
+            continuation: { type: 'string' },
+          },
+          required: ['context_token', 'focus_node_id'],
+        },
+        ObservatoryMapFrontierResponse: {
+          type: 'object',
+          properties: {
+            nodes: { type: 'array', items: { $ref: '#/components/schemas/VizNode' } },
+            edges: { type: 'array', items: { $ref: '#/components/schemas/VizEdge' } },
+            frontier_state: { $ref: '#/components/schemas/ObservatoryFrontierState' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+          },
+          required: ['nodes', 'edges', 'frontier_state', 'health'],
+        },
+        ObservatoryLedgerResponse: {
+          type: 'object',
+          properties: {
+            observation_id: { type: 'integer' },
+            title: { type: 'string' },
+            type: OBSERVATION_TYPE_SCHEMA,
+            what: { type: 'array', items: { type: 'string' } },
+            why: { type: 'array', items: { type: 'string' } },
+            where: { type: 'array', items: { type: 'string' } },
+            learned: { type: 'array', items: { type: 'string' } },
+            facts: { type: 'array', items: { $ref: '#/components/schemas/ProjectGraphFact' } },
+            provenance: {
+              type: 'object',
+              properties: {
+                session_id: { type: 'string' },
+                project: { type: 'string', nullable: true },
+                topic_key: { type: 'string', nullable: true },
+                created_at: { type: 'string' },
+              },
+              required: ['session_id', 'project', 'topic_key', 'created_at'],
+            },
+          },
+          required: ['observation_id', 'title', 'type', 'what', 'why', 'where', 'learned', 'facts', 'provenance'],
+        },
+        ObservatoryTimelineResponse: {
+          type: 'object',
+          properties: {
+            context_token: { type: 'string' },
+            events: { type: 'array', items: { $ref: '#/components/schemas/Observation' } },
+            continuation: { type: 'string', nullable: true },
+          },
+          required: ['context_token', 'events', 'continuation'],
         },
         VizNode: {
           type: 'object',

@@ -47,7 +47,7 @@ describe('mem_project tool', () => {
     const topic = await toolHandler?.({ action: 'topic', project: 'project-a', topic_key: 'architecture/topic-a' });
 
     expect(summary?.content[0].text).toContain('## Project Summary: project-a');
-    expect(graph?.content[0].text).toContain('## Graph Lite: project-a');
+    expect(graph?.content[0].text).toContain('## Knowledge Graph Ledger: project-a');
     expect(topics?.content[0].text).toContain('architecture/topic-a');
     expect(topic?.content[0].text).toContain('## Topic Key: architecture/topic-a');
   });

@@ -22,6 +22,13 @@ import {
   handleImport,
   handleMigrateProject,
   handleOpenApi,
+  handleObservatoryContext,
+  handleObservatoryHealth,
+  handleObservatoryLedger,
+  handleObservatoryMapFrontier,
+  handleObservatoryPivot,
+  handleObservatoryRecall,
+  handleObservatoryTimeline,
   handleProjectGraph,
   handleProjectSummary,
   handleProjectTopicKeys,
@@ -42,9 +49,12 @@ import {
   handleVizInspectNode,
   handleVizSlice,
   HttpRouteError,
+  type HttpRouteContext,
   type HttpRouteHandler,
 } from './http-routes.js';
 import type { Store } from './store/index.js';
+import type { EmbeddingProviderAdapter } from './retrieval/providers.js';
+import type { HydeGenerator } from './retrieval/hyde.js';
 
 interface RouteDefinition {
   handler: HttpRouteHandler;
@@ -54,6 +64,11 @@ interface RouteDefinition {
 
 interface HttpBridgeConfig extends ThothConfig {
   dashboardDistDir?: string;
+}
+
+interface HttpBridgeOptions {
+  embeddingProvider?: EmbeddingProviderAdapter | null;
+  hydeGenerator?: HydeGenerator | null;
 }
 
 export interface HttpBridge {
@@ -77,6 +92,13 @@ const ROUTES: RouteDefinition[] = [
   { method: 'GET', pattern: '/context', handler: handleContext },
   { method: 'GET', pattern: '/timeline', handler: handleTimeline },
   { method: 'GET', pattern: '/stats', handler: handleStats },
+  { method: 'GET', pattern: '/observatory/context', handler: handleObservatoryContext },
+  { method: 'GET', pattern: '/observatory/recall', handler: handleObservatoryRecall },
+  { method: 'POST', pattern: '/observatory/pivot', handler: handleObservatoryPivot },
+  { method: 'POST', pattern: '/observatory/map/frontier', handler: handleObservatoryMapFrontier },
+  { method: 'GET', pattern: '/observatory/ledger/:id', handler: handleObservatoryLedger },
+  { method: 'GET', pattern: '/observatory/timeline', handler: handleObservatoryTimeline },
+  { method: 'GET', pattern: '/observatory/health', handler: handleObservatoryHealth },
   { method: 'GET', pattern: '/viz/slice', handler: handleVizSlice },
   { method: 'POST', pattern: '/viz/expand', handler: handleVizExpand },
   { method: 'GET', pattern: '/viz/inspect/node/:id', handler: handleVizInspectNode },
@@ -211,7 +233,7 @@ function resolveDashboardFile(dashboardDistDir: string, pathname: string): { err
 }
 
 function isDashboardFallbackPath(pathname: string): boolean {
-  if (pathname === '/' || pathname === '/search' || pathname === '/topic-keys' || pathname === '/graph') {
+  if (pathname === '/' || pathname === '/search' || pathname === '/topic-keys' || pathname === '/graph' || pathname === '/observatory') {
     return true;
   }
 
@@ -312,7 +334,7 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-export function createHttpBridge(store: Store, config: HttpBridgeConfig): HttpBridge {
+export function createHttpBridge(store: Store, config: HttpBridgeConfig, options: HttpBridgeOptions = {}): HttpBridge {
   let server: Server | null = null;
   let isOwner = false;
   let healthCheckInterval: NodeJS.Timeout | null = null;
@@ -363,7 +385,12 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig): HttpBr
         const body = method === 'POST' || method === 'PATCH' || method === 'DELETE'
           ? await parseBody<Record<string, unknown>>(request)
           : undefined;
-        const result = await route.handler(store, { body, params, query: url.searchParams }, config.httpPort);
+        const routeContext: HttpRouteContext = {
+          embeddingProvider: options.embeddingProvider ?? null,
+          hydeGenerator: options.hydeGenerator ?? null,
+          port: config.httpPort,
+        };
+        const result = await route.handler(store, { body, params, query: url.searchParams }, routeContext);
 
         if (result.text !== undefined) {
           sendText(response, result.status, result.contentType ?? 'text/plain; charset=utf-8', result.text);

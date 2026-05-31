@@ -43,5 +43,7 @@ describe('mem_recall tool', () => {
 
     expect(result?.isError).not.toBe(true);
     expect(result?.content[0].text).toContain('expanded recall body marker');
+    expect(result?.content[0].text).toContain('<retrieved_context observation_id=');
+    expect(result?.content[0].text).toContain('</retrieved_context>');
   });
 });

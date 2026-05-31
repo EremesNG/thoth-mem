@@ -4,6 +4,7 @@ import { Store } from "../store/index.js";
 import { OBSERVATION_TYPES } from "../store/types.js";
 import { validateContentLength } from "../utils/content.js";
 import { getConfig } from "../config.js";
+import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 
 type SaveKind = 'observation' | 'prompt' | 'session_summary' | 'passive_learnings';
 
@@ -22,10 +23,11 @@ function sessionSummaryTopicKey(sessionId: string): string {
   return `session/${sessionId}/summary`;
 }
 
-function capturePassiveLearnings(
+async function capturePassiveLearnings(
   store: Store,
   input: { content: string; session_id?: string; project?: string },
-): string {
+  options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+): Promise<string> {
   const headerMatch = input.content.match(/^##\s+(Key Learnings|Aprendizajes Clave)\s*:?\s*$/im);
 
   if (!headerMatch || headerMatch.index === undefined) {
@@ -49,14 +51,14 @@ function capturePassiveLearnings(
 
   for (const item of items) {
     const title = item.length > 50 ? `${item.slice(0, 50)}...` : item;
-    const result = store.saveObservation({
+    const result = await store.saveObservationWithIndex({
       title,
       content: item,
       type: 'learning',
       session_id: input.session_id,
       project: input.project,
       scope: 'project',
-    });
+    }, { embeddingProvider: options.embeddingProvider ?? null });
 
     if (result.action === 'created') {
       saved += 1;
@@ -68,7 +70,11 @@ function capturePassiveLearnings(
   return `Extracted ${items.length} learnings: ${saved} saved, ${duplicates} duplicates skipped`;
 }
 
-export function registerMemSave(server: McpServer, store: Store): void {
+export function registerMemSave(
+  server: McpServer,
+  store: Store,
+  options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+): void {
   const config = getConfig();
 
   server.tool(
@@ -118,7 +124,7 @@ Use topic_key for evolving topics that should update in-place.`,
           }
 
           const resolvedSessionId = session_id ?? `manual-save-${project}`;
-          const result = store.saveObservation({
+          const result = await store.saveObservationWithIndex({
             title: `Session summary: ${project}`,
             content,
             type: 'session_summary',
@@ -126,7 +132,7 @@ Use topic_key for evolving topics that should update in-place.`,
             project,
             scope: 'project',
             topic_key: sessionSummaryTopicKey(resolvedSessionId),
-          });
+          }, { embeddingProvider: options.embeddingProvider ?? null });
           store.checkpointSession(resolvedSessionId, extractFirstContentLine(content));
           return {
             content: [{
@@ -138,7 +144,7 @@ Use topic_key for evolving topics that should update in-place.`,
 
         if (kind === 'passive_learnings') {
           return {
-            content: [{ type: "text" as const, text: capturePassiveLearnings(store, { content, session_id, project }) }],
+            content: [{ type: "text" as const, text: await capturePassiveLearnings(store, { content, session_id, project }, options) }],
           };
         }
 
@@ -149,7 +155,7 @@ Use topic_key for evolving topics that should update in-place.`,
           };
         }
 
-        const result = store.saveObservation({
+        const result = await store.saveObservationWithIndex({
           title,
           content,
           type,
@@ -157,7 +163,7 @@ Use topic_key for evolving topics that should update in-place.`,
           project,
           scope,
           topic_key,
-        });
+        }, { embeddingProvider: options.embeddingProvider ?? null });
 
         const actionMessages: Record<string, string> = {
           created: `Observation saved (ID: ${result.observation.id})`,

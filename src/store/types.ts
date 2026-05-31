@@ -370,3 +370,96 @@ export interface VizFiltersResponse {
   types: ObservationType[];
   relations: string[];
 }
+
+export type ObservatoryLane = 'lexical' | 'sentence-vector' | 'chunk-vector' | 'fact-kg';
+export type ObservatoryLaneStateReason =
+  | 'ok'
+  | 'no-query'
+  | 'no-evidence'
+  | 'semantic-pending'
+  | 'semantic-stale'
+  | 'semantic-degraded'
+  | 'kg-no-match'
+  | 'unsupported-sync';
+export type ObservatoryLaneStateStatus = 'ready' | 'pending' | 'degraded' | 'unavailable';
+export type ObservatoryPivotTarget = 'map' | 'timeline' | 'ledger' | 'recall';
+export type ObservatoryFrontierReason = 'limit' | 'no-neighbors' | 'scope-filtered';
+
+export interface ObservatoryScope {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  query?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  time_from?: string;
+  time_to?: string;
+}
+
+export interface ObservatoryContextResponse {
+  scope: ObservatoryScope;
+  context_token: string;
+  health: VizHealthResponse;
+  capabilities: {
+    viz_fallback_available: boolean;
+    observatory_routes_available: boolean;
+  };
+}
+
+export interface ObservatoryRecallHit {
+  observation_id: number;
+  title: string;
+  preview: string;
+  type: ObservationType;
+  project: string | null;
+  session_id: string;
+  topic_key: string | null;
+  created_at: string;
+  lane: ObservatoryLane;
+  pivot_token: string;
+}
+
+export interface ObservatoryRecallResponse {
+  context_token: string;
+  lanes: Record<ObservatoryLane, ObservatoryRecallHit[]>;
+  lane_states?: Partial<Record<ObservatoryLane, { status: ObservatoryLaneStateStatus; reason: ObservatoryLaneStateReason }>>;
+}
+
+export interface ObservatoryFrontierState {
+  added_node_ids: string[];
+  already_visible_node_ids: string[];
+  exhausted: boolean;
+  continuation: string | null;
+  reason?: ObservatoryFrontierReason;
+}
+
+export interface ObservatoryMapFrontierResponse {
+  nodes: VizNode[];
+  edges: VizEdge[];
+  frontier_state: ObservatoryFrontierState;
+  health: VizHealthResponse;
+}
+
+export interface ObservatoryLedgerResponse {
+  observation_id: number;
+  title: string;
+  type: ObservationType;
+  what: string[];
+  why: string[];
+  where: string[];
+  learned: string[];
+  facts: ObservationFact[];
+  provenance: {
+    session_id: string;
+    project: string | null;
+    topic_key: string | null;
+    created_at: string;
+  };
+}
+
+export interface ObservatoryTimelineResponse {
+  context_token: string;
+  events: Observation[];
+  continuation: string | null;
+}

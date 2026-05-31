@@ -109,4 +109,98 @@ describe('viz routes', () => {
     const denseBody = await denseResponse.json();
     expect(denseBody.state).toBe('dense');
   });
+
+  it('serves observatory routes with token and continuation validation', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Observatory auth',
+      content: 'jwt rotation',
+      project: 'obs-http',
+      session_id: 'obs-session',
+      topic_key: 'auth/jwt',
+      type: 'decision',
+    });
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project=obs-http&session_id=obs-session&query=jwt`);
+    expect(contextResponse.status).toBe(200);
+    const contextBody = await contextResponse.json();
+    expect(contextBody.context_token).toBeTypeOf('string');
+
+    const recallResponse = await fetch(`http://127.0.0.1:${port}/observatory/recall?context_token=${encodeURIComponent(contextBody.context_token)}&lanes=lexical`);
+    expect(recallResponse.status).toBe(200);
+    const recallBody = await recallResponse.json();
+    expect(recallBody.lanes.lexical.length).toBeGreaterThan(0);
+
+    const pivotResponse = await fetch(`http://127.0.0.1:${port}/observatory/pivot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pivot_token: recallBody.lanes.lexical[0].pivot_token, target: 'map' }),
+    });
+    expect(pivotResponse.status).toBe(200);
+
+    const frontierResponse = await fetch(`http://127.0.0.1:${port}/observatory/map/frontier`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context_token: contextBody.context_token, focus_node_id: `obs:${saved.observation.id}`, visible_node_ids: [], max_nodes: 1 }),
+    });
+    expect(frontierResponse.status).toBe(200);
+    const frontierBody = await frontierResponse.json();
+    expect(frontierBody.frontier_state.added_node_ids.length).toBeGreaterThan(0);
+
+    const invalidContinuationResponse = await fetch(`http://127.0.0.1:${port}/observatory/map/frontier`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context_token: contextBody.context_token, focus_node_id: `obs:${saved.observation.id}`, continuation: 'bad-token' }),
+    });
+    expect(invalidContinuationResponse.status).toBe(400);
+
+    const invalidTokenResponse = await fetch(`http://127.0.0.1:${port}/observatory/recall?context_token=not-a-token`);
+    expect(invalidTokenResponse.status).toBe(400);
+
+    const ledgerResponse = await fetch(`http://127.0.0.1:${port}/observatory/ledger/${saved.observation.id}`);
+    expect(ledgerResponse.status).toBe(200);
+
+    const timelineResponse = await fetch(`http://127.0.0.1:${port}/observatory/timeline?context_token=${encodeURIComponent(contextBody.context_token)}&limit=1`);
+    expect(timelineResponse.status).toBe(200);
+  });
+
+  it('observatory lane truth: HTTP recall lane payload must not clone lexical evidence into semantic/kg lanes', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    store.saveObservation({
+      title: 'HTTP lexical only',
+      content: 'lexical-only phrase for http lane truth',
+      project: 'obs-http-lane',
+      session_id: 'obs-http-session',
+    });
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project=obs-http-lane&session_id=obs-http-session&query=lexical-only`);
+    expect(contextResponse.status).toBe(200);
+    const contextBody = await contextResponse.json();
+
+    const recallResponse = await fetch(
+      `http://127.0.0.1:${port}/observatory/recall?context_token=${encodeURIComponent(contextBody.context_token)}&lanes=lexical,sentence-vector,chunk-vector,fact-kg&limit=20`,
+    );
+    expect(recallResponse.status).toBe(200);
+    const recallBody = await recallResponse.json();
+
+    expect(recallBody.lanes.lexical.length).toBeGreaterThan(0);
+    expect(recallBody.lanes['sentence-vector'].length).toBe(0);
+    expect(recallBody.lanes['chunk-vector'].length).toBe(0);
+    expect(recallBody.lanes['fact-kg'].length).toBe(0);
+    expect(recallBody.lane_states.lexical.status).toBe('ready');
+    expect(recallBody.lane_states['sentence-vector'].status).toBe('pending');
+    expect(recallBody.lane_states['chunk-vector'].status).toBe('pending');
+    expect(recallBody.lane_states['fact-kg'].status).toBe('unavailable');
+    expect(recallBody.lane_states['sentence-vector'].reason).toMatch(/^semantic-/);
+    expect(recallBody.lane_states['chunk-vector'].reason).toMatch(/^semantic-/);
+    expect(recallBody.lane_states['fact-kg'].reason).toBe('kg-no-match');
+  });
 });

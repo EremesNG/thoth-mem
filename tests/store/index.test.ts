@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
 import { vectorToBuffer } from '../../src/retrieval/sqlite-vec.js';
+import { splitIntoChunks } from '../../src/retrieval/sentences.js';
+import { KG_ENTITY_TYPES } from '../../src/indexing/kg-extractor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -98,6 +100,275 @@ describe('Store', () => {
   });
 
   describe('hybrid retrieval/index contracts', () => {
+    it('stale semantic cleanup: update removes stale semantic artifacts after reindex completion', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.11 : 0));
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map(() => vector),
+      };
+
+      const saved = store.saveObservation({
+        title: 'stale semantic cleanup update',
+        content: 'old-secret-token phrase',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+      store.updateObservation({
+        id: saved.observation.id,
+        content: 'fresh-public-token phrase',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+
+      const staleChunk = db.prepare(
+        "SELECT COUNT(*) AS count FROM semantic_chunks WHERE observation_id = ? AND content LIKE '%old-secret-token%'"
+      ).get(saved.observation.id) as { count: number };
+      const staleSentence = db.prepare(
+        "SELECT COUNT(*) AS count FROM semantic_sentences WHERE observation_id = ? AND content LIKE '%old-secret-token%'"
+      ).get(saved.observation.id) as { count: number };
+
+      expect(staleChunk.count).toBe(0);
+      expect(staleSentence.count).toBe(0);
+    });
+
+    it('stale semantic cleanup: delete and rebuild remove orphan semantic vectors', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.13 : 0));
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map(() => vector),
+      };
+
+      const saved = store.saveObservation({
+        title: 'stale semantic cleanup delete',
+        content: 'to-delete semantic body',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+      const beforeVecRows = db.prepare(
+        'SELECT (SELECT COUNT(*) FROM vec_chunks) + (SELECT COUNT(*) FROM vec_sentences) AS count'
+      ).get() as { count: number };
+      expect(beforeVecRows.count).toBeGreaterThan(0);
+      db.prepare('DELETE FROM observations WHERE id = ?').run(saved.observation.id);
+      runtime.enqueueManualSemanticRebuild?.({ scope: 'all', reason: 'cleanup-check' });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+
+      const orphanRowids = db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM semantic_vector_rowids svr
+         LEFT JOIN observations o ON o.id = svr.observation_id
+       WHERE o.id IS NULL`
+      ).get() as { count: number };
+      const remainingVecRows = db.prepare(
+        'SELECT (SELECT COUNT(*) FROM vec_chunks) + (SELECT COUNT(*) FROM vec_sentences) AS count'
+      ).get() as { count: number };
+
+      expect(orphanRowids.count).toBe(0);
+      expect(remainingVecRows.count).toBe(0);
+    });
+
+    it('hard delete removes semantic vectors and knowledge triples before metadata is lost', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.17 : 0));
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map(() => vector),
+      };
+
+      const saved = store.saveObservation({
+        title: 'hard delete cleanup',
+        content: 'api-key belongs-to vault-service for cleanup testing',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+
+      const beforeVecRows = db.prepare(
+        'SELECT (SELECT COUNT(*) FROM vec_chunks) + (SELECT COUNT(*) FROM vec_sentences) AS count'
+      ).get() as { count: number };
+      const beforeTriples = db.prepare("SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?")
+        .get(saved.observation.id) as { count: number };
+
+      expect(beforeVecRows.count).toBeGreaterThan(0);
+      expect(beforeTriples.count).toBeGreaterThan(0);
+      expect(store.deleteObservation(saved.observation.id, true)).toBe(true);
+
+      const afterVecRows = db.prepare(
+        'SELECT (SELECT COUNT(*) FROM vec_chunks) + (SELECT COUNT(*) FROM vec_sentences) AS count'
+      ).get() as { count: number };
+      const afterRowids = db.prepare('SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE observation_id = ?')
+        .get(saved.observation.id) as { count: number };
+      const afterTriples = db.prepare("SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?")
+        .get(saved.observation.id) as { count: number };
+
+      expect(afterVecRows.count).toBe(0);
+      expect(afterRowids.count).toBe(0);
+      expect(afterTriples.count).toBe(0);
+    });
+
+    it('kg source-safe: update replaces stale triples and keeps source lineage bound to latest content', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'kg source-safe',
+        content: 'api-key belongs-to payments-service',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20 });
+      store.updateObservation({
+        id: saved.observation.id,
+        content: 'api-key belongs-to auth-service',
+      });
+      await runtime.processSemanticJobs({ limit: 20 });
+
+      const triples = db.prepare(
+        `SELECT s.canonical_name AS subject, t.relation, o.canonical_name AS object, t.provenance
+         FROM kg_triples t
+         JOIN kg_entities s ON s.id = t.subject_entity_id
+         JOIN kg_entities o ON o.id = t.object_entity_id
+         WHERE t.source_type = 'observation' AND t.source_id = ?
+         ORDER BY t.id`
+      ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; provenance: string | null }>;
+
+      expect(triples.length).toBeGreaterThan(0);
+      expect(triples.some((triple) => `${triple.subject} ${triple.relation} ${triple.object}`.includes('payments-service'))).toBe(false);
+      expect(triples.every((triple) => typeof triple.provenance === 'string' && triple.provenance.length > 0)).toBe(true);
+    });
+
+    it('kg source-safe: retries upsert by deterministic key and avoid duplicate triples', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'kg source-safe retries',
+        content: 'secret belongs-to vault',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20 });
+      const before = db.prepare("SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?")
+        .get(saved.observation.id) as { count: number };
+      store.updateObservation({
+        id: saved.observation.id,
+        content: 'secret belongs-to vault',
+      });
+      await runtime.processSemanticJobs({ limit: 20 });
+      const after = db.prepare("SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?")
+        .get(saved.observation.id) as { count: number };
+
+      expect(after.count).toBeLessThanOrEqual(before.count);
+    });
+
+    it('atomic claim: two workers cannot claim the same pending semantic job', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'atomic claim',
+        content: 'worker claim race target',
+        project: 'hybrid-test',
+      });
+      db.prepare('DELETE FROM semantic_jobs').run();
+      db.prepare(
+        `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+         VALUES (?, 'chunk', 'pending', 50, ?, ?)`
+      ).run(`chunk:${saved.observation.id}`, saved.observation.id, `observation:${saved.observation.id}`);
+
+      const claimA = await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null, workerId: 'worker-a' });
+      const claimB = await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null, workerId: 'worker-b' });
+      const runningRows = db.prepare(
+        "SELECT COUNT(*) AS count FROM semantic_jobs WHERE observation_id = ? AND state = 'running'"
+      ).get(saved.observation.id) as { count: number };
+
+      expect(claimA + claimB).toBeLessThanOrEqual(1);
+      expect(runningRows.count).toBeLessThanOrEqual(1);
+    });
+
+    it('semantic jobs retry until max_attempts before failing', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'retry attempts',
+        content: 'retry this embedding job',
+        project: 'hybrid-test',
+      });
+      db.prepare("DELETE FROM semantic_jobs WHERE kind != 'chunk'").run();
+      const failingProvider = {
+        config: store.config.embedding!,
+        embed: async () => {
+          throw new Error('embedding offline');
+        },
+      };
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: failingProvider });
+      let row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
+        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
+      expect(row).toEqual({ state: 'pending', attempt_count: 1 });
+
+      db.prepare("UPDATE semantic_jobs SET available_at = datetime('now') WHERE job_key = ?").run(`chunk:${saved.observation.id}`);
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: failingProvider });
+      row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
+        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
+      expect(row).toEqual({ state: 'pending', attempt_count: 2 });
+
+      db.prepare("UPDATE semantic_jobs SET available_at = datetime('now') WHERE job_key = ?").run(`chunk:${saved.observation.id}`);
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: failingProvider });
+      row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
+        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
+      expect(row).toEqual({ state: 'failed', attempt_count: 3 });
+    });
+
+    it('fusion policy: lane order/weights change winner when lexical and semantic disagree', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
+      const runtime = store as any;
+      const semanticVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
+      const lexicalVector = Array.from({ length: 384 }, (_, i) => (i === 1 ? 0.9 : 0));
+      const queryVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map((text) => {
+          const normalized = text.toLowerCase();
+          if (normalized.includes('semantic') || normalized.includes('rollover')) return semanticVector;
+          if (normalized.includes('rotate key rotate key')) return lexicalVector;
+          return queryVector;
+        }),
+      };
+      const semanticHit = store.saveObservation({
+        title: 'fusion policy semantic',
+        content: 'rotate cryptographic material with staged key rollover',
+        project: 'hybrid-test',
+      });
+      const lexicalHit = store.saveObservation({
+        title: 'fusion policy lexical',
+        content: 'rotate key rotate key rotate key',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+
+      const base = await runtime.hybridRetrieve({
+        query: 'rotate key rollover',
+        laneOrder: ['sentence', 'chunk', 'lexical', 'kg'],
+        laneWeights: { sentence: 2, chunk: 2, lexical: 0, kg: 0 },
+      });
+      const lexicalFavored = await runtime.hybridRetrieve({
+        query: 'rotate key rollover',
+        laneOrder: ['lexical', 'sentence', 'chunk', 'kg'],
+        laneWeights: { sentence: 0, chunk: 0, lexical: 3, kg: 0 },
+      });
+
+      const baseTop = base.results[0]?.observation?.id;
+      const lexicalTop = lexicalFavored.results[0]?.observation?.id;
+      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(baseTop);
+      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(lexicalTop);
+      expect(baseTop).not.toBe(lexicalTop);
+    });
+
     it('semantic index: save is non-blocking, semantic state is pending, and rebuild requests are deduped', () => {
       store = new Store(':memory:');
       store.saveObservation({
@@ -124,6 +395,60 @@ describe('Store', () => {
       });
 
       expect(plan?.map((job: { kind: string }) => job.kind)).toEqual(['chunk', 'sentence']);
+    });
+
+    it('semantic chunker: uses Glia-style 300-word windows with 80-word overlap', () => {
+      const words = Array.from({ length: 650 }, (_, index) => `word${index}`);
+      const chunks = splitIntoChunks({ observationId: 7, text: words.join(' ') });
+
+      expect(chunks).toHaveLength(3);
+      expect(chunks[0].content.split(/\s+/)).toHaveLength(300);
+      expect(chunks[1].content.split(/\s+/).slice(0, 80)).toEqual(words.slice(220, 300));
+      expect(chunks[0].chunkKey).toContain('chunk:7:0');
+    });
+
+    it('semantic index: indexed save enqueues background work without embedding during save', async () => {
+      const embedding = {
+        provider: 'transformers_local' as const,
+        model: 'mock-embedding',
+        baseUrl: null,
+        dimensions: 3,
+        hyde: { enabled: false, model: null, baseUrl: null, timeoutMs: 4000 },
+        configHash: 'mock-embedding-hash',
+      };
+      store = new Store(':memory:', { embedding });
+      const provider = {
+        config: embedding,
+        calls: 0,
+        embed: async (texts: string[]) => {
+          provider.calls += 1;
+          return texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      };
+
+      const saved = await store.saveObservationWithIndex({
+        title: 'Background chunk vector',
+        content: 'Chunk vectors should be queued on save and indexed by the worker.',
+        project: 'hybrid-test',
+      }, { embeddingProvider: provider });
+
+      const db = store.getDb();
+      const chunkVectors = db.prepare(
+        "SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE lane = 'chunk' AND observation_id = ?"
+      ).get(saved.observation.id) as { count: number };
+      const sentenceVectors = db.prepare(
+        "SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE lane = 'sentence' AND observation_id = ?"
+      ).get(saved.observation.id) as { count: number };
+      const chunkJob = db.prepare("SELECT state FROM semantic_jobs WHERE kind = 'chunk' AND observation_id = ?")
+        .get(saved.observation.id) as { state: string };
+      const sentenceJob = db.prepare("SELECT state FROM semantic_jobs WHERE kind = 'sentence' AND observation_id = ?")
+        .get(saved.observation.id) as { state: string };
+
+      expect(provider.calls).toBe(0);
+      expect(chunkVectors.count).toBe(0);
+      expect(sentenceVectors.count).toBe(0);
+      expect(chunkJob.state).toBe('pending');
+      expect(sentenceJob.state).toBe('pending');
     });
 
     it('semantic index: writes vectors with sqlite-vec integer rowids', async () => {
@@ -159,7 +484,7 @@ describe('Store', () => {
       expect(vecRows.count).toBeGreaterThan(0);
     });
 
-    it('hybrid retrieval: uses Hybrid Retrieval defaults, fuses semantic/lexical/KG lanes, and degrades gracefully', async () => {
+    it('hybrid retrieval: uses Hybrid Retrieval defaults, fuses core lanes, and degrades gracefully', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
       const response = await runtime.hybridRetrieve?.({ query: 'encrypt data at rest' });
@@ -171,9 +496,9 @@ describe('Store', () => {
         minSemanticScore: 0.3,
         l2DistanceScale: 20,
       });
-      expect(response?.laneOrder).toEqual(['sentence', 'chunk', 'lexical', 'kg']);
+      expect(response?.laneOrder).toEqual(['sentence', 'chunk', 'lexical']);
       expect(response?.degradedFallback?.includes('lexical')).toBe(true);
-      expect(response?.degradedFallback?.includes('kg')).toBe(true);
+      expect(response?.degradedFallback?.includes('kg')).toBe(false);
       expect(response?.lexicalQuery).toContain('"encrypt"*');
       expect(response?.scoreFromDistance?.(20)).toBeCloseTo(Math.exp(-1), 10);
     });
@@ -257,11 +582,28 @@ describe('Store', () => {
       expect(response.lexicalQuery).toContain('"encrypt"*');
     });
 
-    it('graph lane: returns kg_triples evidence with fallback metadata shape', async () => {
+    it('FTS lexical evidence returns matching sentences instead of whole observations', async () => {
       store = new Store(':memory:');
       const saved = store.saveObservation({
-        title: 'KG lane',
-        content: 'API key belongs to service account in project hybrid-test.',
+        title: 'FTS surgical trim',
+        content: 'Alpha setup is unrelated. Rotate encryption keys weekly. Billing notes stay out of the recall.',
+        project: 'hybrid-test',
+      });
+      const runtime = store as any;
+      const response = await runtime.hybridRetrieve({ query: 'encrypt', project: 'hybrid-test' });
+      const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
+      const lexicalEvidence = hit.evidence.byLane.lexical[0].text;
+
+      expect(lexicalEvidence).toContain('Rotate encryption keys weekly.');
+      expect(lexicalEvidence).not.toContain('Alpha setup');
+      expect(lexicalEvidence).not.toContain('Billing notes');
+    });
+
+    it('graph enrichment: attaches kg_triples evidence without letting KG win core ranking', async () => {
+      store = new Store(':memory:');
+      const saved = store.saveObservation({
+        title: 'KG enrichment',
+        content: 'API key belongs to service account in project hybrid-test. Rotate service account credentials.',
         project: 'hybrid-test',
       });
       const runtime = store as any;
@@ -269,6 +611,7 @@ describe('Store', () => {
       const response = await runtime.hybridRetrieve({ query: 'service account api key' });
       const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
       expect(hit).toBeDefined();
+      expect(hit.evidence.primary.lane).not.toBe('kg');
       expect(hit.evidence.byLane.kg?.length ?? 0).toBeGreaterThan(0);
       const kgEvidence = hit.evidence.byLane.kg[0];
       if (kgEvidence.source === 'kg_triples') {
@@ -375,7 +718,9 @@ describe('Store', () => {
       ).run(saved.observation.id);
       db.prepare('INSERT INTO vec_sentences(rowid, embedding) VALUES (1003, ?)').run(vectorToBuffer(vector));
       db.prepare('INSERT INTO vec_chunks(rowid, embedding) VALUES (1004, ?)').run(vectorToBuffer(vector));
-      runtime.semanticRuntime = { pending: false, stale: false, degraded: false, degradedReason: null };
+      db.prepare(
+        "UPDATE semantic_index_state SET pending = 0, stale = 0, degraded = 0 WHERE lane IN ('chunk','sentence')"
+      ).run();
       const provider = {
         config: store.config.embedding!,
         embed: async (texts: string[]) => texts.map(() => vector),
@@ -400,12 +745,40 @@ describe('Store', () => {
       expect(kg?.triples?.every((triple: { provenance?: string; confidence?: number }) =>
         typeof triple.provenance === 'string' && typeof triple.confidence === 'number'
       )).toBe(true);
+      expect(kg?.triples?.some((triple: { relation?: string }) => triple.relation === 'BELONGS_TO')).toBe(true);
+      expect(kg?.triples?.every((triple: { subjectType?: string; objectType?: string }) =>
+        KG_ENTITY_TYPES.includes(triple.subjectType as typeof KG_ENTITY_TYPES[number])
+        && KG_ENTITY_TYPES.includes(triple.objectType as typeof KG_ENTITY_TYPES[number])
+        && triple.subjectType !== 'entity'
+        && triple.objectType !== 'entity'
+      )).toBe(true);
       expect(typeof kg?.dedupeKey).toBe('string');
 
       const factsFallback = store.getDb().prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name = 'observation_facts'"
       ).get() as { name?: string } | undefined;
       expect(factsFallback?.name).toBe('observation_facts');
+    });
+
+    it('observation_facts fallback: keeps kg_triples evidence and adds matching facts as complementary provenance', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
+      const runtime = store as any;
+      const saved = store.saveObservation({
+        title: 'KG + facts',
+        content: 'service account belongs-to security-platform',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20 });
+      store.getDb().prepare(
+        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(saved.observation.id, 'service account', 'HAS_WHAT', 'security platform rotation', 'hybrid-test', null, 'discovery');
+
+      const response = await runtime.hybridRetrieve({ query: 'service account security platform', project: 'hybrid-test' });
+      const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
+      expect(hit).toBeDefined();
+      const kgSources = new Set((hit.evidence.byLane.kg ?? []).map((c: any) => c.source));
+      expect(kgSources.has('kg_triples')).toBe(true);
+      expect(kgSources.has('observation_facts')).toBe(true);
     });
 
     it('background indexing: processSemanticJobs indexes chunks/sentences and converges idempotently', async () => {
@@ -458,24 +831,31 @@ describe('Store', () => {
       db.prepare(
         "UPDATE semantic_jobs SET state = 'done', attempt_count = 2, finished_at = datetime('now') WHERE job_key = ?"
       ).run(`chunk:${saved.observation.id}`);
+      db.prepare(
+        "UPDATE semantic_jobs SET state = 'done', attempt_count = 2, finished_at = datetime('now') WHERE job_key = ?"
+      ).run(`sentence:${saved.observation.id}`);
 
       runtime.enqueueManualSemanticRebuild?.({ scope: 'all', reason: 'manual' });
       await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null });
 
       const row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
         .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
+      const sentenceRow = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
+        .get(`sentence:${saved.observation.id}`) as { state: string; attempt_count: number };
       expect(row.state).toBe('pending');
       expect(row.attempt_count).toBe(0);
+      expect(sentenceRow.state).toBe('pending');
+      expect(sentenceRow.attempt_count).toBe(0);
     });
 
-    it('degraded: returns lexical+kg lanes when semantic runtime is pending', async () => {
+    it('degraded: returns lexical fallback when semantic runtime is pending', async () => {
       store = new Store(':memory:');
       store.saveObservation({ title: 'Degraded fallback', content: 'encrypt data at rest', project: 'hybrid-test' });
       const runtime = store as any;
       const response = await runtime.hybridRetrieve({ query: 'encrypt data' });
       expect(response.pending).toBe(true);
       expect(response.degradedFallback).toContain('lexical');
-      expect(response.degradedFallback).toContain('kg');
+      expect(response.degradedFallback).not.toContain('kg');
     });
   });
 });

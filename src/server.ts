@@ -25,7 +25,7 @@ FORMAT for content — use structured format:
 
 ## Recall Protocol — 3-Layer (Token-Efficient)
 Use the compact MCP surface:
-1. RECALL: mem_recall(query, mode="compact") → fused hybrid evidence across semantic, lexical, and graph lanes
+1. RECALL: mem_recall(query, mode="compact") → fused hybrid evidence across semantic and lexical lanes, enriched with graph facts
 2. EXPAND: mem_recall(query, mode="context") → concise retrieved text for the strongest hits
 3. FETCH: mem_get(id) → full content ONLY for the 1-3 records that truly need full detail
 

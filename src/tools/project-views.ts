@@ -29,7 +29,7 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   ].filter((part): part is string => part !== null);
 
   const headerLines = [
-    `## Graph Lite: ${project}`,
+    `## Knowledge Graph Ledger: ${project}`,
     '',
     filterParts.length > 0 ? `Filters: ${filterParts.join(', ')}` : null,
     `Showing ${limitedFacts.length} of ${facts.length} fact(s).`,
@@ -37,7 +37,7 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   ].filter((line): line is string => line !== null);
 
   if (facts.length === 0) {
-    return [...headerLines, 'No graph-lite facts found.'].join('\n');
+    return [...headerLines, 'No KG/ledger facts found.'].join('\n');
   }
 
   const omittedByLimit = facts.length - limitedFacts.length;

@@ -9,15 +9,19 @@ import type {
   Session,
   UserPrompt,
   VizExpandRequest,
+  ObservatoryLane,
 } from './store/types.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from './tools/project-views.js';
 import { suggestTopicKey } from './utils/topic-key.js';
+import type { EmbeddingProviderAdapter } from './retrieval/providers.js';
+import type { HydeGenerator } from './retrieval/hyde.js';
 
 const OBSERVATION_SCOPES: ObservationScope[] = ['project', 'personal'];
 const SEARCH_MODES: SearchMode[] = ['compact', 'preview'];
+const OBSERVATORY_LANES: ObservatoryLane[] = ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'];
 const GRAPH_RELATIONS = [
   'HAS_TYPE',
   'IN_PROJECT',
@@ -55,6 +59,12 @@ export interface HttpRouteResponse {
   contentType?: string;
   status: number;
   text?: string;
+}
+
+export interface HttpRouteContext {
+  embeddingProvider?: EmbeddingProviderAdapter | null;
+  hydeGenerator?: HydeGenerator | null;
+  port: number;
 }
 
 export class HttpRouteError extends Error {
@@ -383,8 +393,8 @@ export async function handleHealth(): Promise<HttpRouteResponse> {
   return { status: 200, body: { status: 'ok' } };
 }
 
-export async function handleOpenApi(_store: Store, _request: HttpRouteRequest, port: number): Promise<HttpRouteResponse> {
-  return { status: 200, body: getOpenApiSpec(port) };
+export async function handleOpenApi(_store: Store, _request: HttpRouteRequest, context: HttpRouteContext): Promise<HttpRouteResponse> {
+  return { status: 200, body: getOpenApiSpec(context.port) };
 }
 
 export async function handleDocs(): Promise<HttpRouteResponse> {
@@ -408,9 +418,13 @@ export async function handleDocs(): Promise<HttpRouteResponse> {
   };
 }
 
-export async function handleCreateObservation(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+export async function handleCreateObservation(
+  store: Store,
+  request: HttpRouteRequest,
+  context: HttpRouteContext,
+): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
-  const result = store.saveObservation({
+  const result = await store.saveObservationWithIndex({
     title: requireString(body?.title, 'title'),
     content: requireString(body?.content, 'content'),
     type: parseObservationType(body?.type, 'type'),
@@ -418,7 +432,7 @@ export async function handleCreateObservation(store: Store, request: HttpRouteRe
     project: optionalString(body?.project, 'project'),
     scope: parseObservationScope(body?.scope, 'scope'),
     topic_key: optionalString(body?.topic_key, 'topic_key'),
-  });
+  }, { embeddingProvider: context.embeddingProvider ?? null });
 
   return {
     status: 201,
@@ -580,19 +594,23 @@ export async function handleStartSession(store: Store, request: HttpRouteRequest
   };
 }
 
-export async function handleSessionSummary(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+export async function handleSessionSummary(
+  store: Store,
+  request: HttpRouteRequest,
+  context: HttpRouteContext,
+): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const project = requireString(body?.project, 'project');
   const sessionId = optionalString(body?.session_id, 'session_id') ?? `manual-save-${project}`;
   const content = requireString(body?.content, 'content');
-  const result = store.saveObservation({
+  const result = await store.saveObservationWithIndex({
     title: `Session summary: ${project}`,
     content,
     type: 'session_summary',
     session_id: sessionId,
     project,
     scope: 'project',
-  });
+  }, { embeddingProvider: context.embeddingProvider ?? null });
 
   store.endSession(sessionId, extractFirstContentLine(content));
 
@@ -644,6 +662,17 @@ export async function handleTimeline(store: Store, request: HttpRouteRequest): P
 
 export async function handleStats(store: Store): Promise<HttpRouteResponse> {
   return { status: 200, body: toStatsResponse(store) };
+}
+
+function parseObservatoryLanes(value: string | null): ObservatoryLane[] | undefined {
+  if (!value) return undefined;
+  const lanes = value.split(',').map((lane) => lane.trim()).filter((lane) => lane.length > 0);
+  if (lanes.length === 0) return undefined;
+  const invalid = lanes.find((lane) => !OBSERVATORY_LANES.includes(lane as ObservatoryLane));
+  if (invalid) {
+    throw new HttpRouteError(400, `Invalid lane: ${invalid}`);
+  }
+  return lanes as ObservatoryLane[];
 }
 
 export async function handleVizSlice(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
@@ -711,6 +740,122 @@ export async function handleVizFilters(store: Store, request: HttpRouteRequest):
 }
 
 export async function handleVizHealth(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.getVisualizationHealth({ project: request.query.get('project') ?? undefined }) };
+}
+
+export async function handleObservatoryContext(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return {
+    status: 200,
+    body: store.getObservatoryContext({
+      project: request.query.get('project') ?? undefined,
+      session_id: request.query.get('session_id') ?? undefined,
+      topic_key: request.query.get('topic_key') ?? undefined,
+      query: request.query.get('query') ?? undefined,
+      relation: request.query.get('relation') ?? undefined,
+      type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
+      observation_type: parseObservationType(request.query.get('observation_type') ?? undefined, 'observation_type'),
+      time_from: request.query.get('time_from') ?? undefined,
+      time_to: request.query.get('time_to') ?? undefined,
+    }),
+  };
+}
+
+export async function handleObservatoryRecall(store: Store, request: HttpRouteRequest, context: HttpRouteContext): Promise<HttpRouteResponse> {
+  const contextToken = request.query.get('context_token');
+  if (!contextToken) throw new HttpRouteError(400, 'Missing required field: context_token');
+  try {
+    return {
+      status: 200,
+      body: await store.getObservatoryRecall({
+        context_token: contextToken,
+        lanes: parseObservatoryLanes(request.query.get('lanes')),
+        limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
+        embeddingProvider: context.embeddingProvider ?? null,
+        hydeGenerator: context.hydeGenerator ?? null,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
+      throw new HttpRouteError(400, error.message);
+    }
+    throw error;
+  }
+}
+
+export async function handleObservatoryPivot(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  const target = requireString(body?.target, 'target');
+  if (!['map', 'timeline', 'ledger', 'recall'].includes(target)) {
+    throw new HttpRouteError(400, 'Invalid field: target');
+  }
+  try {
+    return {
+      status: 200,
+      body: store.resolveObservatoryPivot({
+        pivot_token: requireString(body?.pivot_token, 'pivot_token'),
+        target: target as 'map' | 'timeline' | 'ledger' | 'recall',
+      }),
+    };
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
+      throw new HttpRouteError(400, error.message);
+    }
+    throw error;
+  }
+}
+
+export async function handleObservatoryMapFrontier(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  try {
+    return {
+      status: 200,
+      body: store.getObservatoryMapFrontier({
+        context_token: requireString(body?.context_token, 'context_token'),
+        focus_node_id: requireString(body?.focus_node_id, 'focus_node_id'),
+        visible_node_ids: Array.isArray(body?.visible_node_ids)
+          ? body?.visible_node_ids.filter((item): item is string => typeof item === 'string')
+          : undefined,
+        max_nodes: body?.max_nodes !== undefined ? parseRequiredInteger(String(body.max_nodes), 'max_nodes', 1) : undefined,
+        max_edges: body?.max_edges !== undefined ? parseRequiredInteger(String(body.max_edges), 'max_edges', 1) : undefined,
+        continuation: optionalString(body?.continuation, 'continuation'),
+      }),
+    };
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired') || error.message.includes('continuation'))) {
+      throw new HttpRouteError(400, error.message);
+    }
+    throw error;
+  }
+}
+
+export async function handleObservatoryLedger(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const id = parseObservationId(request.params);
+  const payload = store.getObservatoryLedgerDetail({ observation_id: id });
+  if (!payload) throw new HttpRouteError(404, `Observation ${id} not found`);
+  return { status: 200, body: payload };
+}
+
+export async function handleObservatoryTimeline(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const contextToken = request.query.get('context_token');
+  if (!contextToken) throw new HttpRouteError(400, 'Missing required field: context_token');
+  try {
+    return {
+      status: 200,
+      body: store.getObservatoryTimeline({
+        context_token: contextToken,
+        limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
+        continuation: request.query.get('continuation') ?? undefined,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired') || error.message.includes('continuation'))) {
+      throw new HttpRouteError(400, error.message);
+    }
+    throw error;
+  }
+}
+
+export async function handleObservatoryHealth(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   return { status: 200, body: store.getVisualizationHealth({ project: request.query.get('project') ?? undefined }) };
 }
 
@@ -823,7 +968,11 @@ export async function handleSuggestTopicKey(_store: Store, request: HttpRouteReq
   };
 }
 
-export async function handleCapturePassive(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+export async function handleCapturePassive(
+  store: Store,
+  request: HttpRouteRequest,
+  context: HttpRouteContext,
+): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const learnings = extractPassiveLearnings(requireString(body?.content, 'content'));
   const sessionId = optionalString(body?.session_id, 'session_id');
@@ -834,14 +983,14 @@ export async function handleCapturePassive(store: Store, request: HttpRouteReque
 
   for (const item of learnings) {
     const title = item.length > 50 ? `${item.slice(0, 50)}...` : item;
-    const result = store.saveObservation({
+    const result = await store.saveObservationWithIndex({
       title,
       content: item,
       type: 'learning',
       session_id: sessionId,
       project,
       scope: 'project',
-    });
+    }, { embeddingProvider: context.embeddingProvider ?? null });
 
     if (result.action === 'created' || result.action === 'upserted') {
       saved += 1;
@@ -988,4 +1137,4 @@ export async function handleDeleteProject(store: Store, request: HttpRouteReques
   }
 }
 
-export type HttpRouteHandler = (store: Store, request: HttpRouteRequest, port: number) => Promise<HttpRouteResponse>;
+export type HttpRouteHandler = (store: Store, request: HttpRouteRequest, context: HttpRouteContext) => Promise<HttpRouteResponse>;

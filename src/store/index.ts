@@ -33,6 +33,17 @@ import type {
   TopicKeySummary,
   UpdateObservationInput,
   UserPrompt,
+  ObservatoryContextResponse,
+  ObservatoryFrontierState,
+  ObservatoryLane,
+  ObservatoryLaneStateReason,
+  ObservatoryLedgerResponse,
+  ObservatoryMapFrontierResponse,
+  ObservatoryPivotTarget,
+  ObservatoryRecallHit,
+  ObservatoryRecallResponse,
+  ObservatoryScope,
+  ObservatoryTimelineResponse,
   VizExpandRequest,
   VizFiltersResponse,
   VizHealthResponse,
@@ -49,7 +60,14 @@ import { formatObservationMarkdown, formatSearchResults, truncateForPreview, val
 import { prepareHydeSemanticInputs } from '../retrieval/hyde.js';
 import type { HydeGenerator, SemanticInput } from '../retrieval/hyde.js';
 import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
-import { fuseCandidates, type HybridHit, type LaneCandidate } from '../retrieval/ranking.js';
+import {
+  DEFAULT_LANE_ORDER,
+  fuseCandidates,
+  type FusionOptions,
+  type HybridHit,
+  type LaneCandidate,
+  type RetrievalLane,
+} from '../retrieval/ranking.js';
 import { processNextSemanticJob, processSemanticJobs } from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
@@ -57,6 +75,22 @@ import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 type ObservationRow = Observation;
 
 type SearchRow = ObservationRow & { rank: number };
+type SemanticLaneName = 'chunk' | 'sentence';
+type RetrievalCandidateFilters = {
+  project?: string;
+  session_id?: string;
+  scope?: Observation['scope'];
+  topic_key?: string;
+  type?: Observation['type'];
+  time_from?: string;
+  time_to?: string;
+};
+type SemanticLaneReadiness = Record<SemanticLaneName, {
+  pending: boolean;
+  degraded: boolean;
+  stale: boolean;
+  ready: boolean;
+}>;
 type VizEdgeRow = {
   observation_id: number;
   session_id: string;
@@ -144,6 +178,9 @@ const VIZ_LIMITS = {
   maxNodesDefault: 300,
   maxEdgesDefault: 900,
 };
+
+const OBSERVATORY_CONTEXT_TTL_MS = 1000 * 60 * 30;
+const OBSERVATORY_PIVOT_TTL_MS = 1000 * 60 * 10;
 
 export class Store {
   private db: Database.Database;
@@ -421,6 +458,31 @@ export class Store {
     this.semanticRuntime.stale = rows.some((row) => row.stale === 1);
   }
 
+  private getSemanticLaneReadiness(): SemanticLaneReadiness {
+    const rows = this.db.prepare(
+      "SELECT lane, pending, degraded, stale FROM semantic_index_state WHERE lane IN ('chunk','sentence')"
+    ).all() as Array<{ lane: SemanticLaneName; pending: number; degraded: number; stale: number }>;
+    const defaultState = { pending: true, degraded: false, stale: true, ready: false };
+    const readiness: SemanticLaneReadiness = {
+      chunk: { ...defaultState },
+      sentence: { ...defaultState },
+    };
+
+    for (const row of rows) {
+      const pending = row.pending === 1;
+      const degraded = row.degraded === 1;
+      const stale = row.stale === 1;
+      readiness[row.lane] = {
+        pending,
+        degraded,
+        stale,
+        ready: !pending && !degraded && !stale,
+      };
+    }
+
+    return readiness;
+  }
+
   private enqueueRebuildOnConfigMismatch(): void {
     const hash = this.config.embedding?.configHash ?? null;
     if (!hash) {
@@ -660,6 +722,31 @@ export class Store {
 
   private refreshObservationFacts(observation: Observation): void {
     this.replaceObservationFacts(observation);
+  }
+
+  private deleteSemanticArtifactsForObservation(observationId: number): void {
+    const rows = this.db.prepare(
+      "SELECT lane, vec_rowid FROM semantic_vector_rowids WHERE observation_id = ?"
+    ).all(observationId) as Array<{ lane: SemanticLaneName; vec_rowid: number }>;
+    const deleteChunkVec = this.db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+    const deleteSentenceVec = this.db.prepare('DELETE FROM vec_sentences WHERE rowid = ?');
+
+    for (const row of rows) {
+      if (row.lane === 'chunk') {
+        deleteChunkVec.run(BigInt(row.vec_rowid));
+      } else {
+        deleteSentenceVec.run(BigInt(row.vec_rowid));
+      }
+    }
+
+    this.db.prepare('DELETE FROM semantic_vector_rowids WHERE observation_id = ?').run(observationId);
+    this.db.prepare('DELETE FROM semantic_sentences WHERE observation_id = ?').run(observationId);
+    this.db.prepare('DELETE FROM semantic_chunks WHERE observation_id = ?').run(observationId);
+  }
+
+  private deleteKnowledgeArtifactsForObservation(observationId: number): void {
+    this.db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
+    this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
@@ -984,6 +1071,18 @@ export class Store {
     return { observation, action: 'created' };
   }
 
+  async saveObservationWithIndex(
+    input: SaveObservationInput,
+    options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+  ): Promise<SaveResult> {
+    const result = this.saveObservation(input);
+    if (result.action !== 'deduplicated') {
+      void options.embeddingProvider;
+      this.refreshSemanticRuntimeFromState();
+    }
+    return result;
+  }
+
   getObservation(id: number): Observation | null {
     const row = this.db.prepare('SELECT * FROM observations WHERE id = ? AND deleted_at IS NULL').get(id) as ObservationRow | undefined;
     return this.mapObservationRow(row);
@@ -995,8 +1094,16 @@ export class Store {
         'SELECT sync_id, project FROM observations WHERE id = ?'
       ).get(id) as { sync_id: string | null; project: string | null } | undefined;
 
-      this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
-      const result = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+      if (!existing) {
+        return false;
+      }
+
+      const result = this.db.transaction(() => {
+        this.deleteSemanticArtifactsForObservation(id);
+        this.deleteKnowledgeArtifactsForObservation(id);
+        this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
+        return this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+      })();
 
       if (result.changes > 0) {
         this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
@@ -1079,16 +1186,60 @@ export class Store {
     return updated;
   }
 
+  private appendObservationFilters(
+    sql: string[],
+    params: Array<string | number | Buffer>,
+    filters: RetrievalCandidateFilters = {},
+    alias = 'o',
+  ): void {
+    if (filters.project) {
+      sql.push(`AND ${alias}.project = ?`);
+      params.push(filters.project);
+    }
+    if (filters.session_id) {
+      sql.push(`AND ${alias}.session_id = ?`);
+      params.push(filters.session_id);
+    }
+    if (filters.scope) {
+      sql.push(`AND ${alias}.scope = ?`);
+      params.push(filters.scope);
+    }
+    if (filters.topic_key) {
+      sql.push(`AND ${alias}.topic_key = ?`);
+      params.push(filters.topic_key);
+    }
+    if (filters.type) {
+      sql.push(`AND ${alias}.type = ?`);
+      params.push(filters.type);
+    }
+    if (filters.time_from) {
+      sql.push(`AND ${alias}.created_at >= ?`);
+      params.push(filters.time_from);
+    }
+    if (filters.time_to) {
+      sql.push(`AND ${alias}.created_at <= ?`);
+      params.push(filters.time_to);
+    }
+  }
+
   async hybridRetrieve(input: {
     query: string;
     limit?: number;
     project?: string;
+    session_id?: string;
+    scope?: Observation['scope'];
+    topic_key?: string;
+    type?: Observation['type'];
+    time_from?: string;
+    time_to?: string;
+    laneOrder?: RetrievalLane[];
+    laneWeights?: Partial<Record<RetrievalLane, number>>;
     embeddingProvider?: EmbeddingProviderAdapter | null;
     hydeGenerator?: HydeGenerator | null;
     hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
   }): Promise<{
     defaults: typeof DEFAULT_RETRIEVAL_DEFAULTS;
-    laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+    laneOrder: RetrievalLane[];
     degradedFallback: string[];
     lexicalQuery: string;
     scoreFromDistance: (distance: number) => number;
@@ -1099,6 +1250,15 @@ export class Store {
     const defaults = resolveRetrievalDefaults(this.config.retrievalDefaults);
     const lexicalQuery = sanitizeFTSPrefix(input.query);
     const degradedFallback: string[] = [];
+    const filters: RetrievalCandidateFilters = {
+      project: input.project,
+      session_id: input.session_id,
+      scope: input.scope,
+      topic_key: input.topic_key,
+      type: input.type,
+      time_from: input.time_from,
+      time_to: input.time_to,
+    };
     const semanticInputsResult = await this.prepareSemanticInputs({
       query: input.query,
       hyde: input.hyde,
@@ -1106,39 +1266,44 @@ export class Store {
     });
     const semanticInputs = semanticInputsResult.inputs;
     const semanticCandidates: LaneCandidate[] = [];
-    const canRunSemantic = !this.semanticRuntime.degraded && !this.semanticRuntime.pending && !this.semanticRuntime.stale;
+    const semanticReadiness = this.getSemanticLaneReadiness();
+    const canRunSentenceSemantic = semanticReadiness.sentence.ready;
+    const canRunChunkSemantic = semanticReadiness.chunk.ready;
 
-    if (canRunSemantic && input.embeddingProvider && semanticInputs.length > 0) {
+    if ((canRunSentenceSemantic || canRunChunkSemantic) && input.embeddingProvider && semanticInputs.length > 0) {
       const embeddings = await input.embeddingProvider.embed(semanticInputs.map((item) => item.text), 'query');
       for (let i = 0; i < semanticInputs.length; i += 1) {
         const semanticInput = semanticInputs[i];
         const vector = embeddings[i];
         if (!vector || vector.length === 0) continue;
-        semanticCandidates.push(...this.querySentenceLane({
-          vector,
-          source: semanticInput.source,
-          topK: defaults.sentenceTopK,
-          minSemanticScore: defaults.minSemanticScore,
-          l2DistanceScale: defaults.l2DistanceScale,
-          project: input.project,
-        }));
-        semanticCandidates.push(...this.queryChunkLane({
-          vector,
-          source: semanticInput.source,
-          topK: defaults.chunkTopK,
-          minSemanticScore: defaults.minSemanticScore,
-          l2DistanceScale: defaults.l2DistanceScale,
-          project: input.project,
-        }));
+        if (canRunSentenceSemantic) {
+          semanticCandidates.push(...this.querySentenceLane({
+            vector,
+            source: semanticInput.source,
+            topK: defaults.sentenceTopK,
+            minSemanticScore: defaults.minSemanticScore,
+            l2DistanceScale: defaults.l2DistanceScale,
+            filters,
+          }));
+        }
+        if (canRunChunkSemantic) {
+          semanticCandidates.push(...this.queryChunkLane({
+            vector,
+            source: semanticInput.source,
+            topK: defaults.chunkTopK,
+            minSemanticScore: defaults.minSemanticScore,
+            l2DistanceScale: defaults.l2DistanceScale,
+            filters,
+          }));
+        }
       }
     } else {
-      degradedFallback.push('lexical', 'kg');
+      degradedFallback.push('lexical');
     }
 
-    const lexicalCandidates = this.queryLexicalLane({ query: input.query, lexicalLimit: defaults.lexicalLimit, project: input.project });
-    const kgCandidates = this.queryKnowledgeLane({ query: input.query, project: input.project });
-    const allCandidates = [...semanticCandidates, ...lexicalCandidates, ...kgCandidates];
-    const observationIds = Array.from(new Set(allCandidates.map((candidate) => candidate.observationId)));
+    const lexicalCandidates = this.queryLexicalLane({ query: input.query, lexicalLimit: defaults.lexicalLimit, filters });
+    const coreCandidates = [...semanticCandidates, ...lexicalCandidates];
+    const observationIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
     const observationRows = observationIds.length > 0
       ? this.db.prepare(
           `SELECT * FROM observations
@@ -1147,11 +1312,42 @@ export class Store {
         ).all(...observationIds) as ObservationRow[]
       : [];
     const observations = new Map(observationRows.map((row) => [row.id, row]));
-    const fused = fuseCandidates(observations, allCandidates).slice(0, input.limit ?? defaults.lexicalLimit);
+    const fusionOptions: FusionOptions = {
+      laneOrder: input.laneOrder,
+      laneWeights: input.laneWeights,
+    };
+    const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, input.limit ?? defaults.lexicalLimit);
+    const effectiveLaneOrder = this.resolveEffectiveLaneOrder(input.laneOrder);
+    const graphCandidates = this.queryKnowledgeLane({
+      query: input.query,
+      filters,
+      observationIds: fused.map((hit) => hit.observation.id),
+      includeUnmatched: true,
+    });
+    const graphByObservation = new Map<number, LaneCandidate[]>();
+    graphCandidates.sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      if (a.source !== b.source) return a.source === 'observation_facts' ? -1 : 1;
+      return a.observationId - b.observationId;
+    });
+    for (const candidate of graphCandidates) {
+      const list = graphByObservation.get(candidate.observationId) ?? [];
+      if (list.length < 5) {
+        list.push(candidate);
+        graphByObservation.set(candidate.observationId, list);
+      }
+    }
 
     for (const hit of fused) {
-      if (hit.evidence.primary.lane !== 'sentence') continue;
-      const sentenceChunkKey = hit.evidence.primary.chunkKey;
+      const graphEvidence = graphByObservation.get(hit.observation.id);
+      if (graphEvidence && graphEvidence.length > 0) {
+        hit.evidence.byLane.kg = graphEvidence;
+        hit.lanes = Array.from(new Set([...hit.lanes, 'kg' as const]));
+      }
+      const bestSentence = hit.evidence.byLane.sentence?.reduce((best, candidate) => (
+        candidate.score > best.score ? candidate : best
+      ));
+      const sentenceChunkKey = bestSentence?.chunkKey;
       if (!sentenceChunkKey) continue;
       const parent = this.db.prepare(
         'SELECT chunk_key, content FROM semantic_chunks WHERE chunk_key = ? LIMIT 1'
@@ -1163,7 +1359,7 @@ export class Store {
 
     return {
       defaults,
-      laneOrder: ['sentence', 'chunk', 'lexical', 'kg'],
+      laneOrder: effectiveLaneOrder,
       degradedFallback,
       lexicalQuery,
       scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
@@ -1179,7 +1375,7 @@ export class Store {
     topK: number;
     minSemanticScore: number;
     l2DistanceScale: number;
-    project?: string;
+    filters?: RetrievalCandidateFilters;
   }): LaneCandidate[] {
     const params: Array<string | number | Buffer> = [vectorToBuffer(input.vector), input.topK];
     const sql = [
@@ -1191,10 +1387,7 @@ export class Store {
       'WHERE v.embedding MATCH ? AND k = ?',
       'AND o.deleted_at IS NULL',
     ];
-    if (input.project) {
-      sql.push('AND o.project = ?');
-      params.push(input.project);
-    }
+    this.appendObservationFilters(sql, params, input.filters);
     sql.push('ORDER BY v.distance ASC');
     const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{
       observation_id: number; chunk_key: string; sentence_key: string; content: string; distance: number;
@@ -1220,7 +1413,7 @@ export class Store {
     topK: number;
     minSemanticScore: number;
     l2DistanceScale: number;
-    project?: string;
+    filters?: RetrievalCandidateFilters;
   }): LaneCandidate[] {
     const params: Array<string | number | Buffer> = [vectorToBuffer(input.vector), input.topK];
     const sql = [
@@ -1232,10 +1425,7 @@ export class Store {
       'WHERE v.embedding MATCH ? AND k = ?',
       'AND o.deleted_at IS NULL',
     ];
-    if (input.project) {
-      sql.push('AND o.project = ?');
-      params.push(input.project);
-    }
+    this.appendObservationFilters(sql, params, input.filters);
     sql.push('ORDER BY v.distance ASC');
     const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{
       observation_id: number; chunk_key: string; content: string; distance: number;
@@ -1254,10 +1444,54 @@ export class Store {
       }));
   }
 
-  private queryLexicalLane(input: { query: string; lexicalLimit: number; project?: string }): LaneCandidate[] {
+  private getQueryTerms(query: string): string[] {
+    return query
+      .toLowerCase()
+      .split(/[^a-z0-9_./:-]+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length >= 3);
+  }
+
+  private splitEvidenceSentences(content: string): string[] {
+    const normalized = stripPrivateTags(content).replace(/\r\n?/g, '\n').trim();
+    if (normalized.length === 0) {
+      return [];
+    }
+
+    return normalized
+      .replace(/\n+/g, ' ')
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence.length >= 5);
+  }
+
+  private sentenceMatchesTerms(sentence: string, terms: string[]): boolean {
+    const words = sentence
+      .toLowerCase()
+      .split(/[^a-z0-9_./:-]+/)
+      .filter(Boolean);
+
+    return terms.some((term) => words.some((word) => word.startsWith(term) || word.includes(term)));
+  }
+
+  private buildLexicalEvidenceText(observationId: number, content: string, terms: string[]): string {
+    const indexedSentences = this.db.prepare(
+      'SELECT content FROM semantic_sentences WHERE observation_id = ? ORDER BY sentence_index ASC'
+    ).all(observationId) as Array<{ content: string }>;
+    const sentences = indexedSentences.length > 0
+      ? indexedSentences.map((row) => stripPrivateTags(row.content).trim()).filter((sentence) => sentence.length >= 5)
+      : this.splitEvidenceSentences(content);
+    const matchingSentences = sentences.filter((sentence) => this.sentenceMatchesTerms(sentence, terms));
+    const selected = matchingSentences.length > 0 ? matchingSentences : sentences.slice(0, 3);
+
+    return selected.join(' ').trim() || truncateForPreview(stripPrivateTags(content).trim(), this.config.previewLength);
+  }
+
+  private queryLexicalLane(input: { query: string; lexicalLimit: number; filters?: RetrievalCandidateFilters }): LaneCandidate[] {
     const prefixQuery = sanitizeFTSPrefix(input.query);
     if (prefixQuery === '') return [];
-    const params: Array<string | number> = [prefixQuery];
+    const terms = this.getQueryTerms(input.query);
+    const params: Array<string | number | Buffer> = [prefixQuery];
     const sql = [
       'SELECT o.id as observation_id, o.content, fts.rank',
       'FROM observations_fts fts',
@@ -1265,29 +1499,39 @@ export class Store {
       'WHERE observations_fts MATCH ?',
       'AND o.deleted_at IS NULL',
     ];
-    if (input.project) {
-      sql.push('AND o.project = ?');
-      params.push(input.project);
-    }
+    this.appendObservationFilters(sql, params, input.filters);
     sql.push('ORDER BY fts.rank ASC LIMIT ?');
     params.push(input.lexicalLimit);
     const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; content: string; rank: number }>;
     return rows.map((row) => ({
       lane: 'lexical' as const,
-      observationId: row.observation_id,
-      score: 1 / (1 + Math.abs(row.rank)),
-      source: 'lexical_prefix' as const,
-      text: row.content,
-    }));
+        observationId: row.observation_id,
+        score: 1 / (1 + Math.abs(row.rank)),
+        source: 'lexical_prefix' as const,
+        text: this.buildLexicalEvidenceText(row.observation_id, row.content, terms),
+      }));
   }
 
-  private queryKnowledgeLane(input: { query: string; project?: string }): LaneCandidate[] {
+  private queryKnowledgeLane(input: {
+    query: string;
+    filters?: RetrievalCandidateFilters;
+    observationIds?: number[];
+    includeUnmatched?: boolean;
+  }): LaneCandidate[] {
+    if (input.observationIds && input.observationIds.length === 0) return [];
     const sanitized = sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase();
-    if (sanitized.length === 0) return [];
-    const terms = sanitized.split(/\s+/).filter((token) => token.length >= 3);
-    if (terms.length === 0) return [];
+    const terms = this.getQueryTerms(sanitized);
+    if (terms.length === 0 && !input.includeUnmatched) return [];
+    const queryText = ` ${terms.join(' ')} `;
+    const entityMatches = (name: string): number => {
+      const entityTerms = this.getQueryTerms(name);
+      if (entityTerms.length === 0) return 0;
+      const exactPhrase = queryText.includes(` ${entityTerms.join(' ')} `) ? 1 : 0;
+      const tokenMatches = entityTerms.filter((term) => terms.some((queryTerm) => term.startsWith(queryTerm) || queryTerm.startsWith(term))).length;
+      return exactPhrase + tokenMatches;
+    };
 
-    const kgParams: Array<string> = [];
+    const kgParams: Array<string | number | Buffer> = [];
     const kgSql = [
       'SELECT t.source_id as observation_id, t.provenance, t.confidence, t.source_type, se.canonical_name as subject_name,',
       '       oe.canonical_name as object_name, t.relation',
@@ -1297,19 +1541,25 @@ export class Store {
       'JOIN observations o ON o.id = t.source_id',
       'WHERE o.deleted_at IS NULL',
     ];
-    if (input.project) {
-      kgSql.push('AND o.project = ?');
-      kgParams.push(input.project);
+    this.appendObservationFilters(kgSql, kgParams, input.filters);
+    if (input.observationIds && input.observationIds.length > 0) {
+      kgSql.push(`AND o.id IN (${input.observationIds.map(() => '?').join(',')})`);
+      kgParams.push(...input.observationIds);
     }
     const rows = this.db.prepare(kgSql.join(' ')).all(...kgParams) as Array<{
       observation_id: number; provenance: string; confidence: number; source_type: string;
       subject_name: string; object_name: string; relation: string;
     }>;
-    const scored = rows.flatMap((row) => {
-      const tripleText = `${row.subject_name} ${row.relation} ${row.object_name}`.toLowerCase();
-      const matches = terms.filter((term) => tripleText.includes(term)).length;
-      if (matches === 0) return [];
-      const score = Math.min(1, row.confidence + (matches / terms.length) * 0.5);
+    const tripleCandidates = rows.flatMap((row) => {
+      const subjectMatches = entityMatches(row.subject_name);
+      const objectMatches = entityMatches(row.object_name);
+      const relationTerms = this.getQueryTerms(row.relation);
+      const relationMatches = relationTerms.filter((term) => terms.includes(term)).length;
+      const matches = subjectMatches + objectMatches + relationMatches;
+      if (matches === 0 && !input.includeUnmatched) return [];
+      const score = matches > 0
+        ? Math.min(1, row.confidence + Math.min(matches / Math.max(terms.length, 1), 1) * 0.5)
+        : row.confidence * 0.2;
       return [{
         lane: 'kg' as const,
         observationId: row.observation_id,
@@ -1320,25 +1570,25 @@ export class Store {
       }];
     });
 
-    if (scored.length > 0) return scored;
-
-    const fallbackParams: Array<string> = [];
+    const fallbackParams: Array<string | number | Buffer> = [];
     const fallbackSql = [
       'SELECT f.observation_id, f.subject, f.relation, f.object',
       'FROM observation_facts f',
       'JOIN observations o ON o.id = f.observation_id',
       'WHERE o.deleted_at IS NULL',
     ];
-    if (input.project) {
-      fallbackSql.push('AND o.project = ?');
-      fallbackParams.push(input.project);
+    this.appendObservationFilters(fallbackSql, fallbackParams, input.filters);
+    if (input.observationIds && input.observationIds.length > 0) {
+      fallbackSql.push(`AND o.id IN (${input.observationIds.map(() => '?').join(',')})`);
+      fallbackParams.push(...input.observationIds);
     }
     const fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
       observation_id: number; subject: string; relation: string; object: string;
     }>;
-    return fallbackRows.flatMap((row) => {
+    const factCandidates = fallbackRows.flatMap((row) => {
       const factText = `${row.subject} ${row.relation} ${row.object}`.toLowerCase();
-      if (!terms.some((term) => factText.includes(term))) return [];
+      const matches = terms.filter((term) => factText.includes(term)).length;
+      if (matches === 0) return [];
       return [{
         lane: 'kg' as const,
         observationId: row.observation_id,
@@ -1347,6 +1597,24 @@ export class Store {
         text: `${row.subject} ${row.relation} ${row.object}`,
       }];
     });
+    return [...tripleCandidates, ...factCandidates];
+  }
+
+  private resolveEffectiveLaneOrder(laneOrder?: RetrievalLane[]): RetrievalLane[] {
+    const provided = laneOrder ?? DEFAULT_LANE_ORDER;
+    const seen = new Set<RetrievalLane>();
+    const resolved: RetrievalLane[] = [];
+    for (const lane of provided) {
+      if (seen.has(lane)) continue;
+      seen.add(lane);
+      resolved.push(lane);
+    }
+    for (const lane of DEFAULT_LANE_ORDER) {
+      if (seen.has(lane)) continue;
+      seen.add(lane);
+      resolved.push(lane);
+    }
+    return resolved;
   }
 
   searchObservations(input: SearchInput): SearchResult[] {
@@ -1515,6 +1783,250 @@ export class Store {
     else if (laneStale && pendingJobs > 0) semanticState = 'rebuilding';
     else if (lanePending || runtime.pending || pendingJobs > 0) semanticState = 'pending';
     return { semantic_state: semanticState, pending_jobs: pendingJobs };
+  }
+
+  getObservatoryContext(input: ObservatoryScope = {}): ObservatoryContextResponse {
+    const scope = this.normalizeObservatoryScope(input);
+    return {
+      scope,
+      context_token: this.encodeScopedToken('context', { scope }, OBSERVATORY_CONTEXT_TTL_MS),
+      health: this.getVisualizationHealth({ project: scope.project }),
+      capabilities: {
+        viz_fallback_available: true,
+        observatory_routes_available: true,
+      },
+    };
+  }
+
+  async getObservatoryRecall(input: {
+    context_token: string;
+    lanes?: ObservatoryLane[];
+    limit?: number;
+    embeddingProvider?: EmbeddingProviderAdapter | null;
+    hydeGenerator?: HydeGenerator | null;
+  }): Promise<ObservatoryRecallResponse> {
+    const parsed = this.decodeScopedToken<{ scope: ObservatoryScope }>('context', input.context_token);
+    const scope = this.normalizeObservatoryScope(parsed.scope);
+    const lanes = input.lanes && input.lanes.length > 0
+      ? input.lanes
+      : ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'] as ObservatoryLane[];
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    const query = scope.query?.trim() ?? '';
+    const laneHits = new Map<ObservatoryLane, ObservatoryRecallHit[]>();
+    const laneStates: NonNullable<ObservatoryRecallResponse['lane_states']> = {};
+    const semanticReadiness = this.getSemanticLaneReadiness();
+    const semanticLaneState = (lane: SemanticLaneName): { status: 'pending' | 'degraded' | 'unavailable'; reason: ObservatoryLaneStateReason } => {
+      const state = semanticReadiness[lane];
+      if (state.degraded) return { status: 'degraded', reason: 'semantic-degraded' };
+      if (state.pending) return { status: 'pending', reason: 'semantic-pending' };
+      if (state.stale) return { status: 'pending', reason: 'semantic-stale' };
+      return { status: 'unavailable', reason: 'unsupported-sync' };
+    };
+    const toRecallHit = (observation: Observation, lane: ObservatoryLane): ObservatoryRecallHit => ({
+      observation_id: observation.id,
+      title: stripPrivateTags(observation.title).trim(),
+      preview: truncateForPreview(stripPrivateTags(observation.content).trim(), this.config.previewLength),
+      type: observation.type,
+      project: observation.project,
+      session_id: observation.session_id,
+      topic_key: observation.topic_key,
+      created_at: observation.created_at,
+      lane,
+      pivot_token: this.encodeScopedToken('pivot', {
+        scope,
+        target: 'recall' as ObservatoryPivotTarget,
+        focus_node_id: `obs:${observation.id}`,
+      }, OBSERVATORY_PIVOT_TTL_MS),
+    });
+
+    for (const lane of lanes) {
+      laneHits.set(lane, []);
+    }
+
+    if (query.length > 0) {
+      const retrieval = await this.hybridRetrieve({
+        query,
+        limit,
+        project: scope.project,
+        session_id: scope.session_id,
+        topic_key: scope.topic_key,
+        type: scope.type ?? scope.observation_type,
+        time_from: scope.time_from,
+        time_to: scope.time_to,
+        embeddingProvider: input.embeddingProvider,
+        hydeGenerator: input.hydeGenerator,
+      });
+      const laneByCandidate: Record<RetrievalLane, ObservatoryLane> = {
+        lexical: 'lexical',
+        sentence: 'sentence-vector',
+        chunk: 'chunk-vector',
+        kg: 'fact-kg',
+      };
+      const seenByLane = new Map<ObservatoryLane, Set<number>>();
+
+      for (const hit of retrieval.results) {
+        for (const [candidateLane, candidates] of Object.entries(hit.evidence.byLane) as Array<[RetrievalLane, LaneCandidate[] | undefined]>) {
+          const observatoryLane = laneByCandidate[candidateLane];
+          if (!lanes.includes(observatoryLane) || !candidates || candidates.length === 0) continue;
+          const hits = laneHits.get(observatoryLane) ?? [];
+          const seen = seenByLane.get(observatoryLane) ?? new Set<number>();
+          if (seen.has(hit.observation.id) || hits.length >= limit) continue;
+          seen.add(hit.observation.id);
+          seenByLane.set(observatoryLane, seen);
+          hits.push(toRecallHit(hit.observation, observatoryLane));
+          laneHits.set(observatoryLane, hits);
+        }
+      }
+    }
+
+    for (const lane of lanes) {
+      const hits = laneHits.get(lane) ?? [];
+      if (query.length === 0) {
+        laneStates[lane] = { status: 'unavailable', reason: 'no-query' };
+      } else if (hits.length > 0) {
+        laneStates[lane] = { status: 'ready', reason: 'ok' };
+      } else if (lane === 'sentence-vector') {
+        laneStates[lane] = semanticReadiness.sentence.ready && input.embeddingProvider
+          ? { status: 'unavailable', reason: 'no-evidence' }
+          : semanticLaneState('sentence');
+      } else if (lane === 'chunk-vector') {
+        laneStates[lane] = semanticReadiness.chunk.ready && input.embeddingProvider
+          ? { status: 'unavailable', reason: 'no-evidence' }
+          : semanticLaneState('chunk');
+      } else if (lane === 'fact-kg') {
+        laneStates[lane] = { status: 'unavailable', reason: 'kg-no-match' };
+      } else {
+        laneStates[lane] = { status: 'unavailable', reason: 'no-evidence' };
+      }
+    }
+    return {
+      context_token: input.context_token,
+      lanes: {
+        lexical: laneHits.get('lexical') ?? [],
+        'sentence-vector': laneHits.get('sentence-vector') ?? [],
+        'chunk-vector': laneHits.get('chunk-vector') ?? [],
+        'fact-kg': laneHits.get('fact-kg') ?? [],
+      },
+      lane_states: laneStates,
+    };
+  }
+
+  getObservatoryMapFrontier(input: {
+    context_token: string;
+    focus_node_id: string;
+    visible_node_ids?: string[];
+    max_nodes?: number;
+    max_edges?: number;
+    continuation?: string;
+  }): ObservatoryMapFrontierResponse {
+    const parsed = this.decodeScopedToken<{ scope: ObservatoryScope }>('context', input.context_token);
+    const scope = this.normalizeObservatoryScope(parsed.scope);
+    const maxNodes = Math.min(Math.max(input.max_nodes ?? 50, 1), VIZ_LIMITS.maxNodesHard);
+    const maxEdges = Math.min(Math.max(input.max_edges ?? 150, 1), VIZ_LIMITS.maxEdgesHard);
+    const slice = this.expandVisualizationNode({
+      node_id: input.focus_node_id,
+      project: scope.project,
+      session_id: scope.session_id,
+      topic_key: scope.topic_key,
+      type: scope.type,
+      observation_type: scope.observation_type,
+      relation: scope.relation,
+      query: scope.query,
+      max_nodes: Math.min(maxNodes * 3, VIZ_LIMITS.maxNodesHard),
+      max_edges: Math.min(maxEdges * 3, VIZ_LIMITS.maxEdgesHard),
+    });
+    const visibleSet = new Set(input.visible_node_ids ?? []);
+    const continuationOffset = this.decodeFrontierContinuation(input.continuation);
+    const candidates = slice.nodes.filter((node) => node.id !== input.focus_node_id);
+    const addedCandidates = candidates.filter((node) => !visibleSet.has(node.id));
+    const page = addedCandidates.slice(continuationOffset, continuationOffset + maxNodes);
+    const pageIdSet = new Set(page.map((node) => node.id));
+    const frontierState: ObservatoryFrontierState = {
+      added_node_ids: page.map((node) => node.id),
+      already_visible_node_ids: candidates.filter((node) => visibleSet.has(node.id)).slice(0, maxNodes).map((node) => node.id),
+      exhausted: continuationOffset + maxNodes >= addedCandidates.length,
+      continuation: continuationOffset + maxNodes < addedCandidates.length
+        ? `frontier:${continuationOffset + maxNodes}`
+        : null,
+    };
+    if (addedCandidates.length === 0) {
+      frontierState.reason = candidates.length === 0 ? 'no-neighbors' : 'scope-filtered';
+    } else if (frontierState.continuation) {
+      frontierState.reason = 'limit';
+    }
+    return {
+      nodes: slice.nodes.filter((node) => node.id === input.focus_node_id || pageIdSet.has(node.id)).slice(0, maxNodes + 1),
+      edges: slice.edges.filter((edge) => pageIdSet.has(edge.source_id) || pageIdSet.has(edge.target_id)).slice(0, maxEdges),
+      frontier_state: frontierState,
+      health: this.getVisualizationHealth({ project: scope.project }),
+    };
+  }
+
+  getObservatoryLedgerDetail(input: { observation_id: number }): ObservatoryLedgerResponse | null {
+    const observation = this.getObservation(input.observation_id);
+    if (!observation) return null;
+    const facts = this.getObservationFacts({ observation_id: input.observation_id });
+    const extract = (relation: string) => facts.filter((fact) => fact.relation === relation).map((fact) => stripPrivateTags(fact.object).trim());
+    return {
+      observation_id: observation.id,
+      title: stripPrivateTags(observation.title).trim(),
+      type: observation.type,
+      what: extract('HAS_WHAT'),
+      why: extract('HAS_WHY'),
+      where: extract('HAS_WHERE'),
+      learned: extract('HAS_LEARNED'),
+      facts,
+      provenance: {
+        session_id: observation.session_id,
+        project: observation.project,
+        topic_key: observation.topic_key,
+        created_at: observation.created_at,
+      },
+    };
+  }
+
+  getObservatoryTimeline(input: { context_token: string; limit?: number; continuation?: string }): ObservatoryTimelineResponse {
+    const parsed = this.decodeScopedToken<{ scope: ObservatoryScope }>('context', input.context_token);
+    const scope = this.normalizeObservatoryScope(parsed.scope);
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    const offset = this.decodeFrontierContinuation(input.continuation);
+    const sql = ['SELECT * FROM observations WHERE deleted_at IS NULL'];
+    const params: Array<string | number> = [];
+    if (scope.project) {
+      sql.push('AND project = ?');
+      params.push(scope.project);
+    }
+    if (scope.session_id) {
+      sql.push('AND session_id = ?');
+      params.push(scope.session_id);
+    }
+    if (scope.topic_key) {
+      sql.push('AND topic_key = ?');
+      params.push(scope.topic_key);
+    }
+    sql.push('ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?');
+    params.push(limit, offset);
+    const events = this.mapObservationRows(this.db.prepare(sql.join(' ')).all(...params) as ObservationRow[]);
+    return {
+      context_token: input.context_token,
+      events,
+      continuation: events.length < limit ? null : `frontier:${offset + events.length}`,
+    };
+  }
+
+  resolveObservatoryPivot(input: { pivot_token: string; target: ObservatoryPivotTarget }): {
+    context_token: string;
+    scope: ObservatoryScope;
+    focus_node_id: string;
+    target: ObservatoryPivotTarget;
+  } {
+    const parsed = this.decodeScopedToken<{ scope: ObservatoryScope; target: ObservatoryPivotTarget; focus_node_id: string }>('pivot', input.pivot_token);
+    return {
+      context_token: this.encodeScopedToken('context', { scope: parsed.scope }, OBSERVATORY_CONTEXT_TTL_MS),
+      scope: this.normalizeObservatoryScope(parsed.scope),
+      focus_node_id: parsed.focus_node_id,
+      target: input.target,
+    };
   }
 
   getVisualizationSlice(input: VizSliceRequest = {}): VizSliceResponse {
@@ -1857,6 +2369,66 @@ export class Store {
     if (nodes === 0) return 'empty';
     if (nodes >= Math.max(Math.floor(maxNodes * 0.7), 1)) return 'dense';
     return 'sparse';
+  }
+
+  private normalizeObservatoryScope(scope: ObservatoryScope): ObservatoryScope {
+    const normalize = (value: string | undefined): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
+    return {
+      project: normalize(scope.project),
+      session_id: normalize(scope.session_id),
+      topic_key: normalize(scope.topic_key),
+      query: normalize(scope.query),
+      type: scope.type,
+      observation_type: scope.observation_type,
+      relation: normalize(scope.relation),
+      time_from: normalize(scope.time_from),
+      time_to: normalize(scope.time_to),
+    };
+  }
+
+  private encodeScopedToken(kind: 'context' | 'pivot', payload: Record<string, unknown>, ttlMs: number): string {
+    const body = JSON.stringify({
+      v: 1,
+      kind,
+      exp: Date.now() + ttlMs,
+      ...payload,
+    });
+    return Buffer.from(body, 'utf-8').toString('base64url');
+  }
+
+  private decodeScopedToken<T extends Record<string, unknown>>(expectedKind: 'context' | 'pivot', token: string): T {
+    let raw = '';
+    try {
+      raw = Buffer.from(token, 'base64url').toString('utf-8');
+    } catch {
+      throw new Error('Invalid token encoding');
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Malformed token payload');
+    }
+    if (parsed.kind !== expectedKind) {
+      throw new Error('Invalid token scope');
+    }
+    if (typeof parsed.exp !== 'number' || parsed.exp < Date.now()) {
+      throw new Error('Expired token');
+    }
+    return parsed as T;
+  }
+
+  private decodeFrontierContinuation(token: string | undefined): number {
+    if (!token) return 0;
+    const match = token.match(/^frontier:(\d+)$/);
+    if (!match) {
+      throw new Error('Invalid continuation token');
+    }
+    return Number.parseInt(match[1], 10);
   }
 
   getObservationFacts(input: ObservationFactsInput = {}): ObservationFact[] {

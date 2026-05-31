@@ -121,8 +121,7 @@ CREATE TABLE IF NOT EXISTS semantic_vector_rowids (
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (lane, source_key),
-  UNIQUE (lane, vec_rowid),
-  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+  UNIQUE (lane, vec_rowid)
 );
 
 CREATE TABLE IF NOT EXISTS semantic_jobs (

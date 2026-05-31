@@ -166,6 +166,50 @@ function recreateVectorTablesOnDimensionChange(db: SqliteDatabase, dimensions: n
   return recreated;
 }
 
+function semanticRowidsHasObservationForeignKey(db: SqliteDatabase): boolean {
+  if (!tableExists(db, 'semantic_vector_rowids')) {
+    return false;
+  }
+
+  const foreignKeys = db
+    .prepare('PRAGMA foreign_key_list("semantic_vector_rowids")')
+    .all() as Array<{ table: string; from: string }>;
+
+  return foreignKeys.some((foreignKey) => (
+    foreignKey.table === 'observations' && foreignKey.from === 'observation_id'
+  ));
+}
+
+function rebuildSemanticRowidsWithoutObservationForeignKey(db: SqliteDatabase): void {
+  if (!semanticRowidsHasObservationForeignKey(db)) {
+    return;
+  }
+
+  db.exec('ALTER TABLE semantic_vector_rowids RENAME TO semantic_vector_rowids_old');
+  db.exec(`
+    CREATE TABLE semantic_vector_rowids (
+      lane            TEXT NOT NULL CHECK(lane IN ('chunk','sentence')),
+      source_key      TEXT NOT NULL,
+      vec_rowid       INTEGER NOT NULL,
+      observation_id  INTEGER NOT NULL,
+      lineage_hash    TEXT NOT NULL,
+      embedding_hash  TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (lane, source_key),
+      UNIQUE (lane, vec_rowid)
+    )
+  `);
+  db.exec(`
+    INSERT OR IGNORE INTO semantic_vector_rowids (
+      lane, source_key, vec_rowid, observation_id, lineage_hash, embedding_hash, created_at, updated_at
+    )
+    SELECT lane, source_key, vec_rowid, observation_id, lineage_hash, embedding_hash, created_at, updated_at
+    FROM semantic_vector_rowids_old
+  `);
+  db.exec('DROP TABLE semantic_vector_rowids_old');
+}
+
 export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticMigrationOptions): void {
   const migrate = db.transaction(() => {
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
@@ -177,6 +221,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     db.exec(SYNC_CHUNKS_INDEXES_SQL);
     db.exec(SYNC_MUTATIONS_INDEXES_SQL);
     db.exec(SEMANTIC_METADATA_SQL);
+    rebuildSemanticRowidsWithoutObservationForeignKey(db);
     db.exec(SEMANTIC_METADATA_INDEXES_SQL);
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);

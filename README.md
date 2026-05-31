@@ -38,7 +38,7 @@ Agent Session 1                    Agent Session 2
 - **Git-friendly sync** — export memory as gzipped chunks for version control
 - **JSON export/import** — portable memory backup and transfer
 - **Project migration** — rename projects across all entities in one operation
-- **Graph fact rebuild** — backfill derived graph-lite facts for existing memories
+- **Knowledge Graph Ledger rebuild** — backfill derived KG/ledger facts for existing memories; legacy graph endpoint compatibility is preserved
 - **MCP Server Instructions** — built-in protocol guidance for connected agents
 - **Observation versioning** — full history preserved on topic_key upserts
 - **Session enrichment** — sessions auto-fill missing project/directory on reconnect
@@ -188,7 +188,7 @@ pnpm test
 pnpm run eval:retrieval
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations. It reports baseline lexical recall plus hybrid status metrics (pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG contribution, and evidence lineage coverage) without requiring model downloads or remote APIs.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations. It reports baseline lexical recall plus hybrid status metrics (pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, and evidence lineage coverage) without requiring model downloads or remote APIs.
 
 ## MCP Tools (6)
 
@@ -196,7 +196,7 @@ pnpm run eval:retrieval
 | Tool                    | Purpose                                                           |
 | ----------------------- | ----------------------------------------------------------------- |
 | `mem_save`              | Save observations, prompts, session summaries, or passive learnings |
-| `mem_recall`            | Primary fused hybrid recall across semantic, lexical, and KG lanes |
+| `mem_recall`            | Primary fused hybrid recall across semantic and lexical lanes with KG enrichment |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get`               | Retrieve full memory by ID, optionally with session timeline      |
 | `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
@@ -207,11 +207,11 @@ pnpm run eval:retrieval
 ## Retrieval and Embeddings
 
 - `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
-- Hybrid retrieval defaults use tuned lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical > kg`.
+- Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical`. Knowledge-graph facts enrich returned core hits instead of competing as a ranking lane.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.
-- When semantic lanes are pending or unavailable, retrieval degrades safely to lexical + KG lanes and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
-- `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical/KG retrieval.
+- When semantic lanes are pending or unavailable, retrieval degrades safely to lexical recall with graph enrichment where matching facts exist, and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
+- `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical retrieval with KG enrichment.
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
 - HyDE is enabled by default. The local fallback uses Transformers.js text generation with `onnx-community/Qwen2.5-Coder-0.5B-Instruct`; remote HyDE can use Ollama or an OpenAI-compatible LM Studio server.
 

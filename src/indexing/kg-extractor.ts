@@ -11,19 +11,69 @@ export const KG_ENTITY_TYPES = [
 export const KG_RELATION_TYPES = [
   'USES', 'DEPENDS_ON', 'BELONGS_TO', 'PART_OF', 'OWNS', 'CONFIGURES', 'IMPLEMENTS', 'RUNS_IN', 'DEPLOYS_TO', 'CAUSES',
   'FIXES', 'BLOCKS', 'UNBLOCKS', 'AFFECTS', 'REFERENCES', 'MENTIONS', 'EXTRACTED_FROM', 'HAS_TOPIC', 'HAS_SCOPE', 'PRECEDES',
-  'FOLLOWS', 'AUTHENTICATES_WITH',
+  'FOLLOWS', 'AUTHENTICATES_WITH', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED',
 ] as const;
+
+type EntityType = typeof KG_ENTITY_TYPES[number];
+type RelationType = typeof KG_RELATION_TYPES[number];
 
 export interface ExtractedTriple {
   subject: string;
-  subjectType: string;
-  relation: string;
+  subjectType: EntityType;
+  relation: RelationType;
   object: string;
-  objectType: string;
+  objectType: EntityType;
   provenance: string;
   confidence: number;
   tripleHash: string;
 }
+
+const STOPWORDS = new Set([
+  'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'with',
+  'via', 'when', 'where', 'while', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'should', 'must',
+]);
+
+const RELATION_PATTERNS: Array<{ tokens: string[]; relation: RelationType; confidence: number }> = [
+  { tokens: ['authenticates', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
+  { tokens: ['authenticate', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
+  { tokens: ['authenticated', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
+  { tokens: ['depends', 'on'], relation: 'DEPENDS_ON', confidence: 0.8 },
+  { tokens: ['depend', 'on'], relation: 'DEPENDS_ON', confidence: 0.8 },
+  { tokens: ['belongs', 'to'], relation: 'BELONGS_TO', confidence: 0.8 },
+  { tokens: ['part', 'of'], relation: 'PART_OF', confidence: 0.78 },
+  { tokens: ['runs', 'in'], relation: 'RUNS_IN', confidence: 0.78 },
+  { tokens: ['run', 'in'], relation: 'RUNS_IN', confidence: 0.78 },
+  { tokens: ['deploys', 'to'], relation: 'DEPLOYS_TO', confidence: 0.8 },
+  { tokens: ['deployed', 'to'], relation: 'DEPLOYS_TO', confidence: 0.8 },
+  { tokens: ['owned', 'by'], relation: 'OWNS', confidence: 0.72 },
+  { tokens: ['belongs-to'], relation: 'BELONGS_TO', confidence: 0.82 },
+  { tokens: ['depends-on'], relation: 'DEPENDS_ON', confidence: 0.82 },
+  { tokens: ['part-of'], relation: 'PART_OF', confidence: 0.8 },
+  { tokens: ['runs-in'], relation: 'RUNS_IN', confidence: 0.8 },
+  { tokens: ['deploys-to'], relation: 'DEPLOYS_TO', confidence: 0.82 },
+  { tokens: ['authenticates-with'], relation: 'AUTHENTICATES_WITH', confidence: 0.84 },
+  { tokens: ['uses'], relation: 'USES', confidence: 0.76 },
+  { tokens: ['using'], relation: 'USES', confidence: 0.74 },
+  { tokens: ['configures'], relation: 'CONFIGURES', confidence: 0.78 },
+  { tokens: ['configured'], relation: 'CONFIGURES', confidence: 0.74 },
+  { tokens: ['implements'], relation: 'IMPLEMENTS', confidence: 0.78 },
+  { tokens: ['implemented'], relation: 'IMPLEMENTS', confidence: 0.74 },
+  { tokens: ['fixes'], relation: 'FIXES', confidence: 0.76 },
+  { tokens: ['fixed'], relation: 'FIXES', confidence: 0.74 },
+  { tokens: ['blocks'], relation: 'BLOCKS', confidence: 0.76 },
+  { tokens: ['unblocks'], relation: 'UNBLOCKS', confidence: 0.76 },
+  { tokens: ['causes'], relation: 'CAUSES', confidence: 0.74 },
+  { tokens: ['affects'], relation: 'AFFECTS', confidence: 0.72 },
+  { tokens: ['references'], relation: 'REFERENCES', confidence: 0.7 },
+  { tokens: ['mentions'], relation: 'MENTIONS', confidence: 0.65 },
+];
+
+const STRUCTURED_SECTION_RELATIONS: Record<string, RelationType> = {
+  what: 'HAS_WHAT',
+  why: 'HAS_WHY',
+  where: 'HAS_WHERE',
+  learned: 'HAS_LEARNED',
+};
 
 function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -33,45 +83,195 @@ function hashTriple(subject: string, relation: string, object: string): string {
   return createHash('sha256').update(`${subject}|${relation}|${object}`).digest('hex');
 }
 
-export function extractKnowledgeTriples(input: { content: string; provenance: string }): {
+function tokenize(content: string): string[] {
+  return normalize(content).split(/[^a-z0-9_./:-]+/).filter((token) => token.length > 0);
+}
+
+function cleanEntityTokens(tokens: string[]): string[] {
+  const cleaned = [...tokens];
+  while (cleaned.length > 0 && STOPWORDS.has(cleaned[0])) {
+    cleaned.shift();
+  }
+  while (cleaned.length > 0 && STOPWORDS.has(cleaned[cleaned.length - 1])) {
+    cleaned.pop();
+  }
+  return cleaned.filter((token) => token.length > 1);
+}
+
+function entityFromTokens(tokens: string[], start: number, end: number): string | null {
+  const cleaned = cleanEntityTokens(tokens.slice(start, end));
+  if (cleaned.length === 0) {
+    return null;
+  }
+  return normalize(cleaned.join(' ')).slice(0, 160);
+}
+
+function inferEntityType(value: string): EntityType {
+  const text = normalize(value);
+
+  if (/\b(api key|token|credential|service account|oauth|jwt|pat)\b/.test(text)) return 'credential';
+  if (/\b(secret|password|private key)\b/.test(text)) return 'secret';
+  if (/^https?:\/\//.test(text) || /\b(endpoint|route|url|webhook)\b/.test(text)) return 'endpoint';
+  if (/\bapi\b/.test(text)) return 'api';
+  if (/[\\/]/.test(text) && /\.[a-z0-9]+$/.test(text)) return 'file';
+  if (/[\\/]/.test(text) || /^[a-z]:/.test(text)) return 'path';
+  if (/\b(readme|doc|docs|document|markdown|spec)\b/.test(text)) return 'document';
+  if (/\b(model|embedding|llm|gpt|nomic)\b/.test(text)) return 'model';
+  if (/\b(provider|openai|ollama|azure|anthropic)\b/.test(text)) return 'provider';
+  if (/\b(project|repo|repository|workspace)\b/.test(text)) return 'project';
+  if (/\b(service|server|worker|daemon|mcp)\b/.test(text)) return 'service';
+  if (/\b(system|engine|runtime|pipeline)\b/.test(text)) return 'system';
+  if (/\b(component|adapter|connector)\b/.test(text)) return 'component';
+  if (/\b(module|package|library|sdk)\b/.test(text)) return 'module';
+  if (/\b(database|sqlite|dataset|index|vector store|fts)\b/.test(text)) return 'dataset';
+  if (/\b(env|environment|dev|staging|prod|production|local)\b/.test(text)) return 'environment';
+  if (/\b(region|eastus|westus|europe|asia)\b/.test(text)) return 'region';
+  if (/\b(issue|bug|error|failure|regression|risk)\b/.test(text)) return 'issue';
+  if (/\b(task|todo|job|queue)\b/.test(text)) return 'task';
+  if (/\b(decision|choice|tradeoff|rationale)\b/.test(text)) return 'decision';
+  if (/\b(event|release|migration|deploy)\b/.test(text)) return 'event';
+  if (/\b(tool|cli|command|script)\b/.test(text)) return 'tool';
+  if (/\b(policy|rule|guardrail|permission)\b/.test(text)) return 'policy';
+  if (/\b(team|squad)\b/.test(text)) return 'team';
+  if (/\b(org|organization|company)\b/.test(text)) return 'organization';
+  if (/\b(user|author|owner|person)\b/.test(text)) return 'person';
+
+  return 'system';
+}
+
+function extractStructuredSections(content: string): Array<{ relation: RelationType; object: string }> {
+  const sections: Array<{ relation: RelationType; object: string }> = [];
+  let currentRelation: RelationType | null = null;
+  let currentValue: string[] = [];
+
+  const flush = (): void => {
+    if (!currentRelation) return;
+    const object = currentValue.join('\n').trim();
+    if (object.length > 0) {
+      sections.push({ relation: currentRelation, object: object.slice(0, 500) });
+    }
+  };
+
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^(?:\*\*(What|Why|Where|Learned)\*\*|(What|Why|Where|Learned)):\s*(.*)$/i);
+    if (match) {
+      flush();
+      currentRelation = STRUCTURED_SECTION_RELATIONS[(match[1] ?? match[2]).toLowerCase()];
+      currentValue = [match[3] ?? ''];
+      continue;
+    }
+
+    if (currentRelation) {
+      currentValue.push(line);
+    }
+  }
+
+  flush();
+  return sections;
+}
+
+function extractTechnicalReferences(content: string): string[] {
+  const references = new Set<string>();
+  const patterns = [
+    /https?:\/\/[^\s)]+/gi,
+    /\b(?:src|tests|dashboard|backend|openspec|docs)\/[a-z0-9_./-]+\b/gi,
+    /\b[a-z0-9_-]+\.(?:ts|tsx|js|mjs|json|md|sql|py|yml|yaml)\b/gi,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      references.add(match[0].replace(/[),.;]+$/, '').toLowerCase());
+    }
+  }
+
+  return [...references].slice(0, 20);
+}
+
+function highSignalMentionTokens(tokens: string[]): string[] {
+  return tokens
+    .filter((token) => token.length >= 4 && !STOPWORDS.has(token))
+    .filter((token) => /[./:_-]/.test(token) || /\d/.test(token) || /^(api|mcp|sqlite|vector|embedding|retrieval|provider|worker|queue|index)$/i.test(token))
+    .slice(0, 20);
+}
+
+function patternMatches(tokens: string[], start: number, pattern: string[]): boolean {
+  if (start + pattern.length > tokens.length) {
+    return false;
+  }
+  return pattern.every((token, offset) => tokens[start + offset] === token);
+}
+
+export function extractKnowledgeTriples(input: {
+  content: string;
+  provenance: string;
+  subjectHint?: string | null;
+  project?: string | null;
+  topicKey?: string | null;
+}): {
   taxonomy: { entityTypes: string[]; relationTypes: string[]; version: string };
   triples: ExtractedTriple[];
   dedupeKey: string;
 } {
   const normalizedContent = normalize(input.content);
-  const tokens = normalizedContent.split(/[^a-z0-9_./:-]+/).filter((t) => t.length >= 3);
+  const tokens = tokenize(normalizedContent);
+  const subjectHint = normalize(input.subjectHint ?? '') || entityFromTokens(tokens, 0, Math.min(tokens.length, 4)) || 'observation';
   const triples: ExtractedTriple[] = [];
   const seen = new Set<string>();
 
-  for (let i = 0; i < tokens.length - 2; i += 1) {
-    const subject = tokens[i];
-    const relationCandidate = tokens[i + 1];
-    const object = tokens[i + 2];
-    let relation = 'MENTIONS';
-
-    if (relationCandidate === 'uses' || relationCandidate === 'using') relation = 'USES';
-    if (relationCandidate === 'in' || relationCandidate === 'within') relation = 'RUNS_IN';
-    if (relationCandidate === 'belongs') relation = 'BELONGS_TO';
-    if (relationCandidate === 'depends') relation = 'DEPENDS_ON';
-    if (relationCandidate === 'blocks') relation = 'BLOCKS';
-    if (relationCandidate === 'fixes' || relationCandidate === 'fixed') relation = 'FIXES';
-
+  const pushTriple = (subject: string, relation: RelationType, object: string, confidence: number): void => {
     const tripleHash = hashTriple(subject, relation, object);
     if (seen.has(tripleHash)) {
-      continue;
+      return;
     }
 
     seen.add(tripleHash);
     triples.push({
       subject,
-      subjectType: 'entity',
+      subjectType: inferEntityType(subject),
       relation,
       object,
-      objectType: 'entity',
+      objectType: inferEntityType(object),
       provenance: input.provenance,
-      confidence: 0.5,
+      confidence,
       tripleHash,
     });
+  };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    for (const pattern of RELATION_PATTERNS) {
+      if (!patternMatches(tokens, i, pattern.tokens)) {
+        continue;
+      }
+
+      const subject = entityFromTokens(tokens, Math.max(0, i - 3), i);
+      const object = entityFromTokens(tokens, i + pattern.tokens.length, Math.min(tokens.length, i + pattern.tokens.length + 3));
+      if (!subject || !object || subject === object) {
+        continue;
+      }
+
+      pushTriple(subject, pattern.relation, object, pattern.confidence);
+    }
+  }
+
+  if (input.project) {
+    pushTriple(subjectHint, 'BELONGS_TO', input.project, 0.86);
+  }
+  if (input.topicKey) {
+    pushTriple(subjectHint, 'HAS_TOPIC', input.topicKey, 0.84);
+  }
+
+  for (const section of extractStructuredSections(input.content)) {
+    pushTriple(subjectHint, section.relation, section.object, 0.78);
+  }
+
+  for (const reference of extractTechnicalReferences(input.content)) {
+    pushTriple(subjectHint, 'REFERENCES', reference, 0.72);
+  }
+
+  for (const token of highSignalMentionTokens(tokens)) {
+    if (token !== subjectHint) {
+      pushTriple(subjectHint, 'MENTIONS', token, 0.52);
+    }
   }
 
   return {

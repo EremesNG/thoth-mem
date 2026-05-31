@@ -20,19 +20,24 @@ export async function processNextSemanticJob(
 ): Promise<{ processed: boolean; kind?: JobRow['kind'] }> {
   const db = store.getDb();
   const job = db.prepare(
-    `SELECT * FROM semantic_jobs
-     WHERE state = 'pending' AND available_at <= datetime('now')
-     ORDER BY priority ASC, id ASC
-     LIMIT 1`
+    `UPDATE semantic_jobs
+     SET state = 'running',
+         attempt_count = attempt_count + 1,
+         started_at = datetime('now'),
+         updated_at = datetime('now')
+     WHERE id = (
+       SELECT id FROM semantic_jobs
+       WHERE state = 'pending' AND available_at <= datetime('now')
+       ORDER BY priority ASC, id ASC
+       LIMIT 1
+     )
+       AND state = 'pending'
+     RETURNING id, kind, observation_id, job_key, source_key, max_attempts, attempt_count`
   ).get() as JobRow | undefined;
 
   if (!job) {
     return { processed: false };
   }
-
-  db.prepare(
-    "UPDATE semantic_jobs SET state = 'running', attempt_count = attempt_count + 1, started_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
-  ).run(job.id);
 
   try {
     if (job.kind === 'chunk' && job.observation_id !== null) {
@@ -51,7 +56,7 @@ export async function processNextSemanticJob(
     return { processed: true, kind: job.kind };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    const finalState = job.attempt_count + 1 >= job.max_attempts ? 'failed' : 'pending';
+    const finalState = job.attempt_count >= job.max_attempts ? 'failed' : 'pending';
     db.prepare(
       "UPDATE semantic_jobs SET state = ?, last_error = ?, available_at = datetime('now', '+1 second'), updated_at = datetime('now') WHERE id = ?"
     ).run(finalState, msg, job.id);
@@ -88,6 +93,8 @@ async function processChunkJob(
     return;
   }
 
+  cleanupSemanticArtifactsForObservation(store, obs.id);
+
   const chunks = splitIntoChunks({ observationId: obs.id, text: obs.content });
   const upsertChunk = db.prepare(
     `INSERT INTO semantic_chunks (observation_id, chunk_key, chunk_index, content, project, topic_key, updated_at)
@@ -104,21 +111,6 @@ async function processChunkJob(
   }
 
   await embedLane(store, 'chunk', chunks.map((c) => ({ key: c.chunkKey, content: c.content, observationId: obs.id })), embeddingProvider);
-  db.prepare(
-    `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
-     VALUES (?, 'sentence', 'pending', 60, ?, ?)
-     ON CONFLICT(job_key) DO UPDATE SET
-       state = 'pending',
-       priority = excluded.priority,
-       observation_id = excluded.observation_id,
-       source_key = excluded.source_key,
-       attempt_count = 0,
-       last_error = NULL,
-       available_at = datetime('now'),
-       started_at = NULL,
-       finished_at = NULL,
-       updated_at = datetime('now')`
-  ).run(`sentence:${obs.id}`, obs.id, `observation:${obs.id}`);
 }
 
 async function processSentenceJob(
@@ -205,6 +197,8 @@ async function embedLane(
 
 function processRebuildJob(store: Store, jobKey: string): void {
   const db = store.getDb();
+  cleanupOrphanSemanticArtifacts(store);
+  cleanupOrphanKnowledgeArtifacts(store);
   const observations = db.prepare('SELECT id FROM observations WHERE deleted_at IS NULL ORDER BY id ASC').all() as Array<{ id: number }>;
   for (const row of observations) {
     db.prepare(
@@ -222,6 +216,21 @@ function processRebuildJob(store: Store, jobKey: string): void {
          finished_at = NULL,
          updated_at = datetime('now')`
     ).run(`chunk:${row.id}`, row.id, `observation:${row.id}`);
+    db.prepare(
+      `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+       VALUES (?, 'sentence', 'pending', 60, ?, ?)
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
+    ).run(`sentence:${row.id}`, row.id, `observation:${row.id}`);
     db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'extract_kg', 'pending', 70, ?, ?)
@@ -247,12 +256,21 @@ function processRebuildJob(store: Store, jobKey: string): void {
 
 function processKgJob(store: Store, observationId: number): void {
   const db = store.getDb();
-  const obs = db.prepare('SELECT id, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
-    | { id: number; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
+  const obs = db.prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
+    | { id: number; title: string; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
     | undefined;
-  if (!obs) return;
+  if (!obs) {
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
+    return;
+  }
 
-  const extraction = extractKnowledgeTriples({ content: obs.content, provenance: `observation:${obs.id}` });
+  const extraction = extractKnowledgeTriples({
+    content: obs.content,
+    provenance: `observation:${obs.id}`,
+    subjectHint: obs.topic_key ?? obs.title,
+    project: obs.project,
+    topicKey: obs.topic_key,
+  });
   db.prepare(
     `INSERT INTO kg_taxonomy_metadata (id, taxonomy_version, entity_types_json, relation_types_json, updated_at)
      VALUES (1, ?, ?, ?, datetime('now'))
@@ -276,9 +294,17 @@ function processKgJob(store: Store, observationId: number): void {
       project, topic_key, provenance, confidence, triple_hash, extractor_version, updated_at
      ) VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(triple_hash) DO UPDATE SET
-       confidence = excluded.confidence,
-       updated_at = datetime('now')`
+      source_id = excluded.source_id,
+      source_sync_id = excluded.source_sync_id,
+      project = excluded.project,
+      topic_key = excluded.topic_key,
+      provenance = excluded.provenance,
+      confidence = excluded.confidence,
+      extractor_version = excluded.extractor_version,
+      updated_at = datetime('now')`
   );
+
+  db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(obs.id);
 
   for (const triple of extraction.triples) {
     const subject = upsertEntity.get(`entity:${triple.subject}`, triple.subjectType, triple.subject) as { id: number };
@@ -293,8 +319,64 @@ function processKgJob(store: Store, observationId: number): void {
       obs.topic_key,
       triple.provenance,
       triple.confidence,
-      triple.tripleHash,
+      `observation:${obs.id}:${triple.tripleHash}`,
       extraction.taxonomy.version
     );
   }
+}
+
+function cleanupSemanticArtifactsForObservation(store: Store, observationId: number): void {
+  const db = store.getDb();
+  const rows = db.prepare(
+    "SELECT lane, vec_rowid FROM semantic_vector_rowids WHERE observation_id = ?"
+  ).all(observationId) as Array<{ lane: 'chunk' | 'sentence'; vec_rowid: number }>;
+
+  const deleteChunkVec = db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+  const deleteSentenceVec = db.prepare('DELETE FROM vec_sentences WHERE rowid = ?');
+  for (const row of rows) {
+    if (row.lane === 'chunk') {
+      deleteChunkVec.run(BigInt(row.vec_rowid));
+    } else {
+      deleteSentenceVec.run(BigInt(row.vec_rowid));
+    }
+  }
+
+  db.prepare('DELETE FROM semantic_vector_rowids WHERE observation_id = ?').run(observationId);
+  db.prepare('DELETE FROM semantic_sentences WHERE observation_id = ?').run(observationId);
+  db.prepare('DELETE FROM semantic_chunks WHERE observation_id = ?').run(observationId);
+}
+
+function cleanupOrphanSemanticArtifacts(store: Store): void {
+  const db = store.getDb();
+  const rows = db.prepare(
+    `SELECT lane, vec_rowid
+     FROM semantic_vector_rowids svr
+     LEFT JOIN observations o ON o.id = svr.observation_id
+     WHERE o.id IS NULL`
+  ).all() as Array<{ lane: 'chunk' | 'sentence'; vec_rowid: number }>;
+
+  const deleteChunkVec = db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+  const deleteSentenceVec = db.prepare('DELETE FROM vec_sentences WHERE rowid = ?');
+  for (const row of rows) {
+    if (row.lane === 'chunk') {
+      deleteChunkVec.run(BigInt(row.vec_rowid));
+    } else {
+      deleteSentenceVec.run(BigInt(row.vec_rowid));
+    }
+  }
+
+  db.prepare(
+    `DELETE FROM semantic_vector_rowids
+     WHERE observation_id NOT IN (SELECT id FROM observations)`
+  ).run();
+}
+
+function cleanupOrphanKnowledgeArtifacts(store: Store): void {
+  const db = store.getDb();
+  db.prepare(
+    `DELETE FROM kg_triples
+     WHERE source_type = 'observation'
+       AND source_id IS NOT NULL
+       AND source_id NOT IN (SELECT id FROM observations)`
+  ).run();
 }

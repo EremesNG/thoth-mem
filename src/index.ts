@@ -77,7 +77,7 @@ export function shouldRunCli(args: string[]): boolean {
 export async function startMcpServer(argv: string[]): Promise<void> {
   const { dataDir, httpDisabled } = parseArgs(argv);
 
-  const { server, store, config, embeddingProvider } = createServer({ dataDir });
+  const { server, store, config, embeddingProvider, hydeGenerator } = createServer({ dataDir });
 
   if (httpDisabled) {
     config.httpDisabled = true;
@@ -197,7 +197,7 @@ export async function startMcpServer(argv: string[]): Promise<void> {
     semanticWorker.unref();
 
     if (!config.httpDisabled) {
-      httpBridge = createHttpBridge(store, config);
+      httpBridge = createHttpBridge(store, config, { embeddingProvider, hydeGenerator });
 
       try {
         await httpBridge.start();

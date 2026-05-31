@@ -629,6 +629,11 @@ describe('createHttpBridge', () => {
     expect(observationDeepLink.status).toBe(200);
     expect(observationDeepLink.headers.get('content-type')).toContain('text/html');
 
+    const observatoryDeepLink = await fetch(getUrl(bridge.port, '/observatory'));
+    expect(observatoryDeepLink.status).toBe(200);
+    expect(observatoryDeepLink.headers.get('content-type')).toContain('text/html');
+    expect(await observatoryDeepLink.text()).toContain('Thoth Dashboard');
+
     const docsResponse = await fetch(getUrl(bridge.port, '/docs'));
     expect(docsResponse.status).toBe(200);
     expect(await docsResponse.text()).toContain('SwaggerUIBundle');
@@ -730,7 +735,7 @@ describe('createHttpBridge', () => {
     );
     expect(graph.response.status).toBe(200);
     expect(graph.body.project).toBe('http-project');
-    expect(graph.body.text).toContain('## Graph Lite: http-project');
+    expect(graph.body.text).toContain('## Knowledge Graph Ledger: http-project');
     expect(graph.body.text).toContain('Filters: topic_key=architecture/http-graph, relation=HAS_WHAT');
     expect(graph.body.text).toContain('HTTP project graph topic -- HAS_WHAT --> HTTP graph fact content');
     expect(graph.body.text).not.toContain('HAS_TOPIC_KEY');

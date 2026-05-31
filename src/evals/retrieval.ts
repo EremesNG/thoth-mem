@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { Store } from '../store/index.js';
+import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import type { SaveObservationInput } from '../store/types.js';
 
 interface EvalFixture {
@@ -50,6 +51,10 @@ export interface RetrievalEvalSummary {
     promoted_parent_rate: number;
     kg_hit_rate: number;
     evidence_lineage_coverage: number;
+    stale_result_rate: number;
+    kg_provenance_rate: number;
+    lane_truth_rate: number;
+    facts_source_rate: number;
   };
 }
 
@@ -203,6 +208,33 @@ function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : Number((numerator / denominator).toFixed(3));
 }
 
+function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdapter {
+  const dimensions = Math.max(8, store.config.embedding?.dimensions ?? 384);
+  const vectorFromText = (text: string): number[] => {
+    const vector = new Array<number>(dimensions).fill(0);
+    const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+    const tokens = normalized.split(/\s+/).filter((token) => token.length > 0);
+    for (const token of tokens) {
+      let hash = 2166136261;
+      for (let i = 0; i < token.length; i += 1) {
+        hash ^= token.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      const index = Math.abs(hash) % dimensions;
+      vector[index] += 1;
+    }
+    const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+    if (magnitude > 0) {
+      for (let i = 0; i < vector.length; i += 1) vector[i] /= magnitude;
+    }
+    return vector;
+  };
+  return {
+    config: store.config.embedding!,
+    embed: async (texts) => texts.map((text) => vectorFromText(text)),
+  };
+}
+
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
@@ -237,8 +269,12 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| HyDE Semantic Hit Rate | ${formatPercent(summary.hybrid.hyde_semantic_hit_rate)} |`,
     `| Sentence Primary Rate | ${formatPercent(summary.hybrid.sentence_primary_rate)} |`,
     `| Promoted Parent Rate | ${formatPercent(summary.hybrid.promoted_parent_rate)} |`,
-    `| KG Contribution Rate | ${formatPercent(summary.hybrid.kg_hit_rate)} |`,
+    `| KG Enrichment Rate | ${formatPercent(summary.hybrid.kg_hit_rate)} |`,
     `| Evidence Lineage Coverage | ${formatPercent(summary.hybrid.evidence_lineage_coverage)} |`,
+    `| Stale Result Prevention Rate | ${formatPercent(summary.hybrid.stale_result_rate)} |`,
+    `| KG Provenance Rate | ${formatPercent(summary.hybrid.kg_provenance_rate)} |`,
+    `| Lane Truth Rate | ${formatPercent(summary.hybrid.lane_truth_rate)} |`,
+    `| Facts Source Coverage Rate | ${formatPercent(summary.hybrid.facts_source_rate)} |`,
     '',
     '## Retrieval Defaults',
     '',
@@ -264,6 +300,81 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
 
   try {
     const idsByKey = seedEvalStore(store);
+    const embeddingProvider = makeDeterministicEmbeddingProvider(store);
+    const runtime = store as Store & {
+      processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+      hybridRetrieve: (input: {
+        query: string;
+        limit?: number;
+        project?: string;
+        embeddingProvider?: EmbeddingProviderAdapter | null;
+        hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+      }) => Promise<{
+        defaults: {
+          sentenceTopK: number;
+          chunkTopK: number;
+          lexicalLimit: number;
+          minSemanticScore: number;
+          l2DistanceScale: number;
+        };
+        laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+        degradedFallback: string[];
+        lexicalQuery: string;
+        results: Array<{
+          observation: { id: number };
+          evidence: {
+            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
+            promotedParent?: { chunkKey: string };
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; kg?: { provenance?: string } }>>>;
+          };
+        }>;
+        pending: boolean;
+        semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
+      }>;
+    };
+    await runtime.processSemanticJobs({ limit: 200, embeddingProvider });
+
+    const staleSeed = store.saveObservation({
+      title: 'stale eval sentinel',
+      type: 'decision',
+      project: 'stale-project',
+      topic_key: 'eval/stale-sentinel',
+      content: 'legacy-only-phrase retired now',
+    });
+    await runtime.processSemanticJobs({ limit: 50, embeddingProvider });
+    store.deleteObservation(staleSeed.observation.id);
+    await runtime.processSemanticJobs({ limit: 50, embeddingProvider });
+    const staleRaw = await runtime.hybridRetrieve({
+      query: 'legacy-only-phrase',
+      project: 'stale-project',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const staleHyde = await runtime.hybridRetrieve({
+      query: 'legacy-only-phrase',
+      project: 'stale-project',
+      limit: TOP_K,
+      embeddingProvider,
+      hyde: { enabled: true, mode: 'success', answer: 'legacy-only-phrase prior stale answer' },
+    });
+    const staleFresh = await runtime.hybridRetrieve({
+      query: 'fresh-active-phrase',
+      project: 'stale-project',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const staleRuns = [staleRaw, staleHyde, staleFresh];
+    const staleLeaks = staleRuns.filter((result) =>
+      result.results.some((hit) => hit.observation.id === staleSeed.observation.id)
+    ).length;
+
+    const graphLiteId = idsByKey.get('graph-lite');
+    if (graphLiteId) {
+      store.getDb().prepare(
+        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(graphLiteId, 'graph lite facts', 'supports', 'structured facts before vector embeddings', 'memory-project', 'retrieval/graph-lite-derived-facts', 'discovery');
+    }
+
     const pendingCases: boolean[] = [];
     const degradedCases: boolean[] = [];
     const lexicalPrefixHits: boolean[] = [];
@@ -273,6 +384,9 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
     const promotedParentHits: boolean[] = [];
     const kgHits: boolean[] = [];
     const lineageCoverageHits: boolean[] = [];
+    const laneTruthChecks: boolean[] = [];
+    const kgProvenanceChecks: boolean[] = [];
+    const factsSourceChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
@@ -298,40 +412,17 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         limit: evalCase.limit ?? TOP_K,
         mode: 'preview',
       });
-      const runtime = store as Store & {
-        hybridRetrieve: (input: {
-          query: string;
-          limit?: number;
-          project?: string;
-          hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
-        }) => Promise<{
-          defaults: {
-            sentenceTopK: number;
-            chunkTopK: number;
-            lexicalLimit: number;
-            minSemanticScore: number;
-            l2DistanceScale: number;
-          };
-          laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
-          degradedFallback: string[];
-          lexicalQuery: string;
-          results: Array<{
-            evidence: {
-              primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
-              promotedParent?: { chunkKey: string };
-              byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string }>>>;
-            };
-          }>;
-          pending: boolean;
-          semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
-        }>;
-      };
-
-      const raw = await runtime.hybridRetrieve({ query: evalCase.query, project: evalCase.project, limit: evalCase.limit ?? TOP_K });
+      const raw = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+      });
       const hyde = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
         limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
         hyde: { enabled: true, mode: 'success', answer: `Hypothetical answer for ${evalCase.query}` },
       });
       if (!defaultsCapture) {
@@ -360,6 +451,16 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
       sentencePrimaryHits.push(raw.results.some((hit) => hit.evidence.primary.lane === 'sentence'));
       promotedParentHits.push(raw.results.some((hit) => Boolean(hit.evidence.promotedParent?.chunkKey)));
       kgHits.push(raw.results.some((hit) => Boolean(hit.evidence.byLane.kg?.length)));
+      laneTruthChecks.push(raw.results.every((hit) => {
+        const laneEvidence = hit.evidence.byLane[hit.evidence.primary.lane];
+        if (!laneEvidence || laneEvidence.length === 0) return false;
+        return laneEvidence.some((candidate) => candidate.source === hit.evidence.primary.source);
+      }));
+      const kgCandidates = raw.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
+      const tripleCandidates = kgCandidates.filter((candidate) => candidate.source === 'kg_triples');
+      const factCandidates = kgCandidates.filter((candidate) => candidate.source === 'observation_facts');
+      kgProvenanceChecks.push(tripleCandidates.length > 0 && tripleCandidates.every((candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0));
+      factsSourceChecks.push(tripleCandidates.length > 0 && factCandidates.length > 0);
       lineageCoverageHits.push(raw.results.some((hit) => {
         const primary = hit.evidence.primary;
         return Boolean(primary.chunkKey || primary.sentenceKey || primary.kg?.provenance || primary.source);
@@ -390,7 +491,7 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
       mean_reciprocal_rank: ratio(reciprocalRankSum, cases.length),
       context_compression: fullChars === 0 ? 0 : Number((1 - contextChars / fullChars).toFixed(3)),
       retrieval_defaults: defaultsCapture ?? {
-        lane_order: 'sentence > chunk > lexical > kg',
+        lane_order: 'sentence > chunk > lexical',
         sentence_top_k: 100,
         chunk_top_k: 20,
         lexical_limit: 20,
@@ -407,6 +508,10 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         promoted_parent_rate: ratio(countTrue(promotedParentHits), totalHybridCases),
         kg_hit_rate: ratio(countTrue(kgHits), totalHybridCases),
         evidence_lineage_coverage: ratio(countTrue(lineageCoverageHits), totalHybridCases),
+        stale_result_rate: ratio(staleRuns.length - staleLeaks, staleRuns.length),
+        kg_provenance_rate: ratio(countTrue(kgProvenanceChecks), totalHybridCases),
+        lane_truth_rate: ratio(countTrue(laneTruthChecks), totalHybridCases),
+        facts_source_rate: ratio(countTrue(factsSourceChecks), totalHybridCases),
       },
     };
 
