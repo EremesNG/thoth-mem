@@ -31,7 +31,7 @@ Agent Session 1                    Agent Session 2
 
 ## Features
 
-- **17 MCP tools** — always registered, no profiles to configure
+- **6 compact MCP tools** — workflow-level tools instead of one tool per internal view
 - **Local read-only dashboard** served by the HTTP bridge at `/`, with OpenAPI docs preserved at `/docs`
 - **CLI + MCP dual mode** — use as a server or directly from the terminal
 - **SQLite + FTS5** full-text search (fast, zero external dependencies)
@@ -46,9 +46,9 @@ Agent Session 1                    Agent Session 2
 - **Strict type taxonomy** — observation types enforced at the database level
 - **Paginated retrieval** — large observations served in chunks via offset/max_length
 - **Privacy defense** — `<private>` tags stripped before storage
-- **Token-efficient search** — compact results by default, preview mode optional, 3-layer recall protocol
+- **Token-efficient recall** — compact fused evidence first, context expansion only when needed
 - **Retrieval eval baseline** — deterministic hybrid retrieval benchmark (lexical, semantic raw/HyDE, KG, compression, lineage)
-- **Agent-first MCP tools** — project summaries, graph-lite facts, and topic keys are exposed as tools instead of MCP Resources
+- **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
 
 ## Quick Start
@@ -189,34 +189,23 @@ pnpm run eval:retrieval
 
 `pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations. It reports baseline lexical recall plus hybrid status metrics (pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG contribution, and evidence lineage coverage) without requiring model downloads or remote APIs.
 
-## MCP Tools (17)
+## MCP Tools (6)
 
 
 | Tool                    | Purpose                                                           |
 | ----------------------- | ----------------------------------------------------------------- |
-| `mem_save`              | Save structured observations (decisions, bugs, patterns, configs) |
-| `mem_search`            | Full-text search with compact/preview mode and exact topic_key lookup |
-| `mem_recall`            | Fused hybrid recall for agents with pending/degraded status and evidence lanes |
+| `mem_save`              | Save observations, prompts, session summaries, or passive learnings |
+| `mem_recall`            | Primary fused hybrid recall across semantic, lexical, and KG lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
-| `mem_get_observation`   | Retrieve full observation by ID with pagination support           |
-| `mem_session_start`     | Register a new coding session (idempotent)                        |
-| `mem_session_summary`   | Save session summary AND close session in one call                |
-| `mem_suggest_topic_key` | Suggest a stable topic_key for upsert workflows                   |
-| `mem_capture_passive`   | Extract learnings from`## Key Learnings:` sections                |
-| `mem_save_prompt`       | Save user prompts for future recall                               |
-| `mem_update`            | Update an existing observation (preserves version history)        |
-| `mem_delete`            | Delete observation (soft by default, hard optional)               |
-| `mem_stats`             | Memory statistics — sessions, observations, prompts, projects    |
-| `mem_timeline`          | Chronological context around a specific observation               |
-| `mem_project_summary`   | Project-focused summary for Agent workflows                    |
-| `mem_project_graph`     | Filtered graph-lite facts derived from structured project observations |
-| `mem_topic_keys`        | List topic keys or read exact topic-key context                   |
+| `mem_get`               | Retrieve full memory by ID, optionally with session timeline      |
+| `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
+| `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
 > **Admin operations** (export, import, sync, migrate-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, and migration are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Retrieval and Embeddings
 
-- `mem_search` remains backward compatible by default: existing compact/preview/context output is unchanged unless you opt into additive hybrid metadata (`hybrid_status=auto|on`).
+- `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
 - Hybrid retrieval defaults use tuned lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical > kg`.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`.
