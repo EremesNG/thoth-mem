@@ -1,13 +1,14 @@
 import { getOpenApiSpec } from './http-openapi.js';
 import type {
   ExportData,
+  ObservationFact,
   Observation,
   ObservationScope,
   ObservationType,
   SearchMode,
   Session,
   UserPrompt,
-  ObservationFact,
+  VizExpandRequest,
 } from './store/types.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { Store } from './store/index.js';
@@ -643,6 +644,74 @@ export async function handleTimeline(store: Store, request: HttpRouteRequest): P
 
 export async function handleStats(store: Store): Promise<HttpRouteResponse> {
   return { status: 200, body: toStatsResponse(store) };
+}
+
+export async function handleVizSlice(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const type = parseObservationType(request.query.get('type') ?? undefined, 'type');
+  const observationType = parseObservationType(request.query.get('observation_type') ?? undefined, 'observation_type');
+  return {
+    status: 200,
+    body: store.getVisualizationSlice({
+      project: request.query.get('project') ?? undefined,
+      session_id: request.query.get('session_id') ?? undefined,
+      topic_key: request.query.get('topic_key') ?? undefined,
+      type,
+      observation_type: observationType,
+      relation: request.query.get('relation') ?? undefined,
+      query: request.query.get('query') ?? undefined,
+      depth: parseOptionalInteger(request.query.get('depth'), 'depth', 0),
+      max_nodes: parseOptionalInteger(request.query.get('max_nodes'), 'max_nodes', 1),
+      max_edges: parseOptionalInteger(request.query.get('max_edges'), 'max_edges', 1),
+      cursor: request.query.get('cursor') ?? undefined,
+    }),
+  };
+}
+
+export async function handleVizExpand(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  const type = parseObservationType(body?.type, 'type');
+  const observationType = parseObservationType(body?.observation_type, 'observation_type');
+  const payload: VizExpandRequest = {
+    node_id: requireString(body?.node_id, 'node_id'),
+    project: optionalString(body?.project, 'project'),
+    session_id: optionalString(body?.session_id, 'session_id'),
+    topic_key: optionalString(body?.topic_key, 'topic_key'),
+    type,
+    observation_type: observationType,
+    relation: optionalString(body?.relation, 'relation'),
+    query: optionalString(body?.query, 'query'),
+    depth: body?.depth !== undefined ? parseRequiredInteger(String(body.depth), 'depth', 1) : undefined,
+    max_nodes: body?.max_nodes !== undefined ? parseRequiredInteger(String(body.max_nodes), 'max_nodes', 1) : undefined,
+    max_edges: body?.max_edges !== undefined ? parseRequiredInteger(String(body.max_edges), 'max_edges', 1) : undefined,
+    cursor: optionalString(body?.cursor, 'cursor'),
+  };
+  return { status: 200, body: store.expandVisualizationNode(payload) };
+}
+
+export async function handleVizInspectNode(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const id = requireString(request.params.id, 'id');
+  const result = store.inspectVisualizationNode(id, { project: request.query.get('project') ?? undefined });
+  if (!result) throw new HttpRouteError(404, `Visualization node ${id} not found`);
+  return { status: 200, body: result };
+}
+
+export async function handleVizInspectEdge(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const id = requireString(request.params.id, 'id');
+  const result = store.inspectVisualizationEdge(id, { project: request.query.get('project') ?? undefined });
+  if (!result) throw new HttpRouteError(404, `Visualization edge ${id} not found`);
+  return { status: 200, body: result };
+}
+
+export async function handleVizFilters(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = request.query.get('project') ?? undefined;
+  const session_id = request.query.get('session_id') ?? undefined;
+  const base = store.getVisualizationFilters({ project });
+  const filteredSessions = session_id ? base.sessions.filter((value) => value === session_id) : base.sessions;
+  return { status: 200, body: { ...base, sessions: filteredSessions } };
+}
+
+export async function handleVizHealth(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.getVisualizationHealth({ project: request.query.get('project') ?? undefined }) };
 }
 
 export async function handleProjectSummary(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {

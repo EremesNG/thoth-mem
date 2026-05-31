@@ -341,6 +341,60 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/viz/slice': {
+        get: {
+          summary: 'Get visualization slice',
+          parameters: [
+            { name: 'project', in: 'query', schema: { type: 'string' } },
+            { name: 'session_id', in: 'query', schema: { type: 'string' } },
+            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'observation_type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'relation', in: 'query', schema: { type: 'string' } },
+            { name: 'query', in: 'query', schema: { type: 'string' } },
+            { name: 'depth', in: 'query', schema: { type: 'integer', minimum: 0, maximum: 3 } },
+            { name: 'max_nodes', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 1200, default: 300 } },
+            { name: 'max_edges', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 3600, default: 900 } },
+            { name: 'cursor', in: 'query', schema: { type: 'string' } },
+          ],
+          responses: { '200': { description: 'Visualization slice', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizSliceResponse' } } } } },
+        },
+      },
+      '/viz/expand': {
+        post: {
+          summary: 'Expand visualization node neighborhood (read-only)',
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/VizExpandRequest' } } } },
+          responses: { '200': { description: 'Expanded slice', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizSliceResponse' } } } } },
+        },
+      },
+      '/viz/inspect/node/{id}': {
+        get: {
+          summary: 'Inspect visualization node',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'project', in: 'query', schema: { type: 'string' } }],
+          responses: { '200': { description: 'Node details', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizInspectNodeResponse' } } } } },
+        },
+      },
+      '/viz/inspect/edge/{id}': {
+        get: {
+          summary: 'Inspect visualization edge',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'project', in: 'query', schema: { type: 'string' } }],
+          responses: { '200': { description: 'Edge details', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizInspectEdgeResponse' } } } } },
+        },
+      },
+      '/viz/filters': {
+        get: {
+          summary: 'Get visualization filters',
+          parameters: [{ name: 'project', in: 'query', schema: { type: 'string' } }, { name: 'session_id', in: 'query', schema: { type: 'string' } }],
+          responses: { '200': { description: 'Filter metadata', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizFiltersResponse' } } } } },
+        },
+      },
+      '/viz/health': {
+        get: {
+          summary: 'Get visualization semantic health',
+          parameters: [{ name: 'project', in: 'query', schema: { type: 'string' } }],
+          responses: { '200': { description: 'Semantic health', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizHealthResponse' } } } } },
+        },
+      },
       '/projects/{project}/summary': {
         get: {
           summary: 'Get project summary',
@@ -1010,6 +1064,68 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
           required: ['sessions', 'observations', 'prompts', 'projects'],
+        },
+        VizNode: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }, kind: { type: 'string', enum: ['observation', 'fact', 'session', 'project', 'topic'] }, label: { type: 'string' }, snippet: { type: 'string' },
+            project: { type: 'string', nullable: true }, topic_key: { type: 'string', nullable: true }, type: { ...OBSERVATION_TYPE_SCHEMA, nullable: true },
+            session_id: { type: 'string', nullable: true },
+            seed_x: { type: 'number' }, seed_y: { type: 'number' },
+          },
+          required: ['id', 'kind', 'label', 'snippet', 'project', 'topic_key', 'type', 'seed_x', 'seed_y', 'session_id'],
+        },
+        VizEdge: {
+          type: 'object',
+          properties: { id: { type: 'string' }, source_id: { type: 'string' }, target_id: { type: 'string' }, relation: { type: 'string' }, kind: { type: 'string', enum: ['semantic', 'metadata', 'fact'] }, label: { type: 'string' }, summary: { type: 'string' } },
+          required: ['id', 'source_id', 'target_id', 'relation', 'label', 'summary', 'kind'],
+        },
+        VizHealthResponse: {
+          type: 'object',
+          properties: { semantic_state: { type: 'string', enum: ['ready', 'pending', 'degraded', 'rebuilding'] }, pending_jobs: { type: 'integer' } },
+          required: ['semantic_state', 'pending_jobs'],
+        },
+        VizSliceResponse: {
+          type: 'object',
+          properties: {
+            nodes: { type: 'array', items: { $ref: '#/components/schemas/VizNode' } },
+            edges: { type: 'array', items: { $ref: '#/components/schemas/VizEdge' } },
+            state: { type: 'string', enum: ['empty', 'sparse', 'dense'] },
+            continuation: { type: 'string', nullable: true },
+            truncated: { type: 'boolean' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+          },
+          required: ['nodes', 'edges', 'state', 'continuation', 'truncated', 'health'],
+        },
+        VizExpandRequest: {
+          type: 'object',
+          properties: {
+            node_id: { type: 'string' }, project: { type: 'string' }, session_id: { type: 'string' }, topic_key: { type: 'string' }, type: OBSERVATION_TYPE_SCHEMA, observation_type: OBSERVATION_TYPE_SCHEMA, relation: { type: 'string' }, query: { type: 'string' },
+            depth: { type: 'integer', minimum: 1, maximum: 2 }, max_nodes: { type: 'integer', minimum: 1, maximum: 1200 }, max_edges: { type: 'integer', minimum: 1, maximum: 3600 },
+            cursor: { type: 'string' },
+          },
+          required: ['node_id'],
+        },
+        VizInspectNodeResponse: {
+          type: 'object',
+          properties: { id: { type: 'string' }, kind: { type: 'string' }, label: { type: 'string' }, snippet: { type: 'string' }, metadata: { type: 'object' }, links: { type: 'array', items: { type: 'string' } } },
+          required: ['id', 'kind', 'label', 'snippet', 'metadata', 'links'],
+        },
+        VizInspectEdgeResponse: {
+          type: 'object',
+          properties: { id: { type: 'string' }, source_id: { type: 'string' }, target_id: { type: 'string' }, relation: { type: 'string' }, label: { type: 'string' }, summary: { type: 'string' } },
+          required: ['id', 'source_id', 'target_id', 'relation', 'label', 'summary'],
+        },
+        VizFiltersResponse: {
+          type: 'object',
+          properties: {
+            projects: { type: 'array', items: { type: 'string' } },
+            sessions: { type: 'array', items: { type: 'string' } },
+            topic_keys: { type: 'array', items: { type: 'string' } },
+            types: { type: 'array', items: OBSERVATION_TYPE_SCHEMA },
+            relations: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['projects', 'sessions', 'topic_keys', 'types', 'relations'],
         },
         ProjectTextResponse: {
           type: 'object',
