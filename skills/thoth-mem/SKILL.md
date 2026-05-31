@@ -1,127 +1,69 @@
 ---
 name: thoth-mem
-description: Use thoth-mem correctly as persistent memory for coding agents. Use this skill whenever starting or resuming work, recovering prior project context, searching memory, browsing project summaries, graph-lite facts, or topic keys, saving durable learnings, writing session summaries, or deciding whether to call mem_search, mem_context, mem_project_summary, mem_project_graph, mem_topic_keys, mem_timeline, mem_get_observation, mem_save, mem_save_prompt, mem_session_start, or mem_session_summary. Strongly prefer this skill for any task involving memory recall, cross-session continuity, previous decisions, project history, or the 3-layer recall protocol.
+description: Use thoth-mem correctly as persistent memory for coding agents with its compact MCP surface. Use this whenever starting or resuming work, recalling previous decisions or bugs, browsing project memory, saving durable learnings, recording user intent, or writing session summaries. Use the six MCP tools: mem_recall, mem_save, mem_context, mem_get, mem_project, and mem_session.
 ---
 
 # thoth-mem Usage
 
-thoth-mem is a persistent memory MCP server for coding agents. Use it to recover context from previous sessions, avoid repeating old mistakes, and preserve decisions or discoveries that future agents should inherit.
+thoth-mem is a persistent memory MCP server for coding agents. Use it to recover context from previous sessions, avoid repeating past mistakes, and preserve decisions or discoveries that future agents should inherit.
 
-The most important habit is to treat memory as a token-efficient index first, not as a dump of full notes. Start narrow, expand only the promising hits, and save only information that will matter later.
+Use the MCP surface as a set of workflow-level tools:
 
-Project navigation is exposed through three focused tools: `mem_project_summary` for orientation, `mem_topic_keys` for stable decision areas, and `mem_project_graph` for derived graph-lite facts.
+| Workflow | Tool |
+| --- | --- |
+| Fused retrieval/search | `mem_recall` |
+| Save any durable memory | `mem_save` |
+| Start-of-session orientation | `mem_context` |
+| Fetch exact full memory or timeline | `mem_get` |
+| Project navigation and topic/graph views | `mem_project` |
+| Session lifecycle | `mem_session` |
 
-## Start-of-Session Protocol
+## Start Protocol
 
 At the beginning of a meaningful work session:
 
-1. Call `mem_session_start` with a stable session ID, the project name, and the working directory.
-2. Call `mem_project_summary` for the current project when project-level context is available; otherwise call `mem_context` with the project filter.
-3. Call `mem_topic_keys` when you need to discover stable decision areas before searching.
-4. If the task sounds related to previous work, use the 3-layer recall protocol before editing code or making architecture decisions.
-5. Save the user's significant request with `mem_save_prompt` when it defines intent that future sessions should remember.
+1. Call `mem_session(action="start", id="...", project="...", directory="...")`.
+2. Call `mem_context(project="...", session_id="...")` for recent continuity.
+3. Call `mem_project(action="summary", project="...")` when project-level history matters.
+4. If the task might overlap previous work, call `mem_recall(mode="compact", query="...", project="...")` before editing code or making architecture decisions.
+5. Save significant real user intent with `mem_save(kind="prompt", content="...", session_id="...", project="...")`.
 
-Use `mem_context` as the orientation pass. It is good for recent continuity, but it is not a replacement for targeted search when the task depends on a specific prior decision or bug.
+Only save real user prompts. Do not save generated subagent prompts, internal handoffs, raw transcripts, or tool scaffolding as user intent.
 
-Use `mem_project_summary` as the preferred project overview. It gives you a scoped starting point before targeted search.
+## Recall Protocol
 
-## 3-Layer Recall Protocol
+Use recall as a widening funnel:
 
-Use this protocol whenever you need past context beyond recent session orientation. It keeps recall cheap while still letting you reach full detail when needed.
+1. `mem_recall(mode="compact", query="...", project="...")` scans fused evidence cheaply.
+2. `mem_recall(mode="context", query="...", project="...")` expands the strongest hits into retrieved text.
+3. `mem_get(id=...)` fetches full content only for the final records that need exact detail.
+4. `mem_get(id=..., include_timeline=true)` when chronology matters.
 
-### Layer 1: Search
+`mem_recall` is the primary retrieval tool. It may return semantic, lexical, and graph/KG evidence together, plus `pending` and `degraded_fallback` metadata. Pending or degraded semantic lanes are not failures; they mean the fallback lanes are carrying the recall.
 
-Call `mem_search` first.
+Good recall queries include concrete file names, component names, error messages, architecture terms, migration names, topic keys, and user-facing feature names. Prefer two or three focused recalls over one broad vague query.
 
-Use it to scan compact results: IDs, titles, types, projects, scopes, and optionally snippets. Start with compact mode unless the query is highly specific and snippets will materially help.
+## Project Navigation
 
-Good search patterns:
+Use `mem_project` for project-level browsing:
 
-- Use domain terms from the current task: feature names, file names, function names, API names, bug symptoms, migration names, or decision topics.
-- Filter by `project` when you know it.
-- Filter by `type` when the intent is clear, such as `bugfix`, `decision`, `architecture`, `config`, `pattern`, `discovery`, `learning`, or `session_summary`.
-- Use `topic_key_exact` when the user or prior context gives a stable topic key.
-- Use `mode="context"` when you need agent-ready delimited context and can set an explicit `max_chars` budget.
-- Try 2-3 focused searches instead of one broad search when the first search is noisy.
+- `mem_project(action="list")` lists known projects.
+- `mem_project(action="summary", project="...")` gives recent scoped context.
+- `mem_project(action="topics", project="...")` lists stable topic keys.
+- `mem_project(action="topic", project="...", topic_key="...")` reads exact topic context.
+- `mem_project(action="graph", project="...", limit=..., max_chars=...)` scans structured facts and relationships.
 
-Do not fetch full observations during broad exploration. First identify the few IDs that look promising.
-
-### Layer 2: Explore
-
-Call `mem_timeline` on promising observation IDs.
-
-Use it to understand the surrounding session: what happened before, what changed afterward, and whether the search hit was part of a larger decision chain. This prevents over-trusting an isolated title or stale snippet.
-
-Good exploration patterns:
-
-- Start with the best 1-3 search results.
-- Use the timeline to distinguish final decisions from earlier dead ends.
-- Prefer observations whose neighboring entries confirm the same direction.
-- If the timeline shows the topic moved elsewhere, search again using those newer names or topic keys.
-
-### Layer 3: Fetch
-
-Call `mem_get_observation` only for the full content you actually need.
-
-Use it for the final 1-3 most relevant observations after search and timeline filtering. Fetching full content is appropriate when you need exact rationale, file paths, implementation details, gotchas, or a previous summary before acting.
-
-If an observation is large and paginated, follow the returned `offset` instructions only until you have enough context to proceed.
-
-## Recall Decision Guide
-
-Use `mem_context` when:
-
-- Starting a session.
-- The user asks what happened recently.
-- You need recent prompts, observations, and session summaries.
-
-Use `mem_project_summary` when:
-
-- You are working inside a known project.
-- You want a project-scoped overview before targeted recall.
-- You need recent sessions, prompts, observations, and stats for one project.
-
-Use `mem_project_graph` when:
-
-- You need graph-lite facts derived from structured observations.
-- You want to scan `What/Why/Where/Learned`, type, topic key, and project relationships.
-- You are investigating architecture or decision relationships before deeper fetches.
-- Use `topic_key`, `relation`, `limit`, and `max_chars` to keep graph output focused.
-
-Use `mem_topic_keys` when:
-
-- You need to discover stable topic keys for a project.
-- You want to inspect an exact topic key as agent-ready context.
-- You are deciding whether a new learning should update an existing topic-key memory.
-
-Use `mem_search` when:
-
-- You need a specific past decision, bugfix, pattern, configuration, or gotcha.
-- The current task might overlap with prior work.
-- `mem_context` is too recent or too broad.
-
-Use `mem_timeline` when:
-
-- A search result looks relevant but may be incomplete.
-- You need chronology or neighboring decisions.
-- You want to avoid acting on a stale or superseded observation.
-
-Use `mem_get_observation` when:
-
-- You have selected a specific observation ID and need full content.
-- You need exact implementation details, rationale, or file references.
+Use project navigation before broad recall when you are unsure of the project name, topic key, or decision area.
 
 ## Saving Memory
 
-Call `mem_save` proactively after durable learnings, not only at the end.
-
-Save observations after:
+Call `mem_save(kind="observation")` after durable events:
 
 - Architecture decisions or tradeoffs.
-- Bug fixes, including what was wrong, why it happened, and how it was fixed.
-- New patterns or conventions established.
+- Bug fixes, including root cause and verification.
+- New patterns or conventions.
 - Configuration changes or environment setup.
-- Important discoveries, gotchas, constraints, or debugging lessons.
+- Important discoveries, gotchas, or constraints.
 
 Use this content shape:
 
@@ -132,22 +74,27 @@ Use this content shape:
 **Learned**: [gotchas, edge cases - omit if none]
 ```
 
-Write titles that are short and searchable. Include concrete nouns such as component names, tool names, table names, endpoint names, or bug symptoms.
+Use short searchable titles. Include concrete nouns such as module names, table names, endpoint names, commands, or bug symptoms.
 
-Use `mem_suggest_topic_key` before `mem_save` when the memory belongs to an evolving topic that should be updated in place. Then pass the chosen `topic_key` to `mem_save`.
+Use `topic_key` when the memory belongs to an evolving topic that should update in place, for example `architecture/retrieval-engine`, `bugfix/sqlite-vec-loading`, or `config/embedding-provider`.
 
-Good topic-key cases:
+## Save Kinds
 
-- Long-lived architecture decisions.
-- A recurring bug or migration.
-- Project setup conventions.
-- A feature design that will evolve over multiple sessions.
+`mem_save` supports these memory kinds:
 
-Use normal deduplicated observations when the note is a standalone discovery or one-time event.
+- `kind="observation"`: durable decision, bugfix, pattern, config, discovery, learning, or manual note. Requires `title`.
+- `kind="prompt"`: significant real user request or intent. Requires `content`; include `session_id` and `project` when known.
+- `kind="session_summary"`: continuity handoff. Include `session_id`, `project`, and the summary template below.
+- `kind="passive_learnings"`: extracts bullets from a `## Key Learnings:` or `## Aprendizajes Clave:` section.
 
-## Session Summary Protocol
+Do not save secrets, credentials, raw logs without a durable lesson, broad transcripts, or obvious facts already present in the repository.
 
-Before ending a meaningful session, call `mem_session_summary`. This is the continuity handoff for the next agent.
+## Session Summary
+
+Before ending a meaningful session, call either:
+
+- `mem_session(action="summary", id="...", project="...", content="...")`, or
+- `mem_save(kind="session_summary", session_id="...", project="...", content="...")`.
 
 Use this structure:
 
@@ -169,59 +116,32 @@ Use this structure:
 - path/to/file.ts - [what it does or what changed]
 ```
 
-Keep summaries factual and useful for resumption. Include test results or verification gaps when they matter.
-
-## Passive Capture
-
-Use `mem_capture_passive` when an output contains a `## Key Learnings:` or `## Aprendizajes Clave:` section. It extracts each listed item as a separate observation.
-
-This is useful after retrospectives, debugging reports, or research summaries where the learnings are already structured.
-
-## What Not To Save
-
-Do not save:
-
-- Obvious facts available in the repository.
-- Raw logs unless they encode a durable lesson.
-- Large pasted files or broad transcripts.
-- Secrets, credentials, tokens, or private content.
-- Every minor action in a session.
-
-Prefer saving the reason a thing matters, where it applies, and how a future agent should use it.
+Keep summaries factual. Include verification results and known gaps when they matter.
 
 ## Example Workflows
 
 ### Resume a Feature
 
-1. `mem_session_start`
-2. `mem_project_summary(project="...")`
-3. `mem_topic_keys(project="...")`
-4. `mem_search(query="feature-name architecture decision", project="...", type="decision")`
-5. `mem_timeline(observation_id=<best-id>)`
-6. `mem_get_observation(id=<final-id>)`
-7. Continue the work using the recovered context.
+1. `mem_session(action="start", id="...", project="...", directory="...")`
+2. `mem_context(project="...", session_id="...")`
+3. `mem_project(action="summary", project="...")`
+4. `mem_recall(mode="compact", query="feature-name architecture decision", project="...")`
+5. `mem_recall(mode="context", query="feature-name architecture decision", project="...")` if compact hits need detail
+6. `mem_get(id=<best-id>)` only for exact implementation details
 
 ### Investigate a Recurring Bug
 
-1. `mem_search(query="error message function-name failing test", project="...", type="bugfix")`
-2. `mem_search(query="module-name gotcha", project="...", type="discovery")` if the first search is thin.
-3. `mem_timeline` around the most relevant result.
-4. `mem_get_observation` for the final bugfix or discovery.
-5. After fixing, `mem_save` the new root cause and verification.
+1. `mem_recall(mode="compact", query="error message function-name failing test", project="...")`
+2. `mem_recall(mode="compact", query="module-name gotcha root cause", project="...")` if the first recall is thin
+3. `mem_get(id=<best-id>, include_timeline=true)` when chronology matters
+4. After fixing, `mem_save(kind="observation", type="bugfix", title="...", content="...", project="...")`
 
 ### Preserve an Evolving Decision
 
-1. `mem_topic_keys(project="...")` to see whether a stable topic already exists.
-2. `mem_suggest_topic_key(title="...")` if no existing topic key fits.
-3. `mem_save` with `topic_key`, `type="decision"` or `type="architecture"`.
-4. Later sessions update the same topic key instead of creating scattered near-duplicates.
-
-### Inspect Project Structure
-
-1. `mem_project_summary(project="...")`
-2. `mem_topic_keys(project="...")`
-3. `mem_project_graph(project="...", limit=50, max_chars=6000)`
-4. Use `mem_search(mode="context", project="...", query="...")` only for the most relevant follow-up areas.
+1. `mem_project(action="topics", project="...")`
+2. Pick or create a stable `topic_key`
+3. `mem_save(kind="observation", type="decision", topic_key="...", title="...", content="...", project="...")`
+4. Later sessions update the same topic key instead of creating scattered near-duplicates
 
 ## Quality Bar
 
@@ -233,4 +153,4 @@ Good thoth-mem usage should make the next session easier. A future agent should 
 - What should I avoid repeating?
 - Which memories are authoritative versus exploratory?
 
-When in doubt, recall broadly with compact search, explore chronology, fetch sparingly, and save the durable lesson.
+When in doubt, recall compactly, expand only the best hits, fetch full content sparingly, and save the durable lesson.
