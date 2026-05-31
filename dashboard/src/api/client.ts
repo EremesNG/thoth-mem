@@ -225,15 +225,17 @@ export class ApiError extends Error {
 // Helper to handle fetch responses
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let body: any;
+    const bodyText = await response.text();
+    let body: any = bodyText;
+
     try {
-      body = await response.json();
+      body = bodyText ? JSON.parse(bodyText) : bodyText;
     } catch {
-      body = await response.text();
     }
+
     throw new ApiError(
       response.status,
-      body?.error || body?.message || `HTTP error ${response.status}`,
+      body?.error || body?.message || (typeof bodyText === 'string' && bodyText.trim() ? bodyText : response.statusText) || `HTTP error ${response.status}`,
       body
     );
   }

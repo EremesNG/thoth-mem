@@ -29,6 +29,28 @@ describe('api.getMcpVersion', () => {
   });
 });
 
+describe('api error handling', () => {
+  it('rejects non-OK non-JSON responses with ApiError without double-reading the body', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('<!doctype html><html><body>Bad Gateway</body></html>', {
+        status: 502,
+        headers: { 'content-type': 'text/html' },
+      });
+    }) as typeof fetch;
+
+    try {
+      await expect(api.getStats()).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 502,
+      });
+      await expect(api.getStats()).rejects.not.toThrow(TypeError);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('normalizeProjectGraphResponse', () => {
   it('normalizes legacy text-only graph responses to a safe structured shape', () => {
     const result = normalizeProjectGraphResponse({
