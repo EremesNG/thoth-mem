@@ -8,6 +8,8 @@ import type { DeleteProjectResult, ExportData, Observation, ObservationScope, Ob
 import { syncExport, syncImport } from './sync/index.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
 import { VERSION } from './version.js';
+import { createEmbeddingProvider } from './retrieval/provider-factory.js';
+import type { SemanticIndexProgress } from './store/index.js';
 
 export { VERSION };
 
@@ -31,6 +33,7 @@ Commands:
    delete-project <project>     Delete a project safely
    rebuild-graph          Rebuild derived graph facts
    rebuild-index          Queue/process semantic index rebuild jobs
+   rebuild-index --status Show semantic index progress without queueing work
    version                Show version
    help                   Show this help
 
@@ -243,6 +246,47 @@ function formatTimelineObservation(observation: Observation): string {
 
 function printHelp(): void {
   printStdout(HELP_TEXT.trimEnd());
+}
+
+function formatSemanticProgress(progress: SemanticIndexProgress, scopeLabel: string): string {
+  const jobLines = progress.jobs.length > 0
+    ? progress.jobs.map((job) => `  - ${job.state}/${job.kind}: ${job.count}`)
+    : ['  - none'];
+  const laneLines = progress.lanes.length > 0
+    ? progress.lanes.map((lane) => [
+      `  - ${lane.lane}:`,
+      `pending=${lane.pending ? 'yes' : 'no'}`,
+      `degraded=${lane.degraded ? 'yes' : 'no'}`,
+      `stale=${lane.stale ? 'yes' : 'no'}`,
+      `dimensions=${lane.embeddingDimensions ?? 'unknown'}`,
+      `ready=${lane.lastReadyAt ?? 'never'}`,
+      `updated=${lane.updatedAt ?? 'never'}`,
+    ].join(' '))
+    : ['  - none'];
+  const errorLines = progress.recentErrors.length > 0
+    ? progress.recentErrors.map((job) => `  - #${job.id} ${job.kind}/${job.state} attempts=${job.attemptCount}: ${job.lastError ?? 'unknown error'}`)
+    : ['  - none'];
+  const donePercent = progress.totals.total > 0
+    ? Math.round((progress.totals.done / progress.totals.total) * 100)
+    : 100;
+
+  return [
+    '## Semantic Index Status',
+    `- **Scope:** ${scopeLabel}`,
+    `- **Jobs:** ${progress.totals.done}/${progress.totals.total} done (${donePercent}%)`,
+    `- **Pending jobs:** ${progress.totals.pending}`,
+    `- **Running jobs:** ${progress.totals.running}`,
+    `- **Failed jobs:** ${progress.totals.failed}`,
+    `- **Active observations:** ${progress.coverage.observations}`,
+    `- **Chunk coverage:** ${progress.coverage.chunkVectors}/${progress.coverage.chunks} vectors`,
+    `- **Sentence coverage:** ${progress.coverage.sentenceVectors}/${progress.coverage.sentences} vectors`,
+    '- **Queue by state/kind:**',
+    ...jobLines,
+    '- **Lanes:**',
+    ...laneLines,
+    '- **Recent errors:**',
+    ...errorLines,
+  ].join('\n');
 }
 
 async function handleSearch(positionals: string[], globals: GlobalOptions): Promise<void> {
@@ -552,14 +596,15 @@ async function handleRebuildGraph(positionals: string[], globals: GlobalOptions)
 async function handleRebuildIndex(positionals: string[], globals: GlobalOptions): Promise<void> {
   const parsedReason = parseOptionValue(positionals, ['--reason']);
   const parsedProcess = parseOptionValue(parsedReason.rest, ['--process']);
+  const statusOnly = parsedProcess.rest.includes('--status');
   const hasProject = globals.project !== undefined;
   const all = parsedProcess.rest.includes('--all');
-  const rest = parsedProcess.rest.filter((arg) => arg !== '--all');
+  const rest = parsedProcess.rest.filter((arg) => arg !== '--all' && arg !== '--status');
 
   if (all && hasProject) {
     fail('Use either --project or --all, not both');
   }
-  if (!all && !hasProject) {
+  if (!statusOnly && !all && !hasProject) {
     fail('rebuild-index requires --project <name> or --all');
   }
   ensureNoExtraArgs(rest, 'rebuild-index');
@@ -568,26 +613,41 @@ async function handleRebuildIndex(positionals: string[], globals: GlobalOptions)
   const project = hasProject
     ? parseRequiredProjectName(globals.project, 'rebuild-index --project')
     : undefined;
+  const scopeLabel = project ? `project ${project}` : 'all projects';
 
   await withStore(globals.dataDir, async ({ store }) => {
+    if (statusOnly) {
+      printStdout(formatSemanticProgress(store.getSemanticIndexProgress({ project }), scopeLabel));
+      return;
+    }
+
     const reason = parsedReason.value?.trim() || 'cli-manual';
     const rebuild = store.enqueueManualSemanticRebuild({
       scope: project ?? 'all',
       reason,
     });
+    if (processLimit > 0 && !store.config.embedding) {
+      fail('Embedding config unavailable; cannot process semantic jobs');
+    }
+    const embeddingProvider = processLimit > 0 && store.config.embedding
+      ? createEmbeddingProvider(store.config.embedding)
+      : null;
     const processed = processLimit > 0
-      ? await store.processSemanticJobs({ limit: processLimit })
+      ? await store.processSemanticJobs({ limit: processLimit, embeddingProvider })
       : 0;
     const state = store.getSemanticIndexState();
+    const progress = store.getSemanticIndexProgress({ project });
 
     printStdout([
       '## Semantic Index Rebuild',
-      `- **Scope:** ${project ? `project ${project}` : 'all projects'}`,
+      `- **Scope:** ${scopeLabel}`,
       `- **Queued key:** ${rebuild.dedupeKey}`,
       `- **Jobs processed:** ${processed}`,
       `- **Pending:** ${state.pending ? 'yes' : 'no'}`,
       `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,
       `- **Stale:** ${state.stale ? 'yes' : 'no'}`,
+      '',
+      formatSemanticProgress(progress, scopeLabel),
     ].join('\n'));
   });
 }

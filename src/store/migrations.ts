@@ -30,6 +30,7 @@ const LEGACY_COLUMN_MIGRATIONS = [
 ] as const;
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;
+const VECTOR_TABLES = ['vec_chunks', 'vec_sentences'] as const;
 
 export interface SemanticMigrationOptions {
   sqliteVecReady?: boolean;
@@ -139,6 +140,32 @@ export function runMigrations(db: SqliteDatabase): void {
   runMigrationsWithSemantic(db, {});
 }
 
+function vectorTableDimension(db: SqliteDatabase, tableName: string): number | null {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+    .get(tableName) as { sql?: string } | undefined;
+  const match = row?.sql?.match(/float\[(\d+)\]/i);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function recreateVectorTablesOnDimensionChange(db: SqliteDatabase, dimensions: number): boolean {
+  let recreated = false;
+
+  for (const tableName of VECTOR_TABLES) {
+    const existingDimensions = vectorTableDimension(db, tableName);
+    if (existingDimensions !== null && existingDimensions !== dimensions) {
+      db.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)}`);
+      recreated = true;
+    }
+  }
+
+  if (recreated) {
+    db.prepare("DELETE FROM semantic_vector_rowids WHERE lane IN ('chunk','sentence')").run();
+  }
+
+  return recreated;
+}
+
 export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticMigrationOptions): void {
   const migrate = db.transaction(() => {
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
@@ -172,7 +199,10 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     const sqliteVecReady = options.sqliteVecReady ?? false;
     const resolvedDimensions = options.embeddingDimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
     const dimensionsKnown = options.embeddingDimensions !== null && options.embeddingDimensions !== undefined;
-    const stale = dimensionsKnown ? 0 : 1;
+    const vectorTablesRecreated = sqliteVecReady
+      ? recreateVectorTablesOnDimensionChange(db, resolvedDimensions)
+      : false;
+    const stale = dimensionsKnown && !vectorTablesRecreated ? 0 : 1;
     const degraded = sqliteVecReady ? 0 : 1;
     const hash = options.embeddingConfigHash ?? null;
     const lanes = ['sentence', 'chunk'];
@@ -185,6 +215,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
         ON CONFLICT(lane) DO UPDATE SET
           embedding_config_hash = excluded.embedding_config_hash,
           embedding_dimensions = excluded.embedding_dimensions,
+          pending = CASE WHEN excluded.stale = 1 THEN 1 ELSE semantic_index_state.pending END,
           degraded = excluded.degraded,
           stale = excluded.stale,
           updated_at = datetime('now')`

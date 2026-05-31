@@ -3,6 +3,8 @@ import { Store } from "./store/index.js";
 import { getConfig, resolveDataDir, ThothConfig } from "./config.js";
 import { registerTools } from "./tools/index.js";
 import { VERSION } from "./version.js";
+import { createEmbeddingProvider } from "./retrieval/provider-factory.js";
+import type { EmbeddingProviderAdapter } from "./retrieval/providers.js";
 
 /**
  * MCP server instructions — returned during initialization to guide
@@ -45,7 +47,12 @@ export interface ServerOptions {
   dataDir?: string;
 }
 
-export function createServer(options: ServerOptions): { server: McpServer; store: Store; config: ThothConfig } {
+export function createServer(options: ServerOptions): {
+  server: McpServer;
+  store: Store;
+  config: ThothConfig;
+  embeddingProvider: EmbeddingProviderAdapter | null;
+} {
   const config = getConfig();
   if (options.dataDir) {
     config.dataDir = options.dataDir;
@@ -55,6 +62,7 @@ export function createServer(options: ServerOptions): { server: McpServer; store
   resolveDataDir(config);
 
   const store = new Store(config.dbPath, config);
+  const embeddingProvider = config.embedding ? createEmbeddingProvider(config.embedding) : null;
 
   const server = new McpServer({
     name: "thoth-mem",
@@ -63,7 +71,7 @@ export function createServer(options: ServerOptions): { server: McpServer; store
     instructions: SERVER_INSTRUCTIONS,
   });
 
-  registerTools(server, store);
+  registerTools(server, store, { embeddingProvider });
 
-  return { server, store, config };
+  return { server, store, config, embeddingProvider };
 }

@@ -107,7 +107,17 @@ async function processChunkJob(
   db.prepare(
     `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
      VALUES (?, 'sentence', 'pending', 60, ?, ?)
-     ON CONFLICT(job_key) DO NOTHING`
+     ON CONFLICT(job_key) DO UPDATE SET
+       state = 'pending',
+       priority = excluded.priority,
+       observation_id = excluded.observation_id,
+       source_key = excluded.source_key,
+       attempt_count = 0,
+       last_error = NULL,
+       available_at = datetime('now'),
+       started_at = NULL,
+       finished_at = NULL,
+       updated_at = datetime('now')`
   ).run(`sentence:${obs.id}`, obs.id, `observation:${obs.id}`);
 }
 
@@ -181,9 +191,10 @@ async function embedLane(
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
     const rowid = deterministicVecRowid(`${lane}:${item.key}`);
+    const vecRowid = BigInt(rowid);
     const vector = vectorToBuffer(vectors[i] ?? []);
-    deleteVec.run(rowid);
-    insertVec.run(rowid, vector);
+    deleteVec.run(vecRowid);
+    insertVec.run(vecRowid, vector);
     upsertRowid.run(lane, item.key, rowid, item.observationId, item.key, store.config.embedding?.configHash ?? null);
   }
 
@@ -199,12 +210,32 @@ function processRebuildJob(store: Store, jobKey: string): void {
     db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'chunk', 'pending', 50, ?, ?)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
     ).run(`chunk:${row.id}`, row.id, `observation:${row.id}`);
     db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'extract_kg', 'pending', 70, ?, ?)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
     ).run(`kg:${row.id}`, row.id, `observation:${row.id}`);
   }
 

@@ -50,6 +50,46 @@ type ObservationRow = Observation;
 
 type SearchRow = ObservationRow & { rank: number };
 
+export interface SemanticIndexProgress {
+  lanes: Array<{
+    lane: string;
+    pending: boolean;
+    degraded: boolean;
+    stale: boolean;
+    embeddingConfigHash: string | null;
+    embeddingDimensions: number | null;
+    lastReadyAt: string | null;
+    updatedAt: string | null;
+  }>;
+  jobs: Array<{
+    state: string;
+    kind: string;
+    count: number;
+  }>;
+  totals: {
+    total: number;
+    pending: number;
+    running: number;
+    done: number;
+    failed: number;
+  };
+  coverage: {
+    observations: number;
+    chunks: number;
+    sentences: number;
+    chunkVectors: number;
+    sentenceVectors: number;
+  };
+  recentErrors: Array<{
+    id: number;
+    jobKey: string;
+    kind: string;
+    state: string;
+    attemptCount: number;
+    lastError: string | null;
+  }>;
+}
+
 const STRUCTURED_FACT_RELATIONS = {
   what: 'HAS_WHAT',
   why: 'HAS_WHY',
@@ -117,6 +157,111 @@ export class Store {
     return { ...this.semanticRuntime };
   }
 
+  getSemanticIndexProgress(input: { project?: string } = {}): SemanticIndexProgress {
+    const project = input.project?.trim();
+    const jobWhere = project
+      ? `WHERE j.observation_id IN (SELECT id FROM observations WHERE project = ? AND deleted_at IS NULL)`
+      : '';
+    const coverageWhere = project ? 'WHERE project = ?' : '';
+    const observationWhere = project ? 'WHERE project = ? AND deleted_at IS NULL' : 'WHERE deleted_at IS NULL';
+    const params = project ? [project] : [];
+
+    const lanes = this.db.prepare(
+      `SELECT lane, pending, degraded, stale, embedding_config_hash, embedding_dimensions, last_ready_at, updated_at
+       FROM semantic_index_state
+       ORDER BY lane`
+    ).all() as Array<{
+      lane: string;
+      pending: number;
+      degraded: number;
+      stale: number;
+      embedding_config_hash: string | null;
+      embedding_dimensions: number | null;
+      last_ready_at: string | null;
+      updated_at: string | null;
+    }>;
+
+    const jobs = this.db.prepare(
+      `SELECT j.state, j.kind, COUNT(*) AS count
+       FROM semantic_jobs j
+       ${jobWhere}
+       GROUP BY j.state, j.kind
+       ORDER BY j.state, j.kind`
+    ).all(...params) as Array<{ state: string; kind: string; count: number }>;
+
+    const jobCount = (state: string): number => jobs
+      .filter((job) => job.state === state)
+      .reduce((sum, job) => sum + job.count, 0);
+
+    const countOne = (sql: string, values: unknown[] = []): number =>
+      (this.db.prepare(sql).get(...values) as { count: number }).count;
+
+    const recentErrors = this.db.prepare(
+      `SELECT j.id, j.job_key, j.kind, j.state, j.attempt_count, j.last_error
+       FROM semantic_jobs j
+       ${project ? `${jobWhere} AND j.last_error IS NOT NULL` : "WHERE j.last_error IS NOT NULL"}
+       ORDER BY j.updated_at DESC
+       LIMIT 10`
+    ).all(...params) as Array<{
+      id: number;
+      job_key: string;
+      kind: string;
+      state: string;
+      attempt_count: number;
+      last_error: string | null;
+    }>;
+
+    return {
+      lanes: lanes.map((lane) => ({
+        lane: lane.lane,
+        pending: lane.pending === 1,
+        degraded: lane.degraded === 1,
+        stale: lane.stale === 1,
+        embeddingConfigHash: lane.embedding_config_hash,
+        embeddingDimensions: lane.embedding_dimensions,
+        lastReadyAt: lane.last_ready_at,
+        updatedAt: lane.updated_at,
+      })),
+      jobs,
+      totals: {
+        total: jobs.reduce((sum, job) => sum + job.count, 0),
+        pending: jobCount('pending'),
+        running: jobCount('running'),
+        done: jobCount('done'),
+        failed: jobCount('failed'),
+      },
+      coverage: {
+        observations: countOne(`SELECT COUNT(*) AS count FROM observations ${observationWhere}`, params),
+        chunks: countOne(`SELECT COUNT(*) AS count FROM semantic_chunks ${coverageWhere}`, params),
+        sentences: countOne(`SELECT COUNT(*) AS count FROM semantic_sentences ${coverageWhere}`, params),
+        chunkVectors: countOne(
+          project
+            ? `SELECT COUNT(*) AS count FROM semantic_vector_rowids v
+               JOIN semantic_chunks c ON c.chunk_key = v.source_key
+               WHERE v.lane = 'chunk' AND c.project = ?`
+            : "SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE lane = 'chunk'",
+          params,
+        ),
+        sentenceVectors: countOne(
+          project
+            ? `SELECT COUNT(*) AS count FROM semantic_vector_rowids v
+               JOIN semantic_sentences s ON s.sentence_key = v.source_key
+               WHERE v.lane = 'sentence' AND s.project = ?`
+            : "SELECT COUNT(*) AS count FROM semantic_vector_rowids WHERE lane = 'sentence'",
+          params,
+        ),
+      },
+      recentErrors: recentErrors.map((job) => ({
+        id: job.id,
+        jobKey: job.job_key,
+        kind: job.kind,
+        state: job.state,
+        attemptCount: job.attempt_count,
+        lastError: job.last_error,
+      })),
+    };
+  }
+
   requestSemanticRebuild(input: { reason: string }): { dedupeKey: string } {
     const dedupeKey = `rebuild:${input.reason}`;
     this.db.prepare(
@@ -145,17 +290,47 @@ export class Store {
     this.db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'chunk', 'pending', 50, ?, ?)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
     ).run(`chunk:${input.observationId}`, observationId, sourceKey);
     this.db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'sentence', 'pending', 60, ?, ?)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
     ).run(`sentence:${input.observationId}`, observationId, sourceKey);
     this.db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
        VALUES (?, 'extract_kg', 'pending', 70, ?, ?)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         observation_id = excluded.observation_id,
+         source_key = excluded.source_key,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')`
     ).run(`kg:${input.observationId}`, observationId, sourceKey);
     this.db.prepare(
       "UPDATE semantic_index_state SET pending = 1, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"

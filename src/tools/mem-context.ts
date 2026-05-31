@@ -1,8 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 
-export function registerMemContext(server: McpServer, store: Store): void {
+export function registerMemContext(
+  server: McpServer,
+  store: Store,
+  options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+): void {
   server.tool(
     "mem_context",
     `Get recent memory context from previous sessions. Shows recent sessions, user prompts, and observations to understand what was done before.
@@ -31,6 +36,7 @@ Returns formatted Markdown with:
             query: recall_query.trim(),
             limit: 3,
             project,
+            embeddingProvider: options.embeddingProvider,
           });
           const evidence = retrieval.results.slice(0, 3).map((hit, index) => {
             const source = hit.evidence.primary.source ?? 'unknown';

@@ -20,6 +20,9 @@ const CLI_SUBCOMMANDS = new Set([
   'help',
 ]);
 
+const SEMANTIC_WORKER_BATCH_SIZE = 25;
+const SEMANTIC_WORKER_INTERVAL_MS = 2_000;
+
 export function parseArgs(argv: string[]): { dataDir?: string; httpDisabled: boolean } {
   const args = argv.slice(2);
   let dataDir: string | undefined;
@@ -74,7 +77,7 @@ export function shouldRunCli(args: string[]): boolean {
 export async function startMcpServer(argv: string[]): Promise<void> {
   const { dataDir, httpDisabled } = parseArgs(argv);
 
-  const { server, store, config } = createServer({ dataDir });
+  const { server, store, config, embeddingProvider } = createServer({ dataDir });
 
   if (httpDisabled) {
     config.httpDisabled = true;
@@ -83,7 +86,8 @@ export async function startMcpServer(argv: string[]): Promise<void> {
   const transport = new StdioServerTransport();
   let httpBridge: ReturnType<typeof createHttpBridge> | null = null;
   let orphanCheck: NodeJS.Timeout | null = null;
-  let semanticKickoff: NodeJS.Timeout | null = null;
+  let semanticWorker: NodeJS.Timeout | null = null;
+  let semanticWorkerActive = false;
   let isShuttingDown = false;
   const DISCONNECT_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED']);
 
@@ -96,12 +100,27 @@ export async function startMcpServer(argv: string[]): Promise<void> {
     orphanCheck = null;
   };
 
-  const clearSemanticKickoff = (): void => {
-    if (!semanticKickoff) {
+  const clearSemanticWorker = (): void => {
+    if (!semanticWorker) {
       return;
     }
-    clearTimeout(semanticKickoff);
-    semanticKickoff = null;
+    clearInterval(semanticWorker);
+    semanticWorker = null;
+  };
+
+  const runSemanticWorkerBatch = (): void => {
+    if (isShuttingDown || semanticWorkerActive) {
+      return;
+    }
+
+    semanticWorkerActive = true;
+    void store.processSemanticJobs({ limit: SEMANTIC_WORKER_BATCH_SIZE, embeddingProvider })
+      .catch((error: unknown) => {
+        process.stderr.write(`[thoth-mem] semantic background worker skipped: ${error instanceof Error ? error.message : String(error)}\n`);
+      })
+      .finally(() => {
+        semanticWorkerActive = false;
+      });
   };
 
   const shutdown = async (options: { exit?: boolean } = {}): Promise<void> => {
@@ -111,7 +130,7 @@ export async function startMcpServer(argv: string[]): Promise<void> {
 
     isShuttingDown = true;
     clearOrphanCheck();
-    clearSemanticKickoff();
+    clearSemanticWorker();
 
     try {
       if (httpBridge) {
@@ -173,12 +192,9 @@ export async function startMcpServer(argv: string[]): Promise<void> {
 
   try {
     await server.connect(transport);
-    semanticKickoff = setTimeout(() => {
-      void store.processSemanticJobs({ limit: 10 }).catch((error: unknown) => {
-        process.stderr.write(`[thoth-mem] semantic kickoff skipped: ${error instanceof Error ? error.message : String(error)}\n`);
-      });
-    }, 0);
-    semanticKickoff.unref();
+    runSemanticWorkerBatch();
+    semanticWorker = setInterval(runSemanticWorkerBatch, SEMANTIC_WORKER_INTERVAL_MS);
+    semanticWorker.unref();
 
     if (!config.httpDisabled) {
       httpBridge = createHttpBridge(store, config);

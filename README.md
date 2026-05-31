@@ -127,6 +127,7 @@ thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
 thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
 thoth-mem rebuild-index --project <name> # Queue semantic index rebuild for one project
 thoth-mem rebuild-index --all          # Queue semantic index rebuild for all projects
+thoth-mem rebuild-index --status       # Show semantic index queue/coverage progress
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -208,7 +209,7 @@ pnpm run eval:retrieval
 - `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
 - Hybrid retrieval defaults use tuned lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical > kg`.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
-- Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`.
+- Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical + KG lanes and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
 - `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical/KG retrieval.
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
@@ -245,7 +246,7 @@ THOTH_EMBEDDING_MODEL=nomic-embed-text-v1.5 \
 thoth-mem
 ```
 
-`THOTH_EMBEDDING_DIMENSIONS` is optional. Set it only when the selected model/runtime supports a stable dimension override and you want to force a specific sqlite-vec table shape.
+`THOTH_EMBEDDING_DIMENSIONS` is inferred for known models such as `nomic-ai/nomic-embed-text-v1.5` and `nomic-embed-text`. Set it explicitly when using a custom model or when the selected runtime supports a stable dimension override and you want to force a specific sqlite-vec table shape.
 
 
 ## Sync & Portability
@@ -330,7 +331,7 @@ This runs as a transaction, blocks deletion if shared sessions or data are detec
 | `THOTH_EMBEDDING_PROVIDER`    | `transformers_local` | Embedding provider (`transformers_local`, `ollama`, `lmstudio`) |
 | `THOTH_EMBEDDING_MODEL`       | `nomic-ai/nomic-embed-text-v1.5` (local) | Embedding model id |
 | `THOTH_EMBEDDING_BASE_URL`    | provider-specific | Base URL for remote/local API providers |
-| `THOTH_EMBEDDING_DIMENSIONS`  | unset      | Optional embedding dimensions override |
+| `THOTH_EMBEDDING_DIMENSIONS`  | inferred for known models | Optional embedding dimensions override |
 | `THOTH_HYDE_ENABLED`          | `false`    | Enable HyDE dual-input semantic query expansion |
 | `THOTH_HYDE_MODEL`            | unset      | Optional HyDE generation model id |
 | `THOTH_HYDE_BASE_URL`         | unset      | Optional HyDE provider base URL |

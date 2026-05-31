@@ -1,5 +1,6 @@
 import type { EmbeddingConfig } from '../config.js';
-import type { EmbeddingProviderAdapter } from './providers.js';
+import { formatEmbeddingInput } from './embedding-input.js';
+import type { EmbeddingInputRole, EmbeddingProviderAdapter } from './providers.js';
 
 interface OllamaEmbedResponse {
   embedding?: number[];
@@ -46,7 +47,7 @@ export class RemoteEmbeddingProvider implements EmbeddingProviderAdapter {
     this.config = config;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], role: EmbeddingInputRole = 'document'): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
     }
@@ -77,7 +78,7 @@ export class RemoteEmbeddingProvider implements EmbeddingProviderAdapter {
 
     const payload = {
       model: this.config.model,
-      input: texts,
+      input: texts.map((text) => formatEmbeddingInput(text, this.config.model, role)),
     };
 
     const json = await fetchJson(`${baseUrl}/v1/embeddings`, payload) as OpenAIEmbeddingResponse;

@@ -65,6 +65,14 @@ const DEFAULT_HYDE_CONFIG: HydeConfig = {
 };
 
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+const KNOWN_EMBEDDING_DIMENSIONS: Record<string, number> = {
+  'nomic-ai/nomic-embed-text-v1.5': 768,
+  'nomic-embed-text': 768,
+  'xenova/all-minilm-l6-v2': 384,
+  'sentence-transformers/all-minilm-l6-v2': 384,
+  'qwen/qwen3-embedding-0.6b': 1024,
+  'qwen3-embedding:0.6b': 1024,
+};
 
 /**
  * Resolve home directory with Windows MCP subprocess fallbacks.
@@ -94,6 +102,10 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
   const trimmed = value.trim();
   if (trimmed.length === 0) return null;
   return trimmed.replace(/\/+$/, '');
+}
+
+function inferEmbeddingDimensions(model: string): number | null {
+  return KNOWN_EMBEDDING_DIMENSIONS[model] ?? KNOWN_EMBEDDING_DIMENSIONS[model.toLowerCase()] ?? null;
 }
 
 function parseNumber(value: string | undefined): number | null {
@@ -159,7 +171,7 @@ function resolveEmbeddingConfig(persisted: PersistedConfig, hyde: HydeConfig): E
     ?? (provider === 'transformers_local' ? DEFAULT_LOCAL_EMBEDDING_MODEL : 'nomic-embed-text');
 
   const dimensionsFromEnv = parseNumber(process.env.THOTH_EMBEDDING_DIMENSIONS);
-  const dimensions = dimensionsFromEnv ?? persistedEmbedding.dimensions ?? null;
+  const dimensions = dimensionsFromEnv ?? persistedEmbedding.dimensions ?? inferEmbeddingDimensions(model);
 
   const baseUrl = normalizeBaseUrl(
     process.env.THOTH_EMBEDDING_BASE_URL

@@ -1,14 +1,14 @@
 import type { EmbeddingConfig } from '../config.js';
 import type { EmbeddingInputRole, EmbeddingProviderAdapter } from './providers.js';
+import { formatEmbeddingInput } from './embedding-input.js';
 
 type PipelineModule = typeof import('@huggingface/transformers');
+type PipelineOptions = NonNullable<Parameters<PipelineModule['pipeline']>[2]>;
 
 type FeatureExtractionPipeline = (text: string, options: {
   pooling: 'mean';
   normalize: boolean;
 }) => Promise<{ data: Float32Array | number[] }>;
-
-const NOMIC_EMBED_PREFIX = /^(search_document|search_query|clustering|classification):/i;
 
 let cachedPipelineModule: Promise<PipelineModule> | null = null;
 
@@ -21,16 +21,15 @@ async function loadTransformersModule(): Promise<PipelineModule> {
 }
 
 export function formatLocalEmbeddingInput(text: string, model: string, role: EmbeddingInputRole = 'document'): string {
-  if (!model.toLowerCase().includes('nomic-embed-text')) {
-    return text;
+  return formatEmbeddingInput(text, model, role);
+}
+
+export function resolveLocalPipelineOptions(model: string): PipelineOptions {
+  if (model.toLowerCase().includes('nomic-embed-text')) {
+    return { dtype: 'q8' };
   }
 
-  if (NOMIC_EMBED_PREFIX.test(text.trimStart())) {
-    return text;
-  }
-
-  const prefix = role === 'query' ? 'search_query' : 'search_document';
-  return `${prefix}: ${text}`;
+  return {};
 }
 
 export class LocalTransformersEmbeddingProvider implements EmbeddingProviderAdapter {
@@ -49,7 +48,7 @@ export class LocalTransformersEmbeddingProvider implements EmbeddingProviderAdap
     if (!this.pipelinePromise) {
       this.pipelinePromise = (async () => {
         const transformers = await loadTransformersModule();
-        const pipe = await transformers.pipeline('feature-extraction', this.config.model);
+        const pipe = await transformers.pipeline('feature-extraction', this.config.model, resolveLocalPipelineOptions(this.config.model));
         return pipe as FeatureExtractionPipeline;
       })();
     }
