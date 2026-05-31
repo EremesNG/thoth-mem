@@ -1,13 +1,24 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getConfig, resolveDataDir } from '../src/config.js';
 
 describe('getConfig', () => {
   const originalEnv = { ...process.env };
+  let tmpDataDir: string | null = null;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    tmpDataDir = mkdtempSync(join(tmpdir(), 'thoth-config-test-'));
+    process.env.THOTH_DATA_DIR = tmpDataDir;
+  });
 
   afterEach(() => {
+    if (tmpDataDir) {
+      rmSync(tmpDataDir, { recursive: true, force: true });
+      tmpDataDir = null;
+    }
     process.env = { ...originalEnv };
   });
 
@@ -20,15 +31,17 @@ describe('getConfig', () => {
     expect(config.previewLength).toBe(300);
     expect(config.httpPort).toBe(7438);
     expect(config.httpDisabled).toBe(false);
-    expect(config.dataDir).toContain('.thoth');
-    expect(config.dbPath).toContain('thoth.db');
+    expect(config.dataDir).toBe(tmpDataDir);
+    expect(config.dbPath).toBe(join(tmpDataDir!, 'thoth.db'));
   });
 
   it('respects THOTH_DATA_DIR env var', () => {
-    process.env.THOTH_DATA_DIR = '/custom/path';
+    const customPath = mkdtempSync(join(tmpdir(), 'thoth-custom-config-test-'));
+    process.env.THOTH_DATA_DIR = customPath;
     const config = getConfig();
-    expect(config.dataDir).toBe('/custom/path');
-    expect(config.dbPath).toBe(join('/custom/path', 'thoth.db'));
+    expect(config.dataDir).toBe(customPath);
+    expect(config.dbPath).toBe(join(customPath, 'thoth.db'));
+    rmSync(customPath, { recursive: true, force: true });
   });
 
   it('respects numeric env var overrides', () => {
@@ -50,16 +63,25 @@ describe('getConfig', () => {
   });
 
   it('dbPath is derived from dataDir', () => {
-    process.env.THOTH_DATA_DIR = '/test/dir';
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-dbpath-config-test-'));
+    process.env.THOTH_DATA_DIR = dataDir;
     const config = getConfig();
-    expect(config.dbPath).toBe(join('/test/dir', 'thoth.db'));
+    expect(config.dbPath).toBe(join(dataDir, 'thoth.db'));
+    rmSync(dataDir, { recursive: true, force: true });
   });
 });
 
 describe('resolveDataDir', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
   it('creates data directory if it does not exist', () => {
     const tmpBase = mkdtempSync(join(tmpdir(), 'thoth-test-'));
     const dataDir = join(tmpBase, 'nested', 'dir');
+    process.env.THOTH_DATA_DIR = dataDir;
     const config = getConfig();
     config.dataDir = dataDir;
 
@@ -126,6 +148,90 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(config.embedding.dimensions).toBe(768);
   });
 
+  it('hyde: defaults to enabled local Transformers text generation', () => {
+    const config = getConfig() as any;
+
+    expect(config.hyde).toEqual({
+      enabled: true,
+      provider: 'transformers_local',
+      model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+      baseUrl: null,
+      timeoutMs: 4000,
+    });
+  });
+
+  it('hyde: resolves provider from env before config file and defaults', () => {
+    process.env.THOTH_HYDE_ENABLED = 'false';
+    process.env.THOTH_HYDE_PROVIDER = 'lmstudio';
+    process.env.THOTH_HYDE_MODEL = 'loaded_model';
+    process.env.THOTH_HYDE_BASE_URL = 'http://127.0.0.1:1234/v1';
+    process.env.THOTH_HYDE_TIMEOUT_MS = '9000';
+
+    const config = getConfig() as any;
+
+    expect(config.hyde).toEqual({
+      enabled: false,
+      provider: 'lmstudio',
+      model: 'loaded_model',
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      timeoutMs: 9000,
+    });
+  });
+
+  it('config file: creates a complete editable default config when missing', () => {
+    const config = getConfig() as any;
+    const raw = readFileSync(join(config.dataDir, 'config.json'), 'utf8');
+    const saved = JSON.parse(raw);
+
+    expect(saved.version).toBe(1);
+    expect(saved.embedding).toEqual({
+      provider: 'transformers_local',
+      model: 'nomic-ai/nomic-embed-text-v1.5',
+      baseUrl: null,
+      dimensions: 768,
+    });
+    expect(saved.hyde).toEqual(config.hyde);
+    expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
+    expect(saved.http).toEqual({ port: 7438, disabled: false });
+  });
+
+  it('config file: backfills missing defaults while preserving user values', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      embedding: {
+        provider: 'lmstudio',
+        model: 'text-embedding-nomic-embed-text-v1.5@q8_0',
+        baseUrl: 'http://169.254.83.107:1234',
+        dimensions: 768,
+      },
+    }, null, 2));
+
+    const config = getConfig() as any;
+    const saved = JSON.parse(readFileSync(join(config.dataDir, 'config.json'), 'utf8'));
+
+    expect(config.embedding.provider).toBe('lmstudio');
+    expect(saved.embedding).toEqual({
+      provider: 'lmstudio',
+      model: 'text-embedding-nomic-embed-text-v1.5@q8_0',
+      baseUrl: 'http://169.254.83.107:1234',
+      dimensions: 768,
+    });
+    expect(saved.hyde.enabled).toBe(true);
+    expect(saved.hyde.provider).toBe('transformers_local');
+    expect(saved.maxContentLength).toBe(100_000);
+  });
+
+  it('config file: environment overrides do not rewrite the editable config file', () => {
+    process.env.THOTH_EMBEDDING_PROVIDER = 'ollama';
+    process.env.THOTH_EMBEDDING_MODEL = 'nomic-embed-text';
+    process.env.THOTH_EMBEDDING_BASE_URL = 'http://127.0.0.1:11434';
+
+    const config = getConfig() as any;
+    const saved = JSON.parse(readFileSync(join(config.dataDir, 'config.json'), 'utf8'));
+
+    expect(config.embedding.provider).toBe('ollama');
+    expect(saved.embedding.provider).toBe('transformers_local');
+  });
+
   it('embedding: exposes canonical config hash that is stable for same inputs and changes when provider changes', () => {
     process.env.THOTH_EMBEDDING_PROVIDER = 'ollama';
     process.env.THOTH_EMBEDDING_MODEL = 'nomic-embed-text';
@@ -139,5 +245,20 @@ describe('embedding config (hybrid retrieval baseline)', () => {
 
     expect(configA.embedding.configHash).toBe(configB.embedding.configHash);
     expect(configA.embedding.configHash).not.toBe(configC.embedding.configHash);
+  });
+
+  it('embedding: config hash does not change when only HyDE generation config changes', () => {
+    process.env.THOTH_EMBEDDING_PROVIDER = 'lmstudio';
+    process.env.THOTH_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+    process.env.THOTH_EMBEDDING_BASE_URL = 'http://127.0.0.1:1234';
+
+    const configA = getConfig() as any;
+
+    process.env.THOTH_HYDE_MODEL = 'qwen2.5:7b-instruct';
+    process.env.THOTH_HYDE_PROVIDER = 'ollama';
+    process.env.THOTH_HYDE_BASE_URL = 'http://127.0.0.1:11434';
+    const configB = getConfig() as any;
+
+    expect(configA.embedding.configHash).toBe(configB.embedding.configHash);
   });
 });

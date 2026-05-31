@@ -304,6 +304,35 @@ describe('Store', () => {
       expect(fallback?.inputs.map((input: { source: string }) => input.source)).toEqual(['raw_query']);
     });
 
+    it('HyDE: uses the configured generator by default and supports per-query disable', async () => {
+      store = new Store(':memory:', {
+        hyde: {
+          enabled: true,
+          provider: 'transformers_local',
+          model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+          baseUrl: null,
+          timeoutMs: 4000,
+        },
+      });
+      const runtime = store as any;
+      const generator = {
+        generate: async () => 'API credentials are rotated by issuing a new key and revoking the old one.',
+      };
+
+      const enabled = await runtime.prepareSemanticInputs?.({
+        query: 'How do we rotate API credentials?',
+        hydeGenerator: generator,
+      });
+      const disabled = await runtime.prepareSemanticInputs?.({
+        query: 'How do we rotate API credentials?',
+        hyde: { enabled: false },
+        hydeGenerator: generator,
+      });
+
+      expect(enabled?.inputs.map((input: { source: string }) => input.source)).toEqual(['raw_query', 'hyde_answer']);
+      expect(disabled?.inputs.map((input: { source: string }) => input.source)).toEqual(['raw_query']);
+    });
+
     it('small-to-big: returns sentence-first evidence and optional promoted parent context', () => {
       store = new Store(':memory:');
       const runtime = store as any;
