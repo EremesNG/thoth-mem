@@ -215,12 +215,7 @@ function parseRequiredProjectName(value: string | undefined, command: string): s
 }
 
 function createStoreContext(dataDir?: string): StoreContext {
-  const config = getConfig();
-
-  if (dataDir) {
-    config.dataDir = dataDir;
-    config.dbPath = join(dataDir, 'thoth.db');
-  }
+  const config = getConfig({ dataDir });
 
   resolveDataDir(config);
 

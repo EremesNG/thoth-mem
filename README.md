@@ -213,6 +213,7 @@ pnpm run eval:retrieval
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical + KG lanes and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
 - `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical/KG retrieval.
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
+- HyDE is enabled by default. The local fallback uses Transformers.js text generation with `onnx-community/Qwen2.5-Coder-0.5B-Instruct`; remote HyDE can use Ollama or an OpenAI-compatible LM Studio server.
 
 ### Recommended Embedding Models
 
@@ -247,6 +248,38 @@ thoth-mem
 ```
 
 `THOTH_EMBEDDING_DIMENSIONS` is inferred for known models such as `nomic-ai/nomic-embed-text-v1.5` and `nomic-embed-text`. Set it explicitly when using a custom model or when the selected runtime supports a stable dimension override and you want to force a specific sqlite-vec table shape.
+
+### Recommended HyDE Models
+
+HyDE needs a generative/instruct model, not an embedding model. It writes a short hypothetical answer to the recall query; Thoth-Mem embeds both the raw query and the HyDE answer as separate semantic inputs.
+
+| Use case | Provider/model | Notes |
+| --- | --- | --- |
+| Default local fallback | [`onnx-community/Qwen2.5-Coder-0.5B-Instruct`](https://huggingface.co/onnx-community/Qwen2.5-Coder-0.5B-Instruct) via Transformers.js | Small ONNX model for local text generation. Good enough for short retrieval hints and code-heavy memories; loaded with `dtype: "q4"`. |
+| Ollama code-heavy memory | [`qwen2.5-coder:7b`](https://ollama.com/library/qwen2.5-coder) | Recommended 7B-class local model for coding-agent memory and technical HyDE prompts. |
+| Ollama general/multilingual | [`qwen2.5:7b-instruct`](https://ollama.com/library/qwen2.5) | Better general-purpose choice when memory is not mostly code. |
+| LM Studio code-heavy memory | [`Qwen/Qwen2.5-Coder-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct) GGUF | In LM Studio, use the exact model id shown in the Developer panel, often from an `lmstudio-community/...-GGUF` download. |
+| LM Studio general fallback | [`meta-llama/Meta-Llama-3.1-8B-Instruct`](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct) GGUF | Strong general 8B-class option if you already have Llama available locally. |
+
+Example with LM Studio embeddings and LM Studio HyDE:
+
+```json
+{
+  "embedding": {
+    "provider": "lmstudio",
+    "model": "text-embedding-nomic-embed-text-v1.5@q8_0",
+    "baseUrl": "http://127.0.0.1:1234",
+    "dimensions": 768
+  },
+  "hyde": {
+    "enabled": true,
+    "provider": "lmstudio",
+    "model": "loaded_model",
+    "baseUrl": "http://127.0.0.1:1234/v1",
+    "timeoutMs": 4000
+  }
+}
+```
 
 
 ## Sync & Portability
@@ -317,6 +350,44 @@ This runs as a transaction, blocks deletion if shared sessions or data are detec
 
 ## Configuration
 
+On startup, Thoth-Mem creates `~/.thoth/config.json` if it does not exist and backfills missing keys when the file is partial. Environment variables override config file values at runtime, but they are not written back to the file.
+
+Default editable config:
+
+```json
+{
+  "version": 1,
+  "maxContentLength": 100000,
+  "maxContextResults": 20,
+  "maxSearchResults": 20,
+  "dedupeWindowMinutes": 15,
+  "previewLength": 300,
+  "http": {
+    "port": 7438,
+    "disabled": false
+  },
+  "retrievalDefaults": {
+    "sentenceTopK": 100,
+    "chunkTopK": 20,
+    "lexicalLimit": 20,
+    "minSemanticScore": 0.3,
+    "l2DistanceScale": 20
+  },
+  "embedding": {
+    "provider": "transformers_local",
+    "model": "nomic-ai/nomic-embed-text-v1.5",
+    "baseUrl": null,
+    "dimensions": 768
+  },
+  "hyde": {
+    "enabled": true,
+    "provider": "transformers_local",
+    "model": "onnx-community/Qwen2.5-Coder-0.5B-Instruct",
+    "baseUrl": null,
+    "timeoutMs": 4000
+  }
+}
+```
 
 | Environment Variable          | Default    | Description                                 |
 | ----------------------------- | ---------- | ------------------------------------------- |
@@ -332,8 +403,9 @@ This runs as a transaction, blocks deletion if shared sessions or data are detec
 | `THOTH_EMBEDDING_MODEL`       | `nomic-ai/nomic-embed-text-v1.5` (local) | Embedding model id |
 | `THOTH_EMBEDDING_BASE_URL`    | provider-specific | Base URL for remote/local API providers |
 | `THOTH_EMBEDDING_DIMENSIONS`  | inferred for known models | Optional embedding dimensions override |
-| `THOTH_HYDE_ENABLED`          | `false`    | Enable HyDE dual-input semantic query expansion |
-| `THOTH_HYDE_MODEL`            | unset      | Optional HyDE generation model id |
+| `THOTH_HYDE_ENABLED`          | `true`     | Enable HyDE dual-input semantic query expansion |
+| `THOTH_HYDE_PROVIDER`         | `transformers_local` | HyDE generation provider (`transformers_local`, `ollama`, `lmstudio`) |
+| `THOTH_HYDE_MODEL`            | `onnx-community/Qwen2.5-Coder-0.5B-Instruct` | HyDE generation model id |
 | `THOTH_HYDE_BASE_URL`         | unset      | Optional HyDE provider base URL |
 | `THOTH_HYDE_TIMEOUT_MS`       | `4000`     | HyDE timeout before raw-query-only fallback |
 

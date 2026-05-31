@@ -5,6 +5,8 @@ import { registerTools } from "./tools/index.js";
 import { VERSION } from "./version.js";
 import { createEmbeddingProvider } from "./retrieval/provider-factory.js";
 import type { EmbeddingProviderAdapter } from "./retrieval/providers.js";
+import { createHydeGenerator } from "./retrieval/hyde-generator.js";
+import type { HydeGenerator } from "./retrieval/hyde.js";
 
 /**
  * MCP server instructions — returned during initialization to guide
@@ -52,17 +54,15 @@ export function createServer(options: ServerOptions): {
   store: Store;
   config: ThothConfig;
   embeddingProvider: EmbeddingProviderAdapter | null;
+  hydeGenerator: HydeGenerator | null;
 } {
-  const config = getConfig();
-  if (options.dataDir) {
-    config.dataDir = options.dataDir;
-    config.dbPath = `${options.dataDir}/thoth.db`;
-  }
+  const config = getConfig({ dataDir: options.dataDir });
 
   resolveDataDir(config);
 
   const store = new Store(config.dbPath, config);
   const embeddingProvider = config.embedding ? createEmbeddingProvider(config.embedding) : null;
+  const hydeGenerator = createHydeGenerator(config.hyde);
 
   const server = new McpServer({
     name: "thoth-mem",
@@ -71,7 +71,7 @@ export function createServer(options: ServerOptions): {
     instructions: SERVER_INSTRUCTIONS,
   });
 
-  registerTools(server, store, { embeddingProvider });
+  registerTools(server, store, { embeddingProvider, hydeGenerator });
 
-  return { server, store, config, embeddingProvider };
+  return { server, store, config, embeddingProvider, hydeGenerator };
 }

@@ -2,11 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
+import type { HydeGenerator } from "../retrieval/hyde.js";
 
 export function registerMemContext(
   server: McpServer,
   store: Store,
-  options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+  options: { embeddingProvider?: EmbeddingProviderAdapter | null; hydeGenerator?: HydeGenerator | null } = {},
 ): void {
   server.tool(
     "mem_context",
@@ -37,6 +38,7 @@ Returns formatted Markdown with:
             limit: 3,
             project,
             embeddingProvider: options.embeddingProvider,
+            hydeGenerator: options.hydeGenerator,
           });
           const evidence = retrieval.results.slice(0, 3).map((hit, index) => {
             const source = hit.evidence.primary.source ?? 'unknown';

@@ -7,6 +7,7 @@ import { registerMemGet } from "./mem-get.js";
 import { registerMemProject } from "./mem-project.js";
 import { registerMemSession } from "./mem-session.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
+import type { HydeGenerator } from "../retrieval/hyde.js";
 
 interface ToolRegistration {
   name: string;
@@ -15,6 +16,7 @@ interface ToolRegistration {
 
 export interface ToolRegistrationOptions {
   embeddingProvider?: EmbeddingProviderAdapter | null;
+  hydeGenerator?: HydeGenerator | null;
 }
 
 const ALL_TOOLS: ToolRegistration[] = [

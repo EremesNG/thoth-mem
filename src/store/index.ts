@@ -39,7 +39,7 @@ import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
 import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
 import { prepareHydeSemanticInputs } from '../retrieval/hyde.js';
-import type { SemanticInput } from '../retrieval/hyde.js';
+import type { HydeGenerator, SemanticInput } from '../retrieval/hyde.js';
 import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
 import { fuseCandidates, type HybridHit, type LaneCandidate } from '../retrieval/ranking.js';
 import { processNextSemanticJob, processSemanticJobs } from '../indexing/jobs.js';
@@ -110,6 +110,13 @@ const DEFAULT_CONFIG: ThothConfig = {
   httpPort: 7438,
   httpDisabled: false,
   retrievalDefaults: DEFAULT_RETRIEVAL_DEFAULTS,
+  hyde: {
+    enabled: true,
+    provider: 'transformers_local',
+    model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+    baseUrl: null,
+    timeoutMs: 4000,
+  },
 };
 
 export class Store {
@@ -458,14 +465,16 @@ export class Store {
       mode?: 'success' | 'timeout' | 'failure';
       answer?: string;
     };
+    hydeGenerator?: HydeGenerator | null;
   }): Promise<{ inputs: SemanticInput[]; degradedReason?: string }> {
     const hydeConfig = {
-      enabled: input.hyde?.enabled ?? this.config.embedding?.hyde.enabled ?? false,
-      model: this.config.embedding?.hyde.model ?? null,
-      baseUrl: this.config.embedding?.hyde.baseUrl ?? null,
+      enabled: input.hyde?.enabled ?? this.config.hyde?.enabled ?? false,
+      provider: this.config.hyde?.provider ?? 'transformers_local' as const,
+      model: this.config.hyde?.model ?? null,
+      baseUrl: this.config.hyde?.baseUrl ?? null,
       timeoutMs: input.hyde?.mode === 'timeout'
         ? 1
-        : this.config.embedding?.hyde.timeoutMs ?? 4000,
+        : this.config.hyde?.timeoutMs ?? 4000,
     };
 
     const mode = input.hyde?.mode;
@@ -484,7 +493,7 @@ export class Store {
             return input.hyde?.answer ?? `Hypothetical answer for ${input.query}`;
           },
         }
-      : undefined;
+      : input.hydeGenerator ?? undefined;
 
     return prepareHydeSemanticInputs(input.query, hydeConfig, generator);
   }
@@ -1049,6 +1058,7 @@ export class Store {
     limit?: number;
     project?: string;
     embeddingProvider?: EmbeddingProviderAdapter | null;
+    hydeGenerator?: HydeGenerator | null;
     hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
   }): Promise<{
     defaults: typeof DEFAULT_RETRIEVAL_DEFAULTS;
@@ -1063,7 +1073,11 @@ export class Store {
     const defaults = resolveRetrievalDefaults(this.config.retrievalDefaults);
     const lexicalQuery = sanitizeFTSPrefix(input.query);
     const degradedFallback: string[] = [];
-    const semanticInputsResult = await this.prepareSemanticInputs({ query: input.query, hyde: input.hyde });
+    const semanticInputsResult = await this.prepareSemanticInputs({
+      query: input.query,
+      hyde: input.hyde,
+      hydeGenerator: input.hydeGenerator,
+    });
     const semanticInputs = semanticInputsResult.inputs;
     const semanticCandidates: LaneCandidate[] = [];
     const canRunSemantic = !this.semanticRuntime.degraded && !this.semanticRuntime.pending && !this.semanticRuntime.stale;

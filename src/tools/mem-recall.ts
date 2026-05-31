@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
+import type { HydeGenerator } from "../retrieval/hyde.js";
 
 function formatRecallHit(hit: Awaited<ReturnType<Store['hybridRetrieve']>>['results'][number], index: number, mode: 'compact' | 'context'): string {
   const primary = hit.evidence.primary;
@@ -23,7 +24,7 @@ function formatRecallHit(hit: Awaited<ReturnType<Store['hybridRetrieve']>>['resu
 export function registerMemRecall(
   server: McpServer,
   store: Store,
-  options: { embeddingProvider?: EmbeddingProviderAdapter | null } = {},
+  options: { embeddingProvider?: EmbeddingProviderAdapter | null; hydeGenerator?: HydeGenerator | null } = {},
 ): void {
   server.tool(
     "mem_recall",
@@ -42,8 +43,9 @@ export function registerMemRecall(
           query,
           project,
           limit: limit ?? 5,
-          hyde: hyde ? { enabled: true } : undefined,
+          hyde: hyde === undefined ? undefined : { enabled: hyde },
           embeddingProvider: options.embeddingProvider,
+          hydeGenerator: options.hydeGenerator,
         });
 
         const hits = retrieval.results.slice(0, limit ?? 5);
