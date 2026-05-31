@@ -1,7 +1,6 @@
-# Dashboard Specification
+# Delta for Dashboard
 
-## Requirements
-
+## ADDED Requirements
 ### Requirement: Dashboard MUST Provide a Connected Observatory Workspace
 The dashboard MUST present a connected observatory workspace composed of Recall Workspace, Memory Map, Timeline, Knowledge Ledger, and Health & Indexing surfaces in one coordinated product experience.
 
@@ -67,6 +66,7 @@ The observatory workspace MUST remain local-first and read-only, and MUST preser
 - WHEN summaries, labels, and previews are rendered
 - THEN disallowed private-tag content MUST NOT be exposed by default in any observatory surface
 
+## MODIFIED Requirements
 ### Requirement: Dashboard MUST Default to an Observatory Workspace
 The dashboard MUST open to an observatory workspace where the Memory Map is one primary connected surface among Recall Workspace, Timeline, Knowledge Ledger, and Health & Indexing, rather than being the whole default product experience.
 
@@ -79,3 +79,5 @@ The dashboard MUST open to an observatory workspace where the Memory Map is one 
 - GIVEN the default observatory workspace is rendered
 - WHEN layout regions are inspected
 - THEN the Memory Map MUST be primary and always reachable while at least one additional observatory surface is concurrently accessible without route reset
+
+## REMOVED Requirements

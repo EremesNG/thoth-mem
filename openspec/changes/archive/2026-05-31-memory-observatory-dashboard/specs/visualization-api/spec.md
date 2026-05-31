@@ -1,7 +1,6 @@
-# Visualization API Specification
+# Delta for Visualization API
 
-## Requirements
-
+## ADDED Requirements
 ### Requirement: Visualization API MUST Provide an Observatory Query Model
 The dashboard-facing API MUST provide a unified observatory query model that supports Recall Workspace, Memory Map, Timeline, Knowledge Ledger, and Health & Indexing surfaces under shared scope controls.
 
@@ -54,6 +53,7 @@ Dashboard-facing payloads for observatory views MUST expose observation type, Wh
 - WHEN payloads are inspected
 - THEN lane/relationship provenance metadata MUST identify the evidence source class needed for user explanation
 
+## MODIFIED Requirements
 ### Requirement: Visualization API MUST Support Filtered and Pivoted Retrieval Across Observatory Surfaces
 The API MUST support filtered and pivoted retrieval by project, session, topic key, observation type, relation type/class, semantic neighborhood depth, and text query where applicable, and MUST preserve scope continuity across observatory surface pivots.
 
@@ -79,3 +79,5 @@ The API MUST provide neighbor expansion operations that accept a selected entity
 - GIVEN a traversal step exceeds configured bounds
 - WHEN the API returns that step result
 - THEN the response MUST enforce bounds and signal continuation/frontier status compatible with progressive exploration
+
+## REMOVED Requirements
