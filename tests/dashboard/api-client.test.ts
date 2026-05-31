@@ -193,3 +193,102 @@ describe('viz client routes', () => {
     }
   });
 });
+
+describe('observatory client routes', () => {
+  it('builds observatory requests and keeps /viz fallback methods available', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      const url = String(input);
+      if (url.startsWith('/observatory/context')) {
+        return new Response(JSON.stringify({
+          scope: {},
+          context_token: 'ctx',
+          health: { semantic_state: 'ready', pending_jobs: 0 },
+          capabilities: { viz_fallback_available: true, observatory_routes_available: true },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/observatory/recall')) {
+        return new Response(JSON.stringify({
+          context_token: 'ctx',
+          lanes: { lexical: [], 'sentence-vector': [], 'chunk-vector': [], 'fact-kg': [] },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/observatory/pivot') {
+        return new Response(JSON.stringify({
+          context_token: 'ctx',
+          scope: {},
+          focus_node_id: 'obs:1',
+          target: 'map',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/observatory/map/frontier') {
+        return new Response(JSON.stringify({
+          nodes: [],
+          edges: [],
+          frontier_state: { added_node_ids: [], already_visible_node_ids: [], exhausted: true, continuation: null, reason: 'no-neighbors' },
+          health: { semantic_state: 'ready', pending_jobs: 0 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/observatory/ledger/')) {
+        return new Response(JSON.stringify({
+          observation_id: 1,
+          title: 'Ledger',
+          type: 'decision',
+          what: [],
+          why: [],
+          where: [],
+          learned: [],
+          facts: [],
+          provenance: { session_id: 's1', project: 'p1', topic_key: 't1', created_at: '2026-05-31T00:00:00.000Z' },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/observatory/timeline')) {
+        return new Response(JSON.stringify({
+          context_token: 'ctx',
+          events: [],
+          continuation: null,
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/observatory/health')) {
+        return new Response(JSON.stringify({ semantic_state: 'pending', pending_jobs: 1 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        nodes: [],
+        edges: [],
+        state: 'empty',
+        continuation: null,
+        truncated: false,
+        health: { semantic_state: 'ready', pending_jobs: 0 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await api.getObservatoryContext({ project: 'p1', query: 'jwt' });
+      await api.getObservatoryRecall({ context_token: 'ctx', lanes: ['lexical', 'fact-kg'] });
+      await api.resolveObservatoryPivot({ pivot_token: 'tok', target: 'map' });
+      await api.getObservatoryMapFrontier({ context_token: 'ctx', focus_node_id: 'obs:1', max_nodes: 10 });
+      await api.getObservatoryLedger(1);
+      await api.getObservatoryTimeline({ context_token: 'ctx', limit: 20 });
+      await api.getObservatoryHealth({ project: 'p1' });
+      await api.getVizSlice({ project: 'p1' });
+
+      expect(String(calls[0].input)).toContain('/observatory/context?project=p1');
+      expect(String(calls[1].input)).toContain('/observatory/recall?context_token=ctx');
+      expect(String(calls[1].input)).toContain('lanes=lexical%2Cfact-kg');
+      expect(String(calls[2].input)).toBe('/observatory/pivot');
+      expect(String(calls[2].init?.method)).toBe('POST');
+      expect(String(calls[3].input)).toBe('/observatory/map/frontier');
+      expect(String(calls[4].input)).toContain('/observatory/ledger/1');
+      expect(String(calls[5].input)).toContain('/observatory/timeline?context_token=ctx');
+      expect(String(calls[6].input)).toContain('/observatory/health?project=p1');
+      expect(String(calls[7].input)).toContain('/viz/slice?project=p1');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

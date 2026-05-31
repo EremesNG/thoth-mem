@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import type { VizEdge, VizNode, VizSliceResponse } from '../../dashboard/src/api/client.js';
@@ -132,8 +134,21 @@ describe('map workspace behavior helpers', () => {
   });
 
   it('builds drilldown links for observation nodes only', () => {
-    expect(toMapNodeUrl(node('obs:42'))).toBe('/memory/42');
-    expect(toMapNodeUrl(node('topic:visual', { kind: 'topic', topic_key: null }))).toBe('/topic-keys?topic_key=visual');
-    expect(toMapNodeUrl(node('project:thoth-mem', { kind: 'project', project: 'thoth-mem' }))).toBe('/projects/thoth-mem');
+    expect(toMapNodeUrl(node('obs:42'))).toBe('/observatory?surface=ledger&focus=obs%3A42');
+    expect(toMapNodeUrl(node('topic:visual', { kind: 'topic', topic_key: null }))).toBe('/observatory?surface=map&topic_key=visual');
+    expect(toMapNodeUrl(node('project:thoth-mem', { kind: 'project', project: 'thoth-mem' }))).toBe('/observatory?project=thoth-mem');
+  });
+
+  it('ships the connected observatory surfaces and reduced-motion guard', () => {
+    const css = readFileSync('dashboard/src/index.css', 'utf8');
+    const workspace = readFileSync('dashboard/src/components/observatory/ObservatoryWorkspace.tsx', 'utf8');
+
+    expect(workspace).toContain('MemoryMapSurface');
+    expect(workspace).toContain('RecallWorkspace');
+    expect(workspace).toContain('TimelineSurface');
+    expect(workspace).toContain('KnowledgeLedgerSurface');
+    expect(workspace).toContain('HealthIndexingSurface');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css).toContain('.observatory-tabs button:focus-visible');
   });
 });

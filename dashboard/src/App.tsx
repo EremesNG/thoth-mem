@@ -6,12 +6,13 @@ import SearchExplorer from './components/SearchExplorer.js';
 import ObservationDetail from './components/ObservationDetail.js';
 import TopicKeyBrowser from './components/TopicKeyBrowser.js';
 import GraphLiteView from './components/GraphLiteView.js';
-import MapWorkspace from './components/map/MapWorkspace.js';
+import ObservatoryWorkspace from './components/observatory/ObservatoryWorkspace.js';
 
 export default function App() {
   return (
     <Layout>
-      <Route path="/" component={MapWorkspace} />
+      <Route path="/" component={ObservatoryWorkspace} />
+      <Route path="/observatory" component={ObservatoryWorkspace} />
       <Route path="/overview" component={Overview} />
       <Route path="/projects/:project" component={ProjectDetail} />
       <Route path="/search" component={SearchExplorer} />

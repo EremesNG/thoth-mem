@@ -15,7 +15,7 @@ export const DEFAULT_MAP_FILTERS: MapFilters = {
 };
 
 export function isWorkspaceRoute(path: string): boolean {
-  return path === '/';
+  return path === '/' || path === '/observatory';
 }
 
 export function sanitizeMapText(value: string | null | undefined): string {
@@ -89,17 +89,17 @@ export function selectVisibleEdges(edges: VizEdge[], zoom: number, state: VizDen
 export function toMapNodeUrl(node: VizNode): string | null {
   if (node.kind === 'observation') {
     const match = node.id.match(/(\d+)$/);
-    return match ? `/memory/${match[1]}` : null;
+    return match ? `/observatory?surface=ledger&focus=obs%3A${match[1]}` : null;
   }
   if (node.kind === 'topic') {
     const topic = node.topic_key ?? node.id.replace(/^topic:/, '') ?? node.label;
-    return topic ? `/topic-keys?topic_key=${encodeURIComponent(topic)}` : '/topic-keys';
+    return topic ? `/observatory?surface=map&topic_key=${encodeURIComponent(topic)}` : '/observatory';
   }
   if (node.kind === 'session') {
-    return `/overview?session_id=${encodeURIComponent(node.session_id ?? node.id.replace(/^session:/, ''))}`;
+    return `/observatory?surface=timeline&session_id=${encodeURIComponent(node.session_id ?? node.id.replace(/^session:/, ''))}`;
   }
   if (node.kind === 'project' && node.project) {
-    return `/projects/${encodeURIComponent(node.project)}`;
+    return `/observatory?project=${encodeURIComponent(node.project)}`;
   }
   return null;
 }

@@ -163,6 +163,75 @@ export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: V
 export interface VizInspectNodeResponse { id: string; kind: VizNode['kind']; label: string; snippet: string; metadata: Record<string, unknown>; links: string[]; }
 export interface VizInspectEdgeResponse { id: string; source_id: string; target_id: string; relation: string; label: string; summary: string; }
 export interface VizFiltersResponse { projects: string[]; sessions: string[]; topic_keys: string[]; types: ObservationType[]; relations: string[]; }
+export type ObservatoryLane = 'lexical' | 'sentence-vector' | 'chunk-vector' | 'fact-kg';
+export interface ObservatoryScope {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  query?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  time_from?: string;
+  time_to?: string;
+}
+export interface ObservatoryContextResponse {
+  scope: ObservatoryScope;
+  context_token: string;
+  health: VizHealthResponse;
+  capabilities: { viz_fallback_available: boolean; observatory_routes_available: boolean };
+}
+export interface ObservatoryRecallHit {
+  observation_id: number;
+  title: string;
+  preview: string;
+  type: ObservationType;
+  project: string | null;
+  session_id: string;
+  topic_key: string | null;
+  created_at: string;
+  lane: ObservatoryLane;
+  pivot_token: string;
+}
+export interface ObservatoryRecallResponse {
+  context_token: string;
+  lanes: Record<ObservatoryLane, ObservatoryRecallHit[]>;
+}
+export interface ObservatoryPivotResponse {
+  context_token: string;
+  scope: ObservatoryScope;
+  focus_node_id: string;
+  target: 'map' | 'timeline' | 'ledger' | 'recall';
+}
+export interface ObservatoryFrontierState {
+  added_node_ids: string[];
+  already_visible_node_ids: string[];
+  exhausted: boolean;
+  continuation: string | null;
+  reason?: 'limit' | 'no-neighbors' | 'scope-filtered';
+}
+export interface ObservatoryMapFrontierResponse {
+  nodes: VizNode[];
+  edges: VizEdge[];
+  frontier_state: ObservatoryFrontierState;
+  health: VizHealthResponse;
+}
+export interface ObservatoryLedgerResponse {
+  observation_id: number;
+  title: string;
+  type: ObservationType;
+  what: string[];
+  why: string[];
+  where: string[];
+  learned: string[];
+  facts: ProjectGraphFact[];
+  provenance: { session_id: string; project: string | null; topic_key: string | null; created_at: string };
+}
+export interface ObservatoryTimelineResponse {
+  context_token: string;
+  events: Observation[];
+  continuation: string | null;
+}
 
 type ProjectGraphResponsePayload = Partial<Omit<ProjectGraphResponse, 'summary'>> & {
   summary?: Partial<ProjectGraphSummary>;
@@ -469,5 +538,77 @@ export const api = {
     if (params?.project) query.append('project', params.project);
     const queryString = query.toString();
     return apiFetch<VizHealthResponse>(`/viz/health${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getObservatoryContext: (params?: ObservatoryScope, signal?: AbortSignal): Promise<ObservatoryContextResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    if (params?.session_id) query.append('session_id', params.session_id);
+    if (params?.topic_key) query.append('topic_key', params.topic_key);
+    if (params?.query) query.append('query', params.query);
+    if (params?.type) query.append('type', params.type);
+    if (params?.observation_type) query.append('observation_type', params.observation_type);
+    if (params?.relation) query.append('relation', params.relation);
+    if (params?.time_from) query.append('time_from', params.time_from);
+    if (params?.time_to) query.append('time_to', params.time_to);
+    const queryString = query.toString();
+    return apiFetch<ObservatoryContextResponse>(`/observatory/context${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getObservatoryRecall: (
+    params: { context_token: string; lanes?: ObservatoryLane[]; limit?: number },
+    signal?: AbortSignal
+  ): Promise<ObservatoryRecallResponse> => {
+    const query = new URLSearchParams();
+    query.append('context_token', params.context_token);
+    if (params.lanes && params.lanes.length > 0) query.append('lanes', params.lanes.join(','));
+    if (params.limit !== undefined) query.append('limit', String(params.limit));
+    return apiFetch<ObservatoryRecallResponse>(`/observatory/recall?${query.toString()}`, { signal });
+  },
+
+  resolveObservatoryPivot: (
+    payload: { pivot_token: string; target: 'map' | 'timeline' | 'ledger' | 'recall' },
+    signal?: AbortSignal
+  ): Promise<ObservatoryPivotResponse> => {
+    return apiFetch<ObservatoryPivotResponse>('/observatory/pivot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+
+  getObservatoryMapFrontier: (
+    payload: { context_token: string; focus_node_id: string; visible_node_ids?: string[]; max_nodes?: number; max_edges?: number; continuation?: string },
+    signal?: AbortSignal
+  ): Promise<ObservatoryMapFrontierResponse> => {
+    return apiFetch<ObservatoryMapFrontierResponse>('/observatory/map/frontier', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+
+  getObservatoryLedger: (id: number, signal?: AbortSignal): Promise<ObservatoryLedgerResponse> => {
+    return apiFetch<ObservatoryLedgerResponse>(`/observatory/ledger/${id}`, { signal });
+  },
+
+  getObservatoryTimeline: (
+    params: { context_token: string; limit?: number; continuation?: string },
+    signal?: AbortSignal
+  ): Promise<ObservatoryTimelineResponse> => {
+    const query = new URLSearchParams();
+    query.append('context_token', params.context_token);
+    if (params.limit !== undefined) query.append('limit', String(params.limit));
+    if (params.continuation) query.append('continuation', params.continuation);
+    return apiFetch<ObservatoryTimelineResponse>(`/observatory/timeline?${query.toString()}`, { signal });
+  },
+
+  getObservatoryHealth: (params?: { project?: string }, signal?: AbortSignal): Promise<VizHealthResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    const queryString = query.toString();
+    return apiFetch<VizHealthResponse>(`/observatory/health${queryString ? `?${queryString}` : ''}`, { signal });
   },
 };

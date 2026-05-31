@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useRouter } from '../router.js';
-import { Home, Search, Key, Network, Shield, Check, Database, Map } from 'lucide-react';
+import { Home, Search, Key, Network, Shield, Check, Database, Telescope } from 'lucide-react';
 import { api } from '../api/client.js';
 import { DASHBOARD_VERSION } from '../version.js';
 
@@ -44,13 +44,13 @@ export default function Layout({ children }: LayoutProps) {
 
   const isLinkActive = (to: string) => {
     if (to === '/') {
-      return path === '/';
+      return path === '/' || path === '/observatory';
     }
     return path.startsWith(to);
   };
 
   return (
-    <div className={`app-container ${path === '/' ? 'map-first' : ''}`}>
+    <div className={`app-container ${path === '/' || path === '/observatory' ? 'observatory-first' : ''}`}>
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-header">
@@ -65,22 +65,22 @@ export default function Layout({ children }: LayoutProps) {
             to="/"
             className={`sidebar-link ${isLinkActive('/') ? 'active' : ''}`}
           >
-            <Map size={18} />
-            Memory Map
+            <Telescope size={18} />
+            Observatory
           </Link>
           <Link
             to="/overview"
             className={`sidebar-link ${isLinkActive('/overview') ? 'active' : ''}`}
           >
             <Home size={18} />
-            Overview
+            Overview Pivot
           </Link>
           <Link
             to="/search"
             className={`sidebar-link ${isLinkActive('/search') ? 'active' : ''}`}
           >
             <Search size={18} />
-            Search Explorer
+            Recall Pivot
           </Link>
           <Link
             to="/topic-keys"
@@ -94,7 +94,7 @@ export default function Layout({ children }: LayoutProps) {
             className={`sidebar-link ${isLinkActive('/graph') ? 'active' : ''}`}
           >
             <Network size={18} />
-            Graph-Lite
+            Graph Pivot
           </Link>
         </nav>
 

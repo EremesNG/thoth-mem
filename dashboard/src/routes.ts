@@ -1,4 +1,5 @@
 export const DASHBOARD_ROUTES = {
+  observatory: '/observatory',
   map: '/',
   overview: '/overview',
   search: '/search',
@@ -7,6 +8,7 @@ export const DASHBOARD_ROUTES = {
 } as const;
 
 export function resolveDashboardRoute(pathname: string): keyof typeof DASHBOARD_ROUTES | 'project' | 'memory' | 'unknown' {
+  if (pathname === DASHBOARD_ROUTES.observatory) return 'observatory';
   if (pathname === DASHBOARD_ROUTES.map) return 'map';
   if (pathname === DASHBOARD_ROUTES.overview) return 'overview';
   if (pathname === DASHBOARD_ROUTES.search) return 'search';
