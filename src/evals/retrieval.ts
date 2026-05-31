@@ -32,6 +32,25 @@ export interface RetrievalEvalSummary {
   recall_at_k: number;
   mean_reciprocal_rank: number;
   context_compression: number;
+  retrieval_defaults: {
+    lane_order: string;
+    sentence_top_k: number;
+    chunk_top_k: number;
+    lexical_limit: number;
+    min_semantic_score: number;
+    l2_distance_scale: number;
+  };
+  hybrid: {
+    pending_rate: number;
+    degraded_rate: number;
+    lexical_prefix_hit_rate: number;
+    raw_semantic_hit_rate: number;
+    hyde_semantic_hit_rate: number;
+    sentence_primary_rate: number;
+    promoted_parent_rate: number;
+    kg_hit_rate: number;
+    evidence_lineage_coverage: number;
+  };
 }
 
 export interface RetrievalEvalReport {
@@ -198,7 +217,7 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
   ]);
 
   return [
-    '# Retrieval Eval Baseline',
+    '# Retrieval Eval Baseline (Hybrid Retrieval)',
     '',
     'Deterministic baseline for current lexical retrieval before introducing embeddings.',
     '',
@@ -211,6 +230,26 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Recall @ ${TOP_K} | ${formatPercent(summary.recall_at_k)} |`,
     `| Mean Reciprocal Rank | ${summary.mean_reciprocal_rank.toFixed(3)} |`,
     `| Context Compression | ${formatPercent(summary.context_compression)} |`,
+    `| Pending Rate | ${formatPercent(summary.hybrid.pending_rate)} |`,
+    `| Degraded Rate | ${formatPercent(summary.hybrid.degraded_rate)} |`,
+    `| Lexical Prefix Hit Rate | ${formatPercent(summary.hybrid.lexical_prefix_hit_rate)} |`,
+    `| Raw Semantic Hit Rate | ${formatPercent(summary.hybrid.raw_semantic_hit_rate)} |`,
+    `| HyDE Semantic Hit Rate | ${formatPercent(summary.hybrid.hyde_semantic_hit_rate)} |`,
+    `| Sentence Primary Rate | ${formatPercent(summary.hybrid.sentence_primary_rate)} |`,
+    `| Promoted Parent Rate | ${formatPercent(summary.hybrid.promoted_parent_rate)} |`,
+    `| KG Contribution Rate | ${formatPercent(summary.hybrid.kg_hit_rate)} |`,
+    `| Evidence Lineage Coverage | ${formatPercent(summary.hybrid.evidence_lineage_coverage)} |`,
+    '',
+    '## Retrieval Defaults',
+    '',
+    '| Default | Value |',
+    '| --- | ---: |',
+    `| Lane order | ${summary.retrieval_defaults.lane_order} |`,
+    `| Sentence top-k | ${summary.retrieval_defaults.sentence_top_k} |`,
+    `| Chunk top-k | ${summary.retrieval_defaults.chunk_top_k} |`,
+    `| Lexical limit | ${summary.retrieval_defaults.lexical_limit} |`,
+    `| Min semantic score | ${summary.retrieval_defaults.min_semantic_score} |`,
+    `| L2 distance scale | ${summary.retrieval_defaults.l2_distance_scale} |`,
     '',
     '## Case Results',
     '',
@@ -220,12 +259,24 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
   ].join('\n');
 }
 
-export function runRetrievalEval(): RetrievalEvalReport {
+export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
   const store = new Store(':memory:');
 
   try {
     const idsByKey = seedEvalStore(store);
-    const cases = CASES.map((evalCase): RetrievalEvalCaseResult => {
+    const pendingCases: boolean[] = [];
+    const degradedCases: boolean[] = [];
+    const lexicalPrefixHits: boolean[] = [];
+    const rawSemanticHits: boolean[] = [];
+    const hydeSemanticHits: boolean[] = [];
+    const sentencePrimaryHits: boolean[] = [];
+    const promotedParentHits: boolean[] = [];
+    const kgHits: boolean[] = [];
+    const lineageCoverageHits: boolean[] = [];
+    let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
+
+    const cases: RetrievalEvalCaseResult[] = [];
+    for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
       const results = store.searchObservations({
         query: evalCase.query,
@@ -247,8 +298,74 @@ export function runRetrievalEval(): RetrievalEvalReport {
         limit: evalCase.limit ?? TOP_K,
         mode: 'preview',
       });
+      const runtime = store as Store & {
+        hybridRetrieve: (input: {
+          query: string;
+          limit?: number;
+          project?: string;
+          hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+        }) => Promise<{
+          defaults: {
+            sentenceTopK: number;
+            chunkTopK: number;
+            lexicalLimit: number;
+            minSemanticScore: number;
+            l2DistanceScale: number;
+          };
+          laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+          degradedFallback: string[];
+          lexicalQuery: string;
+          results: Array<{
+            evidence: {
+              primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
+              promotedParent?: { chunkKey: string };
+              byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string }>>>;
+            };
+          }>;
+          pending: boolean;
+          semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
+        }>;
+      };
 
-      return {
+      const raw = await runtime.hybridRetrieve({ query: evalCase.query, project: evalCase.project, limit: evalCase.limit ?? TOP_K });
+      const hyde = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        hyde: { enabled: true, mode: 'success', answer: `Hypothetical answer for ${evalCase.query}` },
+      });
+      if (!defaultsCapture) {
+        defaultsCapture = {
+          lane_order: raw.laneOrder.join(' > '),
+          sentence_top_k: raw.defaults.sentenceTopK,
+          chunk_top_k: raw.defaults.chunkTopK,
+          lexical_limit: raw.defaults.lexicalLimit,
+          min_semantic_score: raw.defaults.minSemanticScore,
+          l2_distance_scale: raw.defaults.l2DistanceScale,
+        };
+      }
+      pendingCases.push(raw.pending);
+      degradedCases.push(raw.degradedFallback.length > 0);
+      lexicalPrefixHits.push(raw.lexicalQuery.length > 0 && raw.results.some((hit) => hit.evidence.primary.source === 'lexical_prefix'));
+      const hasRawSemantic = raw.results.some((hit) =>
+        hit.evidence.byLane.sentence?.some((candidate) => candidate.source === 'raw_query')
+        || hit.evidence.byLane.chunk?.some((candidate) => candidate.source === 'raw_query')
+      );
+      rawSemanticHits.push(hasRawSemantic);
+      const hasHydeSemantic = hyde.results.some((hit) =>
+        hit.evidence.byLane.sentence?.some((candidate) => candidate.source === 'hyde_answer')
+        || hit.evidence.byLane.chunk?.some((candidate) => candidate.source === 'hyde_answer')
+      );
+      hydeSemanticHits.push(hasHydeSemantic);
+      sentencePrimaryHits.push(raw.results.some((hit) => hit.evidence.primary.lane === 'sentence'));
+      promotedParentHits.push(raw.results.some((hit) => Boolean(hit.evidence.promotedParent?.chunkKey)));
+      kgHits.push(raw.results.some((hit) => Boolean(hit.evidence.byLane.kg?.length)));
+      lineageCoverageHits.push(raw.results.some((hit) => {
+        const primary = hit.evidence.primary;
+        return Boolean(primary.chunkKey || primary.sentenceKey || primary.kg?.provenance || primary.source);
+      }));
+
+      cases.push({
         name: evalCase.name,
         query: evalCase.query,
         expected_title: expected?.observation.title ?? evalCase.expectedKey,
@@ -257,19 +374,40 @@ export function runRetrievalEval(): RetrievalEvalReport {
         result_count: results.length,
         context_chars: context.length,
         full_content_chars: preview.length,
-      };
-    });
+      });
+    }
 
     const found = cases.filter((result) => result.found);
     const reciprocalRankSum = cases.reduce((sum, result) => sum + (result.rank ? 1 / result.rank : 0), 0);
     const fullChars = cases.reduce((sum, result) => sum + result.full_content_chars, 0);
     const contextChars = cases.reduce((sum, result) => sum + result.context_chars, 0);
+    const countTrue = (items: Array<boolean | number>): number => items.filter(Boolean).length;
+    const totalHybridCases = pendingCases.length === 0 ? cases.length : pendingCases.length;
     const summary: RetrievalEvalSummary = {
       total_cases: cases.length,
       recall_at_1: ratio(cases.filter((result) => result.rank === 1).length, cases.length),
       recall_at_k: ratio(found.length, cases.length),
       mean_reciprocal_rank: ratio(reciprocalRankSum, cases.length),
       context_compression: fullChars === 0 ? 0 : Number((1 - contextChars / fullChars).toFixed(3)),
+      retrieval_defaults: defaultsCapture ?? {
+        lane_order: 'sentence > chunk > lexical > kg',
+        sentence_top_k: 100,
+        chunk_top_k: 20,
+        lexical_limit: 20,
+        min_semantic_score: 0.3,
+        l2_distance_scale: 20,
+      },
+      hybrid: {
+        pending_rate: ratio(countTrue(pendingCases), totalHybridCases),
+        degraded_rate: ratio(countTrue(degradedCases), totalHybridCases),
+        lexical_prefix_hit_rate: ratio(countTrue(lexicalPrefixHits), totalHybridCases),
+        raw_semantic_hit_rate: ratio(countTrue(rawSemanticHits), totalHybridCases),
+        hyde_semantic_hit_rate: ratio(countTrue(hydeSemanticHits), totalHybridCases),
+        sentence_primary_rate: ratio(countTrue(sentencePrimaryHits), totalHybridCases),
+        promoted_parent_rate: ratio(countTrue(promotedParentHits), totalHybridCases),
+        kg_hit_rate: ratio(countTrue(kgHits), totalHybridCases),
+        evidence_lineage_coverage: ratio(countTrue(lineageCoverageHits), totalHybridCases),
+      },
     };
 
     return {
@@ -283,5 +421,12 @@ export function runRetrievalEval(): RetrievalEvalReport {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.stdout.write(`${runRetrievalEval().markdown}\n`);
+  runRetrievalEval()
+    .then((report) => {
+      process.stdout.write(`${report.markdown}\n`);
+    })
+    .catch((error) => {
+      process.stderr.write(`[retrieval-eval] failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    });
 }
