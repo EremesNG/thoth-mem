@@ -33,6 +33,14 @@ import type {
   TopicKeySummary,
   UpdateObservationInput,
   UserPrompt,
+  VizExpandRequest,
+  VizFiltersResponse,
+  VizHealthResponse,
+  VizInspectEdgeResponse,
+  VizInspectNodeResponse,
+  VizNode,
+  VizSliceRequest,
+  VizSliceResponse,
 } from './types.js';
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
@@ -49,6 +57,17 @@ import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 type ObservationRow = Observation;
 
 type SearchRow = ObservationRow & { rank: number };
+type VizEdgeRow = {
+  observation_id: number;
+  session_id: string;
+  title: string;
+  type: Observation['type'];
+  project: string | null;
+  topic_key: string | null;
+  content: string;
+  relation: string;
+  object: string;
+};
 
 export interface SemanticIndexProgress {
   lanes: Array<{
@@ -117,6 +136,13 @@ const DEFAULT_CONFIG: ThothConfig = {
     baseUrl: null,
     timeoutMs: 4000,
   },
+};
+
+const VIZ_LIMITS = {
+  maxNodesHard: 1200,
+  maxEdgesHard: 3600,
+  maxNodesDefault: 300,
+  maxEdgesDefault: 900,
 };
 
 export class Store {
@@ -1475,6 +1501,362 @@ export class Store {
     sql.push('ORDER BY o.project ASC, o.topic_key ASC');
 
     return this.db.prepare(sql.join(' ')).all(...params) as TopicKeySummary[];
+  }
+
+  getVisualizationHealth(input: { project?: string } = {}): VizHealthResponse {
+    const progress = this.getSemanticIndexProgress({ project: input.project });
+    const pendingJobs = progress.totals.pending + progress.totals.running;
+    const runtime = this.getSemanticIndexState();
+    const laneStale = progress.lanes.some((lane) => lane.stale);
+    const lanePending = progress.lanes.some((lane) => lane.pending);
+    const laneDegraded = progress.lanes.some((lane) => lane.degraded);
+    let semanticState: VizHealthResponse['semantic_state'] = 'ready';
+    if (laneDegraded || runtime.degraded) semanticState = 'degraded';
+    else if (laneStale && pendingJobs > 0) semanticState = 'rebuilding';
+    else if (lanePending || runtime.pending || pendingJobs > 0) semanticState = 'pending';
+    return { semantic_state: semanticState, pending_jobs: pendingJobs };
+  }
+
+  getVisualizationSlice(input: VizSliceRequest = {}): VizSliceResponse {
+    const maxNodes = Math.min(Math.max(input.max_nodes ?? VIZ_LIMITS.maxNodesDefault, 1), VIZ_LIMITS.maxNodesHard);
+    const maxEdges = Math.min(Math.max(input.max_edges ?? VIZ_LIMITS.maxEdgesDefault, 1), VIZ_LIMITS.maxEdgesHard);
+    const rows = this.getVisualizationRows(input, maxEdges);
+    const nodesMap = new Map<string, VizNode>();
+    const edges = this.buildVisualizationEdges(rows, maxEdges, nodesMap, input);
+    const nodes = Array.from(nodesMap.values()).slice(0, maxNodes);
+    const state = this.computeVizState(nodes.length, maxNodes);
+    const truncated = edges.length >= maxEdges || nodesMap.size > maxNodes;
+    return {
+      nodes,
+      edges,
+      state,
+      continuation: truncated ? `nodes:${nodes.length}:edges:${edges.length}` : null,
+      truncated,
+      health: this.getVisualizationHealth({ project: input.project }),
+    };
+  }
+
+  expandVisualizationNode(input: VizExpandRequest): VizSliceResponse {
+    const maxNodes = Math.min(Math.max(input.max_nodes ?? VIZ_LIMITS.maxNodesDefault, 1), VIZ_LIMITS.maxNodesHard);
+    const maxEdges = Math.min(Math.max(input.max_edges ?? VIZ_LIMITS.maxEdgesDefault, 1), VIZ_LIMITS.maxEdgesHard);
+    const idMatch = input.node_id.match(/^obs:(\d+)$/);
+    if (!idMatch) {
+      return {
+        nodes: [],
+        edges: [],
+        state: 'empty',
+        continuation: null,
+        truncated: false,
+        health: this.getVisualizationHealth({ project: input.project }),
+      };
+    }
+    const observationId = Number.parseInt(idMatch[1], 10);
+    const rows = this.getVisualizationRows({ ...input }, maxEdges * 2).filter((row) => row.observation_id === observationId);
+    const fallbackRows = rows.length > 0 ? rows : this.getVisualizationRows({ ...input, max_edges: maxEdges }, maxEdges).slice(0, maxEdges);
+    const nodesMap = new Map<string, VizNode>();
+    const edges = this.buildVisualizationEdges(fallbackRows, maxEdges, nodesMap, input);
+    const nodes = Array.from(nodesMap.values()).slice(0, maxNodes);
+    return {
+      nodes,
+      edges,
+      state: this.computeVizState(nodes.length, maxNodes),
+      continuation: edges.length >= maxEdges ? `expand:${input.node_id}:${edges.length}` : null,
+      truncated: edges.length >= maxEdges,
+      health: this.getVisualizationHealth({ project: input.project }),
+    };
+  }
+
+  inspectVisualizationNode(nodeId: string, input: { project?: string } = {}): VizInspectNodeResponse | null {
+    const idMatch = nodeId.match(/^obs:(\d+)$/);
+    if (!idMatch) return null;
+    const observation = this.getObservation(Number.parseInt(idMatch[1], 10));
+    if (!observation) return null;
+    if (input.project && observation.project !== input.project) return null;
+    return {
+      id: nodeId,
+      kind: 'observation',
+      label: stripPrivateTags(observation.title).trim(),
+      snippet: truncateForPreview(stripPrivateTags(observation.content).trim(), 220),
+      links: [observation.session_id, observation.topic_key ?? ''].filter((item) => item.length > 0),
+      metadata: {
+        project: observation.project,
+        topic_key: observation.topic_key,
+        type: observation.type,
+        created_at: observation.created_at,
+      },
+    };
+  }
+
+  inspectVisualizationEdge(edgeId: string, _input: { project?: string } = {}): VizInspectEdgeResponse | null {
+    const [sourceId, relation, targetId] = edgeId.split('|');
+    if (!sourceId || !relation || !targetId) return null;
+    return {
+      id: edgeId,
+      source_id: sourceId,
+      target_id: targetId,
+      relation,
+      label: relation,
+      summary: `Relationship ${relation}`,
+    };
+  }
+
+  getVisualizationFilters(input: { project?: string } = {}): VizFiltersResponse {
+    const projectRows = this.db.prepare(
+      `SELECT DISTINCT project FROM observations WHERE deleted_at IS NULL AND project IS NOT NULL ORDER BY project ASC`
+    ).all() as Array<{ project: string | null }>;
+    const topicRows = this.db.prepare(
+      `SELECT DISTINCT topic_key FROM observations
+       WHERE deleted_at IS NULL AND topic_key IS NOT NULL AND topic_key != ''
+       ${input.project ? 'AND project = ?' : ''}
+       ORDER BY topic_key ASC LIMIT 500`
+    ).all(...(input.project ? [input.project] : [])) as Array<{ topic_key: string | null }>;
+    const typeRows = this.db.prepare(
+      `SELECT DISTINCT type FROM observations WHERE deleted_at IS NULL ${input.project ? 'AND project = ?' : ''} ORDER BY type ASC`
+    ).all(...(input.project ? [input.project] : [])) as Array<{ type: Observation['type'] }>;
+    const sessionRows = this.db.prepare(
+      `SELECT DISTINCT session_id FROM observations WHERE deleted_at IS NULL ${input.project ? 'AND project = ?' : ''} ORDER BY session_id ASC LIMIT 500`
+    ).all(...(input.project ? [input.project] : [])) as Array<{ session_id: string }>;
+    const relationRows = this.db.prepare(
+      `SELECT DISTINCT f.relation
+       FROM observation_facts f
+       JOIN observations o ON o.id = f.observation_id
+       WHERE o.deleted_at IS NULL
+       ${input.project ? 'AND o.project = ?' : ''}
+       ORDER BY f.relation ASC LIMIT 500`
+    ).all(...(input.project ? [input.project] : [])) as Array<{ relation: string }>;
+    return {
+      projects: projectRows.map((row) => row.project).filter((value): value is string => Boolean(value)),
+      sessions: sessionRows.map((row) => row.session_id).filter((value): value is string => Boolean(value)),
+      topic_keys: topicRows.map((row) => row.topic_key).filter((value): value is string => Boolean(value)),
+      types: typeRows.map((row) => row.type),
+      relations: relationRows.map((row) => row.relation).filter((value): value is string => Boolean(value)),
+    };
+  }
+
+  private getVisualizationRows(input: VizSliceRequest, limit: number): VizEdgeRow[] {
+    const params: Array<string | number> = [];
+    const sql = [
+      'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content, f.relation, f.object',
+      'FROM observation_facts f',
+      'JOIN observations o ON o.id = f.observation_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    if (input.project) {
+      sql.push('AND o.project = ?');
+      params.push(input.project);
+    }
+    if (input.topic_key) {
+      sql.push('AND o.topic_key = ?');
+      params.push(input.topic_key);
+    }
+    if (input.type) {
+      sql.push('AND o.type = ?');
+      params.push(input.type);
+    }
+    if (input.observation_type) {
+      sql.push('AND o.type = ?');
+      params.push(input.observation_type);
+    }
+    if (input.session_id) {
+      sql.push('AND o.session_id = ?');
+      params.push(input.session_id);
+    }
+    if (input.relation) {
+      sql.push('AND f.relation = ?');
+      params.push(input.relation);
+    }
+    if (input.query) {
+      const search = `%${sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase()}%`;
+      sql.push('AND (lower(o.title) LIKE ? OR lower(o.content) LIKE ? OR lower(f.object) LIKE ?)');
+      params.push(search, search, search);
+    }
+    sql.push('ORDER BY o.id ASC, f.id ASC LIMIT ?');
+    params.push(limit);
+    return this.db.prepare(sql.join(' ')).all(...params) as VizEdgeRow[];
+  }
+
+  private buildVisualizationEdges(
+    rows: VizEdgeRow[],
+    maxEdges: number,
+    nodesMap: Map<string, VizNode>,
+    input: { project?: string; session_id?: string; topic_key?: string }
+  ) {
+    const edges: Array<{
+      id: string; source_id: string; target_id: string; relation: string; kind: 'semantic' | 'metadata' | 'fact'; label: string; summary: string;
+    }> = [];
+    const relationTargets = new Map<string, string>();
+    for (const row of rows) {
+      if (edges.length >= maxEdges) break;
+      const sourceId = `obs:${row.observation_id}`;
+      const source = this.buildVizNode(sourceId, row, input);
+      if (!nodesMap.has(source.id)) nodesMap.set(source.id, source);
+      const sessionId = `session:${Buffer.from(row.session_id).toString('base64url').slice(0, 16)}`;
+      if (!nodesMap.has(sessionId)) {
+        nodesMap.set(sessionId, this.buildSessionNode(sessionId, row, input));
+      }
+      const projectId = `project:${Buffer.from(row.project ?? 'none').toString('base64url').slice(0, 16)}`;
+      if (!nodesMap.has(projectId)) {
+        nodesMap.set(projectId, this.buildProjectNode(projectId, row, input));
+      }
+      if (row.topic_key) {
+        const topicId = `topic:${Buffer.from(row.topic_key).toString('base64url').slice(0, 16)}`;
+        if (!nodesMap.has(topicId)) {
+          nodesMap.set(topicId, this.buildTopicNode(topicId, row, input));
+        }
+      }
+      const targetId = `ref:${row.relation}:${Buffer.from(stripPrivateTags(row.object)).toString('base64url').slice(0, 16)}`;
+      if (!nodesMap.has(targetId)) {
+        nodesMap.set(targetId, this.buildRefNode(targetId, row.object, row, input));
+      }
+      const edgeId = `${sourceId}|${row.relation}|${targetId}`;
+      if (relationTargets.has(edgeId)) continue;
+      relationTargets.set(edgeId, edgeId);
+      edges.push({
+        id: edgeId,
+        source_id: sourceId,
+        target_id: targetId,
+        relation: row.relation,
+        kind: 'fact',
+        label: row.relation,
+        summary: truncateForPreview(stripPrivateTags(row.object).trim(), 180),
+      });
+      const obsSessionEdge = `${sourceId}|IN_SESSION|${sessionId}`;
+      if (!relationTargets.has(obsSessionEdge) && edges.length < maxEdges) {
+        relationTargets.set(obsSessionEdge, obsSessionEdge);
+        edges.push({
+          id: obsSessionEdge,
+          source_id: sourceId,
+          target_id: sessionId,
+          relation: 'IN_SESSION',
+          kind: 'metadata',
+          label: 'IN_SESSION',
+          summary: 'Observation belongs to session',
+        });
+      }
+      const obsProjectEdge = `${sourceId}|IN_PROJECT|${projectId}`;
+      if (!relationTargets.has(obsProjectEdge) && edges.length < maxEdges) {
+        relationTargets.set(obsProjectEdge, obsProjectEdge);
+        edges.push({
+          id: obsProjectEdge,
+          source_id: sourceId,
+          target_id: projectId,
+          relation: 'IN_PROJECT',
+          kind: 'metadata',
+          label: 'IN_PROJECT',
+          summary: 'Observation belongs to project',
+        });
+      }
+    }
+    return edges;
+  }
+
+  private buildVizNode(nodeId: string, row: VizEdgeRow, input: { project?: string; session_id?: string; topic_key?: string }): VizNode {
+    const seed = `${row.observation_id}|${row.project ?? ''}|${row.session_id}|${input.project ?? ''}|${input.session_id ?? ''}|${input.topic_key ?? ''}`;
+    const { x, y } = this.computeSeedPoint(seed);
+    return {
+      id: nodeId,
+      kind: 'observation',
+      label: stripPrivateTags(row.title).trim(),
+      snippet: truncateForPreview(stripPrivateTags(row.content).trim(), 140),
+      project: row.project,
+      session_id: row.session_id,
+      topic_key: row.topic_key,
+      type: row.type,
+      seed_x: x,
+      seed_y: y,
+    };
+  }
+
+  private buildRefNode(nodeId: string, objectText: string, row: VizEdgeRow, input: { project?: string; session_id?: string; topic_key?: string }): VizNode {
+    const clean = stripPrivateTags(objectText).trim();
+    const seed = `${nodeId}|${row.project ?? ''}|${input.project ?? ''}|${input.topic_key ?? ''}`;
+    const { x, y } = this.computeSeedPoint(seed);
+    return {
+      id: nodeId,
+      kind: 'topic',
+      label: truncateForPreview(clean, 80),
+      snippet: truncateForPreview(clean, 120),
+      project: row.project,
+      session_id: row.session_id,
+      topic_key: row.topic_key,
+      type: null,
+      seed_x: x,
+      seed_y: y,
+    };
+  }
+
+  private buildSessionNode(nodeId: string, row: VizEdgeRow, input: { project?: string; session_id?: string; topic_key?: string }): VizNode {
+    const seed = `${nodeId}|${row.session_id}|${row.project ?? ''}|${input.session_id ?? ''}`;
+    const { x, y } = this.computeSeedPoint(seed);
+    return {
+      id: nodeId,
+      kind: 'session',
+      label: row.session_id,
+      snippet: `Session ${row.session_id}`,
+      project: row.project,
+      session_id: row.session_id,
+      topic_key: row.topic_key,
+      type: null,
+      seed_x: x,
+      seed_y: y,
+    };
+  }
+
+  private buildProjectNode(nodeId: string, row: VizEdgeRow, input: { project?: string; session_id?: string; topic_key?: string }): VizNode {
+    const seed = `${nodeId}|${row.project ?? 'none'}|${input.project ?? ''}`;
+    const { x, y } = this.computeSeedPoint(seed);
+    const label = row.project ?? 'unknown-project';
+    return {
+      id: nodeId,
+      kind: 'project',
+      label,
+      snippet: `Project ${label}`,
+      project: row.project,
+      session_id: row.session_id,
+      topic_key: row.topic_key,
+      type: null,
+      seed_x: x,
+      seed_y: y,
+    };
+  }
+
+  private buildTopicNode(nodeId: string, row: VizEdgeRow, input: { project?: string; session_id?: string; topic_key?: string }): VizNode {
+    const seed = `${nodeId}|${row.topic_key ?? ''}|${input.topic_key ?? ''}`;
+    const { x, y } = this.computeSeedPoint(seed);
+    const label = row.topic_key ?? 'unknown-topic';
+    return {
+      id: nodeId,
+      kind: 'topic',
+      label,
+      snippet: `Topic ${label}`,
+      project: row.project,
+      session_id: row.session_id,
+      topic_key: row.topic_key,
+      type: null,
+      seed_x: x,
+      seed_y: y,
+    };
+  }
+
+  private computeSeedPoint(seed: string): { x: number; y: number } {
+    let hashA = 2166136261;
+    let hashB = 16777619;
+    for (let i = 0; i < seed.length; i += 1) {
+      const code = seed.charCodeAt(i);
+      hashA ^= code;
+      hashA = Math.imul(hashA, 16777619);
+      hashB ^= code + i;
+      hashB = Math.imul(hashB, 2246822519);
+    }
+    const x = ((hashA >>> 0) % 2000) / 1000 - 1;
+    const y = ((hashB >>> 0) % 2000) / 1000 - 1;
+    return { x, y };
+  }
+
+  private computeVizState(nodes: number, maxNodes: number): 'empty' | 'sparse' | 'dense' {
+    if (nodes === 0) return 'empty';
+    if (nodes >= Math.max(Math.floor(maxNodes * 0.7), 1)) return 'dense';
+    return 'sparse';
   }
 
   getObservationFacts(input: ObservationFactsInput = {}): ObservationFact[] {

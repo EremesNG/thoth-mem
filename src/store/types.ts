@@ -10,6 +10,8 @@ export type ObservationType = typeof OBSERVATION_TYPES[number];
 
 export type ObservationScope = 'project' | 'personal';
 export type SearchMode = 'compact' | 'preview' | 'context';
+export type VizDensityState = 'empty' | 'sparse' | 'dense';
+export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 
 // ── Database Entities ──
 
@@ -275,4 +277,96 @@ export interface RebuildObservationFactsResult {
   observations_scanned: number;
   facts_deleted: number;
   facts_created: number;
+}
+
+export interface VizSliceRequest {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  depth?: number;
+  max_nodes?: number;
+  max_edges?: number;
+  cursor?: string;
+}
+
+export interface VizExpandRequest {
+  node_id: string;
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  depth?: number;
+  max_nodes?: number;
+  max_edges?: number;
+  cursor?: string;
+}
+
+export interface VizNode {
+  id: string;
+  kind: 'observation' | 'fact' | 'session' | 'project' | 'topic';
+  label: string;
+  snippet: string;
+  project: string | null;
+  session_id?: string | null;
+  topic_key: string | null;
+  type: ObservationType | null;
+  seed_x: number;
+  seed_y: number;
+}
+
+export interface VizEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  relation: string;
+  kind?: 'semantic' | 'metadata' | 'fact';
+  label: string;
+  summary: string;
+}
+
+export interface VizHealthResponse {
+  semantic_state: VizSemanticState;
+  pending_jobs: number;
+}
+
+export interface VizSliceResponse {
+  nodes: VizNode[];
+  edges: VizEdge[];
+  state: VizDensityState;
+  continuation: string | null;
+  truncated: boolean;
+  health: VizHealthResponse;
+}
+
+export interface VizInspectNodeResponse {
+  id: string;
+  kind: VizNode['kind'];
+  label: string;
+  snippet: string;
+  metadata: Record<string, unknown>;
+  links: string[];
+}
+
+export interface VizInspectEdgeResponse {
+  id: string;
+  source_id: string;
+  target_id: string;
+  relation: string;
+  label: string;
+  summary: string;
+}
+
+export interface VizFiltersResponse {
+  projects: string[];
+  sessions: string[];
+  topic_keys: string[];
+  types: ObservationType[];
+  relations: string[];
 }
