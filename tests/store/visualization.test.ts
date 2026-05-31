@@ -190,7 +190,7 @@ describe('Store visualization', () => {
     }
   });
 
-  it('observatory fact-kg does not return graph-only hits without a core retrieval hit', async () => {
+  it('observatory fact-kg can return query-matching graph-only hits as controlled discovery evidence', async () => {
     const store = new Store(':memory:');
     try {
       const saved = store.saveObservation({
@@ -210,9 +210,9 @@ describe('Store visualization', () => {
         limit: 20,
       });
 
-      expect(recall.lanes['fact-kg'].map((hit) => hit.observation_id)).not.toContain(saved.observation.id);
-      expect(recall.lane_states?.['fact-kg']?.status).toBe('unavailable');
-      expect(recall.lane_states?.['fact-kg']?.reason).toBe('kg-no-match');
+      expect(recall.lanes['fact-kg'].map((hit) => hit.observation_id)).toContain(saved.observation.id);
+      expect(recall.lanes['fact-kg'].length).toBeLessThanOrEqual(2);
+      expect(recall.lane_states?.['fact-kg']?.status).toBe('ready');
     } finally {
       store.close();
     }

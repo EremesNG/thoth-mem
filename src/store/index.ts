@@ -1316,13 +1316,20 @@ export class Store {
       laneOrder: input.laneOrder,
       laneWeights: input.laneWeights,
     };
-    const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, input.limit ?? defaults.lexicalLimit);
+    const fusedLimit = input.limit ?? defaults.lexicalLimit;
+    const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, fusedLimit);
     const effectiveLaneOrder = this.resolveEffectiveLaneOrder(input.laneOrder);
+    const parentPromotionThreshold = defaults.minSemanticScore;
     const graphCandidates = this.queryKnowledgeLane({
       query: input.query,
       filters,
       observationIds: fused.map((hit) => hit.observation.id),
       includeUnmatched: true,
+    });
+    const graphDiscoveryCandidates = this.queryKnowledgeLane({
+      query: input.query,
+      filters,
+      includeUnmatched: false,
     });
     const graphByObservation = new Map<number, LaneCandidate[]>();
     graphCandidates.sort((a, b) => {
@@ -1349,6 +1356,7 @@ export class Store {
       ));
       const sentenceChunkKey = bestSentence?.chunkKey;
       if (!sentenceChunkKey) continue;
+      if (bestSentence.score < parentPromotionThreshold) continue;
       const parent = this.db.prepare(
         'SELECT chunk_key, content FROM semantic_chunks WHERE chunk_key = ? LIMIT 1'
       ).get(sentenceChunkKey) as { chunk_key: string; content: string } | undefined;
@@ -1357,6 +1365,38 @@ export class Store {
       }
     }
 
+    const existingObservationIds = new Set(fused.map((hit) => hit.observation.id));
+    const graphOnlyObservationIds = Array.from(new Set(
+      graphDiscoveryCandidates
+        .map((candidate) => candidate.observationId)
+        .filter((observationId) => !existingObservationIds.has(observationId))
+    ));
+    const graphDiscoveryLimit = Math.min(2, fusedLimit);
+    const graphOnlyHits = graphOnlyObservationIds.length > 0 && graphDiscoveryLimit > 0
+      ? (() => {
+          const rows = this.db.prepare(
+            `SELECT * FROM observations
+             WHERE deleted_at IS NULL
+             AND id IN (${graphOnlyObservationIds.map(() => '?').join(',')})`
+          ).all(...graphOnlyObservationIds) as ObservationRow[];
+          const graphObservations = new Map(rows.map((row) => [row.id, row]));
+          const graphCandidatesForFusion = graphDiscoveryCandidates.filter(
+            (candidate) => graphObservations.has(candidate.observationId),
+          );
+          const graphDiscoveryFusionOptions: FusionOptions = {
+            laneOrder: input.laneOrder,
+            laneWeights: {
+              ...input.laneWeights,
+              kg: input.laneWeights?.kg ?? 1,
+            },
+          };
+          return fuseCandidates(graphObservations, graphCandidatesForFusion, graphDiscoveryFusionOptions).slice(0, graphDiscoveryLimit);
+        })()
+      : [];
+
+    const results = [...fused, ...graphOnlyHits]
+      .slice(0, fusedLimit);
+
     return {
       defaults,
       laneOrder: effectiveLaneOrder,
@@ -1364,7 +1404,7 @@ export class Store {
       lexicalQuery,
       scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
       semanticInputs,
-      results: fused,
+      results,
       pending: this.semanticRuntime.pending,
     };
   }

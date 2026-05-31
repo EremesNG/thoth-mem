@@ -620,6 +620,119 @@ describe('Store', () => {
       }
     });
 
+    it('graph discovery: can return query-matching graph facts even without lexical or semantic core hits', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const saved = store.saveObservation({
+        title: 'Graph discovery only',
+        content: 'body intentionally does not mention codename',
+        project: 'hybrid-test',
+      });
+      store.getDb().prepare(
+        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(saved.observation.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'hybrid-test', null, 'decision');
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
+      const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
+      expect(hit).toBeDefined();
+      expect(hit.evidence.primary.lane).toBe('kg');
+      expect(hit.evidence.primary.source).toBe('observation_facts');
+    });
+
+    it('graph discovery: orders graph-only KG candidates by confidence when lane weight is enabled', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+      const runtime = store as any;
+      const db = store.getDb();
+
+      const first = store.saveObservation({
+        title: 'Graph direct match',
+        content: 'unrelated note about caching',
+        project: 'hybrid-test',
+      });
+      const second = store.saveObservation({
+        title: 'Graph fallback match',
+        content: 'another unrelated note about deployment',
+        project: 'hybrid-test',
+      });
+
+      db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('entity:helios', 'system', 'Helios');
+      db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('entity:primary-cache', 'system', 'Primary cache');
+      db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('entity:secondary-cache', 'system', 'Secondary cache');
+
+      const helios = db.prepare('SELECT id FROM kg_entities WHERE entity_key = ?').get('entity:helios') as { id: number };
+      const primaryCache = db.prepare('SELECT id FROM kg_entities WHERE entity_key = ?').get('entity:primary-cache') as { id: number };
+      const secondaryCache = db.prepare('SELECT id FROM kg_entities WHERE entity_key = ?').get('entity:secondary-cache') as { id: number };
+
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+          project, topic_key, provenance, confidence, triple_hash, extractor_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        helios.id,
+        'USES',
+        primaryCache.id,
+        'observation',
+        first.observation.id,
+        first.observation.sync_id,
+        'hybrid-test',
+        null,
+        'store-test:high-confidence',
+        0.91,
+        'store-test:helios-high',
+        'v1',
+      );
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+          project, topic_key, provenance, confidence, triple_hash, extractor_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        helios.id,
+        'USES',
+        secondaryCache.id,
+        'observation',
+        second.observation.id,
+        second.observation.sync_id,
+        'hybrid-test',
+        null,
+        'store-test:low-confidence',
+        0.15,
+        'store-test:helios-low',
+        'v1',
+      );
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
+      const ids = response.results.map((r: any) => r.observation.id);
+      expect(ids.slice(0, 2)).toEqual([first.observation.id, second.observation.id]);
+      expect(response.results[0].evidence.primary.source).toBe('kg_triples');
+      expect(response.results[0].score).toBeGreaterThan(response.results[1].score);
+    });
+
+    it('graph discovery: unrelated KG facts do not flood retrieval', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      for (let index = 0; index < 5; index += 1) {
+        const saved = store.saveObservation({
+          title: `Graph flood ${index}`,
+          content: 'content does not include codenames',
+          project: 'hybrid-test',
+        });
+        store.getDb().prepare(
+          'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(saved.observation.id, `Other-${index}`, 'HAS_WHAT', `Non matching object ${index}`, 'hybrid-test', null, 'decision');
+      }
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
+      expect(response.results.length).toBe(0);
+    });
+
     it('fusion: deterministically merges lane evidence and uses stable tie-breakers', async () => {
       store = new Store(':memory:');
       store.saveObservation({ title: 'Fusion A', content: 'encrypt data at rest and rotate keys', project: 'hybrid-test' });
@@ -729,6 +842,48 @@ describe('Store', () => {
       const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
       expect(hit.evidence.primary.lane).toBe('sentence');
       expect(hit.evidence.promotedParent?.chunkKey).toBeTruthy();
+    });
+
+    it('small-to-big: parent promotion policy follows retrieval thresholding and does not promote without sentence evidence', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1.1 } });
+      const saved = store.saveObservation({
+        title: 'Small big threshold policy',
+        content: 'Rotate encryption keys weekly. Keep parent context nearby.',
+        project: 'hybrid-test',
+      });
+      const runtime = store as any;
+      const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.7 : 0));
+      const db = store.getDb();
+      db.prepare(
+        `INSERT INTO semantic_chunks (observation_id, chunk_key, chunk_index, content, project)
+         VALUES (?, 'chunk:small-big-threshold', 0, 'Rotate encryption keys weekly. Keep parent context nearby.', 'hybrid-test')`
+      ).run(saved.observation.id);
+      db.prepare(
+        `INSERT INTO semantic_sentences (observation_id, chunk_key, sentence_key, sentence_index, content, project)
+         VALUES (?, 'chunk:small-big-threshold', 'sentence:small-big-threshold', 0, 'Rotate encryption keys weekly.', 'hybrid-test')`
+      ).run(saved.observation.id);
+      db.prepare(
+        `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash)
+         VALUES ('sentence', 'sentence:small-big-threshold', 1203, ?, 'sentence:small-big-threshold')`
+      ).run(saved.observation.id);
+      db.prepare(
+        `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash)
+         VALUES ('chunk', 'chunk:small-big-threshold', 1204, ?, 'chunk:small-big-threshold')`
+      ).run(saved.observation.id);
+      db.prepare('INSERT INTO vec_sentences(rowid, embedding) VALUES (1203, ?)').run(vectorToBuffer(vector));
+      db.prepare('INSERT INTO vec_chunks(rowid, embedding) VALUES (1204, ?)').run(vectorToBuffer(vector));
+      db.prepare(
+        "UPDATE semantic_index_state SET pending = 0, stale = 0, degraded = 0 WHERE lane IN ('chunk','sentence')"
+      ).run();
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map(() => vector),
+      };
+
+      const response = await runtime.hybridRetrieve({ query: 'rotate encryption keys', project: 'hybrid-test', embeddingProvider: provider });
+      const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
+      expect(hit.evidence.primary.lane).toBe('lexical');
+      expect(hit.evidence.promotedParent).toBeUndefined();
     });
 
     it('knowledge graph: defines taxonomy breadth, provenance/confidence, dedupe, and observation_facts fallback', () => {

@@ -46,4 +46,55 @@ describe('mem_recall tool', () => {
     expect(result?.content[0].text).toContain('<retrieved_context observation_id=');
     expect(result?.content[0].text).toContain('</retrieved_context>');
   });
+
+  it('context mode keeps primary sentence first and labels promoted parent context', async () => {
+    const saved = store.saveObservation({
+      title: 'Sentence-first context',
+      content: 'Rotate encryption keys weekly. Keep parent context nearby.',
+      project: 'recall-project',
+    });
+
+    const db = store.getDb();
+    db.prepare(
+      `INSERT INTO semantic_chunks (observation_id, chunk_key, chunk_index, content, project)
+       VALUES (?, 'chunk:recall-sentence-first', 0, 'Rotate encryption keys weekly. Keep parent context nearby.', 'recall-project')`
+    ).run(saved.observation.id);
+    db.prepare(
+      `INSERT INTO semantic_sentences (observation_id, chunk_key, sentence_key, sentence_index, content, project)
+       VALUES (?, 'chunk:recall-sentence-first', 'sentence:recall-sentence-first', 0, 'Rotate encryption keys weekly.', 'recall-project')`
+    ).run(saved.observation.id);
+    db.prepare(
+      `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash)
+       VALUES ('sentence', 'sentence:recall-sentence-first', 2001, ?, 'sentence:recall-sentence-first')`
+    ).run(saved.observation.id);
+    db.prepare(
+      `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash)
+       VALUES ('chunk', 'chunk:recall-sentence-first', 2002, ?, 'chunk:recall-sentence-first')`
+    ).run(saved.observation.id);
+
+    const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.55 : 0));
+    db.prepare('INSERT INTO vec_sentences(rowid, embedding) VALUES (2001, ?)').run(Buffer.from(new Float32Array(vector).buffer));
+    db.prepare('INSERT INTO vec_chunks(rowid, embedding) VALUES (2002, ?)').run(Buffer.from(new Float32Array(vector).buffer));
+    db.prepare(
+      "UPDATE semantic_index_state SET pending = 0, stale = 0, degraded = 0 WHERE lane IN ('chunk','sentence')"
+    ).run();
+
+    const embeddingProvider = {
+      config: store.config.embedding!,
+      embed: async (texts: string[]) => texts.map(() => vector),
+    };
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer;
+    registerMemRecall(server, store, { embeddingProvider });
+
+    const result = await toolHandler?.({ query: 'rotate encryption keys', project: 'recall-project', mode: 'context' });
+    const text = result?.content[0].text ?? '';
+    expect(text).toContain('primary_sentence: Rotate encryption keys weekly.');
+    expect(text).toContain('surrounding_parent_chunk: Rotate encryption keys weekly. Keep parent context nearby.');
+  });
 });

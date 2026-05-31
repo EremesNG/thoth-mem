@@ -48,7 +48,16 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
       + graphLines.join('\n').length
       + '</retrieved_context>'.length
       + 2;
-    const content = sanitizeRetrievedContext(hit.evidence.promotedParent?.text || primary.text || hit.observation.content);
+    const primaryContent = sanitizeRetrievedContext(primary.text || hit.observation.content);
+    const promotedParentContent = hit.evidence.promotedParent?.text
+      ? sanitizeRetrievedContext(hit.evidence.promotedParent.text)
+      : null;
+    const content = primary.lane === 'sentence' && promotedParentContent
+      ? [
+          `primary_sentence: ${primaryContent}`,
+          `surrounding_parent_chunk: ${promotedParentContent}`,
+        ].join('\n')
+      : (promotedParentContent || primaryContent);
     const budgetedContent = trimToBudget(content, Math.max(0, remaining - metadataCost));
 
     lines.push([

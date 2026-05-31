@@ -16,6 +16,7 @@ export const KG_RELATION_TYPES = [
 
 type EntityType = typeof KG_ENTITY_TYPES[number];
 type RelationType = typeof KG_RELATION_TYPES[number];
+const KG_RELATION_TYPE_SET = new Set<string>(KG_RELATION_TYPES);
 
 export interface ExtractedTriple {
   subject: string;
@@ -33,7 +34,13 @@ const STOPWORDS = new Set([
   'via', 'when', 'where', 'while', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'should', 'must',
 ]);
 
-const RELATION_PATTERNS: Array<{ tokens: string[]; relation: RelationType; confidence: number }> = [
+const RELATION_PATTERNS: Array<{
+  tokens: string[];
+  relation: RelationType;
+  confidence: number;
+  reverseDirection?: boolean;
+  skipIfNextTokenIs?: string;
+}> = [
   { tokens: ['authenticates', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
   { tokens: ['authenticate', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
   { tokens: ['authenticated', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
@@ -45,7 +52,12 @@ const RELATION_PATTERNS: Array<{ tokens: string[]; relation: RelationType; confi
   { tokens: ['run', 'in'], relation: 'RUNS_IN', confidence: 0.78 },
   { tokens: ['deploys', 'to'], relation: 'DEPLOYS_TO', confidence: 0.8 },
   { tokens: ['deployed', 'to'], relation: 'DEPLOYS_TO', confidence: 0.8 },
-  { tokens: ['owned', 'by'], relation: 'OWNS', confidence: 0.72 },
+  { tokens: ['owned', 'by'], relation: 'OWNS', confidence: 0.72, reverseDirection: true },
+  { tokens: ['blocked', 'by'], relation: 'BLOCKS', confidence: 0.74, reverseDirection: true },
+  { tokens: ['fixed', 'by'], relation: 'FIXES', confidence: 0.74, reverseDirection: true },
+  { tokens: ['caused', 'by'], relation: 'CAUSES', confidence: 0.72, reverseDirection: true },
+  { tokens: ['configured', 'by'], relation: 'CONFIGURES', confidence: 0.74, reverseDirection: true },
+  { tokens: ['implemented', 'by'], relation: 'IMPLEMENTS', confidence: 0.74, reverseDirection: true },
   { tokens: ['belongs-to'], relation: 'BELONGS_TO', confidence: 0.82 },
   { tokens: ['depends-on'], relation: 'DEPENDS_ON', confidence: 0.82 },
   { tokens: ['part-of'], relation: 'PART_OF', confidence: 0.8 },
@@ -55,11 +67,11 @@ const RELATION_PATTERNS: Array<{ tokens: string[]; relation: RelationType; confi
   { tokens: ['uses'], relation: 'USES', confidence: 0.76 },
   { tokens: ['using'], relation: 'USES', confidence: 0.74 },
   { tokens: ['configures'], relation: 'CONFIGURES', confidence: 0.78 },
-  { tokens: ['configured'], relation: 'CONFIGURES', confidence: 0.74 },
+  { tokens: ['configured'], relation: 'CONFIGURES', confidence: 0.74, skipIfNextTokenIs: 'by' },
   { tokens: ['implements'], relation: 'IMPLEMENTS', confidence: 0.78 },
-  { tokens: ['implemented'], relation: 'IMPLEMENTS', confidence: 0.74 },
+  { tokens: ['implemented'], relation: 'IMPLEMENTS', confidence: 0.74, skipIfNextTokenIs: 'by' },
   { tokens: ['fixes'], relation: 'FIXES', confidence: 0.76 },
-  { tokens: ['fixed'], relation: 'FIXES', confidence: 0.74 },
+  { tokens: ['fixed'], relation: 'FIXES', confidence: 0.74, skipIfNextTokenIs: 'by' },
   { tokens: ['blocks'], relation: 'BLOCKS', confidence: 0.76 },
   { tokens: ['unblocks'], relation: 'UNBLOCKS', confidence: 0.76 },
   { tokens: ['causes'], relation: 'CAUSES', confidence: 0.74 },
@@ -87,8 +99,17 @@ function tokenize(content: string): string[] {
   return normalize(content).split(/[^a-z0-9_./:-]+/).filter((token) => token.length > 0);
 }
 
+function splitRelationSegments(content: string): string[] {
+  return content
+    .split(/[\r\n]+|(?<=[.!?])\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
 function cleanEntityTokens(tokens: string[]): string[] {
-  const cleaned = [...tokens];
+  const cleaned = tokens
+    .map((token) => token.replace(/^[,.;:!?'"`]+|[,.;:!?'"`]+$/g, ''))
+    .filter((token) => token.length > 0);
   while (cleaned.length > 0 && STOPWORDS.has(cleaned[0])) {
     cleaned.shift();
   }
@@ -201,6 +222,54 @@ function patternMatches(tokens: string[], start: number, pattern: string[]): boo
   return pattern.every((token, offset) => tokens[start + offset] === token);
 }
 
+function cleanExplicitEntity(value: string): string | null {
+  const cleaned = normalize(
+    value
+      .replace(/^[\s"'`([{]+/, '')
+      .replace(/[\s"'`)\]}.;,!?]+$/g, '')
+  );
+  if (cleaned.length === 0) {
+    return null;
+  }
+  return cleaned.slice(0, 160);
+}
+
+function extractExplicitGraphTriples(content: string): Array<{ subject: string; relation: RelationType; object: string }> {
+  const triples: Array<{ subject: string; relation: RelationType; object: string }> = [];
+  const notations = [
+    /^(.*?)\s*--\s*([A-Za-z_]+)\s*-->\s*(.*?)\s*$/,
+    /^(.*?)\s*-\[\s*([A-Za-z_]+)\s*\]->\s*(.*?)\s*$/,
+  ];
+
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    for (const notation of notations) {
+      const match = trimmed.match(notation);
+      if (!match) {
+        continue;
+      }
+
+      const relation = match[2].toUpperCase();
+      if (!KG_RELATION_TYPE_SET.has(relation)) {
+        break;
+      }
+
+      const subject = cleanExplicitEntity(match[1]);
+      const object = cleanExplicitEntity(match[3]);
+      if (subject && object && subject !== object) {
+        triples.push({ subject, relation: relation as RelationType, object });
+      }
+      break;
+    }
+  }
+
+  return triples;
+}
+
 export function extractKnowledgeTriples(input: {
   content: string;
   provenance: string;
@@ -237,19 +306,37 @@ export function extractKnowledgeTriples(input: {
     });
   };
 
-  for (let i = 0; i < tokens.length; i += 1) {
-    for (const pattern of RELATION_PATTERNS) {
-      if (!patternMatches(tokens, i, pattern.tokens)) {
-        continue;
-      }
+  for (const explicitTriple of extractExplicitGraphTriples(input.content)) {
+    pushTriple(explicitTriple.subject, explicitTriple.relation, explicitTriple.object, 0.92);
+  }
 
-      const subject = entityFromTokens(tokens, Math.max(0, i - 3), i);
-      const object = entityFromTokens(tokens, i + pattern.tokens.length, Math.min(tokens.length, i + pattern.tokens.length + 3));
-      if (!subject || !object || subject === object) {
-        continue;
-      }
+  for (const segment of splitRelationSegments(input.content)) {
+    const segmentTokens = tokenize(segment);
+    for (let i = 0; i < segmentTokens.length; i += 1) {
+      for (const pattern of RELATION_PATTERNS) {
+        if (!patternMatches(segmentTokens, i, pattern.tokens)) {
+          continue;
+        }
+        if (pattern.skipIfNextTokenIs && segmentTokens[i + pattern.tokens.length] === pattern.skipIfNextTokenIs) {
+          continue;
+        }
 
-      pushTriple(subject, pattern.relation, object, pattern.confidence);
+        const subject = entityFromTokens(segmentTokens, Math.max(0, i - 3), i);
+        const object = entityFromTokens(
+          segmentTokens,
+          i + pattern.tokens.length,
+          Math.min(segmentTokens.length, i + pattern.tokens.length + 3)
+        );
+        if (!subject || !object || subject === object) {
+          continue;
+        }
+
+        if (pattern.reverseDirection) {
+          pushTriple(object, pattern.relation, subject, pattern.confidence);
+        } else {
+          pushTriple(subject, pattern.relation, object, pattern.confidence);
+        }
+      }
     }
   }
 
