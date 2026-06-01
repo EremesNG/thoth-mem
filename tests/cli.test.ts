@@ -524,6 +524,15 @@ describe('runCli', () => {
     expect((error as Error).message).toContain('Unknown command');
   });
 
+  it('routes every documented data-management command through the CLI dispatcher', () => {
+    expect(shouldRunCli(['sync-import'])).toBe(true);
+    expect(shouldRunCli(['migrate-project', 'old', 'new'])).toBe(true);
+    expect(shouldRunCli(['delete-project', 'project-name'])).toBe(true);
+    expect(shouldRunCli(['rebuild-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
+    expect(shouldRunCli(['mcp'])).toBe(false);
+  });
+
   describe('--tools= flag removal', () => {
     it('--tools=agent does not change registered tool set', () => {
       const withoutToolsFlag = parseArgs(['node', 'thoth-mem', 'mcp']);
