@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/thoth-mem/config.schema.json",
+  "title": "Thoth-Mem Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Public JSON Schema URL for Thoth-Mem config files."
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxContentLength": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxContextResults": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxSearchResults": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dedupeWindowMinutes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "previewLength": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "disabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "retrievalDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sentenceTopK": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "chunkTopK": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lexicalLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minSemanticScore": {
+          "type": "number",
+          "minimum": 0
+        },
+        "l2DistanceScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "embedding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["transformers_local", "ollama", "lmstudio"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseUrl": {
+          "type": ["string", "null"]
+        },
+        "dimensions": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
+      }
+    },
+    "hyde": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["transformers_local", "ollama", "lmstudio"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "baseUrl": {
+          "type": ["string", "null"]
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "kgLlm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["transformers_local", "ollama", "lmstudio"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseUrl": {
+          "type": ["string", "null"]
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minContentChars": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

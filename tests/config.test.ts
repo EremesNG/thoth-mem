@@ -215,7 +215,10 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     const config = getConfig() as any;
     const raw = readFileSync(join(config.dataDir, 'config.json'), 'utf8');
     const saved = JSON.parse(raw);
+    const schema = JSON.parse(readFileSync(join(process.cwd(), 'config.schema.json'), 'utf8'));
 
+    expect(Object.keys(saved)[0]).toBe('$schema');
+    expect(saved.$schema).toBe('https://unpkg.com/thoth-mem@0.3.0/config.schema.json');
     expect(saved.version).toBe(1);
     expect(saved.embedding).toEqual({
       provider: 'transformers_local',
@@ -227,6 +230,23 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.kgLlm).toEqual(config.kgLlm);
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
+    expect(schema).toMatchObject({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      title: 'Thoth-Mem Config',
+      type: 'object',
+      properties: {
+        embedding: {
+          properties: {
+            provider: { enum: ['transformers_local', 'ollama', 'lmstudio'] },
+          },
+        },
+        kgLlm: {
+          properties: {
+            provider: { enum: ['transformers_local', 'ollama', 'lmstudio'] },
+          },
+        },
+      },
+    });
   });
 
   it('config file: backfills missing defaults while preserving user values', () => {

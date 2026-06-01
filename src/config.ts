@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { getVersion } from './version.js';
 
 export interface RetrievalDefaults {
   sentenceTopK: number;
@@ -62,6 +63,7 @@ interface PersistedEmbeddingConfig extends Partial<EmbeddingConfig> {
 }
 
 interface PersistedConfig {
+  $schema?: string;
   version?: number;
   maxContentLength?: number;
   maxContextResults?: number;
@@ -91,6 +93,7 @@ const DEFAULT_RETRIEVAL_DEFAULTS: RetrievalDefaults = {
   l2DistanceScale: 20,
 };
 
+const CONFIG_SCHEMA_REF = `https://unpkg.com/thoth-mem@${getVersion()}/config.schema.json`;
 const DEFAULT_LOCAL_HYDE_MODEL = 'onnx-community/Qwen2.5-Coder-0.5B-Instruct';
 
 const DEFAULT_HYDE_CONFIG: HydeConfig = {
@@ -189,6 +192,7 @@ function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmPro
 
 function defaultPersistedConfig(): PersistedConfig {
   return {
+    $schema: CONFIG_SCHEMA_REF,
     version: 1,
     maxContentLength: 100_000,
     maxContextResults: 20,
