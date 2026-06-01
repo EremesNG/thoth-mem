@@ -1,10 +1,13 @@
 import { getOpenApiSpec } from './http-openapi.js';
 import type {
   ExportData,
+  ListOperationTracesInput,
   ObservationFact,
   Observation,
   ObservationScope,
   ObservationType,
+  OperationTraceOrigin,
+  OperationTraceStatus,
   SearchMode,
   Session,
   UserPrompt,
@@ -18,9 +21,12 @@ import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, format
 import { suggestTopicKey } from './utils/topic-key.js';
 import type { EmbeddingProviderAdapter } from './retrieval/providers.js';
 import type { HydeGenerator } from './retrieval/hyde.js';
+import { VERSION } from './version.js';
 
 const OBSERVATION_SCOPES: ObservationScope[] = ['project', 'personal'];
 const SEARCH_MODES: SearchMode[] = ['compact', 'preview'];
+const OPERATION_TRACE_ORIGINS: OperationTraceOrigin[] = ['mcp', 'http', 'cli', 'system'];
+const OPERATION_TRACE_STATUSES: OperationTraceStatus[] = ['ok', 'error'];
 const OBSERVATORY_LANES: ObservatoryLane[] = ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'];
 const GRAPH_RELATIONS = [
   'HAS_TYPE',
@@ -33,6 +39,38 @@ const GRAPH_RELATIONS = [
 ] as const;
 
 type GraphRelation = typeof GRAPH_RELATIONS[number];
+
+interface OperationCatalogEntry {
+  id: string;
+  origin: 'http' | 'mcp' | 'cli';
+  label: string;
+  kind: 'read' | 'write' | 'admin' | 'sync' | 'indexing';
+  method?: string;
+  path?: string;
+  target?: string;
+  description: string;
+}
+
+const OPERATION_CATALOG: OperationCatalogEntry[] = [
+  { id: 'create-observation', origin: 'http', label: 'Create observation', kind: 'write', method: 'POST', path: '/observations', description: 'Save a durable observation and enqueue indexing work.' },
+  { id: 'search-observations', origin: 'http', label: 'Search observations', kind: 'read', method: 'GET', path: '/observations/search', description: 'Run lexical observation search with compact or preview responses.' },
+  { id: 'observatory-recall', origin: 'http', label: 'Observatory recall', kind: 'read', method: 'GET', path: '/observatory/recall', description: 'Read hybrid lane recall payloads for lexical, sentence, chunk, and KG evidence.' },
+  { id: 'operation-traces', origin: 'http', label: 'Operation traces', kind: 'read', method: 'GET', path: '/operation-traces', description: 'Inspect sanitized MCP and HTTP trace logs.' },
+  { id: 'rebuild-index', origin: 'http', label: 'Rebuild index', kind: 'indexing', method: 'POST', path: '/index/rebuild', description: 'Queue semantic index rebuild work and optionally process queued jobs.' },
+  { id: 'index-status', origin: 'http', label: 'Index status', kind: 'indexing', method: 'GET', path: '/index/status', description: 'Inspect semantic lane readiness, queue counts, coverage, and recent failures.' },
+  { id: 'rebuild-graph', origin: 'http', label: 'Rebuild graph', kind: 'indexing', method: 'POST', path: '/graph/rebuild', description: 'Rebuild deterministic graph-lite facts from saved observations.' },
+  { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
+  { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
+  { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
+  { id: 'mcp-mem-recall', origin: 'mcp', label: 'mem_recall', kind: 'read', target: 'mem_recall', description: 'Run fused hybrid recall across sentence, chunk, lexical, and KG lanes.' },
+  { id: 'mcp-mem-context', origin: 'mcp', label: 'mem_context', kind: 'read', target: 'mem_context', description: 'Recover recent project/session memory context.' },
+  { id: 'mcp-mem-get', origin: 'mcp', label: 'mem_get', kind: 'read', target: 'mem_get', description: 'Fetch full memory content and optional timeline neighborhood.' },
+  { id: 'mcp-mem-project', origin: 'mcp', label: 'mem_project', kind: 'read', target: 'mem_project', description: 'Navigate project summaries, graph facts, and topic-key memory.' },
+  { id: 'mcp-mem-session', origin: 'mcp', label: 'mem_session', kind: 'write', target: 'mem_session', description: 'Start, checkpoint, or summarize a memory session.' },
+  { id: 'cli-rebuild-index', origin: 'cli', label: 'rebuild-index', kind: 'indexing', target: 'rebuild-index', description: 'CLI equivalent for queueing or inspecting semantic index rebuild jobs.' },
+  { id: 'cli-rebuild-graph', origin: 'cli', label: 'rebuild-graph', kind: 'indexing', target: 'rebuild-graph', description: 'CLI equivalent for rebuilding graph-lite facts.' },
+  { id: 'cli-version', origin: 'cli', label: 'version', kind: 'read', target: 'version', description: 'CLI equivalent for package version output.' },
+];
 
 interface ProjectGraphSummary {
   shown: number;
@@ -214,6 +252,30 @@ function parseSearchMode(value: string | null, fieldName: string): SearchMode {
   }
 
   return value as SearchMode;
+}
+
+function parseOperationTraceOrigin(value: string | null): OperationTraceOrigin | undefined {
+  if (value === null || value === '') {
+    return undefined;
+  }
+
+  if (!OPERATION_TRACE_ORIGINS.includes(value as OperationTraceOrigin)) {
+    throw new HttpRouteError(400, 'Invalid field: origin');
+  }
+
+  return value as OperationTraceOrigin;
+}
+
+function parseOperationTraceStatus(value: string | null): OperationTraceStatus | undefined {
+  if (value === null || value === '') {
+    return undefined;
+  }
+
+  if (!OPERATION_TRACE_STATUSES.includes(value as OperationTraceStatus)) {
+    throw new HttpRouteError(400, 'Invalid field: status');
+  }
+
+  return value as OperationTraceStatus;
 }
 
 function parseGraphRelation(value: string | null, fieldName: string): GraphRelation | undefined {
@@ -415,6 +477,106 @@ export async function handleDocs(): Promise<HttpRouteResponse> {
       '</body>',
       '</html>',
     ].join('\n'),
+  };
+}
+
+export async function handleVersion(): Promise<HttpRouteResponse> {
+  return { status: 200, body: { version: VERSION } };
+}
+
+export async function handleOperationsCatalog(): Promise<HttpRouteResponse> {
+  return {
+    status: 200,
+    body: {
+      operations: OPERATION_CATALOG,
+    },
+  };
+}
+
+export async function handleOperationTraces(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const input: ListOperationTracesInput = {
+    origin: parseOperationTraceOrigin(request.query.get('origin')),
+    target: request.query.get('target') ?? undefined,
+    status: parseOperationTraceStatus(request.query.get('status')),
+    project: request.query.get('project') ?? undefined,
+    session_id: request.query.get('session_id') ?? undefined,
+    since: request.query.get('since') ?? undefined,
+    until: request.query.get('until') ?? undefined,
+    limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
+    offset: parseOptionalInteger(request.query.get('offset'), 'offset', 0),
+  };
+
+  return { status: 200, body: store.listOperationTraces(input) };
+}
+
+export async function handleOperationTraceDetail(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const traceId = requireString(request.params.trace_id, 'trace_id');
+  const trace = store.getOperationTrace(traceId);
+
+  if (!trace) {
+    throw new HttpRouteError(404, `Operation trace ${traceId} not found`);
+  }
+
+  return { status: 200, body: trace };
+}
+
+export async function handleIndexStatus(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = request.query.get('project') ?? undefined;
+
+  return {
+    status: 200,
+    body: {
+      project: project ?? null,
+      state: store.getSemanticIndexState(),
+      progress: store.getSemanticIndexProgress({ project }),
+      health: store.getVisualizationHealth({ project }),
+    },
+  };
+}
+
+export async function handleRebuildIndex(
+  store: Store,
+  request: HttpRouteRequest,
+  context: HttpRouteContext,
+): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  const project = optionalString(body?.project, 'project');
+  const reason = optionalString(body?.reason, 'reason') ?? 'http-manual';
+  const processLimit = body?.process_limit === undefined
+    ? 0
+    : parseRequiredInteger(String(body.process_limit), 'process_limit', 0);
+  const rebuild = store.enqueueManualSemanticRebuild({
+    scope: project ?? 'all',
+    reason,
+  });
+  const processed = processLimit > 0
+    ? await store.processSemanticJobs({
+        limit: processLimit,
+        embeddingProvider: context.embeddingProvider ?? null,
+      })
+    : 0;
+
+  return {
+    status: 202,
+    body: {
+      project: project ?? null,
+      queued: true,
+      dedupe_key: rebuild.dedupeKey,
+      processed,
+      state: store.getSemanticIndexState(),
+      progress: store.getSemanticIndexProgress({ project }),
+      health: store.getVisualizationHealth({ project }),
+    },
+  };
+}
+
+export async function handleRebuildGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.rebuildObservationFacts({
+      project: optionalString(body?.project, 'project'),
+    }),
   };
 }
 

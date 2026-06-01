@@ -70,6 +70,150 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/version': {
+        get: {
+          summary: 'Get package version',
+          responses: {
+            '200': {
+              description: 'Version payload',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { version: { type: 'string' } },
+                    required: ['version'],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/operations': {
+        get: {
+          summary: 'List supported HTTP, MCP, and CLI-equivalent operations',
+          responses: {
+            '200': {
+              description: 'Operation catalog',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/OperationCatalogResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/operation-traces': {
+        get: {
+          summary: 'List sanitized operation traces',
+          parameters: [
+            { name: 'origin', in: 'query', schema: { type: 'string', enum: ['mcp', 'http', 'cli', 'system'] } },
+            { name: 'target', in: 'query', schema: { type: 'string' } },
+            { name: 'status', in: 'query', schema: { type: 'string', enum: ['ok', 'error'] } },
+            { name: 'project', in: 'query', schema: { type: 'string' } },
+            { name: 'session_id', in: 'query', schema: { type: 'string' } },
+            { name: 'since', in: 'query', schema: { type: 'string' } },
+            { name: 'until', in: 'query', schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Trace list',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/OperationTraceListResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/operation-traces/{trace_id}': {
+        get: {
+          summary: 'Get one sanitized operation trace',
+          parameters: [{ name: 'trace_id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': {
+              description: 'Trace detail',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/OperationTrace' },
+                },
+              },
+            },
+            '404': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/index/status': {
+        get: {
+          summary: 'Get semantic index and background queue status',
+          parameters: [{ name: 'project', in: 'query', schema: { type: 'string' } }],
+          responses: {
+            '200': {
+              description: 'Index status',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/IndexStatusResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/index/rebuild': {
+        post: {
+          summary: 'Queue semantic index rebuild work',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RebuildIndexRequest' },
+              },
+            },
+          },
+          responses: {
+            '202': {
+              description: 'Index rebuild queued',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/RebuildIndexResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/graph/rebuild': {
+        post: {
+          summary: 'Rebuild graph-lite facts',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { project: { type: 'string' } },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Graph rebuild result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/RebuildGraphResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -886,6 +1030,119 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
           required: ['error'],
         },
+        OperationCatalogEntry: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            origin: { type: 'string', enum: ['http', 'mcp', 'cli'] },
+            label: { type: 'string' },
+            kind: { type: 'string', enum: ['read', 'write', 'admin', 'sync', 'indexing'] },
+            method: { type: 'string' },
+            path: { type: 'string' },
+            target: { type: 'string' },
+            description: { type: 'string' },
+          },
+          required: ['id', 'origin', 'label', 'kind', 'description'],
+        },
+        OperationCatalogResponse: {
+          type: 'object',
+          properties: {
+            operations: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/OperationCatalogEntry' },
+            },
+          },
+          required: ['operations'],
+        },
+        OperationTrace: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            trace_id: { type: 'string' },
+            origin: { type: 'string', enum: ['mcp', 'http', 'cli', 'system'] },
+            target: { type: 'string' },
+            status: { type: 'string', enum: ['ok', 'error'] },
+            project: { type: 'string', nullable: true },
+            session_id: { type: 'string', nullable: true },
+            started_at: { type: 'string' },
+            finished_at: { type: 'string' },
+            duration_ms: { type: 'integer' },
+            request_json: { type: 'string' },
+            response_json: { type: 'string', nullable: true },
+            error: { type: 'string', nullable: true },
+            request_truncated: { type: 'boolean' },
+            response_truncated: { type: 'boolean' },
+            created_at: { type: 'string' },
+          },
+          required: [
+            'id', 'trace_id', 'origin', 'target', 'status', 'project', 'session_id',
+            'started_at', 'finished_at', 'duration_ms', 'request_json', 'response_json',
+            'error', 'request_truncated', 'response_truncated', 'created_at',
+          ],
+        },
+        OperationTraceListResponse: {
+          type: 'object',
+          properties: {
+            traces: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/OperationTrace' },
+            },
+            total: { type: 'integer' },
+          },
+          required: ['traces', 'total'],
+        },
+        SemanticIndexProgress: {
+          type: 'object',
+          properties: {
+            lanes: { type: 'array', items: { type: 'object' } },
+            jobs: { type: 'array', items: { type: 'object' } },
+            totals: { type: 'object' },
+            coverage: { type: 'object' },
+            recentErrors: { type: 'array', items: { type: 'object' } },
+          },
+          required: ['lanes', 'jobs', 'totals', 'coverage', 'recentErrors'],
+        },
+        IndexStatusResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            state: { type: 'object' },
+            progress: { $ref: '#/components/schemas/SemanticIndexProgress' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+          },
+          required: ['project', 'state', 'progress', 'health'],
+        },
+        RebuildIndexRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            reason: { type: 'string' },
+            process_limit: { type: 'integer', minimum: 0 },
+          },
+        },
+        RebuildIndexResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            queued: { type: 'boolean' },
+            dedupe_key: { type: 'string' },
+            processed: { type: 'integer' },
+            state: { type: 'object' },
+            progress: { $ref: '#/components/schemas/SemanticIndexProgress' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+          },
+          required: ['project', 'queued', 'dedupe_key', 'processed', 'state', 'progress', 'health'],
+        },
+        RebuildGraphResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            observations_scanned: { type: 'integer' },
+            facts_deleted: { type: 'integer' },
+            facts_created: { type: 'integer' },
+          },
+          required: ['project', 'observations_scanned', 'facts_deleted', 'facts_created'],
+        },
         DeleteProjectRequest: {
           type: 'object',
           properties: {
@@ -1346,8 +1603,27 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
                     running: { type: 'integer' },
                     done: { type: 'integer' },
                     failed: { type: 'integer' },
+                    oldest_pending_at: { type: 'string', nullable: true },
+                    queue_lag_ms: { type: 'integer', nullable: true },
+                    by_kind: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          kind: { type: 'string' },
+                          total: { type: 'integer' },
+                          pending: { type: 'integer' },
+                          running: { type: 'integer' },
+                          done: { type: 'integer' },
+                          failed: { type: 'integer' },
+                          oldest_pending_at: { type: 'string', nullable: true },
+                          oldest_pending_age_ms: { type: 'integer', nullable: true },
+                        },
+                        required: ['kind', 'total', 'pending', 'running', 'done', 'failed', 'oldest_pending_at', 'oldest_pending_age_ms'],
+                      },
+                    },
                   },
-                  required: ['total', 'pending', 'running', 'done', 'failed'],
+                  required: ['total', 'pending', 'running', 'done', 'failed', 'oldest_pending_at', 'queue_lag_ms', 'by_kind'],
                 },
                 coverage: {
                   type: 'object',

@@ -79,6 +79,10 @@ describe('viz routes', () => {
     const healthBody = await healthResponse.json();
     expect(['ready', 'pending', 'degraded', 'rebuilding']).toContain(healthBody.semantic_state);
     expect(healthBody.semantic.jobs.pending).toBeGreaterThan(0);
+    expect(healthBody.semantic.jobs.queue_lag_ms).toEqual(expect.any(Number));
+    expect(healthBody.semantic.jobs.by_kind.some((job: { kind: string; pending: number }) => (
+      job.kind === 'chunk' && job.pending > 0
+    ))).toBe(true);
     expect(healthBody.semantic.coverage.observations).toBe(2);
     expect(Array.isArray(healthBody.semantic.recent_errors)).toBe(true);
 
@@ -205,5 +209,39 @@ describe('viz routes', () => {
     expect(recallBody.lane_states['sentence-vector'].reason).toMatch(/^semantic-/);
     expect(recallBody.lane_states['chunk-vector'].reason).toMatch(/^semantic-/);
     expect(recallBody.lane_states['fact-kg'].reason).toBe('kg-no-match');
+  });
+
+  it('exposes background indexing failures through HTTP index status', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Index failure telemetry',
+      content: 'provider outage should remain visible',
+      project: 'idx-http-failure',
+      session_id: 'idx-session',
+    });
+    store.getDb().prepare(
+      `UPDATE semantic_jobs
+       SET state = 'failed',
+           attempt_count = 3,
+           last_error = 'embedding provider offline',
+           updated_at = datetime('now')
+       WHERE job_key = ?`
+    ).run(`chunk:${saved.observation.id}`);
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const statusResponse = await fetch(`http://127.0.0.1:${port}/index/status?project=idx-http-failure`);
+    expect(statusResponse.status).toBe(200);
+    const statusBody = await statusResponse.json();
+    expect(statusBody.health.semantic.recent_errors.some((error: { last_error: string | null; job_key: string }) => (
+      error.job_key === `chunk:${saved.observation.id}`
+      && error.last_error === 'embedding provider offline'
+    ))).toBe(true);
+    expect(statusBody.progress.recentErrors.some((error: { lastError: string | null; jobKey: string }) => (
+      error.jobKey === `chunk:${saved.observation.id}`
+      && error.lastError === 'embedding provider offline'
+    ))).toBe(true);
   });
 });

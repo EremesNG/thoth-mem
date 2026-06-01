@@ -20,6 +20,7 @@ import {
   handleGetObservation,
   handleHealth,
   handleImport,
+  handleIndexStatus,
   handleMigrateProject,
   handleOpenApi,
   handleObservatoryContext,
@@ -29,9 +30,14 @@ import {
   handleObservatoryPivot,
   handleObservatoryRecall,
   handleObservatoryTimeline,
+  handleOperationTraceDetail,
+  handleOperationTraces,
+  handleOperationsCatalog,
   handleProjectGraph,
   handleProjectSummary,
   handleProjectTopicKeys,
+  handleRebuildGraph,
+  handleRebuildIndex,
   handleSavePrompt,
   handleSearchObservations,
   handleSessionSummary,
@@ -42,6 +48,7 @@ import {
   handleSyncImport,
   handleTimeline,
   handleUpdateObservation,
+  handleVersion,
   handleVizExpand,
   handleVizFilters,
   handleVizHealth,
@@ -80,8 +87,15 @@ export interface HttpBridge {
 
 const ROUTES: RouteDefinition[] = [
   { method: 'GET', pattern: '/health', handler: async (_store, _request, _port) => handleHealth() },
+  { method: 'GET', pattern: '/version', handler: handleVersion },
   { method: 'GET', pattern: '/openapi.json', handler: handleOpenApi },
   { method: 'GET', pattern: '/docs', handler: async (_store, _request, _port) => handleDocs() },
+  { method: 'GET', pattern: '/operations', handler: handleOperationsCatalog },
+  { method: 'GET', pattern: '/operation-traces', handler: handleOperationTraces },
+  { method: 'GET', pattern: '/operation-traces/:trace_id', handler: handleOperationTraceDetail },
+  { method: 'GET', pattern: '/index/status', handler: handleIndexStatus },
+  { method: 'POST', pattern: '/index/rebuild', handler: handleRebuildIndex },
+  { method: 'POST', pattern: '/graph/rebuild', handler: handleRebuildGraph },
   { method: 'POST', pattern: '/observations', handler: handleCreateObservation },
   { method: 'GET', pattern: '/observations/search', handler: handleSearchObservations },
   { method: 'GET', pattern: '/observations/:id', handler: handleGetObservation },
@@ -182,6 +196,61 @@ function sendError(response: ServerResponse, statusCode: number, message: string
   sendJson(response, statusCode, { error: message });
 }
 
+function getStringProperty(source: Record<string, unknown> | undefined, key: string): string | null {
+  const value = source?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function getQueryValue(query: URLSearchParams, key: string): string | null {
+  const value = query.get(key);
+  return value && value.trim().length > 0 ? value : null;
+}
+
+function recordHttpTrace(input: {
+  body?: Record<string, unknown>;
+  error?: string;
+  method: string;
+  params?: Record<string, string>;
+  query: URLSearchParams;
+  responseBody?: unknown;
+  routeTarget: string;
+  startedAt: string;
+  startedAtMs: number;
+  statusCode: number;
+  store: Store;
+  url: URL;
+}): void {
+  const finishedAtMs = Date.now();
+  const project = getStringProperty(input.body, 'project') ?? getQueryValue(input.query, 'project');
+  const sessionId = getStringProperty(input.body, 'session_id') ?? getQueryValue(input.query, 'session_id');
+
+  try {
+    input.store.saveOperationTrace({
+      origin: 'http',
+      target: input.routeTarget,
+      status: input.statusCode >= 400 ? 'error' : 'ok',
+      project,
+      session_id: sessionId,
+      started_at: input.startedAt,
+      finished_at: new Date(finishedAtMs).toISOString(),
+      duration_ms: finishedAtMs - input.startedAtMs,
+      request: {
+        method: input.method,
+        path: input.url.pathname,
+        query: Object.fromEntries(input.query.entries()),
+        params: input.params ?? {},
+        body: input.body ?? null,
+      },
+      response: input.responseBody,
+      error: input.error,
+    });
+  } catch (error) {
+    process.stderr.write(
+      `[thoth-http] Failed to record operation trace (${input.routeTarget}): ${error instanceof Error ? error.message : String(error)}\n`
+    );
+  }
+}
+
 function getDefaultDashboardDistDir(): string {
   const compiledPackagePath = resolve(moduleDirectory, 'dashboard');
 
@@ -233,11 +302,11 @@ function resolveDashboardFile(dashboardDistDir: string, pathname: string): { err
 }
 
 function isDashboardFallbackPath(pathname: string): boolean {
-  if (pathname === '/' || pathname === '/search' || pathname === '/topic-keys' || pathname === '/graph' || pathname === '/observatory') {
+  if (pathname === '/' || pathname === '/console/operations' || pathname === '/console/traces' || pathname === '/console/indexing' || pathname === '/console/graph') {
     return true;
   }
 
-  return /^\/projects\/[^/]+$/.test(pathname) || /^\/memory\/[^/]+$/.test(pathname);
+  return false;
 }
 
 function getDashboardContentType(filePath: string): string {
@@ -368,6 +437,11 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
       const method = request.method ?? 'GET';
       const rawPathname = (request.url ?? '/').split('?')[0] || '/';
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      const startedAtMs = Date.now();
+      const startedAt = new Date(startedAtMs).toISOString();
+      let routeTarget = `${method} ${url.pathname}`;
+      let body: Record<string, unknown> | undefined;
+      let params: Record<string, string> = {};
 
       try {
         const route = ROUTES.find((candidate) => candidate.method === method && matchRoute(url.pathname, candidate.pattern) !== null);
@@ -377,12 +451,24 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
             return;
           }
 
+          recordHttpTrace({
+            method,
+            query: url.searchParams,
+            responseBody: { error: 'Not Found' },
+            routeTarget,
+            startedAt,
+            startedAtMs,
+            statusCode: 404,
+            store,
+            url,
+          });
           sendError(response, 404, 'Not Found');
           return;
         }
 
-        const params = matchRoute(url.pathname, route.pattern) ?? {};
-        const body = method === 'POST' || method === 'PATCH' || method === 'DELETE'
+        routeTarget = `${method} ${route.pattern}`;
+        params = matchRoute(url.pathname, route.pattern) ?? {};
+        body = method === 'POST' || method === 'PATCH' || method === 'DELETE'
           ? await parseBody<Record<string, unknown>>(request)
           : undefined;
         const routeContext: HttpRouteContext = {
@@ -393,18 +479,74 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
         const result = await route.handler(store, { body, params, query: url.searchParams }, routeContext);
 
         if (result.text !== undefined) {
+          recordHttpTrace({
+            body,
+            method,
+            params,
+            query: url.searchParams,
+            responseBody: result.text,
+            routeTarget,
+            startedAt,
+            startedAtMs,
+            statusCode: result.status,
+            store,
+            url,
+          });
           sendText(response, result.status, result.contentType ?? 'text/plain; charset=utf-8', result.text);
           return;
         }
 
+        recordHttpTrace({
+          body,
+          method,
+          params,
+          query: url.searchParams,
+          responseBody: result.body ?? null,
+          routeTarget,
+          startedAt,
+          startedAtMs,
+          statusCode: result.status,
+          store,
+          url,
+        });
         sendJson(response, result.status, result.body ?? null);
       } catch (error) {
         if (error instanceof HttpRouteError) {
-          sendJson(response, error.status, error.body ?? { error: error.message });
+          const errorBody = error.body ?? { error: error.message };
+          recordHttpTrace({
+            body,
+            error: error.message,
+            method,
+            params,
+            query: url.searchParams,
+            responseBody: errorBody,
+            routeTarget,
+            startedAt,
+            startedAtMs,
+            statusCode: error.status,
+            store,
+            url,
+          });
+          sendJson(response, error.status, errorBody);
           return;
         }
 
-        sendError(response, 500, error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        recordHttpTrace({
+          body,
+          error: message,
+          method,
+          params,
+          query: url.searchParams,
+          responseBody: { error: message },
+          routeTarget,
+          startedAt,
+          startedAtMs,
+          statusCode: 500,
+          store,
+          url,
+        });
+        sendError(response, 500, message);
       }
     });
   }

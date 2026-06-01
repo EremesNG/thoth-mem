@@ -347,6 +347,113 @@ describe('createHttpBridge', () => {
     expect(docsHtml).toContain("url: '/openapi.json'");
   });
 
+  it('serves operation traces, operation catalog, rebuild controls, and version', async () => {
+    const bridge = await startBridge();
+
+    const created = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP operation trace',
+          content: '<private>secret value</private> **What**: Trace HTTP operations\n**Why**: Dashboard needs live evidence',
+          session_id: 'ops-session',
+          project: 'ops-project',
+          type: 'architecture',
+        }),
+      },
+      bridge.port,
+    );
+    expect(created.response.status).toBe(201);
+
+    const traceList = await fetchJson(
+      `/operation-traces?origin=http&target=${encodeURIComponent('POST /observations')}&limit=10`,
+      undefined,
+      bridge.port,
+    );
+    expect(traceList.response.status).toBe(200);
+    expect(traceList.body.total).toBe(1);
+    expect(traceList.body.traces[0]).toMatchObject({
+      origin: 'http',
+      target: 'POST /observations',
+      status: 'ok',
+      project: 'ops-project',
+      session_id: 'ops-session',
+    });
+    expect(traceList.body.traces[0].request_json).toContain('Trace HTTP operations');
+    expect(traceList.body.traces[0].request_json).not.toContain('secret value');
+    expect(traceList.body.traces[0].response_json).toContain(String(created.body.id));
+
+    const traceDetail = await fetchJson(`/operation-traces/${traceList.body.traces[0].trace_id}`, undefined, bridge.port);
+    expect(traceDetail.response.status).toBe(200);
+    expect(traceDetail.body.trace_id).toBe(traceList.body.traces[0].trace_id);
+    expect(traceDetail.body.request_truncated).toBe(false);
+
+    const operations = await fetchJson('/operations', undefined, bridge.port);
+    expect(operations.response.status).toBe(200);
+    expect(operations.body.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'create-observation', origin: 'http', method: 'POST', path: '/observations' }),
+      expect.objectContaining({ id: 'mcp-mem-recall', origin: 'mcp', target: 'mem_recall' }),
+      expect.objectContaining({ id: 'rebuild-index', origin: 'http', method: 'POST', path: '/index/rebuild' }),
+      expect.objectContaining({ id: 'rebuild-graph', origin: 'http', method: 'POST', path: '/graph/rebuild' }),
+    ]));
+
+    const version = await fetchJson('/version', undefined, bridge.port);
+    expect(version.response.status).toBe(200);
+    expect(version.body).toEqual({ version: VERSION });
+
+    const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+    expect(openapi.response.status).toBe(200);
+    expect(openapi.body.paths['/operation-traces']).toBeDefined();
+    expect(openapi.body.paths['/operation-traces/{trace_id}']).toBeDefined();
+    expect(openapi.body.paths['/operations']).toBeDefined();
+    expect(openapi.body.paths['/version']).toBeDefined();
+    expect(openapi.body.paths['/index/status']).toBeDefined();
+    expect(openapi.body.paths['/index/rebuild']).toBeDefined();
+    expect(openapi.body.paths['/graph/rebuild']).toBeDefined();
+    expect(openapi.body.components.schemas.OperationTrace).toBeDefined();
+
+    const indexRebuild = await fetchJson(
+      '/index/rebuild',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project', reason: 'http-test', process_limit: 0 }),
+      },
+      bridge.port,
+    );
+    expect(indexRebuild.response.status).toBe(202);
+    expect(indexRebuild.body).toMatchObject({
+      project: 'ops-project',
+      queued: true,
+      processed: 0,
+    });
+    expect(indexRebuild.body.dedupe_key).toContain('http-test:ops-project');
+
+    const indexStatus = await fetchJson('/index/status?project=ops-project', undefined, bridge.port);
+    expect(indexStatus.response.status).toBe(200);
+    expect(indexStatus.body.project).toBe('ops-project');
+    expect(indexStatus.body.health.semantic.coverage.observations).toBe(1);
+    expect(indexStatus.body.progress.totals.pending).toBeGreaterThan(0);
+
+    const graphRebuild = await fetchJson(
+      '/graph/rebuild',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project' }),
+      },
+      bridge.port,
+    );
+    expect(graphRebuild.response.status).toBe(200);
+    expect(graphRebuild.body).toMatchObject({
+      project: 'ops-project',
+      observations_scanned: 1,
+    });
+    expect(graphRebuild.body.facts_created).toBeGreaterThan(0);
+  });
+
   it('supports observation CRUD, search, and paginated retrieval', async () => {
     const bridge = await startBridge();
 
@@ -621,18 +728,12 @@ describe('createHttpBridge', () => {
     expect(assetResponse.headers.get('content-type')).toContain('text/javascript');
     expect(await assetResponse.text()).toContain('dashboard');
 
-    const projectDeepLink = await fetch(getUrl(bridge.port, '/projects/http-project'));
-    expect(projectDeepLink.status).toBe(200);
-    expect(projectDeepLink.headers.get('content-type')).toContain('text/html');
-
-    const observationDeepLink = await fetch(getUrl(bridge.port, '/memory/123'));
-    expect(observationDeepLink.status).toBe(200);
-    expect(observationDeepLink.headers.get('content-type')).toContain('text/html');
-
-    const observatoryDeepLink = await fetch(getUrl(bridge.port, '/observatory'));
-    expect(observatoryDeepLink.status).toBe(200);
-    expect(observatoryDeepLink.headers.get('content-type')).toContain('text/html');
-    expect(await observatoryDeepLink.text()).toContain('Thoth Dashboard');
+    for (const path of ['/console/operations', '/console/traces', '/console/indexing', '/console/graph']) {
+      const deepLink = await fetch(getUrl(bridge.port, path));
+      expect(deepLink.status).toBe(200);
+      expect(deepLink.headers.get('content-type')).toContain('text/html');
+      expect(await deepLink.text()).toContain('Thoth Dashboard');
+    }
 
     const docsResponse = await fetch(getUrl(bridge.port, '/docs'));
     expect(docsResponse.status).toBe(200);
@@ -1143,6 +1244,17 @@ describe('createHttpBridge', () => {
     const badJsonBody = await badJsonResponse.json();
     expect(badJsonResponse.status).toBe(400);
     expect(badJsonBody).toEqual({ error: 'Invalid JSON body' });
+
+    const badJsonTrace = await fetchJson(
+      `/operation-traces?origin=http&target=${encodeURIComponent('POST /observations')}&status=error&limit=5`,
+      undefined,
+      bridge.port,
+    );
+    expect(badJsonTrace.response.status).toBe(200);
+    expect(badJsonTrace.body.traces.some((trace: { error: string | null; response_json: string | null }) => (
+      trace.error === 'Invalid JSON body'
+      && trace.response_json?.includes('Invalid JSON body')
+    ))).toBe(true);
 
     const missingFields = await fetchJson(
       '/observations',
