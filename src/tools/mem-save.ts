@@ -115,7 +115,12 @@ Use topic_key for evolving topics that should update in-place.`,
         if (kind === 'prompt') {
           const resolvedSessionId = session_id ?? `manual-save-${project || 'unknown'}`;
           const prompt = store.savePrompt(resolvedSessionId, content, project);
-          return { content: [{ type: "text" as const, text: `Prompt saved (ID: ${prompt.id})` }] };
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Prompt saved (prompt ID: ${prompt.id}). Retrieve with mem_get(kind="prompt", id=${prompt.id}).`,
+            }],
+          };
         }
 
         if (kind === 'session_summary') {

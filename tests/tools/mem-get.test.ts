@@ -34,6 +34,37 @@ describe('mem_get tool', () => {
     expect(result?.content[0].text).toContain('complete body');
   });
 
+  it('retrieves prompts by id with kind=prompt', async () => {
+    const prompt = store.savePrompt('get-session', 'prompt body', 'get-project');
+
+    const result = await toolHandler?.({ id: prompt.id, kind: 'prompt' });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result?.content[0].text).toContain(`Prompt (ID: ${prompt.id})`);
+    expect(result?.content[0].text).toContain('prompt body');
+    expect(result?.content[0].text).toContain('get-session');
+  });
+
+  it('paginates prompt content with offset and max_length', async () => {
+    const prompt = store.savePrompt('get-session', 'prompt body that is longer than the page', 'get-project');
+
+    const result = await toolHandler?.({ id: prompt.id, kind: 'prompt', offset: 7, max_length: 6 });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result?.content[0].text).toContain('**Content pagination:** Showing characters 7-13 of 40');
+    expect(result?.content[0].text).toContain('Call mem_get(kind="prompt", id=');
+    expect(result?.content[0].text).toContain('body t');
+  });
+
+  it('rejects timeline requests for prompts', async () => {
+    const prompt = store.savePrompt('get-session', 'prompt body', 'get-project');
+
+    const result = await toolHandler?.({ id: prompt.id, kind: 'prompt', include_timeline: true });
+
+    expect(result?.isError).toBe(true);
+    expect(result?.content[0].text).toContain('include_timeline=true is only supported for kind="observation"');
+  });
+
   it('can include surrounding timeline', async () => {
     store.startSession('get-session', 'get-project');
     store.saveObservation({ title: 'Before', content: 'before body', session_id: 'get-session', project: 'get-project' });

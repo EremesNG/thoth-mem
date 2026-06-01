@@ -4,6 +4,15 @@ import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
 import { formatObservationMarkdown } from "../utils/content.js";
 
+function formatPromptMarkdown(prompt: { id: number; project: string | null; session_id: string; content: string; created_at: string }): string {
+  return [
+    `### Prompt (ID: ${prompt.id})`,
+    `**Project:** ${prompt.project || 'none'} | **Session:** ${prompt.session_id} | **Created:** ${prompt.created_at}`,
+    '',
+    prompt.content,
+  ].join('\n');
+}
+
 function formatPaginatedObservation(
   store: Store,
   id: number,
@@ -34,6 +43,36 @@ function formatPaginatedObservation(
     '',
     `**Content pagination:** Showing characters ${offset}-${returnedTo} of ${totalLength}`,
     hasMore ? `Call mem_get with id=${id} and offset=${returnedTo} to get more.` : null,
+    '',
+    slice,
+  ].filter((line): line is string => line !== null);
+
+  return { text: lines.join('\n') };
+}
+
+function formatPaginatedPrompt(store: Store, id: number, offset: number, maxLength: number): { isError?: boolean; text: string } {
+  const prompt = store.getPrompt(id);
+
+  if (!prompt) {
+    return { isError: true, text: `Prompt with ID ${id} not found.` };
+  }
+
+  const fullContent = prompt.content;
+  const totalLength = fullContent.length;
+
+  if (totalLength <= maxLength && offset === 0) {
+    return { text: formatPromptMarkdown(prompt) };
+  }
+
+  const slice = fullContent.substring(offset, offset + maxLength);
+  const returnedTo = offset + slice.length;
+  const hasMore = returnedTo < totalLength;
+  const lines = [
+    `### Prompt (ID: ${prompt.id})`,
+    `**Project:** ${prompt.project || 'none'} | **Session:** ${prompt.session_id} | **Created:** ${prompt.created_at}`,
+    '',
+    `**Content pagination:** Showing characters ${offset}-${returnedTo} of ${totalLength}`,
+    hasMore ? `Call mem_get(kind="prompt", id=${id}, offset=${returnedTo}) to get more.` : null,
     '',
     slice,
   ].filter((line): line is string => line !== null);
@@ -81,20 +120,30 @@ export function registerMemGet(server: McpServer, store: Store): void {
     server,
     store,
     "mem_get",
-    "Fetch a saved memory by ID. Use include_timeline=true when the surrounding session chronology matters.",
+    "Fetch a saved observation or prompt by ID. Use include_timeline=true when the surrounding observation chronology matters.",
     {
-      id: z.number().describe("Observation ID to retrieve"),
+      id: z.number().describe("Record ID to retrieve, interpreted according to kind"),
+      kind: z.enum(['observation', 'prompt'] as const).optional().describe("Memory kind to retrieve (defaults to observation)"),
       offset: z.number().min(0).optional().describe("Character offset for large content (default: 0)"),
       max_length: z.number().min(100).optional().describe("Max characters to return (default: 50000)"),
       include_timeline: z.boolean().optional().describe("Include surrounding observations in the same session"),
       before: z.number().min(0).max(20).optional().describe("Timeline observations before the focus item (default: 5)"),
       after: z.number().min(0).max(20).optional().describe("Timeline observations after the focus item (default: 5)"),
     },
-    async ({ id, offset = 0, max_length = 50000, include_timeline, before = 5, after = 5 }) => {
+    async ({ id, kind = 'observation', offset = 0, max_length = 50000, include_timeline, before = 5, after = 5 }) => {
       try {
-        const result = include_timeline
-          ? formatTimeline(store, id, before, after)
-          : formatPaginatedObservation(store, id, offset, max_length);
+        if (kind === 'prompt' && include_timeline) {
+          return {
+            isError: true,
+            content: [{ type: "text" as const, text: "include_timeline=true is only supported for kind=\"observation\"." }],
+          };
+        }
+
+        const result = kind === 'prompt'
+          ? formatPaginatedPrompt(store, id, offset, max_length)
+          : include_timeline
+            ? formatTimeline(store, id, before, after)
+            : formatPaginatedObservation(store, id, offset, max_length);
 
         return {
           isError: result.isError,

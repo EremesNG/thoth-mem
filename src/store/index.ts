@@ -1453,6 +1453,11 @@ export class Store {
     return this.mapObservationRow(row);
   }
 
+  getPrompt(id: number): UserPrompt | null {
+    const row = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(id) as UserPrompt | undefined;
+    return row ?? null;
+  }
+
   deleteObservation(id: number, hardDelete: boolean = false): boolean {
     if (hardDelete) {
       const existing = this.db.prepare(

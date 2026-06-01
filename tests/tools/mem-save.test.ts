@@ -96,7 +96,8 @@ describe('mem_save tool (via Store)', () => {
     });
 
     expect(result?.isError).not.toBe(true);
-    expect(result.content[0].text).toContain('Prompt saved');
+    expect(result.content[0].text).toContain('Prompt saved (prompt ID:');
+    expect(result.content[0].text).toContain('mem_get(kind="prompt"');
   });
 
   it('handler captures passive learnings through kind=passive_learnings', async () => {
