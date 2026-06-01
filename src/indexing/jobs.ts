@@ -20,6 +20,13 @@ interface SemanticJobRuntime {
   kgLlmExtractor?: KgLlmExtractor | null;
 }
 
+type JobResult = 'done' | 'deferred';
+interface LaneStateUpdate {
+  pending: number;
+  stale: number;
+  degraded: number;
+}
+
 export async function processNextSemanticJob(
   store: Store,
   input?: SemanticJobRuntime
@@ -47,14 +54,30 @@ export async function processNextSemanticJob(
 
   try {
     let warning: string | null = null;
+    let result: JobResult = 'done';
     if (job.kind === 'chunk' && job.observation_id !== null) {
-      await processChunkJob(store, job.observation_id, input?.embeddingProvider ?? null);
+      await processChunkJob(store, job.observation_id, input?.embeddingProvider ?? null, job.id);
     } else if (job.kind === 'sentence' && job.observation_id !== null) {
-      await processSentenceJob(store, job.observation_id, input?.embeddingProvider ?? null);
+      result = await processSentenceJob(store, job.observation_id, input?.embeddingProvider ?? null, job.id);
     } else if (job.kind === 'rebuild_semantic') {
       processRebuildJob(store, job.job_key);
     } else if (job.kind === 'extract_kg' && job.observation_id !== null) {
       warning = await processKgJob(store, job.observation_id, input?.kgLlmExtractor ?? null);
+    }
+
+    if (result === 'deferred') {
+      db.prepare(
+        `UPDATE semantic_jobs
+         SET state = 'pending',
+             attempt_count = CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END,
+             available_at = datetime('now', '+1 second'),
+             started_at = NULL,
+             finished_at = NULL,
+             updated_at = datetime('now'),
+             last_error = NULL
+         WHERE id = ?`
+      ).run(job.id);
+      return { processed: true, kind: job.kind };
     }
 
     db.prepare(
@@ -96,7 +119,8 @@ export async function processSemanticJobs(
 async function processChunkJob(
   store: Store,
   observationId: number,
-  embeddingProvider: EmbeddingProviderAdapter | null
+  embeddingProvider: EmbeddingProviderAdapter | null,
+  currentJobId: number
 ): Promise<void> {
   const db = store.getDb();
   const obs = db.prepare('SELECT id, content, project, topic_key FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
@@ -123,20 +147,29 @@ async function processChunkJob(
     upsertChunk.run(obs.id, chunk.chunkKey, chunk.chunkIndex, chunk.content, obs.project, obs.topic_key);
   }
 
-  await embedLane(store, 'chunk', chunks.map((c) => ({ key: c.chunkKey, content: c.content, observationId: obs.id })), embeddingProvider);
+  await embedLane(store, 'chunk', chunks.map((c) => ({ key: c.chunkKey, content: c.content, observationId: obs.id })), embeddingProvider, currentJobId);
 }
 
 async function processSentenceJob(
   store: Store,
   observationId: number,
-  embeddingProvider: EmbeddingProviderAdapter | null
-): Promise<void> {
+  embeddingProvider: EmbeddingProviderAdapter | null,
+  currentJobId: number
+): Promise<JobResult> {
   const db = store.getDb();
   const chunks = db.prepare(
     'SELECT chunk_key, content FROM semantic_chunks WHERE observation_id = ? ORDER BY chunk_index ASC'
   ).all(observationId) as Array<{ chunk_key: string; content: string }>;
   if (chunks.length === 0) {
-    return;
+    const observation = db.prepare(
+      'SELECT 1 AS ok FROM observations WHERE id = ? AND deleted_at IS NULL'
+    ).get(observationId) as { ok: number } | undefined;
+    const pendingChunk = observation
+      ? db.prepare(
+          "SELECT 1 AS ok FROM semantic_jobs WHERE job_key = ? AND kind = 'chunk' AND state IN ('pending','running')"
+        ).get(`chunk:${observationId}`) as { ok: number } | undefined
+      : undefined;
+    return pendingChunk ? 'deferred' : 'done';
   }
 
   const upsertSentence = db.prepare(
@@ -158,14 +191,16 @@ async function processSentenceJob(
       items.push({ key: sentence.sentenceKey, content: sentence.content, observationId });
     }
   }
-  await embedLane(store, 'sentence', items, embeddingProvider);
+  await embedLane(store, 'sentence', items, embeddingProvider, currentJobId);
+  return 'done';
 }
 
 async function embedLane(
   store: Store,
   lane: 'chunk' | 'sentence',
   items: Array<{ key: string; content: string; observationId: number }>,
-  embeddingProvider: EmbeddingProviderAdapter | null
+  embeddingProvider: EmbeddingProviderAdapter | null,
+  currentJobId: number
 ): Promise<void> {
   const db = store.getDb();
   if (items.length === 0) {
@@ -203,9 +238,39 @@ async function embedLane(
     upsertRowid.run(lane, item.key, rowid, item.observationId, item.key, store.config.embedding?.configHash ?? null);
   }
 
+  const laneState = resolveLaneStateAfterEmbedding(db, lane, currentJobId);
+
   db.prepare(
-    "UPDATE semantic_index_state SET pending = 0, stale = 0, degraded = 0, last_ready_at = datetime('now'), updated_at = datetime('now') WHERE lane = ?"
-  ).run(lane);
+    `UPDATE semantic_index_state
+     SET pending = ?,
+         stale = ?,
+         degraded = ?,
+         last_ready_at = CASE WHEN ? = 0 AND ? = 0 THEN datetime('now') ELSE last_ready_at END,
+         updated_at = datetime('now')
+     WHERE lane = ?`
+  ).run(laneState.pending, laneState.stale, laneState.degraded, laneState.pending, laneState.degraded, lane);
+}
+
+function resolveLaneStateAfterEmbedding(
+  db: ReturnType<Store['getDb']>,
+  lane: 'chunk' | 'sentence',
+  currentJobId: number
+): LaneStateUpdate {
+  const queued = db.prepare(
+    "SELECT COUNT(*) AS count FROM semantic_jobs WHERE kind = ? AND state IN ('pending','running') AND id != ?"
+  ).get(lane, currentJobId) as { count: number };
+  if (queued.count > 0) {
+    return { pending: 1, stale: 1, degraded: 0 };
+  }
+
+  const failed = db.prepare(
+    "SELECT COUNT(*) AS count FROM semantic_jobs WHERE kind = ? AND state = 'failed'"
+  ).get(lane) as { count: number };
+  if (failed.count > 0) {
+    return { pending: 0, stale: 1, degraded: 1 };
+  }
+
+  return { pending: 0, stale: 0, degraded: 0 };
 }
 
 function processRebuildJob(store: Store, jobKey: string): void {

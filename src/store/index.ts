@@ -261,6 +261,7 @@ export class Store {
       degradedReason: sqliteVec.degradedReason,
     });
     this.enqueueRebuildOnConfigMismatch();
+    this.enqueueRebuildOnMissingSemanticCoverage();
   }
 
   getSemanticIndexState(): {
@@ -554,6 +555,62 @@ export class Store {
     this.db.prepare(
       "UPDATE semantic_index_state SET embedding_config_hash = ?, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
     ).run(hash);
+  }
+
+  private enqueueRebuildOnMissingSemanticCoverage(): void {
+    const activeObservations = (this.db.prepare(
+      'SELECT COUNT(*) AS count FROM observations WHERE deleted_at IS NULL'
+    ).get() as { count: number }).count;
+    if (activeObservations === 0) {
+      return;
+    }
+
+    const activeJobs = (this.db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM semantic_jobs
+       WHERE kind IN ('chunk','sentence','rebuild_semantic')
+         AND state IN ('pending','running')`
+    ).get() as { count: number }).count;
+    if (activeJobs > 0) {
+      return;
+    }
+
+    const coverage = this.db.prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT c.observation_id)
+          FROM semantic_chunks c
+          JOIN observations o ON o.id = c.observation_id
+          WHERE o.deleted_at IS NULL) AS chunked,
+         (SELECT COUNT(DISTINCT s.observation_id)
+          FROM semantic_sentences s
+          JOIN observations o ON o.id = s.observation_id
+          WHERE o.deleted_at IS NULL) AS sentenced,
+         (SELECT COUNT(DISTINCT v.observation_id)
+          FROM semantic_vector_rowids v
+          JOIN observations o ON o.id = v.observation_id
+          WHERE v.lane = 'chunk' AND o.deleted_at IS NULL) AS chunk_vectors,
+         (SELECT COUNT(DISTINCT v.observation_id)
+          FROM semantic_vector_rowids v
+          JOIN observations o ON o.id = v.observation_id
+          WHERE v.lane = 'sentence' AND o.deleted_at IS NULL) AS sentence_vectors`
+    ).get() as {
+      chunked: number;
+      sentenced: number;
+      chunk_vectors: number;
+      sentence_vectors: number;
+    };
+    const missingStructuralCoverage = coverage.chunked < activeObservations
+      || coverage.sentenced < activeObservations;
+    const missingVectorCoverage = this.config.embedding !== undefined && (
+      coverage.chunk_vectors < activeObservations
+      || coverage.sentence_vectors < activeObservations
+    );
+
+    if (!missingStructuralCoverage && !missingVectorCoverage) {
+      return;
+    }
+
+    this.requestSemanticRebuild({ reason: 'missing-semantic-coverage' });
   }
 
   private mapObservationRow(row: ObservationRow | undefined): Observation | null {

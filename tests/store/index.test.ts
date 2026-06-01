@@ -289,6 +289,32 @@ describe('Store', () => {
       expect(runningRows.count).toBeLessThanOrEqual(1);
     });
 
+    it('semantic jobs defer sentence indexing until chunk rows exist', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'sentence waits for chunks',
+        content: 'Sentence indexing should wait for chunk materialization.',
+        project: 'hybrid-test',
+      });
+
+      db.prepare("UPDATE semantic_jobs SET state = 'running' WHERE job_key = ?")
+        .run(`chunk:${saved.observation.id}`);
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null });
+
+      const sentenceJob = db.prepare(
+        'SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?'
+      ).get(`sentence:${saved.observation.id}`) as { state: string; attempt_count: number };
+      const sentenceRows = db.prepare(
+        'SELECT COUNT(*) AS count FROM semantic_sentences WHERE observation_id = ?'
+      ).get(saved.observation.id) as { count: number };
+
+      expect(sentenceJob).toEqual({ state: 'pending', attempt_count: 0 });
+      expect(sentenceRows.count).toBe(0);
+    });
+
     it('semantic jobs retry until max_attempts before failing with terminal diagnostics', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
@@ -527,6 +553,46 @@ describe('Store', () => {
 
       expect(vectorRows.count).toBeGreaterThan(0);
       expect(vecRows.count).toBeGreaterThan(0);
+    });
+
+    it('semantic index: keeps a lane pending while same-lane jobs remain queued', async () => {
+      const embedding = {
+        provider: 'transformers_local' as const,
+        model: 'mock-embedding',
+        baseUrl: null,
+        dimensions: 3,
+        hyde: { enabled: false, model: null, baseUrl: null, timeoutMs: 4000 },
+        configHash: 'mock-embedding-hash',
+      };
+      store = new Store(':memory:', { embedding });
+      const provider = {
+        config: embedding,
+        embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+      };
+
+      store.saveObservation({
+        title: 'Lane backlog one',
+        content: 'First chunk vector waits in a larger backlog.',
+        project: 'hybrid-test',
+      });
+      store.saveObservation({
+        title: 'Lane backlog two',
+        content: 'Second chunk vector keeps the lane incomplete.',
+        project: 'hybrid-test',
+      });
+      const runtime = store as any;
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: provider });
+
+      const chunkState = store.getDb().prepare(
+        "SELECT pending, stale FROM semantic_index_state WHERE lane = 'chunk'"
+      ).get() as { pending: number; stale: number };
+      const pendingChunkJobs = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM semantic_jobs WHERE kind = 'chunk' AND state = 'pending'"
+      ).get() as { count: number };
+
+      expect(pendingChunkJobs.count).toBeGreaterThan(0);
+      expect(chunkState).toEqual({ pending: 1, stale: 1 });
     });
 
     it('hybrid retrieval: uses Hybrid Retrieval defaults, fuses core lanes, and degrades gracefully', async () => {

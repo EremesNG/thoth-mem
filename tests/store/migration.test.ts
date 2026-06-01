@@ -264,6 +264,87 @@ describe('Store — Migration behaviors', () => {
     }
   });
 
+  it('queues semantic rebuild when upgrading a database with pre-existing observations', () => {
+    const dbPath = join(tmpdir(), `thoth-legacy-semantic-${randomUUID()}.db`);
+    const legacyDb = new Database(dbPath);
+
+    try {
+      for (const pragma of PRAGMAS) {
+        legacyDb.exec(pragma);
+      }
+
+      legacyDb.exec(`
+        CREATE TABLE sessions (
+          id         TEXT PRIMARY KEY,
+          project    TEXT NOT NULL,
+          directory  TEXT,
+          started_at TEXT NOT NULL DEFAULT (datetime('now')),
+          ended_at   TEXT,
+          summary    TEXT
+        );
+
+        CREATE TABLE observations (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id         TEXT,
+          session_id      TEXT NOT NULL,
+          type            TEXT NOT NULL,
+          title           TEXT NOT NULL,
+          content         TEXT NOT NULL,
+          tool_name       TEXT,
+          project         TEXT,
+          scope           TEXT NOT NULL DEFAULT 'project',
+          topic_key       TEXT,
+          normalized_hash TEXT,
+          revision_count  INTEGER NOT NULL DEFAULT 1,
+          duplicate_count INTEGER NOT NULL DEFAULT 1,
+          last_seen_at    TEXT,
+          created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+          deleted_at      TEXT
+        );
+
+        INSERT INTO sessions(id, project) VALUES ('legacy-session', 'legacy-project');
+        INSERT INTO observations(session_id, type, title, content, project, scope)
+        VALUES ('legacy-session', 'manual', 'Legacy observation', 'Legacy content for semantic rebuild', 'legacy-project', 'project');
+      `);
+      legacyDb.close();
+
+      const upgradedStore = new Store(dbPath, {
+        embedding: {
+          provider: 'transformers_local',
+          model: 'mock-embedding',
+          baseUrl: null,
+          dimensions: 384,
+          configHash: 'legacy-upgrade-hash',
+        },
+      });
+
+      try {
+        const rebuildJob = upgradedStore.getDb().prepare(
+          "SELECT state FROM semantic_jobs WHERE kind = 'rebuild_semantic' LIMIT 1"
+        ).get() as { state: string } | undefined;
+        const progress = upgradedStore.getSemanticIndexProgress({ project: 'legacy-project' });
+
+        expect(rebuildJob?.state).toBe('pending');
+        expect(progress.coverage.observations).toBe(1);
+        expect(progress.coverage.chunks).toBe(0);
+      } finally {
+        upgradedStore.close();
+      }
+    } finally {
+      if (legacyDb.open) {
+        legacyDb.close();
+      }
+      try {
+        unlinkSync(dbPath);
+        unlinkSync(`${dbPath}-shm`);
+        unlinkSync(`${dbPath}-wal`);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+
   it('FTS topic_key column is searchable after fresh startup', () => {
     const saved = store.saveObservation({
       title: 'Topic key search test',
