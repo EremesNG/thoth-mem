@@ -1,6 +1,6 @@
 {
   "name": "thoth-mem",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "Persistent memory MCP server for AI coding agents",
   "packageManager": "pnpm@11.1.3",
