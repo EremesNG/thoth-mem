@@ -434,6 +434,44 @@ describe('Store', () => {
       expect(new Set(rowids.map((row) => row.vec_rowid)).size).toBe(2);
     });
 
+    it('semantic index state clears sticky pending when queue and vector coverage are complete', async () => {
+      const embedding = {
+        provider: 'transformers_local' as const,
+        model: 'mock-embedding',
+        baseUrl: null,
+        dimensions: 3,
+        hyde: { enabled: false, model: null, baseUrl: null, timeoutMs: 4000 },
+        configHash: 'mock-embedding-hash',
+      };
+      store = new Store(':memory:', { embedding });
+      const runtime = store as any;
+      const db = store.getDb();
+      const provider = {
+        config: embedding,
+        embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+      };
+      store.saveObservation({
+        title: 'complete coverage pending flag',
+        content: 'Chunk vector exists. Sentence vector exists.',
+        project: 'hybrid-test',
+      });
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+      db.prepare(
+        "UPDATE semantic_index_state SET pending = 1, stale = 0, degraded = 0 WHERE lane IN ('chunk','sentence')"
+      ).run();
+
+      const progress = store.getSemanticIndexProgress();
+      const state = store.getSemanticIndexState();
+
+      expect(progress.totals.pending).toBe(0);
+      expect(progress.totals.running).toBe(0);
+      expect(progress.totals.failed).toBe(0);
+      expect(progress.lanes.every((lane: { pending: boolean; stale: boolean; degraded: boolean }) => (
+        !lane.pending && !lane.stale && !lane.degraded
+      ))).toBe(true);
+      expect(state).toMatchObject({ pending: false, stale: false, degraded: false });
+    });
+
     it('semantic job worker skips terminal failures and continues later queued work', async () => {
       store = new Store(':memory:');
       const runtime = store as any;

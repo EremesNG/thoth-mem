@@ -290,6 +290,7 @@ export class Store {
     recoverRetriableSemanticJobs(this);
     this.enqueueRebuildOnConfigMismatch();
     this.enqueueRebuildOnMissingSemanticCoverage();
+    this.reconcileSemanticIndexState();
   }
 
   getSemanticIndexState(): {
@@ -298,10 +299,12 @@ export class Store {
     stale: boolean;
     degradedReason: string | null;
   } {
+    this.reconcileSemanticIndexState();
     return { ...this.semanticRuntime };
   }
 
   getSemanticIndexProgress(input: { project?: string } = {}): SemanticIndexProgress {
+    this.reconcileSemanticIndexState();
     const project = input.project?.trim();
     const jobWhere = project
       ? `WHERE j.observation_id IN (SELECT id FROM observations WHERE project = ? AND deleted_at IS NULL)`
@@ -549,7 +552,7 @@ export class Store {
     input?: { embeddingProvider?: EmbeddingProviderAdapter | null; kgLlmExtractor?: KgLlmExtractor | null }
   ): Promise<{ processed: boolean; kind?: string }> {
     const result = await processNextSemanticJob(this, input);
-    this.refreshSemanticRuntimeFromState();
+    this.reconcileSemanticIndexState();
     return result;
   }
 
@@ -557,7 +560,7 @@ export class Store {
     input?: { embeddingProvider?: EmbeddingProviderAdapter | null; kgLlmExtractor?: KgLlmExtractor | null; limit?: number }
   ): Promise<number> {
     const processed = await processSemanticJobs(this, input);
-    this.refreshSemanticRuntimeFromState();
+    this.reconcileSemanticIndexState();
     return processed;
   }
 
@@ -590,7 +593,52 @@ export class Store {
     this.semanticRuntime.stale = rows.some((row) => row.stale === 1);
   }
 
+  private reconcileSemanticIndexState(): void {
+    if (!this.config.embedding) {
+      this.refreshSemanticRuntimeFromState();
+      return;
+    }
+
+    const lanes: SemanticLaneName[] = ['chunk', 'sentence'];
+    for (const lane of lanes) {
+      const sourceTable = lane === 'chunk' ? 'semantic_chunks' : 'semantic_sentences';
+      const sourceKeyColumn = lane === 'chunk' ? 'chunk_key' : 'sentence_key';
+      const state = this.db.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM semantic_jobs WHERE kind IN (?, 'rebuild_semantic') AND state IN ('pending','running')) AS active,
+           (SELECT COUNT(*) FROM semantic_jobs WHERE kind = ? AND state = 'failed') AS failed,
+           (SELECT COUNT(*)
+            FROM ${sourceTable} source
+            JOIN observations o ON o.id = source.observation_id
+            WHERE o.deleted_at IS NULL) AS expected,
+           (SELECT COUNT(*)
+            FROM semantic_vector_rowids v
+            JOIN ${sourceTable} source ON source.${sourceKeyColumn} = v.source_key
+            JOIN observations o ON o.id = source.observation_id
+            WHERE v.lane = ? AND o.deleted_at IS NULL) AS vectors`
+      ).get(lane, lane, lane) as { active: number; failed: number; expected: number; vectors: number };
+      const runtimeDegraded = this.semanticRuntime.degradedReason !== null;
+      const missingVectors = state.vectors < state.expected;
+      const pending = state.active > 0 || (state.failed === 0 && missingVectors) ? 1 : 0;
+      const degraded = runtimeDegraded || state.failed > 0 ? 1 : 0;
+      const stale = state.active > 0 || state.failed > 0 || missingVectors || runtimeDegraded ? 1 : 0;
+
+      this.db.prepare(
+        `UPDATE semantic_index_state
+         SET pending = ?,
+             degraded = ?,
+             stale = ?,
+             last_ready_at = CASE WHEN ? = 0 AND ? = 0 AND ? = 0 THEN COALESCE(last_ready_at, datetime('now')) ELSE last_ready_at END,
+             updated_at = CASE WHEN pending != ? OR degraded != ? OR stale != ? THEN datetime('now') ELSE updated_at END
+         WHERE lane = ?`
+      ).run(pending, degraded, stale, pending, degraded, stale, pending, degraded, stale, lane);
+    }
+
+    this.refreshSemanticRuntimeFromState();
+  }
+
   private getSemanticLaneReadiness(): SemanticLaneReadiness {
+    this.reconcileSemanticIndexState();
     const rows = this.db.prepare(
       "SELECT lane, pending, degraded, stale FROM semantic_index_state WHERE lane IN ('chunk','sentence')"
     ).all() as Array<{ lane: SemanticLaneName; pending: number; degraded: number; stale: number }>;
