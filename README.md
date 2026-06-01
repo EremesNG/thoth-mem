@@ -343,7 +343,17 @@ Example with LM Studio embeddings and LM Studio HyDE:
 
 ### Optional KG LLM Enrichment
 
-KG extraction defaults to the deterministic extractor. To enrich long observations, enable a remote local model provider and set the minimum content length that should trigger the LLM pass:
+KG extraction defaults to the deterministic extractor. To enrich long observations, enable the local Transformers.js provider or a remote local model provider and set the minimum content length that should trigger the LLM pass:
+
+```bash
+THOTH_KG_LLM_ENABLED=true \
+THOTH_KG_LLM_PROVIDER=transformers_local \
+THOTH_KG_LLM_MODEL=onnx-community/Qwen2.5-Coder-0.5B-Instruct \
+THOTH_KG_LLM_MIN_CONTENT_CHARS=12000 \
+thoth-mem
+```
+
+Ollama remains available for remote local generation:
 
 ```bash
 THOTH_KG_LLM_ENABLED=true \
@@ -435,12 +445,13 @@ This runs as a transaction, blocks deletion if shared sessions or data are detec
 
 ## Configuration
 
-On startup, Thoth-Mem creates `~/.thoth/config.json` if it does not exist and backfills missing keys when the file is partial. Environment variables override config file values at runtime, but they are not written back to the file.
+On startup, Thoth-Mem creates `~/.thoth/config.json` if it does not exist and backfills missing keys when the file is partial. The config starts with a public `$schema` URL served from the published package on unpkg; the schema source lives in this repo at `config.schema.json`. Environment variables override config file values at runtime, but they are not written back to the file.
 
 Default editable config:
 
 ```json
 {
+  "$schema": "https://unpkg.com/thoth-mem@0.3.0/config.schema.json",
   "version": 1,
   "maxContentLength": 100000,
   "maxContextResults": 20,
@@ -473,9 +484,9 @@ Default editable config:
   },
   "kgLlm": {
     "enabled": false,
-    "provider": "ollama",
-    "model": "qwen2.5:7b-instruct",
-    "baseUrl": "http://127.0.0.1:11434",
+    "provider": "transformers_local",
+    "model": "onnx-community/Qwen2.5-Coder-0.5B-Instruct",
+    "baseUrl": null,
     "timeoutMs": 8000,
     "minContentChars": 12000
   }
@@ -502,9 +513,9 @@ Default editable config:
 | `THOTH_HYDE_BASE_URL`         | unset      | Optional HyDE provider base URL |
 | `THOTH_HYDE_TIMEOUT_MS`       | `4000`     | HyDE timeout before raw-query-only fallback |
 | `THOTH_KG_LLM_ENABLED`        | `false`    | Enable optional LLM KG enrichment for long observations |
-| `THOTH_KG_LLM_PROVIDER`       | `ollama`   | KG LLM provider (`ollama`, `lmstudio`) |
-| `THOTH_KG_LLM_MODEL`          | `qwen2.5:7b-instruct` | KG LLM model id |
-| `THOTH_KG_LLM_BASE_URL`       | `http://127.0.0.1:11434` | KG LLM provider base URL |
+| `THOTH_KG_LLM_PROVIDER`       | `transformers_local` | KG LLM provider (`transformers_local`, `ollama`, `lmstudio`) |
+| `THOTH_KG_LLM_MODEL`          | `onnx-community/Qwen2.5-Coder-0.5B-Instruct` | KG LLM model id |
+| `THOTH_KG_LLM_BASE_URL`       | unset      | KG LLM provider base URL for remote providers |
 | `THOTH_KG_LLM_TIMEOUT_MS`     | `8000`     | KG LLM timeout before deterministic-only fallback |
 | `THOTH_KG_LLM_MIN_CONTENT_CHARS` | `12000` | Minimum observation size that triggers LLM enrichment |
 
