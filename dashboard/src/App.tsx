@@ -5,6 +5,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
@@ -1240,6 +1242,19 @@ function MemoryUniverse({
     if (!context) return;
     const canvasElement = canvas;
     const canvasContext = context;
+    const canvasWidth = Math.max(canvasElement.clientWidth, 320);
+    const canvasHeight = Math.max(canvasElement.clientHeight, 420);
+    const spreadFactor = Math.max(1, Math.sqrt(Math.max(graph.nodes.length, 1) / 45));
+    const layoutWidth = Math.max(canvasWidth * 2.4, 1100 * spreadFactor);
+    const layoutHeight = Math.max(canvasHeight * 2.2, 760 * spreadFactor);
+    const layoutCenterX = layoutWidth / 2;
+    const layoutCenterY = layoutHeight / 2;
+
+    function normalizeSeed(value: number): number {
+      if (!Number.isFinite(value)) return 0;
+      if (value >= -1 && value <= 1) return value;
+      return (Math.abs(value) % 2000) / 1000 - 1;
+    }
 
     const degree = new Map<string, number>();
     for (const node of graph.nodes) degree.set(node.id, 0);
@@ -1256,8 +1271,8 @@ function MemoryUniverse({
           degree: nodeDegree,
           id: node.id,
           radius: Math.max(9, Math.min(30, 9 + nodeDegree * 3)),
-          x: Math.abs(node.seed_x % 900) + 80,
-          y: Math.abs(node.seed_y % 620) + 70,
+          x: layoutCenterX + normalizeSeed(node.seed_x) * layoutWidth * 0.42,
+          y: layoutCenterY + normalizeSeed(node.seed_y) * layoutHeight * 0.42,
         };
       })
       .filter((node) => node.degree >= minDegree || node.data.kind === 'project');
@@ -1268,10 +1283,12 @@ function MemoryUniverse({
 
     simulationRef.current?.stop();
     const simulation = forceSimulation<UniverseNodeDatum, UniverseEdgeDatum>(nodes)
-      .force('link', forceLink<UniverseNodeDatum, UniverseEdgeDatum>(edges).id((node) => node.id).distance((edge) => 72 + edge.data.relation.length * 1.5).strength(0.14))
-      .force('charge', forceManyBody<UniverseNodeDatum>().strength((node) => -170 - node.degree * 18))
-      .force('collide', forceCollide<UniverseNodeDatum>().radius((node) => node.radius + 13).strength(0.8))
-      .force('center', forceCenter(canvasElement.clientWidth / 2, canvasElement.clientHeight / 2))
+      .force('link', forceLink<UniverseNodeDatum, UniverseEdgeDatum>(edges).id((node) => node.id).distance((edge) => 128 + Math.min(edge.data.relation.length * 3, 90)).strength(0.08))
+      .force('charge', forceManyBody<UniverseNodeDatum>().strength((node) => -320 - Math.min(node.degree, 12) * 24))
+      .force('collide', forceCollide<UniverseNodeDatum>().radius((node) => node.radius + 24).strength(0.95))
+      .force('center', forceCenter(layoutCenterX, layoutCenterY))
+      .force('x', forceX<UniverseNodeDatum>(layoutCenterX).strength(0.018))
+      .force('y', forceY<UniverseNodeDatum>(layoutCenterY).strength(0.018))
       .alpha(0.9)
       .alphaDecay(0.045);
     simulationRef.current = simulation;
@@ -1309,10 +1326,6 @@ function MemoryUniverse({
       const height = canvasElement.clientHeight;
       const selected = selectedRef.current;
       const hovered = hoveredRef.current;
-      for (const node of nodes) {
-        node.x = Math.max(42, Math.min(width - 42, node.x ?? width / 2));
-        node.y = Math.max(42, Math.min(height - 56, node.y ?? height / 2));
-      }
 
       canvasContext.save();
       canvasContext.clearRect(0, 0, width, height);
@@ -1367,13 +1380,37 @@ function MemoryUniverse({
     simulation.on('tick', draw);
 
     const zoomBehavior = zoom<HTMLCanvasElement, unknown>()
-      .scaleExtent([0.08, 5])
+      .scaleExtent([0.04, 5])
       .on('zoom', (event) => {
         transformRef.current = event.transform;
         draw();
       });
     zoomRef.current = zoomBehavior;
     select<HTMLCanvasElement, unknown>(canvasElement).call(zoomBehavior);
+
+    function fitVisibleNodes(maxScale = 1.15): void {
+      if (nodes.length === 0) return;
+      const bounds = nodes.reduce(
+        (acc, node) => ({
+          maxX: Math.max(acc.maxX, node.x ?? layoutCenterX),
+          maxY: Math.max(acc.maxY, node.y ?? layoutCenterY),
+          minX: Math.min(acc.minX, node.x ?? layoutCenterX),
+          minY: Math.min(acc.minY, node.y ?? layoutCenterY),
+        }),
+        { maxX: -Infinity, maxY: -Infinity, minX: Infinity, minY: Infinity }
+      );
+      const width = Math.max(canvasElement.clientWidth, 320);
+      const height = Math.max(canvasElement.clientHeight, 420);
+      const padding = Math.min(220, Math.max(120, Math.min(width, height) * 0.24));
+      const scale = Math.max(0.06, Math.min(maxScale, Math.min(
+        Math.max(width - padding, 1) / Math.max(bounds.maxX - bounds.minX, 1),
+        Math.max(height - padding, 1) / Math.max(bounds.maxY - bounds.minY, 1)
+      )));
+      const x = width / 2 - scale * ((bounds.minX + bounds.maxX) / 2);
+      const y = height / 2 - scale * ((bounds.minY + bounds.maxY) / 2);
+      select<HTMLCanvasElement, unknown>(canvasElement)
+        .call(zoomBehavior.transform, zoomIdentity.translate(x, y).scale(scale));
+    }
 
     function findNode(clientX: number, clientY: number): UniverseNodeDatum | null {
       const rect = canvasElement.getBoundingClientRect();
@@ -1412,9 +1449,11 @@ function MemoryUniverse({
     canvasElement.addEventListener('pointerleave', handlePointerLeave);
     canvasElement.addEventListener('click', handleClick);
     draw();
+    const fitTimer = window.setTimeout(() => fitVisibleNodes(), 320);
 
     return () => {
       simulation.stop();
+      window.clearTimeout(fitTimer);
       canvasElement.removeEventListener('pointermove', handlePointerMove);
       canvasElement.removeEventListener('pointerleave', handlePointerLeave);
       canvasElement.removeEventListener('click', handleClick);
@@ -1439,12 +1478,12 @@ function MemoryUniverse({
       }),
       { maxX: -Infinity, maxY: -Infinity, minX: Infinity, minY: Infinity }
     );
-    const padding = 90;
+    const padding = Math.min(220, Math.max(120, Math.min(canvas.clientWidth, canvas.clientHeight) * 0.24));
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const scale = Math.max(0.12, Math.min(3, Math.min(
-      (width - padding) / Math.max(bounds.maxX - bounds.minX, 1),
-      (height - padding) / Math.max(bounds.maxY - bounds.minY, 1)
+    const scale = Math.max(0.06, Math.min(1.15, Math.min(
+      Math.max(width - padding, 1) / Math.max(bounds.maxX - bounds.minX, 1),
+      Math.max(height - padding, 1) / Math.max(bounds.maxY - bounds.minY, 1)
     )));
     const x = width / 2 - scale * ((bounds.minX + bounds.maxX) / 2);
     const y = height / 2 - scale * ((bounds.minY + bounds.maxY) / 2);
