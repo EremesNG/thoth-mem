@@ -18,12 +18,27 @@ Use the MCP surface as a set of workflow-level tools:
 | Project navigation and topic/graph views | `mem_project` |
 | Session lifecycle | `mem_session` |
 
+The active MCP surface has only these six tools. Do not call legacy split tools such as `mem_search`, `mem_get_observation`, `mem_timeline`, `mem_project_summary`, `mem_project_graph`, `mem_topic_keys`, `mem_session_start`, `mem_session_summary`, or `mem_save_prompt`.
+
+Use this current mapping instead:
+
+| Old intent | Current tool |
+| --- | --- |
+| Search/recall | `mem_recall` |
+| Fetch one memory or timeline | `mem_get` |
+| Project summary, graph, topics, topic context | `mem_project` |
+| Start or summarize a session | `mem_session` |
+| Save a prompt | `mem_save(kind="prompt")` |
+| Save a session summary | `mem_session(action="summary")` or `mem_save(kind="session_summary")` |
+
+Admin and operations work is intentionally outside the MCP tool surface. Use CLI, HTTP, or the dashboard for export/import, sync/sync-import, project migration/deletion, graph rebuilds, index rebuilds, status inspection, and operation traces.
+
 ## Start Protocol
 
 At the beginning of a meaningful work session:
 
 1. Call `mem_session(action="start", id="...", project="...", directory="...")`.
-2. Call `mem_context(project="...", session_id="...")` for recent continuity.
+2. Call `mem_context(project="...", session_id="...")` for recent continuity. Add `recall_query="..."` when one targeted fused recall should appear inline with the context.
 3. Call `mem_project(action="summary", project="...")` when project-level history matters.
 4. If the task might overlap previous work, call `mem_recall(mode="compact", query="...", project="...")` before editing code or making architecture decisions.
 5. Save significant real user intent with `mem_save(kind="prompt", content="...", session_id="...", project="...")`.
@@ -40,6 +55,8 @@ Use recall as a widening funnel:
 4. `mem_get(id=..., include_timeline=true)` when chronology matters.
 
 `mem_recall` is the primary retrieval tool. It may return semantic, lexical, and graph/KG evidence together, plus `pending` and `degraded_fallback` metadata. Pending or degraded semantic lanes are not failures; they mean the fallback lanes are carrying the recall.
+
+Use `hyde=false` only when comparing raw query behavior or debugging recall drift. Use `debug=true` when you need lane order, semantic input sources, or evidence diagnostics for a retrieval bug.
 
 Good recall queries include concrete file names, component names, error messages, architecture terms, migration names, topic keys, and user-facing feature names. Prefer two or three focused recalls over one broad vague query.
 

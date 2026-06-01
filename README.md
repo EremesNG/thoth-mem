@@ -55,21 +55,24 @@ Agent Session 1                    Agent Session 2
 ## Quick Start
 
 ```bash
-# Run directly (no install needed)
-npx -y thoth-mem@latest
+# Run the MCP server + HTTP bridge directly (no install needed)
+npx -y thoth-mem@latest mcp
 
 # Or install globally
 pnpm add -g thoth-mem
+thoth-mem mcp
 ```
 
 Requires Node.js >= 18.
+
+For backwards compatibility, running `thoth-mem` with no subcommand also starts the MCP server and HTTP bridge. New MCP client configs should prefer the explicit `mcp` subcommand.
 
 ## MCP Configuration
 
 ### Claude Code
 
 ```bash
-claude mcp add thoth-mem -- npx -y thoth-mem@latest
+claude mcp add thoth-mem -- npx -y thoth-mem@latest mcp
 ```
 
 ### OpenCode
@@ -84,7 +87,8 @@ Add to `~/.config/opencode/config.json`:
       "command": [
         "npx",
         "-y",
-        "thoth-mem@latest"
+        "thoth-mem@latest",
+        "mcp"
       ]
     }
   }
@@ -100,7 +104,7 @@ Add to `~/.gemini/settings.json`:
   "mcpServers": {
     "thoth": {
       "command": "npx",
-      "args": ["-y", "thoth-mem@latest"]
+      "args": ["-y", "thoth-mem@latest", "mcp"]
     }
   }
 }
@@ -113,6 +117,7 @@ Thoth-Mem also works as a standalone CLI. When no subcommand is given, it starts
 ```bash
 thoth-mem                              # Start MCP server + HTTP bridge (default)
 thoth-mem mcp                          # Start MCP server (explicit)
+thoth-mem mcp --no-http                # Start MCP server without HTTP bridge
 thoth-mem search <query>               # Search memories
 thoth-mem save <title> <content>       # Save a memory
 thoth-mem timeline <observation_id>    # Chronological context around an observation
@@ -128,17 +133,23 @@ thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
 thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
 thoth-mem rebuild-index --project <name> # Queue semantic index rebuild for one project
 thoth-mem rebuild-index --all          # Queue semantic index rebuild for all projects
+thoth-mem rebuild-index --all --process 500 # Queue and process up to 500 jobs
 thoth-mem rebuild-index --status       # Show semantic index queue/coverage progress
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
 
-Global flags work with any command:
+Common CLI path/filter flags:
 
 ```bash
 thoth-mem stats --data-dir=/custom/path
 thoth-mem search "auth pattern" -p my-project
-thoth-mem --no-http                    # Disable HTTP bridge
+```
+
+`--no-http` is a server startup flag, so use it with MCP/server mode:
+
+```bash
+thoth-mem mcp --no-http
 ```
 
 ## HTTP REST API
@@ -154,6 +165,10 @@ Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The 
 - Dashboard deep links live under `/console/*` so API routes such as `/operations` and `/graph/rebuild` are never shadowed.
 - The console can create observations and queue rebuild operations through the same REST contracts documented in OpenAPI.
 
+![Memory universe graph nodes](img/graph_nodes.png)
+
+_Memory universe D3 graph view with clustered nodes and relationship edges._
+
 **Interactive Documentation:**
 
 - OpenAPI spec: `http://localhost:7438/openapi.json`
@@ -162,9 +177,9 @@ Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The 
 **Disable the HTTP bridge:**
 
 ```bash
-thoth-mem --no-http
+thoth-mem mcp --no-http
 # or
-THOTH_HTTP_DISABLED=true thoth-mem
+THOTH_HTTP_DISABLED=true thoth-mem mcp
 ```
 
 **Example: Search memories via HTTP**
@@ -228,7 +243,20 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
 | `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
-> **Admin operations** (export, import, sync, migrate-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+Current tool/action map:
+
+| Tool | Current shape |
+| --- | --- |
+| `mem_save` | `kind="observation"`, `kind="prompt"`, `kind="session_summary"`, or `kind="passive_learnings"` |
+| `mem_recall` | `mode="compact"` first, `mode="context"` for retrieved text; supports filters plus `hyde` and `debug` |
+| `mem_context` | Recent sessions/prompts/observations, optionally with `recall_query` fused evidence |
+| `mem_get` | `id`, `offset`, `max_length`, `include_timeline`, `before`, and `after` |
+| `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, or `"topic"` |
+| `mem_session` | `action="start"`, `"checkpoint"`, or `"summary"` |
+
+Legacy one-tool-per-view names are intentionally obsolete and are not registered. Use `mem_recall` instead of `mem_search`, `mem_get` instead of `mem_get_observation` or `mem_timeline`, `mem_project` instead of `mem_project_summary`, `mem_project_graph`, or `mem_topic_keys`, `mem_session` instead of `mem_session_start` or `mem_session_summary`, and `mem_save(kind="prompt")` instead of `mem_save_prompt`.
+
+> **Admin operations** (export, import, sync, sync-import, migrate-project, delete-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Retrieval and Embeddings
 
@@ -237,7 +265,8 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 - Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > kg > chunk > lexical`. Knowledge-graph facts now participate as a first-class ranking lane and also enrich returned hits with supporting graph evidence.
 - Lexical ranking filters low-signal query stopwords and scores prefix matches by content-term coverage, so a broad one-word overlap cannot outrank stronger semantic/KG evidence under noisy corpora.
 - Surgical trimming is explicit in `mem_recall mode=context`: sentence hits return a `primary_sentence` and, when the score clears the small-to-big threshold, a labeled `surrounding_parent_chunk`. Lexical hits return matching sentences instead of whole observations. Each context hit includes `retrieval_contract`, `compression_ratio`, `evidence_chars`, and `full_chars` so noise reduction is measured rather than claimed.
-- Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background. Terminal job failures keep `last_error` and `finished_at`, and later queued jobs continue processing instead of being starved by failed work.
+- Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background. Terminal job failures keep `last_error` and `finished_at`, stale running leases are recoverable, and later queued jobs continue processing instead of being starved by failed work.
+- Semantic lane state is reconciled from queue health plus vector coverage on startup/status reads, so completed lanes do not remain stuck in `pending` after a restart when queue and coverage are clean.
 - `/viz/health`, `/observatory/health`, and `/index/status` include product telemetry for semantic lanes, job totals, job-kind breakdowns, queue lag, vector coverage ratios, and recent indexing/KG warnings. Optional KG LLM failures are recorded as job telemetry while deterministic KG extraction still completes.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>`, `thoth-mem rebuild-index --all`, and `POST /index/rebuild`. Use `thoth-mem rebuild-index --status` or `GET /index/status` to inspect queue progress, lane state, recent errors, and vector coverage.
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical recall with graph enrichment where matching facts exist, and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
