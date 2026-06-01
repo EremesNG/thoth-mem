@@ -189,7 +189,7 @@ pnpm run eval:retrieval
 pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations plus synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The default gate now requires every eval case to land at rank 1.
 
 Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
 
@@ -218,8 +218,10 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 - `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
 - `mem_recall` accepts precision filters for `project`, `session_id`, `scope`, `topic_key`, `type`, `time_from`, and `time_to`; these pass through to all retrieval lanes.
 - Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > kg > chunk > lexical`. Knowledge-graph facts now participate as a first-class ranking lane and also enrich returned hits with supporting graph evidence.
+- Lexical ranking filters low-signal query stopwords and scores prefix matches by content-term coverage, so a broad one-word overlap cannot outrank stronger semantic/KG evidence under noisy corpora.
 - Surgical trimming is explicit in `mem_recall mode=context`: sentence hits return a `primary_sentence` and, when the score clears the small-to-big threshold, a labeled `surrounding_parent_chunk`. Lexical hits return matching sentences instead of whole observations. Each context hit includes `retrieval_contract`, `compression_ratio`, `evidence_chars`, and `full_chars` so noise reduction is measured rather than claimed.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background. Terminal job failures keep `last_error` and `finished_at`, and later queued jobs continue processing instead of being starved by failed work.
+- `/viz/health` and `/observatory/health` include product telemetry for semantic lanes, job totals, vector coverage ratios, and recent indexing/KG warnings. Optional KG LLM failures are recorded as job telemetry while deterministic KG extraction still completes.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical recall with graph enrichment where matching facts exist, and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
 - `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical retrieval with KG enrichment.
