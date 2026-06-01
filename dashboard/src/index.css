@@ -182,9 +182,8 @@ textarea:focus-visible {
 
 .console-topbar {
   min-height: 78px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  align-items: start;
   gap: 18px;
   padding-bottom: 14px;
 }
@@ -230,7 +229,26 @@ p {
   gap: 10px;
 }
 
-.scope-bar label,
+.mission-scope-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(140px, 1fr) minmax(150px, 1.1fr) minmax(118px, 0.8fr) minmax(135px, 0.9fr) minmax(190px, 1.35fr) auto;
+  align-items: end;
+  width: 100%;
+}
+
+.guided-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.guided-field > span {
+  color: var(--ink-muted);
+  font: 700 0.68rem var(--font-mono);
+  text-transform: uppercase;
+}
+
+.guided-field > div,
 .query-dock,
 .trace-filters {
   min-height: 42px;
@@ -242,16 +260,17 @@ p {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.scope-bar label {
+.guided-field > div {
   padding: 0 11px;
 }
 
-.scope-bar svg,
+.guided-field svg,
 .query-dock svg {
   color: var(--cyan);
 }
 
-.scope-bar input,
+.guided-field input,
+.guided-field select,
 .query-dock input,
 .trace-filters input,
 .trace-filters select,
@@ -266,8 +285,9 @@ p {
   outline: 0;
 }
 
-.scope-bar input {
-  width: 190px;
+.guided-field input,
+.guided-field select {
+  min-height: 40px;
 }
 
 .command-button,
@@ -288,7 +308,9 @@ p {
 }
 
 .command-button:hover,
-.query-dock button:hover {
+.query-dock button:hover,
+.mission-dock button:hover,
+.universe-controls button:hover {
   filter: brightness(1.05);
 }
 
@@ -414,11 +436,51 @@ p {
   margin-bottom: 12px;
 }
 
+.mission-dock {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--control);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.mission-dock svg {
+  color: var(--cyan);
+}
+
+.mission-dock div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.mission-dock strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-dock span,
+.scope-summary span {
+  color: var(--ink-muted);
+  font: 0.74rem var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .query-dock input {
   min-height: 42px;
 }
 
-.query-dock button {
+.query-dock button,
+.mission-dock button,
+.universe-controls button {
   min-width: 76px;
   background: var(--plate);
   color: var(--ink);
@@ -678,6 +740,200 @@ p {
   box-shadow: inset 0 0 0 1px var(--line-soft);
 }
 
+.mission-grid {
+  grid-template-columns: minmax(0, 1.55fr) minmax(330px, 0.65fr);
+}
+
+.universe-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.scope-summary,
+.density-control,
+.node-inspector-card,
+.inspector-empty {
+  border-radius: 8px;
+  background: rgba(18, 24, 27, 0.78);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+
+.scope-summary {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+}
+
+.density-control {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.density-control span {
+  color: var(--ink-muted);
+  font: 700 0.72rem var(--font-mono);
+  text-transform: uppercase;
+}
+
+.density-control input {
+  width: 100%;
+  accent-color: var(--mint);
+}
+
+.filter-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.filter-pill {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--ink-muted);
+  background: rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  font: 700 0.68rem var(--font-mono);
+  text-transform: uppercase;
+}
+
+.filter-pill.active {
+  color: var(--void);
+  background: var(--mint);
+}
+
+.filter-pill.relation.active {
+  background: var(--amber);
+}
+
+.universe-stage {
+  min-height: 660px;
+}
+
+.universe-stage canvas {
+  width: 100%;
+  height: 660px;
+  display: block;
+}
+
+.universe-stage.empty {
+  display: grid;
+  place-items: center;
+}
+
+.universe-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 7px;
+}
+
+.universe-controls button {
+  min-width: 58px;
+  min-height: 34px;
+  border: 0;
+  cursor: pointer;
+}
+
+.universe-controls button.active {
+  color: var(--void);
+  background: var(--amber);
+}
+
+.universe-hover-card,
+.universe-counter {
+  position: absolute;
+  left: 12px;
+  border-radius: 8px;
+  background: rgba(7, 10, 11, 0.82);
+  backdrop-filter: blur(10px);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.universe-hover-card {
+  bottom: 12px;
+  display: grid;
+  gap: 4px;
+  max-width: min(360px, calc(100% - 24px));
+  padding: 10px;
+}
+
+.universe-hover-card span,
+.universe-counter {
+  color: var(--cyan);
+  font: 700 0.7rem var(--font-mono);
+  text-transform: uppercase;
+}
+
+.universe-hover-card strong {
+  overflow-wrap: anywhere;
+}
+
+.universe-counter {
+  top: 12px;
+  padding: 8px 10px;
+}
+
+.inspector-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.node-inspector-card,
+.inspector-empty {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.node-inspector-card > span {
+  color: var(--cyan);
+  font: 700 0.72rem var(--font-mono);
+  text-transform: uppercase;
+}
+
+.node-inspector-card p {
+  font-size: 0.84rem;
+}
+
+.inspector-meta-grid {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.inspector-meta-grid span {
+  color: var(--ink-muted);
+  font: 0.72rem var(--font-mono);
+}
+
+.inspector-meta-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.inspector-empty {
+  place-items: center;
+  min-height: 280px;
+  text-align: center;
+}
+
+.inspector-empty svg {
+  color: var(--cyan);
+}
+
 .graph-node {
   position: absolute;
   width: min(180px, 24vw);
@@ -726,8 +982,13 @@ p {
   .operations-grid,
   .traces-grid,
   .indexing-grid,
-  .graph-grid {
+  .graph-grid,
+  .mission-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mission-scope-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .lane-grid {
@@ -764,13 +1025,22 @@ p {
   }
 
   .console-topbar,
-  .scope-bar {
+  .scope-bar,
+  .universe-command-row {
     align-items: stretch;
+  }
+
+  .console-topbar {
     flex-direction: column;
   }
 
-  .scope-bar input {
-    width: 100%;
+  .scope-bar,
+  .universe-command-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scope-bar {
+    display: grid;
   }
 
   .signal-strip,
@@ -792,6 +1062,18 @@ p {
 
   .graph-stage {
     min-height: 460px;
+  }
+
+  .universe-stage canvas {
+    height: 480px;
+  }
+
+  .mission-dock {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .mission-dock button {
+    grid-column: 1 / -1;
   }
 }
 
