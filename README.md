@@ -239,7 +239,7 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | `mem_save`              | Save observations, prompts, session summaries, or passive learnings |
 | `mem_recall`            | Primary fused hybrid recall across semantic, KG, and lexical lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
-| `mem_get`               | Retrieve full memory by ID, optionally with session timeline      |
+| `mem_get`               | Retrieve an observation or prompt by ID, with optional timeline or pagination |
 | `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
 | `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
@@ -250,7 +250,7 @@ Current tool/action map:
 | `mem_save` | `kind="observation"`, `kind="prompt"`, `kind="session_summary"`, or `kind="passive_learnings"` |
 | `mem_recall` | `mode="compact"` first, `mode="context"` for retrieved text; supports filters plus `hyde` and `debug` |
 | `mem_context` | Recent sessions/prompts/observations, optionally with `recall_query` fused evidence |
-| `mem_get` | `id`, `offset`, `max_length`, `include_timeline`, `before`, and `after` |
+| `mem_get` | `id`, `kind`, `offset`, `max_length`, `include_timeline`, `before`, and `after` |
 | `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, or `"topic"` |
 | `mem_session` | `action="start"`, `"checkpoint"`, or `"summary"` |
 
