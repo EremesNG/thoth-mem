@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 import { OBSERVATION_TYPES } from "../store/types.js";
 import { validateContentLength } from "../utils/content.js";
 import { getConfig } from "../config.js";
@@ -77,7 +78,9 @@ export function registerMemSave(
 ): void {
   const config = getConfig();
 
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_save",
     `Save memory. This single write tool handles observations, user prompts, session summaries, and passive learning capture.
 

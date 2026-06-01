@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
 
@@ -9,7 +10,9 @@ export function registerMemContext(
   store: Store,
   options: { embeddingProvider?: EmbeddingProviderAdapter | null; hydeGenerator?: HydeGenerator | null } = {},
 ): void {
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_context",
     `Get recent memory context from previous sessions. Shows recent sessions, user prompts, and observations to understand what was done before.
 

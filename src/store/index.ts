@@ -13,9 +13,12 @@ import type {
   Observation,
   ObservationFact,
   ObservationFactsInput,
+  OperationTrace,
+  OperationTraceListResult,
   ObservationVersion,
   RebuildObservationFactsInput,
   RebuildObservationFactsResult,
+  SaveOperationTraceInput,
   SaveObservationInput,
   SaveResult,
   SearchInput,
@@ -52,8 +55,10 @@ import type {
   VizNode,
   VizSliceRequest,
   VizSliceResponse,
+  ListOperationTracesInput,
 } from './types.js';
 import { stripPrivateTags } from '../utils/privacy.js';
+import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
 import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
@@ -74,6 +79,10 @@ import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 
 type ObservationRow = Observation;
+type OperationTraceRow = Omit<OperationTrace, 'request_truncated' | 'response_truncated'> & {
+  request_truncated: number;
+  response_truncated: number;
+};
 
 type SearchRow = ObservationRow & { rank: number };
 type SemanticLaneName = 'chunk' | 'sentence';
@@ -120,6 +129,18 @@ export interface SemanticIndexProgress {
     kind: string;
     count: number;
   }>;
+  byKind: Array<{
+    kind: string;
+    total: number;
+    pending: number;
+    running: number;
+    done: number;
+    failed: number;
+    oldestPendingAt: string | null;
+    oldestPendingAgeMs: number | null;
+  }>;
+  oldestPendingAt: string | null;
+  queueLagMs: number | null;
   totals: {
     total: number;
     pending: number;
@@ -305,6 +326,57 @@ export class Store {
        ORDER BY j.state, j.kind`
     ).all(...params) as Array<{ state: string; kind: string; count: number }>;
 
+    const jobKinds = this.db.prepare(
+      `SELECT
+         j.kind,
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN j.state = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+         COALESCE(SUM(CASE WHEN j.state = 'running' THEN 1 ELSE 0 END), 0) AS running,
+         COALESCE(SUM(CASE WHEN j.state = 'done' THEN 1 ELSE 0 END), 0) AS done,
+         COALESCE(SUM(CASE WHEN j.state = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+         MIN(CASE WHEN j.state = 'pending' THEN j.available_at END) AS oldest_pending_at,
+         MAX(CASE WHEN j.state = 'pending' THEN CAST((julianday('now') - julianday(j.available_at)) * 86400000 AS INTEGER) END) AS oldest_pending_age_ms
+       FROM semantic_jobs j
+       ${jobWhere}
+       GROUP BY j.kind
+       ORDER BY j.kind`
+    ).all(...params) as Array<{
+      kind: string;
+      total: number;
+      pending: number;
+      running: number;
+      done: number;
+      failed: number;
+      oldest_pending_at: string | null;
+      oldest_pending_age_ms: number | null;
+    }>;
+
+    const normalizeAge = (ageMs: number | null): number | null => (
+      ageMs === null ? null : Math.max(0, Math.round(ageMs))
+    );
+    const byKind = jobKinds.map((job) => ({
+      kind: job.kind,
+      total: job.total,
+      pending: job.pending,
+      running: job.running,
+      done: job.done,
+      failed: job.failed,
+      oldestPendingAt: job.oldest_pending_at,
+      oldestPendingAgeMs: normalizeAge(job.oldest_pending_age_ms),
+    }));
+    const pendingKinds = byKind.filter((job) => job.oldestPendingAt !== null);
+    const oldestPendingAt = pendingKinds
+      .map((job) => job.oldestPendingAt)
+      .filter((value): value is string => value !== null)
+      .sort()[0] ?? null;
+    const queueLagMs = byKind.reduce<number | null>((max, job) => {
+      if (job.oldestPendingAgeMs === null) {
+        return max;
+      }
+
+      return max === null ? job.oldestPendingAgeMs : Math.max(max, job.oldestPendingAgeMs);
+    }, null);
+
     const jobCount = (state: string): number => jobs
       .filter((job) => job.state === state)
       .reduce((sum, job) => sum + job.count, 0);
@@ -339,6 +411,9 @@ export class Store {
         updatedAt: lane.updated_at,
       })),
       jobs,
+      byKind,
+      oldestPendingAt,
+      queueLagMs,
       totals: {
         total: jobs.reduce((sum, job) => sum + job.count, 0),
         pending: jobCount('pending'),
@@ -643,6 +718,123 @@ export class Store {
         `[store] Failed to record sync mutation (${operation} ${entityType}#${entityId}): ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
+  }
+
+  private mapOperationTraceRow(row: OperationTraceRow | undefined): OperationTrace | null {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      ...row,
+      request_truncated: row.request_truncated === 1,
+      response_truncated: row.response_truncated === 1,
+    };
+  }
+
+  saveOperationTrace(input: SaveOperationTraceInput): OperationTrace {
+    const now = new Date().toISOString();
+    const startedAt = input.started_at ?? now;
+    const finishedAt = input.finished_at ?? now;
+    const fallbackDuration = Date.parse(finishedAt) - Date.parse(startedAt);
+    const durationMs = Math.max(0, Math.round(
+      input.duration_ms ?? (Number.isFinite(fallbackDuration) ? fallbackDuration : 0)
+    ));
+    const request = sanitizeTracePayload(input.request, { maxChars: input.max_payload_chars });
+    const response = input.response === undefined
+      ? { json: null, truncated: false }
+      : sanitizeTracePayload(input.response, { maxChars: input.max_payload_chars });
+    const error = input.error ? sanitizeTraceText(input.error, { maxChars: input.max_payload_chars }).json : null;
+    const result = this.db.prepare(
+      `INSERT INTO operation_traces (
+        trace_id, origin, target, status, project, session_id, started_at, finished_at,
+        duration_ms, request_json, response_json, error, request_truncated, response_truncated
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      input.trace_id?.trim() || randomUUID(),
+      input.origin,
+      input.target,
+      input.status,
+      input.project?.trim() || null,
+      input.session_id?.trim() || null,
+      startedAt,
+      finishedAt,
+      durationMs,
+      request.json,
+      response.json,
+      error,
+      request.truncated ? 1 : 0,
+      response.truncated ? 1 : 0,
+    );
+
+    const row = this.db.prepare('SELECT * FROM operation_traces WHERE id = ?')
+      .get(result.lastInsertRowid) as OperationTraceRow | undefined;
+    const trace = this.mapOperationTraceRow(row);
+    if (!trace) {
+      throw new Error('Failed to load saved operation trace');
+    }
+    return trace;
+  }
+
+  listOperationTraces(input: ListOperationTracesInput = {}): OperationTraceListResult {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.origin) {
+      where.push('origin = ?');
+      params.push(input.origin);
+    }
+    if (input.target) {
+      where.push('target LIKE ?');
+      params.push(`%${input.target}%`);
+    }
+    if (input.status) {
+      where.push('status = ?');
+      params.push(input.status);
+    }
+    if (input.project) {
+      where.push('project = ?');
+      params.push(input.project);
+    }
+    if (input.session_id) {
+      where.push('session_id = ?');
+      params.push(input.session_id);
+    }
+    if (input.since) {
+      where.push('started_at >= ?');
+      params.push(input.since);
+    }
+    if (input.until) {
+      where.push('started_at <= ?');
+      params.push(input.until);
+    }
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    const offset = Math.max(input.offset ?? 0, 0);
+    const total = (this.db.prepare(`SELECT COUNT(*) AS count FROM operation_traces ${whereSql}`)
+      .get(...params) as { count: number }).count;
+    const rows = this.db.prepare(
+      `SELECT *
+       FROM operation_traces
+       ${whereSql}
+       ORDER BY started_at DESC, id DESC
+       LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset) as OperationTraceRow[];
+
+    return {
+      total,
+      traces: rows
+        .map((row) => this.mapOperationTraceRow(row))
+        .filter((row): row is OperationTrace => row !== null),
+    };
+  }
+
+  getOperationTrace(traceIdOrId: string | number): OperationTrace | null {
+    const row = typeof traceIdOrId === 'number'
+      ? this.db.prepare('SELECT * FROM operation_traces WHERE id = ?').get(traceIdOrId) as OperationTraceRow | undefined
+      : this.db.prepare('SELECT * FROM operation_traces WHERE trace_id = ?').get(traceIdOrId) as OperationTraceRow | undefined;
+    return this.mapOperationTraceRow(row);
   }
 
   /**
@@ -1940,7 +2132,21 @@ export class Store {
           last_ready_at: lane.lastReadyAt,
           updated_at: lane.updatedAt,
         })),
-        jobs: { ...progress.totals },
+        jobs: {
+          ...progress.totals,
+          oldest_pending_at: progress.oldestPendingAt,
+          queue_lag_ms: progress.queueLagMs,
+          by_kind: progress.byKind.map((job) => ({
+            kind: job.kind,
+            total: job.total,
+            pending: job.pending,
+            running: job.running,
+            done: job.done,
+            failed: job.failed,
+            oldest_pending_at: job.oldestPendingAt,
+            oldest_pending_age_ms: job.oldestPendingAgeMs,
+          })),
+        },
         coverage: {
           observations: progress.coverage.observations,
           chunks: progress.coverage.chunks,

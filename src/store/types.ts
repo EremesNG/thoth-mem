@@ -12,6 +12,8 @@ export type ObservationScope = 'project' | 'personal';
 export type SearchMode = 'compact' | 'preview' | 'context';
 export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
+export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
+export type OperationTraceStatus = 'ok' | 'error';
 
 // ── Database Entities ──
 
@@ -60,6 +62,25 @@ export interface UserPrompt {
   session_id: string;
   content: string;
   project: string | null;
+  created_at: string;
+}
+
+export interface OperationTrace {
+  id: number;
+  trace_id: string;
+  origin: OperationTraceOrigin;
+  target: string;
+  status: OperationTraceStatus;
+  project: string | null;
+  session_id: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  request_json: string;
+  response_json: string | null;
+  error: string | null;
+  request_truncated: boolean;
+  response_truncated: boolean;
   created_at: string;
 }
 
@@ -144,6 +165,34 @@ export interface UpdateObservationInput {
   project?: string;
   scope?: ObservationScope;
   topic_key?: string;
+}
+
+export interface SaveOperationTraceInput {
+  trace_id?: string;
+  origin: OperationTraceOrigin;
+  target: string;
+  status: OperationTraceStatus;
+  project?: string | null;
+  session_id?: string | null;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  request: unknown;
+  response?: unknown;
+  error?: string | null;
+  max_payload_chars?: number;
+}
+
+export interface ListOperationTracesInput {
+  origin?: OperationTraceOrigin;
+  target?: string;
+  status?: OperationTraceStatus;
+  project?: string;
+  session_id?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
 }
 
 // ── Sync Mutation Types ──
@@ -236,6 +285,11 @@ export interface TimelineResult {
   before: Observation[];
   focus: Observation | null;
   after: Observation[];
+}
+
+export interface OperationTraceListResult {
+  traces: OperationTrace[];
+  total: number;
 }
 
 // ── Export/Import/Migration Results ──
@@ -349,6 +403,18 @@ export interface VizHealthResponse {
       running: number;
       done: number;
       failed: number;
+      oldest_pending_at: string | null;
+      queue_lag_ms: number | null;
+      by_kind: Array<{
+        kind: string;
+        total: number;
+        pending: number;
+        running: number;
+        done: number;
+        failed: number;
+        oldest_pending_at: string | null;
+        oldest_pending_age_ms: number | null;
+      }>;
     };
     coverage: {
       observations: number;

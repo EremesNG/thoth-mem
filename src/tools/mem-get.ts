@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 import { formatObservationMarkdown } from "../utils/content.js";
 
 function formatPaginatedObservation(
@@ -76,7 +77,9 @@ function formatTimeline(store: Store, id: number, before: number, after: number)
 }
 
 export function registerMemGet(server: McpServer, store: Store): void {
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_get",
     "Fetch a saved memory by ID. Use include_timeline=true when the surrounding session chronology matters.",
     {

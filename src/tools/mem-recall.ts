@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
 import { OBSERVATION_TYPES } from "../store/types.js";
@@ -93,7 +94,9 @@ export function registerMemRecall(
   store: Store,
   options: { embeddingProvider?: EmbeddingProviderAdapter | null; hydeGenerator?: HydeGenerator | null } = {},
 ): void {
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_recall",
     "Primary retrieval tool. Runs fused hybrid recall across sentence vectors, chunk vectors, keyword FTS, and knowledge-graph enrichment.",
     {

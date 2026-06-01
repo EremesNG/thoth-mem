@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 
 function extractFirstContentLine(content: string): string {
   const lines = content.split('\n');
@@ -18,7 +19,9 @@ function getSessionSummaryTopicKey(sessionId: string): string {
 }
 
 export function registerMemSession(server: McpServer, store: Store): void {
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_session",
     "Manage the active memory session. Use action=start at session start and action=summary before ending.",
     {

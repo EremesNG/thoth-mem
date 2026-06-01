@@ -45,6 +45,14 @@ describe('Store visualization', () => {
       expect(['pending', 'degraded', 'ready', 'rebuilding']).toContain(pending.semantic_state);
       expect(pending.semantic.jobs.pending).toBeGreaterThan(0);
       expect(pending.semantic.jobs.total).toBeGreaterThanOrEqual(pending.semantic.jobs.pending);
+      expect(pending.semantic.jobs.oldest_pending_at).toEqual(expect.any(String));
+      expect(pending.semantic.jobs.queue_lag_ms).toEqual(expect.any(Number));
+      expect(pending.semantic.jobs.by_kind.some((job) => (
+        job.kind === 'chunk'
+        && job.pending > 0
+        && job.oldest_pending_at !== null
+        && typeof job.oldest_pending_age_ms === 'number'
+      ))).toBe(true);
       expect(pending.semantic.coverage.observations).toBe(1);
       expect(pending.semantic.coverage.chunk_coverage).toBeGreaterThanOrEqual(0);
       expect(pending.semantic.coverage.chunk_coverage).toBeLessThanOrEqual(1);

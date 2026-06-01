@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
+import { registerTracedTool } from "./tracing.js";
 import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from "./project-views.js";
 
 const GRAPH_RELATIONS = [
@@ -14,7 +15,9 @@ const GRAPH_RELATIONS = [
 ] as const;
 
 export function registerMemProject(server: McpServer, store: Store): void {
-  server.tool(
+  registerTracedTool(
+    server,
+    store,
     "mem_project",
     "Project-level memory navigation. Lists projects, summarizes one project, reads graph facts, or inspects topic-key memory.",
     {

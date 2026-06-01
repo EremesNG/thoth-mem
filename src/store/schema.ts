@@ -72,6 +72,36 @@ CREATE INDEX IF NOT EXISTS idx_sync_mutations_entity ON sync_mutations(entity_ty
 CREATE INDEX IF NOT EXISTS idx_sync_mutations_created_at ON sync_mutations(created_at);
 `;
 
+export const OPERATION_TRACES_SQL = `
+CREATE TABLE IF NOT EXISTS operation_traces (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id           TEXT NOT NULL UNIQUE,
+  origin             TEXT NOT NULL CHECK(origin IN ('mcp','http','cli','system')),
+  target             TEXT NOT NULL,
+  status             TEXT NOT NULL CHECK(status IN ('ok','error')),
+  project            TEXT,
+  session_id         TEXT,
+  started_at         TEXT NOT NULL,
+  finished_at        TEXT NOT NULL,
+  duration_ms        INTEGER NOT NULL DEFAULT 0,
+  request_json       TEXT NOT NULL,
+  response_json      TEXT,
+  error              TEXT,
+  request_truncated  INTEGER NOT NULL DEFAULT 0,
+  response_truncated INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+
+export const OPERATION_TRACES_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_operation_traces_origin ON operation_traces(origin);
+CREATE INDEX IF NOT EXISTS idx_operation_traces_target ON operation_traces(target);
+CREATE INDEX IF NOT EXISTS idx_operation_traces_status ON operation_traces(status);
+CREATE INDEX IF NOT EXISTS idx_operation_traces_project ON operation_traces(project);
+CREATE INDEX IF NOT EXISTS idx_operation_traces_session ON operation_traces(session_id);
+CREATE INDEX IF NOT EXISTS idx_operation_traces_started ON operation_traces(started_at, id);
+`;
+
 export const SEMANTIC_METADATA_SQL = `
 CREATE TABLE IF NOT EXISTS semantic_index_state (
   lane                 TEXT PRIMARY KEY,
@@ -280,6 +310,9 @@ ${SYNC_CHUNKS_SQL}
 -- Sync mutation journal
 ${SYNC_MUTATIONS_SQL}
 
+-- Operation traces for MCP, HTTP, CLI, and background activity
+${OPERATION_TRACES_SQL}
+
 -- FTS5 virtual table for prompt search
 CREATE VIRTUAL TABLE IF NOT EXISTS prompts_fts USING fts5(
   content, project,
@@ -323,6 +356,7 @@ CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_sync_id ON user_prompts(sync_id);
 ${SYNC_CHUNKS_INDEXES_SQL}
 ${SYNC_MUTATIONS_INDEXES_SQL}
+${OPERATION_TRACES_INDEXES_SQL}
 ${SEMANTIC_METADATA_SQL}
 ${SEMANTIC_METADATA_INDEXES_SQL}
 `;
