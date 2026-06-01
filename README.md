@@ -451,7 +451,7 @@ Default editable config:
 
 ```json
 {
-  "$schema": "https://unpkg.com/thoth-mem@0.3.0/config.schema.json",
+  "$schema": "https://unpkg.com/thoth-mem@0.3.1/config.schema.json",
   "version": 1,
   "maxContentLength": 100000,
   "maxContextResults": 20,

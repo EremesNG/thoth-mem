@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getConfig, resolveDataDir } from '../src/config.js';
+import { getVersion } from '../src/version.js';
 
 describe('getConfig', () => {
   const originalEnv = { ...process.env };
@@ -218,7 +219,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     const schema = JSON.parse(readFileSync(join(process.cwd(), 'config.schema.json'), 'utf8'));
 
     expect(Object.keys(saved)[0]).toBe('$schema');
-    expect(saved.$schema).toBe('https://unpkg.com/thoth-mem@0.3.0/config.schema.json');
+    expect(saved.$schema).toBe(`https://unpkg.com/thoth-mem@${getVersion()}/config.schema.json`);
     expect(saved.version).toBe(1);
     expect(saved.embedding).toEqual({
       provider: 'transformers_local',
