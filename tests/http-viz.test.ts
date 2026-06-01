@@ -78,6 +78,9 @@ describe('viz routes', () => {
     expect(healthResponse.status).toBe(200);
     const healthBody = await healthResponse.json();
     expect(['ready', 'pending', 'degraded', 'rebuilding']).toContain(healthBody.semantic_state);
+    expect(healthBody.semantic.jobs.pending).toBeGreaterThan(0);
+    expect(healthBody.semantic.coverage.observations).toBe(2);
+    expect(Array.isArray(healthBody.semantic.recent_errors)).toBe(true);
 
     const filtersResponse = await fetch(`http://127.0.0.1:${port}/viz/filters?project=viz-http&session_id=viz-session-b`);
     expect(filtersResponse.status).toBe(200);

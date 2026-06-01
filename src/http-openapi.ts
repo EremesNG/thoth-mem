@@ -1317,8 +1317,71 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
         },
         VizHealthResponse: {
           type: 'object',
-          properties: { semantic_state: { type: 'string', enum: ['ready', 'pending', 'degraded', 'rebuilding'] }, pending_jobs: { type: 'integer' } },
-          required: ['semantic_state', 'pending_jobs'],
+          properties: {
+            semantic_state: { type: 'string', enum: ['ready', 'pending', 'degraded', 'rebuilding'] },
+            pending_jobs: { type: 'integer' },
+            semantic: {
+              type: 'object',
+              properties: {
+                lanes: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      lane: { type: 'string' },
+                      pending: { type: 'boolean' },
+                      degraded: { type: 'boolean' },
+                      stale: { type: 'boolean' },
+                      last_ready_at: { type: 'string', nullable: true },
+                      updated_at: { type: 'string', nullable: true },
+                    },
+                    required: ['lane', 'pending', 'degraded', 'stale', 'last_ready_at', 'updated_at'],
+                  },
+                },
+                jobs: {
+                  type: 'object',
+                  properties: {
+                    total: { type: 'integer' },
+                    pending: { type: 'integer' },
+                    running: { type: 'integer' },
+                    done: { type: 'integer' },
+                    failed: { type: 'integer' },
+                  },
+                  required: ['total', 'pending', 'running', 'done', 'failed'],
+                },
+                coverage: {
+                  type: 'object',
+                  properties: {
+                    observations: { type: 'integer' },
+                    chunks: { type: 'integer' },
+                    sentences: { type: 'integer' },
+                    chunk_vectors: { type: 'integer' },
+                    sentence_vectors: { type: 'integer' },
+                    chunk_coverage: { type: 'number' },
+                    sentence_coverage: { type: 'number' },
+                  },
+                  required: ['observations', 'chunks', 'sentences', 'chunk_vectors', 'sentence_vectors', 'chunk_coverage', 'sentence_coverage'],
+                },
+                recent_errors: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'integer' },
+                      job_key: { type: 'string' },
+                      kind: { type: 'string' },
+                      state: { type: 'string' },
+                      attempt_count: { type: 'integer' },
+                      last_error: { type: 'string', nullable: true },
+                    },
+                    required: ['id', 'job_key', 'kind', 'state', 'attempt_count', 'last_error'],
+                  },
+                },
+              },
+              required: ['lanes', 'jobs', 'coverage', 'recent_errors'],
+            },
+          },
+          required: ['semantic_state', 'pending_jobs', 'semantic'],
         },
         VizSliceResponse: {
           type: 'object',

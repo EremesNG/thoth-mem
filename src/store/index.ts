@@ -1868,7 +1868,41 @@ export class Store {
     if (laneDegraded || runtime.degraded) semanticState = 'degraded';
     else if (laneStale && pendingJobs > 0) semanticState = 'rebuilding';
     else if (lanePending || runtime.pending || pendingJobs > 0) semanticState = 'pending';
-    return { semantic_state: semanticState, pending_jobs: pendingJobs };
+    const ratio = (count: number, total: number): number => (
+      total === 0 ? 0 : Number((count / total).toFixed(3))
+    );
+    return {
+      semantic_state: semanticState,
+      pending_jobs: pendingJobs,
+      semantic: {
+        lanes: progress.lanes.map((lane) => ({
+          lane: lane.lane,
+          pending: lane.pending,
+          degraded: lane.degraded,
+          stale: lane.stale,
+          last_ready_at: lane.lastReadyAt,
+          updated_at: lane.updatedAt,
+        })),
+        jobs: { ...progress.totals },
+        coverage: {
+          observations: progress.coverage.observations,
+          chunks: progress.coverage.chunks,
+          sentences: progress.coverage.sentences,
+          chunk_vectors: progress.coverage.chunkVectors,
+          sentence_vectors: progress.coverage.sentenceVectors,
+          chunk_coverage: ratio(progress.coverage.chunkVectors, progress.coverage.chunks),
+          sentence_coverage: ratio(progress.coverage.sentenceVectors, progress.coverage.sentences),
+        },
+        recent_errors: progress.recentErrors.map((error) => ({
+          id: error.id,
+          job_key: error.jobKey,
+          kind: error.kind,
+          state: error.state,
+          attempt_count: error.attemptCount,
+          last_error: error.lastError,
+        })),
+      },
+    };
   }
 
   getObservatoryContext(input: ObservatoryScope = {}): ObservatoryContextResponse {

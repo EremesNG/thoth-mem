@@ -334,6 +334,40 @@ export interface VizEdge {
 export interface VizHealthResponse {
   semantic_state: VizSemanticState;
   pending_jobs: number;
+  semantic: {
+    lanes: Array<{
+      lane: string;
+      pending: boolean;
+      degraded: boolean;
+      stale: boolean;
+      last_ready_at: string | null;
+      updated_at: string | null;
+    }>;
+    jobs: {
+      total: number;
+      pending: number;
+      running: number;
+      done: number;
+      failed: number;
+    };
+    coverage: {
+      observations: number;
+      chunks: number;
+      sentences: number;
+      chunk_vectors: number;
+      sentence_vectors: number;
+      chunk_coverage: number;
+      sentence_coverage: number;
+    };
+    recent_errors: Array<{
+      id: number;
+      job_key: string;
+      kind: string;
+      state: string;
+      attempt_count: number;
+      last_error: string | null;
+    }>;
+  };
 }
 
 export interface VizSliceResponse {

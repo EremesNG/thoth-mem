@@ -46,6 +46,7 @@ export async function processNextSemanticJob(
   }
 
   try {
+    let warning: string | null = null;
     if (job.kind === 'chunk' && job.observation_id !== null) {
       await processChunkJob(store, job.observation_id, input?.embeddingProvider ?? null);
     } else if (job.kind === 'sentence' && job.observation_id !== null) {
@@ -53,12 +54,12 @@ export async function processNextSemanticJob(
     } else if (job.kind === 'rebuild_semantic') {
       processRebuildJob(store, job.job_key);
     } else if (job.kind === 'extract_kg' && job.observation_id !== null) {
-      await processKgJob(store, job.observation_id, input?.kgLlmExtractor ?? null);
+      warning = await processKgJob(store, job.observation_id, input?.kgLlmExtractor ?? null);
     }
 
     db.prepare(
-      "UPDATE semantic_jobs SET state = 'done', finished_at = datetime('now'), updated_at = datetime('now'), last_error = NULL WHERE id = ?"
-    ).run(job.id);
+      "UPDATE semantic_jobs SET state = 'done', finished_at = datetime('now'), updated_at = datetime('now'), last_error = ? WHERE id = ?"
+    ).run(warning, job.id);
     return { processed: true, kind: job.kind };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -266,14 +267,14 @@ function processRebuildJob(store: Store, jobKey: string): void {
   db.prepare("UPDATE semantic_jobs SET source_key = ? WHERE job_key = ?").run('global', jobKey);
 }
 
-async function processKgJob(store: Store, observationId: number, kgLlmExtractor: KgLlmExtractor | null): Promise<void> {
+async function processKgJob(store: Store, observationId: number, kgLlmExtractor: KgLlmExtractor | null): Promise<string | null> {
   const db = store.getDb();
   const obs = db.prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
     | { id: number; title: string; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
     | undefined;
   if (!obs) {
     db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
-    return;
+    return null;
   }
 
   const extractionInput = {
@@ -290,6 +291,7 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       : undefined,
   };
   let extraction = extractKnowledgeTriples(extractionInput);
+  let warning: string | null = null;
 
   if (extraction.strategy.llmFallback === 'recommended' && kgLlmExtractor) {
     try {
@@ -303,7 +305,9 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
         ...extractionInput,
         llmTriples,
       });
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warning = `KG LLM enrichment failed: ${message}`;
       extraction = extractKnowledgeTriples(extractionInput);
     }
   }
@@ -359,6 +363,7 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       extraction.taxonomy.version
     );
   }
+  return warning;
 }
 
 function cleanupSemanticArtifactsForObservation(store: Store, observationId: number): void {

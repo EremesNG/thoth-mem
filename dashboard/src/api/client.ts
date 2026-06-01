@@ -156,7 +156,24 @@ export interface ProjectGraphResponse {
 
 export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
-export interface VizHealthResponse { semantic_state: VizSemanticState; pending_jobs: number; }
+export interface VizHealthResponse {
+  semantic_state: VizSemanticState;
+  pending_jobs: number;
+  semantic?: {
+    lanes: Array<{ lane: string; pending: boolean; degraded: boolean; stale: boolean; last_ready_at: string | null; updated_at: string | null }>;
+    jobs: { total: number; pending: number; running: number; done: number; failed: number };
+    coverage: {
+      observations: number;
+      chunks: number;
+      sentences: number;
+      chunk_vectors: number;
+      sentence_vectors: number;
+      chunk_coverage: number;
+      sentence_coverage: number;
+    };
+    recent_errors: Array<{ id: number; job_key: string; kind: string; state: string; attempt_count: number; last_error: string | null }>;
+  };
+}
 export interface VizNode { id: string; kind: 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; }
 export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'semantic' | 'metadata' | 'fact'; label: string; summary: string; }
 export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }

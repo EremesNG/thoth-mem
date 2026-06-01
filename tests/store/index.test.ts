@@ -1089,6 +1089,55 @@ describe('Store', () => {
       });
     });
 
+    it('background indexing: records optional KG LLM failures as job telemetry while completing deterministic KG', async () => {
+      store = new Store(':memory:', {
+        kgLlm: {
+          enabled: true,
+          provider: 'ollama',
+          model: 'qwen2.5:7b-instruct',
+          baseUrl: 'http://127.0.0.1:11434',
+          timeoutMs: 8000,
+          minContentChars: 100,
+        },
+      } as any);
+      const saved = store.saveObservation({
+        title: 'KG LLM telemetry source',
+        content: [
+          'Auth service depends on Redis cache.',
+          ...Array.from({ length: 10 }, (_, index) => (
+            `Turn ${index}: long conversation context keeps the LLM enrichment gate enabled.`
+          )),
+        ].join('\n'),
+        project: 'hybrid-test',
+      });
+
+      const runtime = store as any;
+      await runtime.processSemanticJobs({
+        limit: 20,
+        kgLlmExtractor: {
+          extract: async () => {
+            throw new Error('kg provider offline');
+          },
+        },
+      });
+
+      const job = store.getDb().prepare(
+        'SELECT state, last_error FROM semantic_jobs WHERE job_key = ?'
+      ).get(`kg:${saved.observation.id}`) as { state: string; last_error: string | null };
+      const triples = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.observation.id) as { count: number };
+      const progress = runtime.getSemanticIndexProgress({ project: 'hybrid-test' });
+
+      expect(job.state).toBe('done');
+      expect(job.last_error).toContain('KG LLM enrichment failed: kg provider offline');
+      expect(triples.count).toBeGreaterThan(0);
+      expect(progress.recentErrors.some((error: { jobKey: string; lastError: string | null }) => (
+        error.jobKey === `kg:${saved.observation.id}`
+        && error.lastError?.includes('kg provider offline')
+      ))).toBe(true);
+    });
+
     it('rebuild: manual rebuild enqueue is idempotent and hash mismatch marks stale', () => {
       store = new Store(':memory:');
       const runtime = store as any;

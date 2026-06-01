@@ -36,8 +36,20 @@ describe('Store visualization', () => {
     const store = new Store(':memory:');
 
     try {
+      store.saveObservation({
+        title: 'Telemetry target',
+        content: 'Index telemetry should expose queue and coverage details.',
+        project: 'viz-project',
+      });
       const pending = store.getVisualizationHealth({ project: 'viz-project' });
       expect(['pending', 'degraded', 'ready', 'rebuilding']).toContain(pending.semantic_state);
+      expect(pending.semantic.jobs.pending).toBeGreaterThan(0);
+      expect(pending.semantic.jobs.total).toBeGreaterThanOrEqual(pending.semantic.jobs.pending);
+      expect(pending.semantic.coverage.observations).toBe(1);
+      expect(pending.semantic.coverage.chunk_coverage).toBeGreaterThanOrEqual(0);
+      expect(pending.semantic.coverage.chunk_coverage).toBeLessThanOrEqual(1);
+      expect(pending.semantic.lanes.map((lane) => lane.lane).sort()).toEqual(['chunk', 'sentence']);
+      expect(Array.isArray(pending.semantic.recent_errors)).toBe(true);
 
       store.getDb().prepare("UPDATE semantic_index_state SET degraded = 1, pending = 0 WHERE lane IN ('chunk','sentence')").run();
       const degraded = store.getVisualizationHealth({ project: 'viz-project' });
