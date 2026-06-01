@@ -45,4 +45,49 @@ describe('RemoteEmbeddingProvider', () => {
 
     expect(body.input).toEqual(['search_document: rotation policy']);
   });
+
+  it('surfaces HTTP failures from embedding providers', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      text: async () => 'model warming',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new RemoteEmbeddingProvider(embeddingConfig());
+
+    await expect(provider.embed(['rotate credentials'], 'query'))
+      .rejects.toThrow('Embedding request failed (503 Service Unavailable): model warming');
+  });
+
+  it('rejects malformed LM Studio embedding responses', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ data: [] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new RemoteEmbeddingProvider(embeddingConfig());
+
+    await expect(provider.embed(['first', 'second'], 'document'))
+      .rejects.toThrow('LM Studio embedding response length mismatch');
+  });
+
+  it('rejects Ollama responses without embedding arrays', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ response: 'not a vector' }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new RemoteEmbeddingProvider({
+      ...embeddingConfig(),
+      provider: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434',
+    });
+
+    await expect(provider.embed(['first'], 'document'))
+      .rejects.toThrow('Ollama embedding response did not include an embedding array.');
+  });
 });

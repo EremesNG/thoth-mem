@@ -69,4 +69,37 @@ describe('HyDE generators', () => {
     expect(body.options.num_predict).toBe(100);
     expect(answer).toBe('Credentials are rotated by revoking old keys and issuing new ones.');
   });
+
+  it('surfaces non-OK remote HyDE responses', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway',
+      text: async () => 'provider restarting',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const generator = new RemoteHydeGenerator(hydeConfig());
+
+    await expect(generator.generate({ query: 'credential rotation policy' }))
+      .rejects.toThrow('HyDE provider request failed (502): provider restarting');
+  });
+
+  it('rejects empty remote HyDE answers', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '   ' } }] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const generator = new RemoteHydeGenerator(hydeConfig());
+
+    await expect(generator.generate({ query: 'credential rotation policy' }))
+      .rejects.toThrow('OpenAI-compatible HyDE response did not include message content.');
+  });
+
+  it('requires a base URL for remote HyDE providers', () => {
+    expect(() => new RemoteHydeGenerator(hydeConfig({ baseUrl: null })))
+      .toThrow('RemoteHydeGenerator requires a baseUrl.');
+  });
 });

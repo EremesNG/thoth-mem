@@ -117,4 +117,60 @@ describe('kg llm generator', () => {
       },
     ]);
   });
+
+  it('returns null when KG LLM enrichment is disabled', () => {
+    expect(createKgLlmExtractor({
+      enabled: false,
+      provider: 'ollama',
+      model: 'qwen2.5:7b-instruct',
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 5000,
+      minContentChars: 1000,
+    })).toBeNull();
+  });
+
+  it('surfaces HTTP failures from KG LLM providers', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const extractor = createKgLlmExtractor({
+      enabled: true,
+      provider: 'ollama',
+      model: 'qwen2.5:7b-instruct',
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 5000,
+      minContentChars: 1000,
+    });
+
+    await expect(extractor!.extract({
+      content: 'Session Worker runs in Background Queue.',
+      provenance: 'observation:2',
+    })).rejects.toThrow('KG LLM request failed: HTTP 503');
+  });
+
+  it('rejects KG LLM responses without JSON payloads', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ response: 'no triples here' }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const extractor = createKgLlmExtractor({
+      enabled: true,
+      provider: 'ollama',
+      model: 'qwen2.5:7b-instruct',
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 5000,
+      minContentChars: 1000,
+    });
+
+    await expect(extractor!.extract({
+      content: 'Session Worker runs in Background Queue.',
+      provenance: 'observation:2',
+    })).rejects.toThrow('KG LLM response did not contain JSON');
+  });
 });
