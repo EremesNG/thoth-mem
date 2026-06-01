@@ -46,6 +46,10 @@ const RELATION_PATTERNS: Array<{
   { tokens: ['authenticated', 'with'], relation: 'AUTHENTICATES_WITH', confidence: 0.82 },
   { tokens: ['depends', 'on'], relation: 'DEPENDS_ON', confidence: 0.8 },
   { tokens: ['depend', 'on'], relation: 'DEPENDS_ON', confidence: 0.8 },
+  { tokens: ['requires'], relation: 'DEPENDS_ON', confidence: 0.78 },
+  { tokens: ['require'], relation: 'DEPENDS_ON', confidence: 0.78 },
+  { tokens: ['backed', 'by'], relation: 'DEPENDS_ON', confidence: 0.78 },
+  { tokens: ['powered', 'by'], relation: 'DEPENDS_ON', confidence: 0.76 },
   { tokens: ['belongs', 'to'], relation: 'BELONGS_TO', confidence: 0.8 },
   { tokens: ['part', 'of'], relation: 'PART_OF', confidence: 0.78 },
   { tokens: ['runs', 'in'], relation: 'RUNS_IN', confidence: 0.78 },
@@ -270,6 +274,49 @@ function extractExplicitGraphTriples(content: string): Array<{ subject: string; 
   return triples;
 }
 
+function extractStructuredTripleBlocks(content: string): Array<{ subject: string; relation: RelationType; object: string }> {
+  const triples: Array<{ subject: string; relation: RelationType; object: string }> = [];
+  let current: { subject?: string; relation?: string; object?: string } = {};
+
+  const flush = (): void => {
+    if (!current.subject || !current.relation || !current.object) {
+      return;
+    }
+
+    const relation = current.relation.trim().toUpperCase().replace(/[\s-]+/g, '_');
+    if (!KG_RELATION_TYPE_SET.has(relation)) {
+      current = {};
+      return;
+    }
+
+    const subject = cleanExplicitEntity(current.subject);
+    const object = cleanExplicitEntity(current.object);
+    if (subject && object && subject !== object) {
+      triples.push({ subject, relation: relation as RelationType, object });
+    }
+    current = {};
+  };
+
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:[-*]\s*)?(subject|relation|object)\s*:\s*(.*?)\s*$/i);
+    if (!match) {
+      continue;
+    }
+
+    const field = match[1].toLowerCase() as 'subject' | 'relation' | 'object';
+    if (field === 'subject' && current.subject && (current.relation || current.object)) {
+      flush();
+    }
+    current[field] = match[2];
+    if (current.subject && current.relation && current.object) {
+      flush();
+    }
+  }
+
+  flush();
+  return triples;
+}
+
 export function extractKnowledgeTriples(input: {
   content: string;
   provenance: string;
@@ -306,7 +353,7 @@ export function extractKnowledgeTriples(input: {
     });
   };
 
-  for (const explicitTriple of extractExplicitGraphTriples(input.content)) {
+  for (const explicitTriple of [...extractStructuredTripleBlocks(input.content), ...extractExplicitGraphTriples(input.content)]) {
     pushTriple(explicitTriple.subject, explicitTriple.relation, explicitTriple.object, 0.92);
   }
 

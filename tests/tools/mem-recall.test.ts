@@ -97,4 +97,65 @@ describe('mem_recall tool', () => {
     expect(text).toContain('primary_sentence: Rotate encryption keys weekly.');
     expect(text).toContain('surrounding_parent_chunk: Rotate encryption keys weekly. Keep parent context nearby.');
   });
+
+  it('passes structured filters through to hybrid retrieval', async () => {
+    store.saveObservation({
+      title: 'Allowed filtered recall',
+      content: 'structured filter marker alpha',
+      project: 'recall-project',
+      session_id: 'session-allowed',
+      scope: 'personal',
+      topic_key: 'allowed/topic',
+      type: 'decision',
+    });
+    store.saveObservation({
+      title: 'Blocked filtered recall',
+      content: 'structured filter marker alpha',
+      project: 'recall-project',
+      session_id: 'session-blocked',
+      scope: 'project',
+      topic_key: 'blocked/topic',
+      type: 'bugfix',
+    });
+
+    const result = await toolHandler?.({
+      query: 'structured filter marker alpha',
+      project: 'recall-project',
+      session_id: 'session-allowed',
+      scope: 'personal',
+      topic_key: 'allowed/topic',
+      type: 'decision',
+      limit: 5,
+    });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('session_id: session-allowed');
+    expect(text).toContain('scope: personal');
+    expect(text).toContain('topic_key: allowed/topic');
+    expect(text).toContain('type: decision');
+    expect(text).toContain('Allowed filtered recall');
+    expect(text).not.toContain('Blocked filtered recall');
+  });
+
+  it('passes time filters through to hybrid retrieval', async () => {
+    store.saveObservation({
+      title: 'Temporal recall target',
+      content: 'temporal filter marker beta',
+      project: 'recall-project',
+    });
+
+    const result = await toolHandler?.({
+      query: 'temporal filter marker beta',
+      project: 'recall-project',
+      time_from: '2999-01-01',
+      limit: 5,
+    });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('time_from: 2999-01-01');
+    expect(text).toContain('evidence:\nnone');
+    expect(text).not.toContain('Temporal recall target');
+  });
 });

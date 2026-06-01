@@ -1533,7 +1533,7 @@ export class Store {
     const terms = this.getQueryTerms(input.query);
     const params: Array<string | number | Buffer> = [prefixQuery];
     const sql = [
-      'SELECT o.id as observation_id, o.content, fts.rank',
+      'SELECT o.id as observation_id, o.title, o.content, fts.rank',
       'FROM observations_fts fts',
       'JOIN observations o ON o.id = fts.rowid',
       'WHERE observations_fts MATCH ?',
@@ -1542,14 +1542,19 @@ export class Store {
     this.appendObservationFilters(sql, params, input.filters);
     sql.push('ORDER BY fts.rank ASC LIMIT ?');
     params.push(input.lexicalLimit);
-    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; content: string; rank: number }>;
-    return rows.map((row) => ({
-      lane: 'lexical' as const,
+    const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; title: string; content: string; rank: number }>;
+    return rows.map((row) => {
+      const evidenceMatchesTitleOrContent = this.sentenceMatchesTerms(`${row.title} ${row.content}`, terms);
+      const baseScore = 1 / (1 + Math.abs(row.rank));
+      const score = evidenceMatchesTitleOrContent ? baseScore : baseScore * 0.1;
+      return {
+        lane: 'lexical' as const,
         observationId: row.observation_id,
-        score: 1 / (1 + Math.abs(row.rank)),
+        score,
         source: 'lexical_prefix' as const,
         text: this.buildLexicalEvidenceText(row.observation_id, row.content, terms),
-      }));
+      };
+    });
   }
 
   private queryKnowledgeLane(input: {

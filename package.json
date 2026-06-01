@@ -25,6 +25,7 @@
     "dashboard:build": "pnpm --dir dashboard build",
     "dashboard:typecheck": "pnpm --dir dashboard typecheck",
     "dev": "tsx watch src/index.ts",
+    "eval:kg": "tsx src/evals/kg-quality.ts",
     "eval:retrieval": "tsx src/evals/retrieval.ts",
     "release:notes": "tsx scripts/generate-release-notes.ts",
     "test": "vitest run",

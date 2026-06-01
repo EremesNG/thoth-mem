@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Store } from "../store/index.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
+import { OBSERVATION_TYPES } from "../store/types.js";
 import { sanitizeRetrievedContext } from "../utils/context-safety.js";
 
 const MAX_CONTEXT_CHARS = 6000;
@@ -84,16 +85,28 @@ export function registerMemRecall(
     {
       query: z.string().min(1).describe("Recall/search query"),
       project: z.string().optional().describe("Optional project filter"),
+      session_id: z.string().optional().describe("Optional session filter"),
+      scope: z.enum(['project', 'personal'] as const).optional().describe("Optional scope filter"),
+      topic_key: z.string().optional().describe("Optional exact topic_key filter"),
+      type: z.enum(OBSERVATION_TYPES).optional().describe("Optional observation type filter"),
+      time_from: z.string().optional().describe("Optional inclusive created_at lower bound"),
+      time_to: z.string().optional().describe("Optional inclusive created_at upper bound"),
       limit: z.number().min(1).max(20).optional().describe("Maximum evidence items (default: 5)"),
       mode: z.enum(['compact', 'context'] as const).optional().describe("compact returns evidence lines; context includes retrieved text"),
       hyde: z.boolean().optional().describe("Request HyDE query expansion when configured"),
       debug: z.boolean().optional().describe("Include retrieval defaults and semantic input sources"),
     },
-    async ({ query, project, limit, mode = 'compact', hyde, debug }) => {
+    async ({ query, project, session_id, scope, topic_key, type, time_from, time_to, limit, mode = 'compact', hyde, debug }) => {
       try {
         const retrieval = await store.hybridRetrieve({
           query,
           project,
+          session_id,
+          scope,
+          topic_key,
+          type,
+          time_from,
+          time_to,
           limit: limit ?? 5,
           hyde: hyde === undefined ? undefined : { enabled: hyde },
           embeddingProvider: options.embeddingProvider,
@@ -114,6 +127,12 @@ export function registerMemRecall(
         const text = [
           `Recall query: ${query}`,
           project ? `project: ${project}` : null,
+          session_id ? `session_id: ${session_id}` : null,
+          scope ? `scope: ${scope}` : null,
+          topic_key ? `topic_key: ${topic_key}` : null,
+          type ? `type: ${type}` : null,
+          time_from ? `time_from: ${time_from}` : null,
+          time_to ? `time_to: ${time_to}` : null,
           `pending: ${retrieval.pending ? 'yes' : 'no'}`,
           `degraded_fallback: ${retrieval.degradedFallback.length > 0 ? retrieval.degradedFallback.join(', ') : 'none'}`,
           `evidence_lanes: ${Object.keys(laneCounts).length > 0 ? Object.entries(laneCounts).map(([laneName, count]) => `${laneName}:${count}`).join(', ') : 'none'}`,

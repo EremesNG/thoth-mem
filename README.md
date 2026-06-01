@@ -47,7 +47,7 @@ Agent Session 1                    Agent Session 2
 - **Paginated retrieval** — large observations served in chunks via offset/max_length
 - **Privacy defense** — `<private>` tags stripped before storage
 - **Token-efficient recall** — compact fused evidence first, context expansion only when needed
-- **Retrieval eval baseline** — deterministic hybrid retrieval benchmark (lexical, semantic raw/HyDE, KG, compression, lineage)
+- **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples)
 - **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
 
@@ -186,9 +186,18 @@ pnpm run dashboard:typecheck
 pnpm run dashboard:build
 pnpm test
 pnpm run eval:retrieval
+pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations. It reports baseline lexical recall plus hybrid status metrics (pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, and evidence lineage coverage) without requiring model downloads or remote APIs.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations plus synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased case mix, surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, and evidence lineage coverage without requiring model downloads or remote APIs.
+
+Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
+
+```powershell
+$env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
+```
+
+`pnpm run eval:kg` runs a deterministic KG quality eval for subject-relation-object extraction. It reports expected triple recall and forbidden triple rate across passive relations, explicit graph notation, structured SRO blocks, dependency prose, structured sections, and technical references.
 
 ## MCP Tools (6)
 
@@ -207,6 +216,7 @@ pnpm run eval:retrieval
 ## Retrieval and Embeddings
 
 - `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
+- `mem_recall` accepts precision filters for `project`, `session_id`, `scope`, `topic_key`, `type`, `time_from`, and `time_to`; these pass through to all retrieval lanes.
 - Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical`. Knowledge-graph facts enrich returned core hits instead of competing as a ranking lane.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.

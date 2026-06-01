@@ -65,4 +65,33 @@ describe('kg-extractor relation quality', () => {
     expect(triples.some((triple) => triple.relation === 'INVALID_EDGE')).toBe(false);
     expect(hasTriple(triples, 'cache layer', 'INVALID_EDGE', 'redis')).toBe(false);
   });
+
+  it('parses structured subject-relation-object blocks', () => {
+    const triples = triplesFrom(
+      [
+        'Subject: ArcRift retrieval engine',
+        'Relation: DEPENDS_ON',
+        'Object: sentence vector index',
+        '',
+        '- subject: Memory sync pipeline',
+        '- relation: IMPLEMENTS',
+        '- object: portable backup chunks',
+      ].join('\n')
+    );
+
+    expect(hasTriple(triples, 'arcrift retrieval engine', 'DEPENDS_ON', 'sentence vector index')).toBe(true);
+    expect(hasTriple(triples, 'memory sync pipeline', 'IMPLEMENTS', 'portable backup chunks')).toBe(true);
+  });
+
+  it('extracts dependency language used in architecture notes', () => {
+    const triples = triplesFrom(
+      [
+        'Search API requires vector index readiness.',
+        'Cache layer is backed by Redis cluster.',
+      ].join(' ')
+    );
+
+    expect(hasTriple(triples, 'search api', 'DEPENDS_ON', 'vector index readiness')).toBe(true);
+    expect(hasTriple(triples, 'cache layer', 'DEPENDS_ON', 'redis cluster')).toBe(true);
+  });
 });

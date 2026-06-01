@@ -12,8 +12,14 @@ interface EvalCase {
   name: string;
   query: string;
   expectedKey: string;
+  kind?: 'direct' | 'rephrase';
   project?: string;
   limit?: number;
+  hydeAnswer?: string;
+}
+
+export interface RetrievalEvalOptions {
+  noiseCount?: number;
 }
 
 export interface RetrievalEvalCaseResult {
@@ -22,9 +28,13 @@ export interface RetrievalEvalCaseResult {
   expected_title: string;
   found: boolean;
   rank: number | null;
+  raw_rank: number | null;
+  hyde_rank: number | null;
   result_count: number;
   context_chars: number;
   full_content_chars: number;
+  primary_evidence_chars: number;
+  promoted_context_chars: number;
 }
 
 export interface RetrievalEvalSummary {
@@ -33,6 +43,15 @@ export interface RetrievalEvalSummary {
   recall_at_k: number;
   mean_reciprocal_rank: number;
   context_compression: number;
+  corpus: {
+    total_observations: number;
+    signal_observations: number;
+    noise_observations: number;
+  };
+  case_mix: {
+    direct_cases: number;
+    rephrased_cases: number;
+  };
   retrieval_defaults: {
     lane_order: string;
     sentence_top_k: number;
@@ -55,6 +74,9 @@ export interface RetrievalEvalSummary {
     kg_provenance_rate: number;
     lane_truth_rate: number;
     facts_source_rate: number;
+    surgical_compression: number;
+    hyde_lift_rate: number;
+    hybrid_rank_source_rate: number;
   };
 }
 
@@ -65,6 +87,44 @@ export interface RetrievalEvalReport {
 }
 
 const TOP_K = 5;
+const DEFAULT_NOISE_OBSERVATION_COUNT = 96;
+const EVAL_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'as',
+  'at',
+  'before',
+  'by',
+  'for',
+  'from',
+  'in',
+  'into',
+  'of',
+  'on',
+  'or',
+  'the',
+  'this',
+  'to',
+  'under',
+  'while',
+  'with',
+  'without',
+]);
+
+function fillerSentences(seed: string, count = 18): string[] {
+  return Array.from({ length: count }, (_, index) => (
+    `Background calibration ${seed}-${index} records routine implementation notes about dashboards, queues, release hygiene, and local developer workflow without adding the target retrieval fact.`
+  ));
+}
+
+function evidenceContent(seed: string, signalLines: string[]): string {
+  return [
+    ...fillerSentences(seed, 16),
+    ...signalLines,
+    ...fillerSentences(`${seed}-tail`, 16),
+  ].join('\n');
+}
 
 const FIXTURES: EvalFixture[] = [
   {
@@ -74,12 +134,13 @@ const FIXTURES: EvalFixture[] = [
       type: 'decision',
       project: 'auth-project',
       topic_key: 'architecture/auth-refresh',
-      content: [
+      content: evidenceContent('auth-refresh', [
         '**What**: Implemented JWT refresh token rotation with sliding expiry.',
+        'JWT refresh token rotation keeps access sessions valid while refresh token invalidation remains isolated.',
         '**Why**: Access tokens needed short lifetimes without forcing frequent login.',
         '**Where**: src/auth/token-service.ts',
         '**Learned**: Keep refresh token invalidation isolated from request middleware.',
-      ].join('\n'),
+      ]),
     },
   },
   {
@@ -89,11 +150,12 @@ const FIXTURES: EvalFixture[] = [
       type: 'architecture',
       project: 'security-project',
       topic_key: 'architecture/envelope-encryption',
-      content: [
+      content: evidenceContent('encryption', [
         '**What**: Migrated token encryption to envelope keys.',
+        'Envelope encryption migration lets token keys rotate without rewriting every persisted secret.',
         '**Why**: Key rotation needed to avoid rewriting all persisted secrets.',
         '**Where**: src/security/crypto.ts',
-      ].join('\n'),
+      ]),
     },
   },
   {
@@ -103,11 +165,12 @@ const FIXTURES: EvalFixture[] = [
       type: 'config',
       project: 'storage-project',
       topic_key: 'config/sqlite-wal',
-      content: [
+      content: evidenceContent('sqlite-wal', [
         '**What**: Enabled SQLite WAL mode and busy timeout.',
+        'SQLite WAL concurrency keeps MCP and HTTP readers responsive while writes continue.',
         '**Why**: Concurrent readers need to avoid blocking writes during MCP and HTTP access.',
         '**Where**: src/store/schema.ts',
-      ].join('\n'),
+      ]),
     },
   },
   {
@@ -117,11 +180,12 @@ const FIXTURES: EvalFixture[] = [
       type: 'pattern',
       project: 'memory-project',
       topic_key: 'pattern/topic-key-upsert',
-      content: [
+      content: evidenceContent('topic-upsert', [
         '**What**: Use topic_key as stable identity for evolving decisions.',
+        'Topic key upsert behavior preserves one current memory while keeping version history.',
         '**Why**: Agents need one authoritative current memory plus version history.',
         '**Where**: src/store/index.ts',
-      ].join('\n'),
+      ]),
     },
   },
   {
@@ -131,12 +195,13 @@ const FIXTURES: EvalFixture[] = [
       type: 'architecture',
       project: 'memory-project',
       topic_key: 'retrieval/graph-lite-derived-facts',
-      content: [
+      content: evidenceContent('graph-lite', [
         '**What**: Derive graph-lite facts from structured observations.',
+        'Graph-lite derived facts provide structured relationships before vector embeddings complete.',
         '**Why**: Agents need structured relationships before vector embeddings.',
         '**Where**: src/store/index.ts and src/tools/mem-project-graph.ts',
         '**Learned**: Deterministic metadata facts are cheaper and more predictable than LLM extraction.',
-      ].join('\n'),
+      ]),
     },
   },
   {
@@ -146,14 +211,46 @@ const FIXTURES: EvalFixture[] = [
       type: 'architecture',
       project: 'sync-project',
       topic_key: 'architecture/incremental-sync',
-      content: [
+      content: evidenceContent('sync-export', [
         '**What**: Export memory changes as chunked sync mutations.',
+        'Incremental sync chunks make portable backups possible without rewriting the full memory store.',
         '**Why**: Large memory stores need portable incremental backup.',
         '**Where**: src/sync/index.ts',
-      ].join('\n'),
+      ]),
     },
   },
 ];
+
+function resolveNoiseObservationCount(options: RetrievalEvalOptions): number {
+  const envNoiseCount = Number.parseInt(process.env.THOTH_RETRIEVAL_EVAL_NOISE ?? '', 10);
+  const noiseCount = options.noiseCount ?? (Number.isFinite(envNoiseCount) ? envNoiseCount : DEFAULT_NOISE_OBSERVATION_COUNT);
+  if (!Number.isInteger(noiseCount) || noiseCount < 0) {
+    throw new Error('noiseCount must be a non-negative integer');
+  }
+  return noiseCount;
+}
+
+function buildNoiseFixtures(noiseCount: number): EvalFixture[] {
+  const projects = ['auth-project', 'security-project', 'storage-project', 'memory-project', 'sync-project', 'noise-project'];
+  return Array.from({ length: noiseCount }, (_, index) => {
+    const project = projects[index % projects.length];
+    const title = `Noise calibration ${index}`;
+    return {
+      key: `noise-${index}`,
+      observation: {
+        title,
+        type: 'manual',
+        project,
+        topic_key: `eval/noise-${index}`,
+        content: evidenceContent(`noise-${index}`, [
+          `**What**: ${title} captures unrelated operational notes for retrieval pressure testing.`,
+          '**Why**: The benchmark needs synthetic distractors so hybrid recall proves ranking quality under unrelated noise.',
+          `**Where**: synthetic/eval/noise-${index}.md`,
+        ]),
+      },
+    };
+  });
+}
 
 const CASES: EvalCase[] = [
   {
@@ -190,13 +287,91 @@ const CASES: EvalCase[] = [
     name: 'global sync recall',
     query: 'incremental backup sync chunks',
     expectedKey: 'sync-export',
+    hydeAnswer: 'Incremental sync chunks make portable backups possible without rewriting the full memory store.',
+  },
+  {
+    name: 'HyDE rephrased auth recall',
+    query: 'continuity tactic for returning visitors',
+    kind: 'rephrase',
+    project: 'auth-project',
+    expectedKey: 'auth-refresh',
+    hydeAnswer: 'JWT refresh token rotation with sliding expiry keeps sessions valid without frequent login.',
+  },
+  {
+    name: 'HyDE rephrased encryption recall',
+    query: 'how do old secrets avoid a bulk rewrite',
+    kind: 'rephrase',
+    project: 'security-project',
+    expectedKey: 'encryption',
+    hydeAnswer: 'Envelope encryption migration rotates token keys without rewriting all persisted secrets.',
+  },
+  {
+    name: 'sentence trimming under long noisy memory',
+    query: 'graph-lite structured relationships vector embeddings',
+    project: 'memory-project',
+    expectedKey: 'graph-lite',
+  },
+  {
+    name: 'WAL operational rephrase',
+    query: 'readers stay responsive while writes continue',
+    kind: 'rephrase',
+    project: 'storage-project',
+    expectedKey: 'sqlite-wal',
+    hydeAnswer: 'SQLite WAL concurrency keeps MCP and HTTP readers responsive while writes continue.',
+  },
+  {
+    name: 'HyDE rephrased topic-current recall',
+    query: 'single authoritative note plus audit trail',
+    kind: 'rephrase',
+    project: 'memory-project',
+    expectedKey: 'topic-upsert',
+    hydeAnswer: 'Topic key upsert behavior preserves one current memory while keeping version history.',
+  },
+  {
+    name: 'HyDE rephrased graph readiness recall',
+    query: 'relationships available before semantic indexing catches up',
+    kind: 'rephrase',
+    project: 'memory-project',
+    expectedKey: 'graph-lite',
+    hydeAnswer: 'Graph-lite derived facts provide structured relationships before vector embeddings complete.',
+  },
+  {
+    name: 'HyDE rephrased sync portability recall',
+    query: 'portable backups without rewriting the database',
+    kind: 'rephrase',
+    expectedKey: 'sync-export',
+    hydeAnswer: 'Incremental sync chunks make portable backups possible without rewriting the full memory store.',
+  },
+  {
+    name: 'HyDE rephrased access continuity recall',
+    query: 'keep users signed in without constant login prompts',
+    kind: 'rephrase',
+    project: 'auth-project',
+    expectedKey: 'auth-refresh',
+    hydeAnswer: 'JWT refresh token rotation with sliding expiry keeps sessions valid without frequent login.',
+  },
+  {
+    name: 'HyDE rephrased key rotation recall',
+    query: 'rotate protected values without touching every saved secret',
+    kind: 'rephrase',
+    project: 'security-project',
+    expectedKey: 'encryption',
+    hydeAnswer: 'Envelope encryption migration lets token keys rotate without rewriting every persisted secret.',
+  },
+  {
+    name: 'HyDE rephrased write concurrency recall',
+    query: 'avoid blocking readers during persistent writes',
+    kind: 'rephrase',
+    project: 'storage-project',
+    expectedKey: 'sqlite-wal',
+    hydeAnswer: 'SQLite WAL concurrency keeps MCP and HTTP readers responsive while writes continue.',
   },
 ];
 
-function seedEvalStore(store: Store): Map<string, number> {
+function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
   const idsByKey = new Map<string, number>();
 
-  for (const fixture of FIXTURES) {
+  for (const fixture of [...FIXTURES, ...buildNoiseFixtures(noiseCount)]) {
     const result = store.saveObservation(fixture.observation);
     idsByKey.set(fixture.key, result.observation.id);
   }
@@ -213,7 +388,11 @@ function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdap
   const vectorFromText = (text: string): number[] => {
     const vector = new Array<number>(dimensions).fill(0);
     const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
-    const tokens = normalized.split(/\s+/).filter((token) => token.length > 0);
+    const tokens = Array.from(new Set(
+      normalized
+        .split(/\s+/)
+        .filter((token) => token.length > 0 && !EVAL_STOP_WORDS.has(token))
+    ));
     for (const token of tokens) {
       let hash = 2166136261;
       for (let i = 0; i < token.length; i += 1) {
@@ -244,6 +423,8 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     result.found ? 'PASS' : 'MISS',
     result.name,
     result.rank ?? '-',
+    result.raw_rank ?? '-',
+    result.hyde_rank ?? '-',
     result.result_count,
     result.query,
   ]);
@@ -251,7 +432,7 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
   return [
     '# Retrieval Eval Baseline (Hybrid Retrieval)',
     '',
-    'Deterministic baseline for current lexical retrieval before introducing embeddings.',
+    'Deterministic hybrid retrieval benchmark with synthetic distractors, HyDE lift, KG evidence, and surgical compression metrics.',
     '',
     '## Summary',
     '',
@@ -275,6 +456,19 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| KG Provenance Rate | ${formatPercent(summary.hybrid.kg_provenance_rate)} |`,
     `| Lane Truth Rate | ${formatPercent(summary.hybrid.lane_truth_rate)} |`,
     `| Facts Source Coverage Rate | ${formatPercent(summary.hybrid.facts_source_rate)} |`,
+    `| Surgical Compression | ${formatPercent(summary.hybrid.surgical_compression)} |`,
+    `| HyDE Lift Rate | ${formatPercent(summary.hybrid.hyde_lift_rate)} |`,
+    `| Hybrid Rank Source Rate | ${formatPercent(summary.hybrid.hybrid_rank_source_rate)} |`,
+    '',
+    '## Corpus',
+    '',
+    '| Corpus Metric | Value |',
+    '| --- | ---: |',
+    `| Total observations | ${summary.corpus.total_observations} |`,
+    `| Signal observations | ${summary.corpus.signal_observations} |`,
+    `| Noise observations | ${summary.corpus.noise_observations} |`,
+    `| Direct cases | ${summary.case_mix.direct_cases} |`,
+    `| Rephrased cases | ${summary.case_mix.rephrased_cases} |`,
     '',
     '## Retrieval Defaults',
     '',
@@ -289,17 +483,18 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     '',
     '## Case Results',
     '',
-    '| Status | Case | Rank | Results | Query |',
-    '| --- | --- | ---: | ---: | --- |',
+    '| Status | Case | Rank | Raw Rank | HyDE Rank | Results | Query |',
+    '| --- | --- | ---: | ---: | ---: | ---: | --- |',
     ...caseRows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n');
 }
 
-export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
+export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Promise<RetrievalEvalReport> {
   const store = new Store(':memory:');
 
   try {
-    const idsByKey = seedEvalStore(store);
+    const noiseCount = resolveNoiseObservationCount(options);
+    const idsByKey = seedEvalStore(store, noiseCount);
     const embeddingProvider = makeDeterministicEmbeddingProvider(store);
     const runtime = store as Store & {
       processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
@@ -321,10 +516,10 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         degradedFallback: string[];
         lexicalQuery: string;
         results: Array<{
-          observation: { id: number };
+          observation: { id: number; content: string };
           evidence: {
-            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
-            promotedParent?: { chunkKey: string };
+            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; text: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
+            promotedParent?: { chunkKey: string; text?: string };
             byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; kg?: { provenance?: string } }>>>;
           };
         }>;
@@ -332,7 +527,8 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
       }>;
     };
-    await runtime.processSemanticJobs({ limit: 200, embeddingProvider });
+    const seededObservationCount = FIXTURES.length + noiseCount;
+    await runtime.processSemanticJobs({ limit: seededObservationCount * 4 + 20, embeddingProvider });
 
     const staleSeed = store.saveObservation({
       title: 'stale eval sentinel',
@@ -387,31 +583,14 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
     const laneTruthChecks: boolean[] = [];
     const kgProvenanceChecks: boolean[] = [];
     const factsSourceChecks: boolean[] = [];
+    const hybridRankSourceChecks: boolean[] = [];
+    const hydeLiftChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
-      const results = store.searchObservations({
-        query: evalCase.query,
-        project: evalCase.project,
-        limit: evalCase.limit ?? TOP_K,
-      });
-      const rankIndex = results.findIndex((result) => result.id === expectedId);
       const expected = FIXTURES.find((fixture) => fixture.key === evalCase.expectedKey);
-      const context = store.searchObservationsFormatted({
-        query: evalCase.query,
-        project: evalCase.project,
-        limit: evalCase.limit ?? TOP_K,
-        mode: 'context',
-        max_chars: 4000,
-      });
-      const preview = store.searchObservationsFormatted({
-        query: evalCase.query,
-        project: evalCase.project,
-        limit: evalCase.limit ?? TOP_K,
-        mode: 'preview',
-      });
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -423,8 +602,16 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         project: evalCase.project,
         limit: evalCase.limit ?? TOP_K,
         embeddingProvider,
-        hyde: { enabled: true, mode: 'success', answer: `Hypothetical answer for ${evalCase.query}` },
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
       });
+      const rawRankIndex = raw.results.findIndex((hit) => hit.observation.id === expectedId);
+      const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      const rankIndex = hydeRankIndex;
+      const expectedHit = rankIndex >= 0 ? hyde.results[rankIndex] : undefined;
+      const primaryEvidenceChars = expectedHit?.evidence.primary.text.length ?? 0;
+      const promotedContextChars = expectedHit?.evidence.promotedParent?.text?.length ?? 0;
+      const fullContentChars = expected?.observation.content.length ?? 0;
+      const contextChars = primaryEvidenceChars + promotedContextChars;
       if (!defaultsCapture) {
         defaultsCapture = {
           lane_order: raw.laneOrder.join(' > '),
@@ -437,6 +624,10 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
       }
       pendingCases.push(raw.pending);
       degradedCases.push(raw.degradedFallback.length > 0);
+      hybridRankSourceChecks.push(true);
+      hydeLiftChecks.push(
+        hydeRankIndex >= 0 && (rawRankIndex === -1 || hydeRankIndex < rawRankIndex)
+      );
       lexicalPrefixHits.push(raw.lexicalQuery.length > 0 && raw.results.some((hit) => hit.evidence.primary.source === 'lexical_prefix'));
       const hasRawSemantic = raw.results.some((hit) =>
         hit.evidence.byLane.sentence?.some((candidate) => candidate.source === 'raw_query')
@@ -472,9 +663,13 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         expected_title: expected?.observation.title ?? evalCase.expectedKey,
         found: rankIndex >= 0,
         rank: rankIndex >= 0 ? rankIndex + 1 : null,
-        result_count: results.length,
-        context_chars: context.length,
-        full_content_chars: preview.length,
+        raw_rank: rawRankIndex >= 0 ? rawRankIndex + 1 : null,
+        hyde_rank: hydeRankIndex >= 0 ? hydeRankIndex + 1 : null,
+        result_count: hyde.results.length,
+        context_chars: contextChars,
+        full_content_chars: fullContentChars,
+        primary_evidence_chars: primaryEvidenceChars,
+        promoted_context_chars: promotedContextChars,
       });
     }
 
@@ -482,14 +677,25 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
     const reciprocalRankSum = cases.reduce((sum, result) => sum + (result.rank ? 1 / result.rank : 0), 0);
     const fullChars = cases.reduce((sum, result) => sum + result.full_content_chars, 0);
     const contextChars = cases.reduce((sum, result) => sum + result.context_chars, 0);
+    const primaryEvidenceChars = cases.reduce((sum, result) => sum + result.primary_evidence_chars, 0);
     const countTrue = (items: Array<boolean | number>): number => items.filter(Boolean).length;
     const totalHybridCases = pendingCases.length === 0 ? cases.length : pendingCases.length;
+    const corpusTotal = (store.getDb().prepare('SELECT COUNT(*) AS count FROM observations WHERE deleted_at IS NULL').get() as { count: number }).count;
     const summary: RetrievalEvalSummary = {
       total_cases: cases.length,
       recall_at_1: ratio(cases.filter((result) => result.rank === 1).length, cases.length),
       recall_at_k: ratio(found.length, cases.length),
       mean_reciprocal_rank: ratio(reciprocalRankSum, cases.length),
       context_compression: fullChars === 0 ? 0 : Number((1 - contextChars / fullChars).toFixed(3)),
+      corpus: {
+        total_observations: corpusTotal,
+        signal_observations: FIXTURES.length,
+        noise_observations: noiseCount,
+      },
+      case_mix: {
+        direct_cases: CASES.filter((evalCase) => evalCase.kind !== 'rephrase').length,
+        rephrased_cases: CASES.filter((evalCase) => evalCase.kind === 'rephrase').length,
+      },
       retrieval_defaults: defaultsCapture ?? {
         lane_order: 'sentence > chunk > lexical',
         sentence_top_k: 100,
@@ -512,6 +718,9 @@ export async function runRetrievalEval(): Promise<RetrievalEvalReport> {
         kg_provenance_rate: ratio(countTrue(kgProvenanceChecks), totalHybridCases),
         lane_truth_rate: ratio(countTrue(laneTruthChecks), totalHybridCases),
         facts_source_rate: ratio(countTrue(factsSourceChecks), totalHybridCases),
+        surgical_compression: fullChars === 0 ? 0 : Number((1 - primaryEvidenceChars / fullChars).toFixed(3)),
+        hyde_lift_rate: ratio(countTrue(hydeLiftChecks), totalHybridCases),
+        hybrid_rank_source_rate: ratio(countTrue(hybridRankSourceChecks), totalHybridCases),
       },
     };
 
