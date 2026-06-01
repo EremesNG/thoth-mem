@@ -14,7 +14,7 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
     expect(report.summary.mean_reciprocal_rank).toBeGreaterThanOrEqual(0.8);
     expect(report.summary.context_compression).toBeGreaterThan(0);
-    expect(report.summary.retrieval_defaults.lane_order).toBe('sentence > chunk > lexical');
+    expect(report.summary.retrieval_defaults.lane_order).toBe('sentence > kg > chunk > lexical');
     expect(report.summary.retrieval_defaults.sentence_top_k).toBe(100);
     expect(report.summary.hybrid.pending_rate).toBeGreaterThanOrEqual(0);
     expect(report.summary.hybrid.degraded_rate).toBeGreaterThanOrEqual(0);
@@ -22,6 +22,7 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.raw_semantic_hit_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.hyde_semantic_hit_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.kg_hit_rate).toBeGreaterThan(0);
+    expect(report.summary.hybrid.kg_primary_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.evidence_lineage_coverage).toBeGreaterThan(0);
     expect(report.summary.hybrid.stale_result_rate).toBe(1);
     expect(report.summary.hybrid.kg_provenance_rate).toBeGreaterThan(0);
@@ -36,6 +37,7 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Pending Rate |');
     expect(report.markdown).toContain('| Stale Result Prevention Rate |');
     expect(report.markdown).toContain('| KG Provenance Rate |');
+    expect(report.markdown).toContain('| KG Primary Lane Rate |');
     expect(report.markdown).toContain('| Lane Truth Rate |');
     expect(report.markdown).toContain('## Retrieval Defaults');
     expect(report.markdown).toContain('## Case Results');
@@ -79,7 +81,7 @@ describe('retrieval eval baseline', () => {
     const scaledReport = await runRetrievalEval({ noiseCount: 120 });
 
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
-    expect(scaledReport.summary.corpus.total_observations).toBe(126);
+    expect(scaledReport.summary.corpus.total_observations).toBe(127);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
     expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
   }, 20_000);

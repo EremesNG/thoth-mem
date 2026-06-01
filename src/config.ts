@@ -14,6 +14,7 @@ export interface RetrievalDefaults {
 export type LocalModelProvider = 'ollama' | 'lmstudio' | 'transformers_local';
 export type EmbeddingProvider = LocalModelProvider;
 export type HydeProvider = LocalModelProvider;
+export type KgLlmProvider = Exclude<LocalModelProvider, 'transformers_local'>;
 
 export interface HydeConfig {
   enabled: boolean;
@@ -21,6 +22,15 @@ export interface HydeConfig {
   model: string | null;
   baseUrl: string | null;
   timeoutMs: number;
+}
+
+export interface KgLlmConfig {
+  enabled: boolean;
+  provider: KgLlmProvider;
+  model: string;
+  baseUrl: string;
+  timeoutMs: number;
+  minContentChars: number;
 }
 
 export interface EmbeddingConfig {
@@ -44,6 +54,7 @@ export interface ThothConfig {
   retrievalDefaults?: RetrievalDefaults;
   embedding?: EmbeddingConfig;
   hyde?: HydeConfig;
+  kgLlm?: KgLlmConfig;
 }
 
 interface PersistedEmbeddingConfig extends Partial<EmbeddingConfig> {
@@ -63,6 +74,7 @@ interface PersistedConfig {
   };
   embedding?: PersistedEmbeddingConfig;
   hyde?: Partial<HydeConfig>;
+  kgLlm?: Partial<KgLlmConfig>;
   retrievalDefaults?: Partial<RetrievalDefaults>;
 }
 
@@ -87,6 +99,15 @@ const DEFAULT_HYDE_CONFIG: HydeConfig = {
   model: DEFAULT_LOCAL_HYDE_MODEL,
   baseUrl: null,
   timeoutMs: 4000,
+};
+
+const DEFAULT_KG_LLM_CONFIG: KgLlmConfig = {
+  enabled: false,
+  provider: 'ollama',
+  model: 'qwen2.5:7b-instruct',
+  baseUrl: 'http://127.0.0.1:11434',
+  timeoutMs: 8000,
+  minContentChars: 12_000,
 };
 
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
@@ -157,6 +178,15 @@ function parseProvider(value: string | null | undefined, fallback: LocalModelPro
   return fallback;
 }
 
+function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmProvider): KgLlmProvider {
+  const normalized = value?.trim();
+  if (normalized === 'ollama' || normalized === 'lmstudio') {
+    return normalized;
+  }
+
+  return fallback;
+}
+
 function defaultPersistedConfig(): PersistedConfig {
   return {
     version: 1,
@@ -177,6 +207,7 @@ function defaultPersistedConfig(): PersistedConfig {
       dimensions: 768,
     },
     hyde: { ...DEFAULT_HYDE_CONFIG },
+    kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
   };
 }
 
@@ -218,6 +249,10 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
       ...defaults.hyde,
       ...(legacyHyde ?? {}),
       ...(existing.hyde ?? {}),
+    },
+    kgLlm: {
+      ...defaults.kgLlm,
+      ...(existing.kgLlm ?? {}),
     },
   };
 }
@@ -290,6 +325,32 @@ function resolveHydeConfig(persisted: PersistedConfig): HydeConfig {
   };
 }
 
+function resolveKgLlmConfig(persisted: PersistedConfig): KgLlmConfig {
+  const persistedKg = persisted.kgLlm ?? {};
+  const enabledFromEnv = parseBoolean(process.env.THOTH_KG_LLM_ENABLED);
+  const timeoutFromEnv = parseNumber(process.env.THOTH_KG_LLM_TIMEOUT_MS);
+  const minCharsFromEnv = parseNumber(process.env.THOTH_KG_LLM_MIN_CONTENT_CHARS);
+  const provider = parseKgLlmProvider(
+    process.env.THOTH_KG_LLM_PROVIDER ?? persistedKg.provider,
+    DEFAULT_KG_LLM_CONFIG.provider,
+  );
+
+  return {
+    enabled: enabledFromEnv ?? persistedKg.enabled ?? DEFAULT_KG_LLM_CONFIG.enabled,
+    provider,
+    model: process.env.THOTH_KG_LLM_MODEL
+      ?? persistedKg.model
+      ?? (provider === 'ollama' ? DEFAULT_KG_LLM_CONFIG.model : 'loaded_model'),
+    baseUrl: normalizeBaseUrl(
+      process.env.THOTH_KG_LLM_BASE_URL
+        ?? persistedKg.baseUrl
+        ?? (provider === 'ollama' ? DEFAULT_KG_LLM_CONFIG.baseUrl : 'http://127.0.0.1:1234/v1'),
+    ) ?? DEFAULT_KG_LLM_CONFIG.baseUrl,
+    timeoutMs: timeoutFromEnv ?? persistedKg.timeoutMs ?? DEFAULT_KG_LLM_CONFIG.timeoutMs,
+    minContentChars: minCharsFromEnv ?? persistedKg.minContentChars ?? DEFAULT_KG_LLM_CONFIG.minContentChars,
+  };
+}
+
 function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   const persistedEmbedding = persisted.embedding ?? {};
   const provider = parseProvider(process.env.THOTH_EMBEDDING_PROVIDER ?? persistedEmbedding.provider, 'transformers_local');
@@ -337,6 +398,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
   const dataDir = options.dataDir || process.env.THOTH_DATA_DIR || join(home, '.thoth');
   const persisted = loadPersistedConfig(dataDir);
   const hyde = resolveHydeConfig(persisted);
+  const kgLlm = resolveKgLlmConfig(persisted);
   const httpPortFromPersisted = persisted.http?.port;
   const httpDisabledFromPersisted = persisted.http?.disabled;
 
@@ -356,6 +418,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     },
     embedding: resolveEmbeddingConfig(persisted),
     hyde,
+    kgLlm,
   };
 }
 

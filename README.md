@@ -47,7 +47,7 @@ Agent Session 1                    Agent Session 2
 - **Paginated retrieval** — large observations served in chunks via offset/max_length
 - **Privacy defense** — `<private>` tags stripped before storage
 - **Token-efficient recall** — compact fused evidence first, context expansion only when needed
-- **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples)
+- **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples, optional LLM KG acceptance)
 - **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
 
@@ -189,7 +189,7 @@ pnpm run eval:retrieval
 pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations plus synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased case mix, surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, and evidence lineage coverage without requiring model downloads or remote APIs.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations plus synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs.
 
 Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
 
@@ -197,7 +197,7 @@ Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundred
 $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 ```
 
-`pnpm run eval:kg` runs a deterministic KG quality eval for subject-relation-object extraction. It reports expected triple recall and forbidden triple rate across passive relations, explicit graph notation, structured SRO blocks, dependency prose, structured sections, and technical references.
+`pnpm run eval:kg` runs a deterministic KG quality eval for subject-relation-object extraction. It reports expected triple recall, forbidden triple rate, long-conversation cases where deterministic extraction should be paired with optional LLM enrichment, and acceptance of validated LLM triples while rejecting unknown relations.
 
 ## MCP Tools (6)
 
@@ -205,7 +205,7 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | Tool                    | Purpose                                                           |
 | ----------------------- | ----------------------------------------------------------------- |
 | `mem_save`              | Save observations, prompts, session summaries, or passive learnings |
-| `mem_recall`            | Primary fused hybrid recall across semantic and lexical lanes with KG enrichment |
+| `mem_recall`            | Primary fused hybrid recall across semantic, KG, and lexical lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get`               | Retrieve full memory by ID, optionally with session timeline      |
 | `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
@@ -217,13 +217,15 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 
 - `mem_recall` is the primary retrieval tool. Use `mode=compact` first, then `mode=context` for the strongest hits, and `mem_get` only when full content is needed.
 - `mem_recall` accepts precision filters for `project`, `session_id`, `scope`, `topic_key`, `type`, `time_from`, and `time_to`; these pass through to all retrieval lanes.
-- Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > chunk > lexical`. Knowledge-graph facts enrich returned core hits instead of competing as a ranking lane.
-- Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background.
+- Hybrid retrieval defaults use tuned core lane fusion: sentence top-k 100, chunk top-k 20, lexical limit 20, min semantic score 0.3, and lane order `sentence > kg > chunk > lexical`. Knowledge-graph facts now participate as a first-class ranking lane and also enrich returned hits with supporting graph evidence.
+- Surgical trimming is explicit in `mem_recall mode=context`: sentence hits return a `primary_sentence` and, when the score clears the small-to-big threshold, a labeled `surrounding_parent_chunk`. Lexical hits return matching sentences instead of whole observations. Each context hit includes `retrieval_contract`, `compression_ratio`, `evidence_chars`, and `full_chars` so noise reduction is measured rather than claimed.
+- Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background. Terminal job failures keep `last_error` and `finished_at`, and later queued jobs continue processing instead of being starved by failed work.
 - Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical recall with graph enrichment where matching facts exist, and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
 - `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical retrieval with KG enrichment.
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
 - HyDE is enabled by default. The local fallback uses Transformers.js text generation with `onnx-community/Qwen2.5-Coder-0.5B-Instruct`; remote HyDE can use Ollama or an OpenAI-compatible LM Studio server.
+- KG extraction is deterministic-first. Optional LLM enrichment can be enabled for long conversations with Ollama or LM Studio; generated triples are filtered through the same relation taxonomy and merged with deterministic triples. If the remote extractor is disabled or unavailable, deterministic KG extraction still completes.
 
 ### Recommended Embedding Models
 
@@ -290,6 +292,31 @@ Example with LM Studio embeddings and LM Studio HyDE:
   }
 }
 ```
+
+### Optional KG LLM Enrichment
+
+KG extraction defaults to the deterministic extractor. To enrich long observations, enable a remote local model provider and set the minimum content length that should trigger the LLM pass:
+
+```bash
+THOTH_KG_LLM_ENABLED=true \
+THOTH_KG_LLM_PROVIDER=ollama \
+THOTH_KG_LLM_BASE_URL=http://127.0.0.1:11434 \
+THOTH_KG_LLM_MODEL=qwen2.5:7b-instruct \
+THOTH_KG_LLM_MIN_CONTENT_CHARS=12000 \
+thoth-mem
+```
+
+LM Studio uses the OpenAI-compatible chat completions endpoint:
+
+```bash
+THOTH_KG_LLM_ENABLED=true \
+THOTH_KG_LLM_PROVIDER=lmstudio \
+THOTH_KG_LLM_BASE_URL=http://127.0.0.1:1234/v1 \
+THOTH_KG_LLM_MODEL=loaded_model \
+thoth-mem
+```
+
+The LLM pass is an enrichment step, not the source of truth: invalid relation names are discarded, duplicate triples are deduped, and KG jobs continue with deterministic triples if the remote request fails.
 
 
 ## Sync & Portability
@@ -395,6 +422,14 @@ Default editable config:
     "model": "onnx-community/Qwen2.5-Coder-0.5B-Instruct",
     "baseUrl": null,
     "timeoutMs": 4000
+  },
+  "kgLlm": {
+    "enabled": false,
+    "provider": "ollama",
+    "model": "qwen2.5:7b-instruct",
+    "baseUrl": "http://127.0.0.1:11434",
+    "timeoutMs": 8000,
+    "minContentChars": 12000
   }
 }
 ```
@@ -418,6 +453,12 @@ Default editable config:
 | `THOTH_HYDE_MODEL`            | `onnx-community/Qwen2.5-Coder-0.5B-Instruct` | HyDE generation model id |
 | `THOTH_HYDE_BASE_URL`         | unset      | Optional HyDE provider base URL |
 | `THOTH_HYDE_TIMEOUT_MS`       | `4000`     | HyDE timeout before raw-query-only fallback |
+| `THOTH_KG_LLM_ENABLED`        | `false`    | Enable optional LLM KG enrichment for long observations |
+| `THOTH_KG_LLM_PROVIDER`       | `ollama`   | KG LLM provider (`ollama`, `lmstudio`) |
+| `THOTH_KG_LLM_MODEL`          | `qwen2.5:7b-instruct` | KG LLM model id |
+| `THOTH_KG_LLM_BASE_URL`       | `http://127.0.0.1:11434` | KG LLM provider base URL |
+| `THOTH_KG_LLM_TIMEOUT_MS`     | `8000`     | KG LLM timeout before deterministic-only fallback |
+| `THOTH_KG_LLM_MIN_CONTENT_CHARS` | `12000` | Minimum observation size that triggers LLM enrichment |
 
 ## Storage
 

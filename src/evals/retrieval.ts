@@ -69,6 +69,7 @@ export interface RetrievalEvalSummary {
     sentence_primary_rate: number;
     promoted_parent_rate: number;
     kg_hit_rate: number;
+    kg_primary_rate: number;
     evidence_lineage_coverage: number;
     stale_result_rate: number;
     kg_provenance_rate: number;
@@ -219,6 +220,16 @@ const FIXTURES: EvalFixture[] = [
       ]),
     },
   },
+  {
+    key: 'graph-rank',
+    observation: {
+      title: 'Graph-only operational fact',
+      type: 'decision',
+      project: 'graph-project',
+      topic_key: 'retrieval/graph-only-ranking',
+      content: 'Archived operational note. Supporting context is intentionally sparse.',
+    },
+  },
 ];
 
 function resolveNoiseObservationCount(options: RetrievalEvalOptions): number {
@@ -366,6 +377,12 @@ const CASES: EvalCase[] = [
     expectedKey: 'sqlite-wal',
     hydeAnswer: 'SQLite WAL concurrency keeps MCP and HTTP readers responsive while writes continue.',
   },
+  {
+    name: 'graph-only ranked recall',
+    query: 'xylophonic zephyrcache',
+    project: 'graph-project',
+    expectedKey: 'graph-rank',
+  },
 ];
 
 function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
@@ -451,6 +468,7 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Sentence Primary Rate | ${formatPercent(summary.hybrid.sentence_primary_rate)} |`,
     `| Promoted Parent Rate | ${formatPercent(summary.hybrid.promoted_parent_rate)} |`,
     `| KG Enrichment Rate | ${formatPercent(summary.hybrid.kg_hit_rate)} |`,
+    `| KG Primary Lane Rate | ${formatPercent(summary.hybrid.kg_primary_rate)} |`,
     `| Evidence Lineage Coverage | ${formatPercent(summary.hybrid.evidence_lineage_coverage)} |`,
     `| Stale Result Prevention Rate | ${formatPercent(summary.hybrid.stale_result_rate)} |`,
     `| KG Provenance Rate | ${formatPercent(summary.hybrid.kg_provenance_rate)} |`,
@@ -570,6 +588,12 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(graphLiteId, 'graph lite facts', 'supports', 'structured facts before vector embeddings', 'memory-project', 'retrieval/graph-lite-derived-facts', 'discovery');
     }
+    const graphRankId = idsByKey.get('graph-rank');
+    if (graphRankId) {
+      store.getDb().prepare(
+        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(graphRankId, 'xylophonic', 'DEPENDS_ON', 'zephyrcache', 'graph-project', 'retrieval/graph-only-ranking', 'decision');
+    }
 
     const pendingCases: boolean[] = [];
     const degradedCases: boolean[] = [];
@@ -579,6 +603,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const sentencePrimaryHits: boolean[] = [];
     const promotedParentHits: boolean[] = [];
     const kgHits: boolean[] = [];
+    const kgPrimaryHits: boolean[] = [];
     const lineageCoverageHits: boolean[] = [];
     const laneTruthChecks: boolean[] = [];
     const kgProvenanceChecks: boolean[] = [];
@@ -642,6 +667,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       sentencePrimaryHits.push(raw.results.some((hit) => hit.evidence.primary.lane === 'sentence'));
       promotedParentHits.push(raw.results.some((hit) => Boolean(hit.evidence.promotedParent?.chunkKey)));
       kgHits.push(raw.results.some((hit) => Boolean(hit.evidence.byLane.kg?.length)));
+      kgPrimaryHits.push(raw.results.some((hit) => hit.evidence.primary.lane === 'kg'));
       laneTruthChecks.push(raw.results.every((hit) => {
         const laneEvidence = hit.evidence.byLane[hit.evidence.primary.lane];
         if (!laneEvidence || laneEvidence.length === 0) return false;
@@ -697,7 +723,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         rephrased_cases: CASES.filter((evalCase) => evalCase.kind === 'rephrase').length,
       },
       retrieval_defaults: defaultsCapture ?? {
-        lane_order: 'sentence > chunk > lexical',
+        lane_order: 'sentence > kg > chunk > lexical',
         sentence_top_k: 100,
         chunk_top_k: 20,
         lexical_limit: 20,
@@ -713,6 +739,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         sentence_primary_rate: ratio(countTrue(sentencePrimaryHits), totalHybridCases),
         promoted_parent_rate: ratio(countTrue(promotedParentHits), totalHybridCases),
         kg_hit_rate: ratio(countTrue(kgHits), totalHybridCases),
+        kg_primary_rate: ratio(countTrue(kgPrimaryHits), totalHybridCases),
         evidence_lineage_coverage: ratio(countTrue(lineageCoverageHits), totalHybridCases),
         stale_result_rate: ratio(staleRuns.length - staleLeaks, staleRuns.length),
         kg_provenance_rate: ratio(countTrue(kgProvenanceChecks), totalHybridCases),

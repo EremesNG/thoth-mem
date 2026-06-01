@@ -70,6 +70,7 @@ import {
 } from '../retrieval/ranking.js';
 import { processNextSemanticJob, processSemanticJobs } from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
+import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 
 type ObservationRow = Observation;
@@ -169,6 +170,14 @@ const DEFAULT_CONFIG: ThothConfig = {
     model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
     baseUrl: null,
     timeoutMs: 4000,
+  },
+  kgLlm: {
+    enabled: false,
+    provider: 'ollama',
+    model: 'qwen2.5:7b-instruct',
+    baseUrl: 'http://127.0.0.1:11434',
+    timeoutMs: 8000,
+    minContentChars: 12_000,
   },
 };
 
@@ -417,13 +426,17 @@ export class Store {
     return extractKnowledgeTriples({ content: input.content, provenance: 'store.extractKnowledgeTriples' });
   }
 
-  async processNextSemanticJob(input?: { embeddingProvider?: EmbeddingProviderAdapter | null }): Promise<{ processed: boolean; kind?: string }> {
+  async processNextSemanticJob(
+    input?: { embeddingProvider?: EmbeddingProviderAdapter | null; kgLlmExtractor?: KgLlmExtractor | null }
+  ): Promise<{ processed: boolean; kind?: string }> {
     const result = await processNextSemanticJob(this, input);
     this.refreshSemanticRuntimeFromState();
     return result;
   }
 
-  async processSemanticJobs(input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }): Promise<number> {
+  async processSemanticJobs(
+    input?: { embeddingProvider?: EmbeddingProviderAdapter | null; kgLlmExtractor?: KgLlmExtractor | null; limit?: number }
+  ): Promise<number> {
     const processed = await processSemanticJobs(this, input);
     this.refreshSemanticRuntimeFromState();
     return processed;
@@ -1302,7 +1315,12 @@ export class Store {
     }
 
     const lexicalCandidates = this.queryLexicalLane({ query: input.query, lexicalLimit: defaults.lexicalLimit, filters });
-    const coreCandidates = [...semanticCandidates, ...lexicalCandidates];
+    const graphRankingCandidates = this.queryKnowledgeLane({
+      query: input.query,
+      filters,
+      includeUnmatched: false,
+    });
+    const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...lexicalCandidates];
     const observationIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
     const observationRows = observationIds.length > 0
       ? this.db.prepare(
@@ -1320,24 +1338,19 @@ export class Store {
     const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, fusedLimit);
     const effectiveLaneOrder = this.resolveEffectiveLaneOrder(input.laneOrder);
     const parentPromotionThreshold = defaults.minSemanticScore;
-    const graphCandidates = this.queryKnowledgeLane({
+    const graphEnrichmentCandidates = this.queryKnowledgeLane({
       query: input.query,
       filters,
       observationIds: fused.map((hit) => hit.observation.id),
       includeUnmatched: true,
     });
-    const graphDiscoveryCandidates = this.queryKnowledgeLane({
-      query: input.query,
-      filters,
-      includeUnmatched: false,
-    });
     const graphByObservation = new Map<number, LaneCandidate[]>();
-    graphCandidates.sort((a, b) => {
+    graphEnrichmentCandidates.sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score;
       if (a.source !== b.source) return a.source === 'observation_facts' ? -1 : 1;
       return a.observationId - b.observationId;
     });
-    for (const candidate of graphCandidates) {
+    for (const candidate of graphEnrichmentCandidates) {
       const list = graphByObservation.get(candidate.observationId) ?? [];
       if (list.length < 5) {
         list.push(candidate);
@@ -1348,7 +1361,19 @@ export class Store {
     for (const hit of fused) {
       const graphEvidence = graphByObservation.get(hit.observation.id);
       if (graphEvidence && graphEvidence.length > 0) {
-        hit.evidence.byLane.kg = graphEvidence;
+        const existing = hit.evidence.byLane.kg ?? [];
+        const merged = [...existing];
+        for (const candidate of graphEvidence) {
+          const duplicate = merged.some((item) => (
+            item.source === candidate.source
+            && item.text === candidate.text
+            && item.observationId === candidate.observationId
+          ));
+          if (!duplicate) {
+            merged.push(candidate);
+          }
+        }
+        hit.evidence.byLane.kg = merged.slice(0, 5);
         hit.lanes = Array.from(new Set([...hit.lanes, 'kg' as const]));
       }
       const bestSentence = hit.evidence.byLane.sentence?.reduce((best, candidate) => (
@@ -1365,38 +1390,6 @@ export class Store {
       }
     }
 
-    const existingObservationIds = new Set(fused.map((hit) => hit.observation.id));
-    const graphOnlyObservationIds = Array.from(new Set(
-      graphDiscoveryCandidates
-        .map((candidate) => candidate.observationId)
-        .filter((observationId) => !existingObservationIds.has(observationId))
-    ));
-    const graphDiscoveryLimit = Math.min(2, fusedLimit);
-    const graphOnlyHits = graphOnlyObservationIds.length > 0 && graphDiscoveryLimit > 0
-      ? (() => {
-          const rows = this.db.prepare(
-            `SELECT * FROM observations
-             WHERE deleted_at IS NULL
-             AND id IN (${graphOnlyObservationIds.map(() => '?').join(',')})`
-          ).all(...graphOnlyObservationIds) as ObservationRow[];
-          const graphObservations = new Map(rows.map((row) => [row.id, row]));
-          const graphCandidatesForFusion = graphDiscoveryCandidates.filter(
-            (candidate) => graphObservations.has(candidate.observationId),
-          );
-          const graphDiscoveryFusionOptions: FusionOptions = {
-            laneOrder: input.laneOrder,
-            laneWeights: {
-              ...input.laneWeights,
-              kg: input.laneWeights?.kg ?? 1,
-            },
-          };
-          return fuseCandidates(graphObservations, graphCandidatesForFusion, graphDiscoveryFusionOptions).slice(0, graphDiscoveryLimit);
-        })()
-      : [];
-
-    const results = [...fused, ...graphOnlyHits]
-      .slice(0, fusedLimit);
-
     return {
       defaults,
       laneOrder: effectiveLaneOrder,
@@ -1404,7 +1397,7 @@ export class Store {
       lexicalQuery,
       scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
       semanticInputs,
-      results,
+      results: fused,
       pending: this.semanticRuntime.pending,
     };
   }
@@ -1543,10 +1536,11 @@ export class Store {
     sql.push('ORDER BY fts.rank ASC LIMIT ?');
     params.push(input.lexicalLimit);
     const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; title: string; content: string; rank: number }>;
+    const singleTermPenalty = terms.length <= 1 ? 0.65 : 1;
     return rows.map((row) => {
       const evidenceMatchesTitleOrContent = this.sentenceMatchesTerms(`${row.title} ${row.content}`, terms);
       const baseScore = 1 / (1 + Math.abs(row.rank));
-      const score = evidenceMatchesTitleOrContent ? baseScore : baseScore * 0.1;
+      const score = (evidenceMatchesTitleOrContent ? baseScore : baseScore * 0.1) * singleTermPenalty;
       return {
         lane: 'lexical' as const,
         observationId: row.observation_id,

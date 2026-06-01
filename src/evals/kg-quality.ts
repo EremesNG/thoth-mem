@@ -15,6 +15,8 @@ interface KgQualityCase {
   topicKey?: string;
   expected: ExpectedTriple[];
   forbidden?: ExpectedTriple[];
+  llmFallback?: { enabled: boolean; minContentChars?: number };
+  llmTriples?: Array<{ subject: string; relation: string; object: string; confidence?: number }>;
 }
 
 export interface KgQualityCaseResult {
@@ -25,6 +27,7 @@ export interface KgQualityCaseResult {
   forbidden: number;
   forbidden_hits: ExpectedTriple[];
   extracted: number;
+  strategy: string;
 }
 
 export interface KgQualityEvalReport {
@@ -36,6 +39,8 @@ export interface KgQualityEvalReport {
     forbidden_triples: number;
     forbidden_hits: number;
     forbidden_triple_rate: number;
+    llm_recommended_cases: number;
+    llm_used_cases: number;
   };
   cases: KgQualityCaseResult[];
   markdown: string;
@@ -120,6 +125,39 @@ const CASES: KgQualityCase[] = [
       { subject: 'background indexing', relation: 'REFERENCES', object: 'src/indexing/jobs.ts' },
     ],
   },
+  {
+    name: 'long conversation strategy gate',
+    content: [
+      'Auth service depends on Redis cache.',
+      ...Array.from({ length: 120 }, (_, index) => (
+        `Conversation turn ${index} mentions rollout notes, deployment sequencing, and memory retrieval context.`
+      )),
+    ].join('\n'),
+    expected: [
+      { subject: 'auth service', relation: 'DEPENDS_ON', object: 'redis cache' },
+    ],
+    llmFallback: { enabled: true, minContentChars: 1000 },
+  },
+  {
+    name: 'llm enrichment acceptance gate',
+    content: [
+      'A long conversation discussed memory routing, prompt budgets, and recall behavior without explicit relation syntax.',
+      ...Array.from({ length: 40 }, (_, index) => (
+        `Turn ${index}: agent notes mention context windows, retrieval scope, and follow-up planning.`
+      )),
+    ].join('\n'),
+    expected: [
+      { subject: 'memory router', relation: 'DEPENDS_ON', object: 'context budget' },
+    ],
+    forbidden: [
+      { subject: 'ignored', relation: 'IMAGINES', object: 'invalid relation' },
+    ],
+    llmFallback: { enabled: true, minContentChars: 1000 },
+    llmTriples: [
+      { subject: 'Memory Router', relation: 'DEPENDS_ON', object: 'Context Budget', confidence: 0.94 },
+      { subject: 'Ignored', relation: 'IMAGINES', object: 'Invalid relation', confidence: 0.99 },
+    ],
+  },
 ];
 
 function normalize(value: string): string {
@@ -149,6 +187,7 @@ function formatMarkdown(report: Omit<KgQualityEvalReport, 'markdown'>): string {
     `${result.matched}/${result.expected}`,
     result.forbidden_hits.length,
     result.extracted,
+    result.strategy,
     result.missing.map(formatTriple).join('; ') || '-',
   ]);
 
@@ -168,24 +207,29 @@ function formatMarkdown(report: Omit<KgQualityEvalReport, 'markdown'>): string {
     `| Forbidden triples | ${report.summary.forbidden_triples} |`,
     `| Forbidden hits | ${report.summary.forbidden_hits} |`,
     `| Forbidden Triple Rate | ${formatPercent(report.summary.forbidden_triple_rate)} |`,
+    `| LLM Fallback Recommended Cases | ${report.summary.llm_recommended_cases} |`,
+    `| LLM Fallback Used Cases | ${report.summary.llm_used_cases} |`,
     '',
     '## Case Results',
     '',
-    '| Status | Case | Expected Matched | Forbidden Hits | Extracted | Missing |',
-    '| --- | --- | ---: | ---: | ---: | --- |',
+    '| Status | Case | Expected Matched | Forbidden Hits | Extracted | Strategy | Missing |',
+    '| --- | --- | ---: | ---: | ---: | --- | --- |',
     ...rows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n');
 }
 
 export function runKgQualityEval(): KgQualityEvalReport {
   const cases = CASES.map((kgCase) => {
-    const extracted = extractKnowledgeTriples({
+    const extraction = extractKnowledgeTriples({
       content: kgCase.content,
       provenance: `kg-quality://${kgCase.name}`,
       subjectHint: kgCase.subjectHint,
       project: kgCase.project,
       topicKey: kgCase.topicKey,
-    }).triples;
+      llmFallback: kgCase.llmFallback,
+      llmTriples: kgCase.llmTriples,
+    });
+    const extracted = extraction.triples;
     const extractedKeys = new Set(extracted.map((triple) => tripleKey(triple)));
     const missing = kgCase.expected.filter((triple) => !extractedKeys.has(tripleKey(triple)));
     const forbiddenHits = (kgCase.forbidden ?? []).filter((triple) => extractedKeys.has(tripleKey(triple)));
@@ -198,6 +242,7 @@ export function runKgQualityEval(): KgQualityEvalReport {
       forbidden: kgCase.forbidden?.length ?? 0,
       forbidden_hits: forbiddenHits,
       extracted: extracted.length,
+      strategy: `${extraction.strategy.primary}/${extraction.strategy.llmFallback}/${extraction.strategy.reason}`,
     };
   });
 
@@ -214,6 +259,8 @@ export function runKgQualityEval(): KgQualityEvalReport {
       forbidden_triples: forbiddenTriples,
       forbidden_hits: forbiddenHits,
       forbidden_triple_rate: ratio(forbiddenHits, forbiddenTriples),
+      llm_recommended_cases: cases.filter((result) => result.strategy.includes('/recommended/')).length,
+      llm_used_cases: cases.filter((result) => result.strategy.includes('/used/')).length,
     },
     cases,
   };

@@ -1,12 +1,12 @@
 import type { Observation } from '../store/types.js';
 
 export type RetrievalLane = 'sentence' | 'chunk' | 'lexical' | 'kg';
-export const DEFAULT_LANE_ORDER: RetrievalLane[] = ['sentence', 'chunk', 'lexical'];
+export const DEFAULT_LANE_ORDER: RetrievalLane[] = ['sentence', 'kg', 'chunk', 'lexical'];
 export const DEFAULT_LANE_WEIGHTS: Record<RetrievalLane, number> = {
   sentence: 1,
   chunk: 1,
   lexical: 1,
-  kg: 0,
+  kg: 0.9,
 };
 
 export interface FusionOptions {

@@ -289,7 +289,7 @@ describe('Store', () => {
       expect(runningRows.count).toBeLessThanOrEqual(1);
     });
 
-    it('semantic jobs retry until max_attempts before failing', async () => {
+    it('semantic jobs retry until max_attempts before failing with terminal diagnostics', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
       const db = store.getDb();
@@ -319,9 +319,54 @@ describe('Store', () => {
 
       db.prepare("UPDATE semantic_jobs SET available_at = datetime('now') WHERE job_key = ?").run(`chunk:${saved.observation.id}`);
       await runtime.processSemanticJobs({ limit: 1, embeddingProvider: failingProvider });
-      row = db.prepare('SELECT state, attempt_count FROM semantic_jobs WHERE job_key = ?')
-        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number };
-      expect(row).toEqual({ state: 'failed', attempt_count: 3 });
+      row = db.prepare('SELECT state, attempt_count, last_error, finished_at FROM semantic_jobs WHERE job_key = ?')
+        .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number; last_error: string | null; finished_at: string | null };
+      expect(row).toMatchObject({ state: 'failed', attempt_count: 3, last_error: 'embedding offline' });
+      expect(row.finished_at).toEqual(expect.any(String));
+    });
+
+    it('semantic job worker skips terminal failures and continues later queued work', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const failedSource = store.saveObservation({
+        title: 'failed source',
+        content: 'embedding provider outage should not starve the queue',
+        project: 'hybrid-test',
+      });
+      const laterSource = store.saveObservation({
+        title: 'later source',
+        content: 'Auth service depends on Redis cache.',
+        project: 'hybrid-test',
+      });
+      db.prepare('DELETE FROM semantic_jobs').run();
+      db.prepare(
+        `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key, max_attempts)
+         VALUES (?, 'chunk', 'pending', 10, ?, ?, 1)`
+      ).run(`chunk:${failedSource.observation.id}`, failedSource.observation.id, `observation:${failedSource.observation.id}`);
+      db.prepare(
+        `INSERT INTO semantic_jobs (job_key, kind, state, priority, observation_id, source_key)
+         VALUES (?, 'extract_kg', 'pending', 20, ?, ?)`
+      ).run(`kg:${laterSource.observation.id}`, laterSource.observation.id, `observation:${laterSource.observation.id}`);
+      const failingProvider = {
+        config: store.config.embedding!,
+        embed: async () => {
+          throw new Error('embedding offline');
+        },
+      };
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: failingProvider });
+      await runtime.processSemanticJobs({ limit: 5, embeddingProvider: null });
+
+      const rows = db.prepare('SELECT job_key, state FROM semantic_jobs ORDER BY priority ASC')
+        .all() as Array<{ job_key: string; state: string }>;
+      const tripleCount = db.prepare("SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?")
+        .get(laterSource.observation.id) as { count: number };
+      expect(rows).toEqual([
+        { job_key: `chunk:${failedSource.observation.id}`, state: 'failed' },
+        { job_key: `kg:${laterSource.observation.id}`, state: 'done' },
+      ]);
+      expect(tripleCount.count).toBeGreaterThan(0);
     });
 
     it('fusion policy: lane order/weights change winner when lexical and semantic disagree', async () => {
@@ -496,7 +541,7 @@ describe('Store', () => {
         minSemanticScore: 0.3,
         l2DistanceScale: 20,
       });
-      expect(response?.laneOrder).toEqual(['sentence', 'chunk', 'lexical']);
+      expect(response?.laneOrder).toEqual(['sentence', 'kg', 'chunk', 'lexical']);
       expect(response?.degradedFallback?.includes('lexical')).toBe(true);
       expect(response?.degradedFallback?.includes('kg')).toBe(false);
       expect(response?.lexicalQuery).toContain('"encrypt"*');
@@ -599,25 +644,54 @@ describe('Store', () => {
       expect(lexicalEvidence).not.toContain('Billing notes');
     });
 
-    it('graph enrichment: attaches kg_triples evidence without letting KG win core ranking', async () => {
-      store = new Store(':memory:');
-      const saved = store.saveObservation({
-        title: 'KG enrichment',
-        content: 'API key belongs to service account in project hybrid-test. Rotate service account credentials.',
+    it('graph ranking: KG is a first-class lane and can outrank a weak lexical-only match', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+      const runtime = store as any;
+      const db = store.getDb();
+      const lexical = store.saveObservation({
+        title: 'Weak lexical mention',
+        content: 'Helios appears in a status aside without the retrieval fact.',
         project: 'hybrid-test',
       });
-      const runtime = store as any;
-      await runtime.processSemanticJobs({ limit: 20 });
-      const response = await runtime.hybridRetrieve({ query: 'service account api key' });
-      const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
-      expect(hit).toBeDefined();
-      expect(hit.evidence.primary.lane).not.toBe('kg');
-      expect(hit.evidence.byLane.kg?.length ?? 0).toBeGreaterThan(0);
-      const kgEvidence = hit.evidence.byLane.kg[0];
-      if (kgEvidence.source === 'kg_triples') {
-        expect(typeof kgEvidence.kg?.provenance).toBe('string');
-        expect(typeof kgEvidence.kg?.confidence).toBe('number');
-      }
+      const graph = store.saveObservation({
+        title: 'Graph ranked fact',
+        content: 'Unrelated body keeps this out of lexical retrieval.',
+        project: 'hybrid-test',
+      });
+
+      db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('entity:helios', 'system', 'Helios');
+      db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('entity:primary-cache', 'system', 'Primary cache');
+      const helios = db.prepare('SELECT id FROM kg_entities WHERE entity_key = ?').get('entity:helios') as { id: number };
+      const primaryCache = db.prepare('SELECT id FROM kg_entities WHERE entity_key = ?').get('entity:primary-cache') as { id: number };
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+          project, topic_key, provenance, confidence, triple_hash, extractor_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        helios.id,
+        'USES',
+        primaryCache.id,
+        'observation',
+        graph.observation.id,
+        graph.observation.sync_id,
+        'hybrid-test',
+        null,
+        'store-test:ranked-kg',
+        0.95,
+        'store-test:ranked-kg',
+        'v1',
+      );
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
+      expect(response.results.map((r: any) => r.observation.id)).toContain(lexical.observation.id);
+      expect(response.results[0].observation.id).toBe(graph.observation.id);
+      expect(response.results[0].evidence.primary.lane).toBe('kg');
+      expect(response.results[0].evidence.primary.source).toBe('kg_triples');
     });
 
     it('graph discovery: can return query-matching graph facts even without lexical or semantic core hits', async () => {
@@ -958,6 +1032,61 @@ describe('Store', () => {
       expect(secondPass).toBe(0);
       expect(chunkCount.count).toBeGreaterThan(0);
       expect(sentenceCount.count).toBeGreaterThan(0);
+    });
+
+    it('background indexing: enriches long observations with optional KG LLM triples', async () => {
+      store = new Store(':memory:', {
+        kgLlm: {
+          enabled: true,
+          provider: 'ollama',
+          model: 'qwen2.5:7b-instruct',
+          baseUrl: 'http://127.0.0.1:11434',
+          timeoutMs: 8000,
+          minContentChars: 100,
+        },
+      } as any);
+      const calls: string[] = [];
+      const saved = store.saveObservation({
+        title: 'Long KG source',
+        content: Array.from({ length: 10 }, (_, index) => (
+          `Turn ${index}: the memory router and context budget were discussed without an explicit relation.`
+        )).join('\n'),
+        project: 'hybrid-test',
+      });
+
+      const runtime = store as any;
+      await runtime.processSemanticJobs({
+        limit: 20,
+        kgLlmExtractor: {
+          extract: async (input: { content: string }) => {
+            calls.push(input.content);
+            return [
+              {
+                subject: 'Memory Router',
+                relation: 'DEPENDS_ON',
+                object: 'Context Budget',
+                confidence: 0.94,
+              },
+            ];
+          },
+        },
+      });
+
+      const row = store.getDb().prepare(
+        `SELECT se.canonical_name AS subject, kt.relation, oe.canonical_name AS object, kt.confidence
+         FROM kg_triples kt
+         JOIN kg_entities se ON se.id = kt.subject_entity_id
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'DEPENDS_ON'`
+      ).get(saved.observation.id) as { subject: string; relation: string; object: string; confidence: number } | undefined;
+
+      expect(calls).toHaveLength(1);
+      expect(row).toMatchObject({
+        subject: 'memory router',
+        relation: 'DEPENDS_ON',
+        object: 'context budget',
+        confidence: 0.94,
+      });
     });
 
     it('rebuild: manual rebuild enqueue is idempotent and hash mismatch marks stale', () => {

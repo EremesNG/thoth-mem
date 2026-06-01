@@ -38,10 +38,28 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
 
     const primary = hit.evidence.primary;
     const graphEvidence = hit.evidence.byLane.kg ?? [];
+    const primaryContent = sanitizeRetrievedContext(primary.text || hit.observation.content);
+    const fullContent = sanitizeRetrievedContext(hit.observation.content);
+    const promotedParentContent = hit.evidence.promotedParent?.text
+      ? sanitizeRetrievedContext(hit.evidence.promotedParent.text)
+      : null;
+    const retrievalContract = primary.lane === 'sentence' && promotedParentContent
+      ? 'sentence-primary-with-parent'
+      : primary.lane === 'sentence'
+        ? 'sentence-only'
+        : primary.lane === 'lexical'
+          ? 'lexical-matching-sentences'
+          : primary.lane === 'kg'
+            ? 'graph-fact'
+            : 'chunk-evidence';
+    const compressionRatio = fullContent.length > 0
+      ? Math.max(0, 1 - (primaryContent.length / fullContent.length)).toFixed(3)
+      : '0.000';
     const metadata = [
       recallHeader(hit, index),
       `<retrieved_context observation_id="${hit.observation.id}" lane="${primary.lane}" source="${primary.source ?? 'unknown'}">`,
       `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
+      `retrieval_contract=${retrievalContract} compression_ratio=${compressionRatio} evidence_chars=${primaryContent.length} full_chars=${fullContent.length}`,
       graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
     ];
     const graphLines = graphEvidence.slice(0, 3).map((candidate) => `graph: ${sanitizeRetrievedContext(candidate.text)}`);
@@ -49,10 +67,6 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
       + graphLines.join('\n').length
       + '</retrieved_context>'.length
       + 2;
-    const primaryContent = sanitizeRetrievedContext(primary.text || hit.observation.content);
-    const promotedParentContent = hit.evidence.promotedParent?.text
-      ? sanitizeRetrievedContext(hit.evidence.promotedParent.text)
-      : null;
     const content = primary.lane === 'sentence' && promotedParentContent
       ? [
           `primary_sentence: ${primaryContent}`,

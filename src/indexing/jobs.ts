@@ -3,6 +3,7 @@ import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../retrieval/sentences.js';
 import { vectorToBuffer } from '../retrieval/sqlite-vec.js';
 import { extractKnowledgeTriples } from './kg-extractor.js';
+import type { KgLlmExtractor } from './kg-llm-generator.js';
 
 interface JobRow {
   id: number;
@@ -14,9 +15,14 @@ interface JobRow {
   attempt_count: number;
 }
 
+interface SemanticJobRuntime {
+  embeddingProvider?: EmbeddingProviderAdapter | null;
+  kgLlmExtractor?: KgLlmExtractor | null;
+}
+
 export async function processNextSemanticJob(
   store: Store,
-  input?: { embeddingProvider?: EmbeddingProviderAdapter | null }
+  input?: SemanticJobRuntime
 ): Promise<{ processed: boolean; kind?: JobRow['kind'] }> {
   const db = store.getDb();
   const job = db.prepare(
@@ -47,7 +53,7 @@ export async function processNextSemanticJob(
     } else if (job.kind === 'rebuild_semantic') {
       processRebuildJob(store, job.job_key);
     } else if (job.kind === 'extract_kg' && job.observation_id !== null) {
-      processKgJob(store, job.observation_id);
+      await processKgJob(store, job.observation_id, input?.kgLlmExtractor ?? null);
     }
 
     db.prepare(
@@ -58,15 +64,21 @@ export async function processNextSemanticJob(
     const msg = error instanceof Error ? error.message : String(error);
     const finalState = job.attempt_count >= job.max_attempts ? 'failed' : 'pending';
     db.prepare(
-      "UPDATE semantic_jobs SET state = ?, last_error = ?, available_at = datetime('now', '+1 second'), updated_at = datetime('now') WHERE id = ?"
-    ).run(finalState, msg, job.id);
+      `UPDATE semantic_jobs
+       SET state = ?,
+           last_error = ?,
+           available_at = datetime('now', '+1 second'),
+           finished_at = CASE WHEN ? = 'failed' THEN datetime('now') ELSE NULL END,
+           updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(finalState, msg, finalState, job.id);
     return { processed: true, kind: job.kind };
   }
 }
 
 export async function processSemanticJobs(
   store: Store,
-  input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }
+  input?: SemanticJobRuntime & { limit?: number }
 ): Promise<number> {
   const limit = input?.limit ?? 50;
   let count = 0;
@@ -254,7 +266,7 @@ function processRebuildJob(store: Store, jobKey: string): void {
   db.prepare("UPDATE semantic_jobs SET source_key = ? WHERE job_key = ?").run('global', jobKey);
 }
 
-function processKgJob(store: Store, observationId: number): void {
+async function processKgJob(store: Store, observationId: number, kgLlmExtractor: KgLlmExtractor | null): Promise<void> {
   const db = store.getDb();
   const obs = db.prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
     | { id: number; title: string; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
@@ -264,13 +276,37 @@ function processKgJob(store: Store, observationId: number): void {
     return;
   }
 
-  const extraction = extractKnowledgeTriples({
+  const extractionInput = {
     content: obs.content,
     provenance: `observation:${obs.id}`,
     subjectHint: obs.topic_key ?? obs.title,
     project: obs.project,
     topicKey: obs.topic_key,
-  });
+    llmFallback: store.config.kgLlm
+      ? {
+        enabled: store.config.kgLlm.enabled,
+        minContentChars: store.config.kgLlm.minContentChars,
+      }
+      : undefined,
+  };
+  let extraction = extractKnowledgeTriples(extractionInput);
+
+  if (extraction.strategy.llmFallback === 'recommended' && kgLlmExtractor) {
+    try {
+      const llmTriples = await kgLlmExtractor.extract({
+        content: obs.content,
+        provenance: `observation:${obs.id}`,
+        project: obs.project,
+        topicKey: obs.topic_key,
+      });
+      extraction = extractKnowledgeTriples({
+        ...extractionInput,
+        llmTriples,
+      });
+    } catch {
+      extraction = extractKnowledgeTriples(extractionInput);
+    }
+  }
   db.prepare(
     `INSERT INTO kg_taxonomy_metadata (id, taxonomy_version, entity_types_json, relation_types_json, updated_at)
      VALUES (1, ?, ?, ?, datetime('now'))

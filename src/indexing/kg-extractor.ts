@@ -29,6 +29,24 @@ export interface ExtractedTriple {
   tripleHash: string;
 }
 
+export interface KnowledgeExtractionStrategy {
+  primary: 'deterministic';
+  llmFallback: 'disabled' | 'recommended' | 'used' | 'failed';
+  reason: 'not_configured' | 'below_threshold' | 'long_conversation';
+}
+
+interface LlmFallbackPolicy {
+  enabled: boolean;
+  minContentChars?: number;
+}
+
+export interface LlmTripleInput {
+  subject: string;
+  relation: string;
+  object: string;
+  confidence?: number;
+}
+
 const STOPWORDS = new Set([
   'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'with',
   'via', 'when', 'where', 'while', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'should', 'must',
@@ -238,6 +256,19 @@ function cleanExplicitEntity(value: string): string | null {
   return cleaned.slice(0, 160);
 }
 
+function cleanLlmRelation(value: string): RelationType | null {
+  const relation = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+  return KG_RELATION_TYPE_SET.has(relation) ? relation as RelationType : null;
+}
+
+function cleanConfidence(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0.4, Math.min(0.99, value));
+}
+
 function extractExplicitGraphTriples(content: string): Array<{ subject: string; relation: RelationType; object: string }> {
   const triples: Array<{ subject: string; relation: RelationType; object: string }> = [];
   const notations = [
@@ -317,16 +348,32 @@ function extractStructuredTripleBlocks(content: string): Array<{ subject: string
   return triples;
 }
 
+function resolveExtractionStrategy(content: string, llmFallback?: LlmFallbackPolicy): KnowledgeExtractionStrategy {
+  if (!llmFallback?.enabled) {
+    return { primary: 'deterministic', llmFallback: 'disabled', reason: 'not_configured' };
+  }
+
+  const minContentChars = Math.max(1, llmFallback.minContentChars ?? 12_000);
+  if (content.length >= minContentChars) {
+    return { primary: 'deterministic', llmFallback: 'recommended', reason: 'long_conversation' };
+  }
+
+  return { primary: 'deterministic', llmFallback: 'disabled', reason: 'below_threshold' };
+}
+
 export function extractKnowledgeTriples(input: {
   content: string;
   provenance: string;
   subjectHint?: string | null;
   project?: string | null;
   topicKey?: string | null;
+  llmFallback?: LlmFallbackPolicy;
+  llmTriples?: LlmTripleInput[];
 }): {
   taxonomy: { entityTypes: string[]; relationTypes: string[]; version: string };
   triples: ExtractedTriple[];
   dedupeKey: string;
+  strategy: KnowledgeExtractionStrategy;
 } {
   const normalizedContent = normalize(input.content);
   const tokens = tokenize(normalizedContent);
@@ -334,10 +381,10 @@ export function extractKnowledgeTriples(input: {
   const triples: ExtractedTriple[] = [];
   const seen = new Set<string>();
 
-  const pushTriple = (subject: string, relation: RelationType, object: string, confidence: number): void => {
+  const pushTriple = (subject: string, relation: RelationType, object: string, confidence: number): boolean => {
     const tripleHash = hashTriple(subject, relation, object);
     if (seen.has(tripleHash)) {
-      return;
+      return false;
     }
 
     seen.add(tripleHash);
@@ -351,6 +398,7 @@ export function extractKnowledgeTriples(input: {
       confidence,
       tripleHash,
     });
+    return true;
   };
 
   for (const explicitTriple of [...extractStructuredTripleBlocks(input.content), ...extractExplicitGraphTriples(input.content)]) {
@@ -408,6 +456,22 @@ export function extractKnowledgeTriples(input: {
     }
   }
 
+  let acceptedLlmTriples = 0;
+  for (const llmTriple of input.llmTriples ?? []) {
+    const subject = cleanExplicitEntity(llmTriple.subject);
+    const relation = cleanLlmRelation(llmTriple.relation);
+    const object = cleanExplicitEntity(llmTriple.object);
+    if (!subject || !relation || !object || subject === object) {
+      continue;
+    }
+
+    if (pushTriple(subject, relation, object, cleanConfidence(llmTriple.confidence, 0.86))) {
+      acceptedLlmTriples += 1;
+    }
+  }
+
+  const strategy = resolveExtractionStrategy(input.content, input.llmFallback);
+
   return {
     taxonomy: {
       entityTypes: [...KG_ENTITY_TYPES],
@@ -416,5 +480,6 @@ export function extractKnowledgeTriples(input: {
     },
     triples,
     dedupeKey: `kg:${createHash('sha256').update(normalizedContent).digest('hex').slice(0, 24)}`,
+    strategy: acceptedLlmTriples > 0 ? { ...strategy, llmFallback: 'used' } : strategy,
   };
 }

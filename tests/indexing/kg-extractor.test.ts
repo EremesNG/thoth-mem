@@ -94,4 +94,59 @@ describe('kg-extractor relation quality', () => {
     expect(hasTriple(triples, 'search api', 'DEPENDS_ON', 'vector index readiness')).toBe(true);
     expect(hasTriple(triples, 'cache layer', 'DEPENDS_ON', 'redis cluster')).toBe(true);
   });
+
+  it('exposes deterministic-first extraction strategy and flags long conversations for optional LLM enrichment', () => {
+    const short = extractKnowledgeTriples({
+      content: 'Auth service depends on Redis cache.',
+      provenance: 'test://kg-extractor',
+    });
+    const longConversation = extractKnowledgeTriples({
+      content: Array.from({ length: 120 }, (_, index) => (
+        `Turn ${index}: User discussed deployment risk, auth service, Redis cache, and rollout sequencing.`
+      )).join('\n'),
+      provenance: 'test://kg-extractor',
+      llmFallback: { enabled: true, minContentChars: 1000 },
+    });
+
+    expect(short.strategy).toEqual({
+      primary: 'deterministic',
+      llmFallback: 'disabled',
+      reason: 'not_configured',
+    });
+    expect(longConversation.strategy).toEqual({
+      primary: 'deterministic',
+      llmFallback: 'recommended',
+      reason: 'long_conversation',
+    });
+  });
+
+  it('merges validated LLM triples while preserving deterministic extraction as primary', () => {
+    const extraction = extractKnowledgeTriples({
+      content: 'Auth service depends on Redis cache.',
+      provenance: 'test://kg-extractor',
+      llmFallback: { enabled: true, minContentChars: 10 },
+      llmTriples: [
+        {
+          subject: 'Memory Router',
+          relation: 'DEPENDS_ON',
+          object: 'Context Budget',
+          confidence: 0.93,
+        },
+        {
+          subject: 'Ignored',
+          relation: 'IMAGINES',
+          object: 'Invalid relation',
+          confidence: 0.99,
+        },
+      ],
+    });
+
+    expect(extraction.strategy).toEqual({
+      primary: 'deterministic',
+      llmFallback: 'used',
+      reason: 'long_conversation',
+    });
+    expect(hasTriple(extraction.triples, 'memory router', 'DEPENDS_ON', 'context budget')).toBe(true);
+    expect(extraction.triples.some((triple) => triple.relation === 'IMAGINES')).toBe(false);
+  });
 });

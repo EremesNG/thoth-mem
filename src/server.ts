@@ -7,6 +7,8 @@ import { createEmbeddingProvider } from "./retrieval/provider-factory.js";
 import type { EmbeddingProviderAdapter } from "./retrieval/providers.js";
 import { createHydeGenerator } from "./retrieval/hyde-generator.js";
 import type { HydeGenerator } from "./retrieval/hyde.js";
+import { createKgLlmExtractor } from "./indexing/kg-llm-generator.js";
+import type { KgLlmExtractor } from "./indexing/kg-llm-generator.js";
 
 /**
  * MCP server instructions — returned during initialization to guide
@@ -55,6 +57,7 @@ export function createServer(options: ServerOptions): {
   config: ThothConfig;
   embeddingProvider: EmbeddingProviderAdapter | null;
   hydeGenerator: HydeGenerator | null;
+  kgLlmExtractor: KgLlmExtractor | null;
 } {
   const config = getConfig({ dataDir: options.dataDir });
 
@@ -63,6 +66,7 @@ export function createServer(options: ServerOptions): {
   const store = new Store(config.dbPath, config);
   const embeddingProvider = config.embedding ? createEmbeddingProvider(config.embedding) : null;
   const hydeGenerator = createHydeGenerator(config.hyde);
+  const kgLlmExtractor = createKgLlmExtractor(config.kgLlm);
 
   const server = new McpServer({
     name: "thoth-mem",
@@ -73,5 +77,5 @@ export function createServer(options: ServerOptions): {
 
   registerTools(server, store, { embeddingProvider, hydeGenerator });
 
-  return { server, store, config, embeddingProvider, hydeGenerator };
+  return { server, store, config, embeddingProvider, hydeGenerator, kgLlmExtractor };
 }

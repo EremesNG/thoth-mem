@@ -94,6 +94,8 @@ describe('mem_recall tool', () => {
 
     const result = await toolHandler?.({ query: 'rotate encryption keys', project: 'recall-project', mode: 'context' });
     const text = result?.content[0].text ?? '';
+    expect(text).toContain('retrieval_contract=sentence-primary-with-parent');
+    expect(text).toContain('compression_ratio=');
     expect(text).toContain('primary_sentence: Rotate encryption keys weekly.');
     expect(text).toContain('surrounding_parent_chunk: Rotate encryption keys weekly. Keep parent context nearby.');
   });

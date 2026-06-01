@@ -160,6 +160,39 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     });
   });
 
+  it('kg llm: defaults to disabled Ollama enrichment for long conversations', () => {
+    const config = getConfig() as any;
+
+    expect(config.kgLlm).toEqual({
+      enabled: false,
+      provider: 'ollama',
+      model: 'qwen2.5:7b-instruct',
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 8000,
+      minContentChars: 12000,
+    });
+  });
+
+  it('kg llm: resolves provider and thresholds from env before config file and defaults', () => {
+    process.env.THOTH_KG_LLM_ENABLED = 'true';
+    process.env.THOTH_KG_LLM_PROVIDER = 'lmstudio';
+    process.env.THOTH_KG_LLM_MODEL = 'loaded_model';
+    process.env.THOTH_KG_LLM_BASE_URL = 'http://127.0.0.1:1234/v1/';
+    process.env.THOTH_KG_LLM_TIMEOUT_MS = '11000';
+    process.env.THOTH_KG_LLM_MIN_CONTENT_CHARS = '2500';
+
+    const config = getConfig() as any;
+
+    expect(config.kgLlm).toEqual({
+      enabled: true,
+      provider: 'lmstudio',
+      model: 'loaded_model',
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      timeoutMs: 11000,
+      minContentChars: 2500,
+    });
+  });
+
   it('hyde: resolves provider from env before config file and defaults', () => {
     process.env.THOTH_HYDE_ENABLED = 'false';
     process.env.THOTH_HYDE_PROVIDER = 'lmstudio';
@@ -191,6 +224,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       dimensions: 768,
     });
     expect(saved.hyde).toEqual(config.hyde);
+    expect(saved.kgLlm).toEqual(config.kgLlm);
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
   });
@@ -217,6 +251,14 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     });
     expect(saved.hyde.enabled).toBe(true);
     expect(saved.hyde.provider).toBe('transformers_local');
+    expect(saved.kgLlm).toEqual({
+      enabled: false,
+      provider: 'ollama',
+      model: 'qwen2.5:7b-instruct',
+      baseUrl: 'http://127.0.0.1:11434',
+      timeoutMs: 8000,
+      minContentChars: 12000,
+    });
     expect(saved.maxContentLength).toBe(100_000);
   });
 
@@ -257,6 +299,22 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     process.env.THOTH_HYDE_MODEL = 'qwen2.5:7b-instruct';
     process.env.THOTH_HYDE_PROVIDER = 'ollama';
     process.env.THOTH_HYDE_BASE_URL = 'http://127.0.0.1:11434';
+    const configB = getConfig() as any;
+
+    expect(configA.embedding.configHash).toBe(configB.embedding.configHash);
+  });
+
+  it('embedding: config hash does not change when only KG LLM enrichment config changes', () => {
+    process.env.THOTH_EMBEDDING_PROVIDER = 'lmstudio';
+    process.env.THOTH_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+    process.env.THOTH_EMBEDDING_BASE_URL = 'http://127.0.0.1:1234';
+
+    const configA = getConfig() as any;
+
+    process.env.THOTH_KG_LLM_ENABLED = 'true';
+    process.env.THOTH_KG_LLM_PROVIDER = 'ollama';
+    process.env.THOTH_KG_LLM_MODEL = 'qwen2.5:14b-instruct';
+    process.env.THOTH_KG_LLM_MIN_CONTENT_CHARS = '2000';
     const configB = getConfig() as any;
 
     expect(configA.embedding.configHash).toBe(configB.embedding.configHash);
