@@ -73,7 +73,12 @@ import {
   type LaneCandidate,
   type RetrievalLane,
 } from '../retrieval/ranking.js';
-import { processNextSemanticJob, processSemanticJobs } from '../indexing/jobs.js';
+import {
+  processNextSemanticJob,
+  processSemanticJobs,
+  recoverRetriableSemanticJobs,
+  recoverStaleSemanticJobs,
+} from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
 import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
@@ -281,6 +286,8 @@ export class Store {
       embeddingConfigHash: this.config.embedding?.configHash ?? null,
       degradedReason: sqliteVec.degradedReason,
     });
+    recoverStaleSemanticJobs(this);
+    recoverRetriableSemanticJobs(this);
     this.enqueueRebuildOnConfigMismatch();
     this.enqueueRebuildOnMissingSemanticCoverage();
   }
@@ -660,25 +667,37 @@ export class Store {
           FROM semantic_sentences s
           JOIN observations o ON o.id = s.observation_id
           WHERE o.deleted_at IS NULL) AS sentenced,
-         (SELECT COUNT(DISTINCT v.observation_id)
-          FROM semantic_vector_rowids v
-          JOIN observations o ON o.id = v.observation_id
-          WHERE v.lane = 'chunk' AND o.deleted_at IS NULL) AS chunk_vectors,
-         (SELECT COUNT(DISTINCT v.observation_id)
-          FROM semantic_vector_rowids v
-          JOIN observations o ON o.id = v.observation_id
-          WHERE v.lane = 'sentence' AND o.deleted_at IS NULL) AS sentence_vectors`
+          (SELECT COUNT(*)
+           FROM semantic_chunks c
+           JOIN observations o ON o.id = c.observation_id
+           WHERE o.deleted_at IS NULL) AS chunks,
+          (SELECT COUNT(*)
+           FROM semantic_sentences s
+           JOIN observations o ON o.id = s.observation_id
+           WHERE o.deleted_at IS NULL) AS sentences,
+          (SELECT COUNT(*)
+           FROM semantic_vector_rowids v
+           JOIN semantic_chunks c ON c.chunk_key = v.source_key
+           JOIN observations o ON o.id = c.observation_id
+           WHERE v.lane = 'chunk' AND o.deleted_at IS NULL) AS chunk_vectors,
+          (SELECT COUNT(*)
+           FROM semantic_vector_rowids v
+           JOIN semantic_sentences s ON s.sentence_key = v.source_key
+           JOIN observations o ON o.id = s.observation_id
+           WHERE v.lane = 'sentence' AND o.deleted_at IS NULL) AS sentence_vectors`
     ).get() as {
       chunked: number;
       sentenced: number;
+      chunks: number;
+      sentences: number;
       chunk_vectors: number;
       sentence_vectors: number;
     };
     const missingStructuralCoverage = coverage.chunked < activeObservations
       || coverage.sentenced < activeObservations;
     const missingVectorCoverage = this.config.embedding !== undefined && (
-      coverage.chunk_vectors < activeObservations
-      || coverage.sentence_vectors < activeObservations
+      coverage.chunk_vectors < coverage.chunks
+      || coverage.sentence_vectors < coverage.sentences
     );
 
     if (!missingStructuralCoverage && !missingVectorCoverage) {

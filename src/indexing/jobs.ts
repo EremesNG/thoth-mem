@@ -27,11 +27,52 @@ interface LaneStateUpdate {
   degraded: number;
 }
 
+const STALE_RUNNING_JOB_MODIFIER = '-15 minutes';
+const MAX_VEC_ROWID_PROBES = 2048;
+const VEC_ROWID_UNIQUE_ERROR = 'UNIQUE constraint failed: semantic_vector_rowids.lane, semantic_vector_rowids.vec_rowid';
+
+export function recoverStaleSemanticJobs(store: Store): number {
+  const db = store.getDb();
+  const result = db.prepare(
+    `UPDATE semantic_jobs
+     SET state = 'pending',
+         attempt_count = CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now'),
+         last_error = COALESCE(last_error, 'Recovered stale running job lease')
+     WHERE state = 'running'
+       AND (started_at IS NULL OR started_at <= datetime('now', ?))`
+  ).run(STALE_RUNNING_JOB_MODIFIER);
+  return result.changes;
+}
+
+export function recoverRetriableSemanticJobs(store: Store): number {
+  const db = store.getDb();
+  const result = db.prepare(
+    `UPDATE semantic_jobs
+     SET state = 'pending',
+         attempt_count = 0,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now'),
+         last_error = NULL
+     WHERE state = 'failed'
+       AND kind IN ('chunk','sentence')
+       AND last_error LIKE ?`
+  ).run(`${VEC_ROWID_UNIQUE_ERROR}%`);
+  return result.changes;
+}
+
 export async function processNextSemanticJob(
   store: Store,
   input?: SemanticJobRuntime
 ): Promise<{ processed: boolean; kind?: JobRow['kind'] }> {
   const db = store.getDb();
+  recoverStaleSemanticJobs(store);
+  recoverRetriableSemanticJobs(store);
   const job = db.prepare(
     `UPDATE semantic_jobs
      SET state = 'running',
@@ -230,7 +271,7 @@ async function embedLane(
 
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
-    const rowid = deterministicVecRowid(`${lane}:${item.key}`);
+    const rowid = resolveVecRowid(db, lane, item.key);
     const vecRowid = BigInt(rowid);
     const vector = vectorToBuffer(vectors[i] ?? []);
     deleteVec.run(vecRowid);
@@ -249,6 +290,31 @@ async function embedLane(
          updated_at = datetime('now')
      WHERE lane = ?`
   ).run(laneState.pending, laneState.stale, laneState.degraded, laneState.pending, laneState.degraded, lane);
+}
+
+function resolveVecRowid(
+  db: ReturnType<Store['getDb']>,
+  lane: 'chunk' | 'sentence',
+  sourceKey: string
+): number {
+  const existing = db.prepare(
+    'SELECT vec_rowid FROM semantic_vector_rowids WHERE lane = ? AND source_key = ?'
+  ).get(lane, sourceKey) as { vec_rowid: number } | undefined;
+  if (existing) {
+    return existing.vec_rowid;
+  }
+
+  for (let probe = 0; probe < MAX_VEC_ROWID_PROBES; probe += 1) {
+    const rowid = deterministicVecRowid(probe === 0 ? `${lane}:${sourceKey}` : `${lane}:${sourceKey}:probe:${probe}`);
+    const conflict = db.prepare(
+      'SELECT source_key FROM semantic_vector_rowids WHERE lane = ? AND vec_rowid = ?'
+    ).get(lane, rowid) as { source_key: string } | undefined;
+    if (!conflict || conflict.source_key === sourceKey) {
+      return rowid;
+    }
+  }
+
+  throw new Error(`Unable to allocate semantic vector rowid for ${lane}:${sourceKey}`);
 }
 
 function resolveLaneStateAfterEmbedding(

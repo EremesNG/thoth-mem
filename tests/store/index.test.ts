@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
 import { vectorToBuffer } from '../../src/retrieval/sqlite-vec.js';
-import { splitIntoChunks } from '../../src/retrieval/sentences.js';
+import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../../src/retrieval/sentences.js';
 import { KG_ENTITY_TYPES } from '../../src/indexing/kg-extractor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -349,6 +349,89 @@ describe('Store', () => {
         .get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number; last_error: string | null; finished_at: string | null };
       expect(row).toMatchObject({ state: 'failed', attempt_count: 3, last_error: 'embedding offline' });
       expect(row.finished_at).toEqual(expect.any(String));
+    });
+
+    it('semantic jobs recover stale running claims before processing', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'stale running claim',
+        content: 'A worker claimed this job before the process stopped.',
+        project: 'hybrid-test',
+      });
+      db.prepare(
+        `UPDATE semantic_jobs
+         SET state = 'running',
+             attempt_count = 1,
+             started_at = datetime('now', '-2 hours')
+         WHERE job_key = ?`
+      ).run(`chunk:${saved.observation.id}`);
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: null });
+
+      const row = db.prepare(
+        'SELECT state, attempt_count, finished_at FROM semantic_jobs WHERE job_key = ?'
+      ).get(`chunk:${saved.observation.id}`) as { state: string; attempt_count: number; finished_at: string | null };
+      expect(row.state).toBe('done');
+      expect(row.attempt_count).toBe(1);
+      expect(row.finished_at).toEqual(expect.any(String));
+    });
+
+    it('semantic jobs recover failed vector rowid collisions without failing the lane', async () => {
+      store = new Store(':memory:');
+      const runtime = store as any;
+      const db = store.getDb();
+      const saved = store.saveObservation({
+        title: 'rowid collision',
+        content: 'First sentence should receive a vector. Second sentence should also receive a vector.',
+        project: 'hybrid-test',
+      });
+      const provider = {
+        config: store.config.embedding!,
+        embed: async (texts: string[]) => texts.map(() => (
+          Array.from({ length: 384 }, (_, index) => (index === 0 ? 0.1 : 0))
+        )),
+      };
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: provider });
+      const chunk = db.prepare(
+        'SELECT chunk_key, content FROM semantic_chunks WHERE observation_id = ? ORDER BY chunk_index ASC LIMIT 1'
+      ).get(saved.observation.id) as { chunk_key: string; content: string };
+      const sentence = splitChunkIntoSentences({
+        observationId: saved.observation.id,
+        chunkKey: chunk.chunk_key,
+        text: chunk.content,
+      })[0];
+      const collidingRowid = deterministicVecRowid(`sentence:${sentence.sentenceKey}`);
+      db.prepare(
+        `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash)
+         VALUES ('sentence', 'sentence:preexisting-collision', ?, 999999, 'collision')`
+      ).run(collidingRowid);
+      db.prepare(
+        `UPDATE semantic_jobs
+         SET state = 'failed',
+             attempt_count = 3,
+             last_error = 'UNIQUE constraint failed: semantic_vector_rowids.lane, semantic_vector_rowids.vec_rowid',
+             finished_at = datetime('now')
+         WHERE job_key = ?`
+      ).run(`sentence:${saved.observation.id}`);
+
+      await runtime.processSemanticJobs({ limit: 1, embeddingProvider: provider });
+
+      const job = db.prepare(
+        'SELECT state, last_error FROM semantic_jobs WHERE job_key = ?'
+      ).get(`sentence:${saved.observation.id}`) as { state: string; last_error: string | null };
+      const rowids = db.prepare(
+        `SELECT source_key, vec_rowid
+         FROM semantic_vector_rowids
+         WHERE lane = 'sentence' AND source_key IN (?, 'sentence:preexisting-collision')
+         ORDER BY source_key`
+      ).all(sentence.sentenceKey) as Array<{ source_key: string; vec_rowid: number }>;
+
+      expect(job).toEqual({ state: 'done', last_error: null });
+      expect(rowids).toHaveLength(2);
+      expect(new Set(rowids.map((row) => row.vec_rowid)).size).toBe(2);
     });
 
     it('semantic job worker skips terminal failures and continues later queued work', async () => {
