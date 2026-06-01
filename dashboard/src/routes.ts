@@ -1,20 +1,16 @@
 export const DASHBOARD_ROUTES = {
-  observatory: '/observatory',
-  map: '/',
-  overview: '/overview',
-  search: '/search',
-  topicKeys: '/topic-keys',
-  graphLite: '/graph',
+  retrieval: '/',
+  operations: '/console/operations',
+  traces: '/console/traces',
+  indexing: '/console/indexing',
+  graphLite: '/console/graph',
 } as const;
 
-export function resolveDashboardRoute(pathname: string): keyof typeof DASHBOARD_ROUTES | 'project' | 'memory' | 'unknown' {
-  if (pathname === DASHBOARD_ROUTES.observatory) return 'observatory';
-  if (pathname === DASHBOARD_ROUTES.map) return 'map';
-  if (pathname === DASHBOARD_ROUTES.overview) return 'overview';
-  if (pathname === DASHBOARD_ROUTES.search) return 'search';
-  if (pathname === DASHBOARD_ROUTES.topicKeys) return 'topicKeys';
+export function resolveDashboardRoute(pathname: string): keyof typeof DASHBOARD_ROUTES | 'unknown' {
+  if (pathname === DASHBOARD_ROUTES.retrieval) return 'retrieval';
+  if (pathname === DASHBOARD_ROUTES.operations) return 'operations';
+  if (pathname === DASHBOARD_ROUTES.traces) return 'traces';
+  if (pathname === DASHBOARD_ROUTES.indexing) return 'indexing';
   if (pathname === DASHBOARD_ROUTES.graphLite) return 'graphLite';
-  if (/^\/projects\/[^/]+$/.test(pathname)) return 'project';
-  if (/^\/memory\/[^/]+$/.test(pathname)) return 'memory';
   return 'unknown';
 }

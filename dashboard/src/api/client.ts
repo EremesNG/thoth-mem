@@ -55,6 +55,115 @@ export interface Stats {
   projects: string[];
 }
 
+export interface VersionResponse {
+  version: string;
+}
+
+export type OperationOrigin = 'http' | 'mcp' | 'cli';
+export type OperationKind = 'read' | 'write' | 'admin' | 'sync' | 'indexing';
+export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
+export type OperationTraceStatus = 'ok' | 'error';
+
+export interface OperationCatalogEntry {
+  id: string;
+  origin: OperationOrigin;
+  label: string;
+  kind: OperationKind;
+  method?: string;
+  path?: string;
+  target?: string;
+  description: string;
+}
+
+export interface OperationCatalogResponse {
+  operations: OperationCatalogEntry[];
+}
+
+export interface OperationTrace {
+  id: number;
+  trace_id: string;
+  origin: OperationTraceOrigin;
+  target: string;
+  status: OperationTraceStatus;
+  project: string | null;
+  session_id: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  request_json: string;
+  response_json: string | null;
+  error: string | null;
+  request_truncated: boolean;
+  response_truncated: boolean;
+  created_at: string;
+}
+
+export interface OperationTraceListResponse {
+  traces: OperationTrace[];
+  total: number;
+}
+
+export interface SemanticIndexProgress {
+  lanes: Array<{
+    lane: string;
+    pending: boolean;
+    degraded: boolean;
+    stale: boolean;
+    embeddingConfigHash: string | null;
+    embeddingDimensions: number | null;
+    lastReadyAt: string | null;
+    updatedAt: string | null;
+  }>;
+  jobs: Array<{ state: string; kind: string; count: number }>;
+  byKind: Array<{
+    kind: string;
+    total: number;
+    pending: number;
+    running: number;
+    done: number;
+    failed: number;
+    oldestPendingAt: string | null;
+    oldestPendingAgeMs: number | null;
+  }>;
+  oldestPendingAt: string | null;
+  queueLagMs: number | null;
+  totals: { total: number; pending: number; running: number; done: number; failed: number };
+  coverage: {
+    observations: number;
+    chunks: number;
+    sentences: number;
+    chunkVectors: number;
+    sentenceVectors: number;
+  };
+  recentErrors: Array<{ id: number; jobKey: string; kind: string; state: string; attemptCount: number; lastError: string | null }>;
+}
+
+export interface IndexStatusResponse {
+  project: string | null;
+  state: { pending: boolean; degraded: boolean; stale: boolean; degradedReason: string | null };
+  progress: SemanticIndexProgress;
+  health: VizHealthResponse;
+}
+
+export interface RebuildIndexRequest {
+  project?: string;
+  reason?: string;
+  process_limit?: number;
+}
+
+export interface RebuildIndexResponse extends IndexStatusResponse {
+  queued: boolean;
+  dedupe_key: string;
+  processed: number;
+}
+
+export interface RebuildGraphResponse {
+  project: string | null;
+  observations_scanned: number;
+  facts_deleted: number;
+  facts_created: number;
+}
+
 interface OpenApiInfoResponse {
   info?: {
     version?: unknown;
@@ -161,7 +270,25 @@ export interface VizHealthResponse {
   pending_jobs: number;
   semantic?: {
     lanes: Array<{ lane: string; pending: boolean; degraded: boolean; stale: boolean; last_ready_at: string | null; updated_at: string | null }>;
-    jobs: { total: number; pending: number; running: number; done: number; failed: number };
+    jobs: {
+      total: number;
+      pending: number;
+      running: number;
+      done: number;
+      failed: number;
+      oldest_pending_at: string | null;
+      queue_lag_ms: number | null;
+      by_kind: Array<{
+        kind: string;
+        total: number;
+        pending: number;
+        running: number;
+        done: number;
+        failed: number;
+        oldest_pending_at: string | null;
+        oldest_pending_age_ms: number | null;
+      }>;
+    };
     coverage: {
       observations: number;
       chunks: number;
@@ -343,6 +470,71 @@ export const api = {
   getMcpVersion: async (signal?: AbortSignal): Promise<string> => {
     const payload = await apiFetch<OpenApiInfoResponse>('/openapi.json', { signal });
     return typeof payload.info?.version === 'string' ? payload.info.version : 'unknown';
+  },
+
+  getVersion: (signal?: AbortSignal): Promise<VersionResponse> => {
+    return apiFetch<VersionResponse>('/version', { signal });
+  },
+
+  getOperations: (signal?: AbortSignal): Promise<OperationCatalogResponse> => {
+    return apiFetch<OperationCatalogResponse>('/operations', { signal });
+  },
+
+  getOperationTraces: (
+    params?: {
+      origin?: OperationTraceOrigin;
+      target?: string;
+      status?: OperationTraceStatus;
+      project?: string;
+      session_id?: string;
+      since?: string;
+      until?: string;
+      limit?: number;
+      offset?: number;
+    },
+    signal?: AbortSignal
+  ): Promise<OperationTraceListResponse> => {
+    const query = new URLSearchParams();
+    if (params?.origin) query.append('origin', params.origin);
+    if (params?.target) query.append('target', params.target);
+    if (params?.status) query.append('status', params.status);
+    if (params?.project) query.append('project', params.project);
+    if (params?.session_id) query.append('session_id', params.session_id);
+    if (params?.since) query.append('since', params.since);
+    if (params?.until) query.append('until', params.until);
+    if (params?.limit !== undefined) query.append('limit', String(params.limit));
+    if (params?.offset !== undefined) query.append('offset', String(params.offset));
+    const queryString = query.toString();
+    return apiFetch<OperationTraceListResponse>(`/operation-traces${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getOperationTrace: (traceId: string, signal?: AbortSignal): Promise<OperationTrace> => {
+    return apiFetch<OperationTrace>(`/operation-traces/${encodeURIComponent(traceId)}`, { signal });
+  },
+
+  getIndexStatus: (params?: { project?: string }, signal?: AbortSignal): Promise<IndexStatusResponse> => {
+    const query = new URLSearchParams();
+    if (params?.project) query.append('project', params.project);
+    const queryString = query.toString();
+    return apiFetch<IndexStatusResponse>(`/index/status${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  rebuildIndex: (payload: RebuildIndexRequest = {}, signal?: AbortSignal): Promise<RebuildIndexResponse> => {
+    return apiFetch<RebuildIndexResponse>('/index/rebuild', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  },
+
+  rebuildGraph: (payload: { project?: string } = {}, signal?: AbortSignal): Promise<RebuildGraphResponse> => {
+    return apiFetch<RebuildGraphResponse>('/graph/rebuild', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
   },
 
   /**

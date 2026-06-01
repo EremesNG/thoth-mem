@@ -139,16 +139,23 @@ describe('map workspace behavior helpers', () => {
     expect(toMapNodeUrl(node('project:thoth-mem', { kind: 'project', project: 'thoth-mem' }))).toBe('/observatory?project=thoth-mem');
   });
 
-  it('ships the connected observatory surfaces and reduced-motion guard', () => {
+  it('ships the connected operations console surfaces and reduced-motion guard', () => {
     const css = readFileSync('dashboard/src/index.css', 'utf8');
-    const workspace = readFileSync('dashboard/src/components/observatory/ObservatoryWorkspace.tsx', 'utf8');
+    const app = readFileSync('dashboard/src/App.tsx', 'utf8');
 
-    expect(workspace).toContain('MemoryMapSurface');
-    expect(workspace).toContain('RecallWorkspace');
-    expect(workspace).toContain('TimelineSurface');
-    expect(workspace).toContain('KnowledgeLedgerSurface');
-    expect(workspace).toContain('HealthIndexingSurface');
+    expect(app).toContain('motion/react');
+    expect(app).toContain('RetrievalWorkspace');
+    expect(app).toContain('OperationsWorkspace');
+    expect(app).toContain('TracesWorkspace');
+    expect(app).toContain('IndexingWorkspace');
+    expect(app).toContain('GraphWorkspace');
+    expect(app).toContain('getOperationTraces');
+    expect(app).toContain('rebuildIndex');
+    expect(app).toContain('rebuildGraph');
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
-    expect(css).toContain('.observatory-tabs button:focus-visible');
+    expect(css).toContain('button:focus-visible');
+    expect(css).toContain('.rail-nav');
+    expect(css).toContain('.trace-row.active');
+    expect(css).toContain('.graph-stage');
   });
 });

@@ -8,7 +8,7 @@ const apiBaseUrl = `http://localhost:${process.env.THOTH_HTTP_PORT ?? '7438'}`;
 export default defineConfig({
   plugins: [react()],
   root: resolve(__dirname),
-  base: './',
+  base: '/',
   build: {
     outDir: resolve(__dirname, '../dist/dashboard'),
     emptyOutDir: true,
@@ -28,6 +28,11 @@ export default defineConfig({
       '/projects': apiBaseUrl,
       '/observatory': apiBaseUrl,
       '/viz': apiBaseUrl,
+      '/version': apiBaseUrl,
+      '/operations': apiBaseUrl,
+      '/operation-traces': apiBaseUrl,
+      '/index': apiBaseUrl,
+      '/graph/rebuild': apiBaseUrl,
       '/openapi.json': apiBaseUrl,
     },
   },

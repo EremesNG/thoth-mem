@@ -292,3 +292,85 @@ describe('observatory client routes', () => {
     }
   });
 });
+
+describe('operations console client routes', () => {
+  it('builds version, operation, trace, and rebuild requests', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      const url = String(input);
+
+      if (url === '/version') {
+        return new Response(JSON.stringify({ version: '0.2.2' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/operations') {
+        return new Response(JSON.stringify({ operations: [{ id: 'mcp-mem-recall', origin: 'mcp', label: 'mem_recall', kind: 'read', target: 'mem_recall', description: 'Recall' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/operation-traces/trace-1')) {
+        return new Response(JSON.stringify({
+          id: 1,
+          trace_id: 'trace-1',
+          origin: 'http',
+          target: 'POST /observations',
+          status: 'ok',
+          project: 'ops',
+          session_id: 's1',
+          started_at: '2026-06-01T00:00:00.000Z',
+          finished_at: '2026-06-01T00:00:00.010Z',
+          duration_ms: 10,
+          request_json: '{}',
+          response_json: '{}',
+          error: null,
+          request_truncated: false,
+          response_truncated: false,
+          created_at: '2026-06-01T00:00:00.010Z',
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/operation-traces')) {
+        return new Response(JSON.stringify({ traces: [], total: 0 }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url.startsWith('/index/status')) {
+        return new Response(JSON.stringify({
+          project: 'ops',
+          state: { pending: true, degraded: false, stale: true, degradedReason: null },
+          progress: { lanes: [], jobs: [], byKind: [], oldestPendingAt: null, queueLagMs: null, totals: { total: 0, pending: 0, running: 0, done: 0, failed: 0 }, coverage: { observations: 0, chunks: 0, sentences: 0, chunkVectors: 0, sentenceVectors: 0 }, recentErrors: [] },
+          health: { semantic_state: 'pending', pending_jobs: 1 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/index/rebuild') {
+        return new Response(JSON.stringify({ project: 'ops', queued: true, dedupe_key: 'rebuild:dashboard:ops', processed: 0, state: {}, progress: {}, health: {} }), { status: 202, headers: { 'content-type': 'application/json' } });
+      }
+
+      return new Response(JSON.stringify({ project: 'ops', observations_scanned: 1, facts_deleted: 1, facts_created: 2 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      await expect(api.getVersion()).resolves.toEqual({ version: '0.2.2' });
+      await api.getOperations();
+      await api.getOperationTraces({ origin: 'http', target: 'POST /observations', status: 'ok', project: 'ops', limit: 25 });
+      await api.getOperationTrace('trace-1');
+      await api.getIndexStatus({ project: 'ops' });
+      await api.rebuildIndex({ project: 'ops', reason: 'dashboard', process_limit: 0 });
+      await api.rebuildGraph({ project: 'ops' });
+
+      expect(String(calls[0].input)).toBe('/version');
+      expect(String(calls[1].input)).toBe('/operations');
+      expect(String(calls[2].input)).toContain('/operation-traces?origin=http');
+      expect(String(calls[2].input)).toContain('target=POST+%2Fobservations');
+      expect(String(calls[2].input)).toContain('status=ok');
+      expect(String(calls[3].input)).toBe('/operation-traces/trace-1');
+      expect(String(calls[4].input)).toBe('/index/status?project=ops');
+      expect(String(calls[5].input)).toBe('/index/rebuild');
+      expect(calls[5].init?.method).toBe('POST');
+      expect(calls[5].init?.body).toBe(JSON.stringify({ project: 'ops', reason: 'dashboard', process_limit: 0 }));
+      expect(String(calls[6].input)).toBe('/graph/rebuild');
+      expect(calls[6].init?.method).toBe('POST');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
