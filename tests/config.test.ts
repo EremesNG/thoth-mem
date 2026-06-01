@@ -160,14 +160,14 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     });
   });
 
-  it('kg llm: defaults to disabled Ollama enrichment for long conversations', () => {
+  it('kg llm: defaults to disabled local Transformers enrichment for long conversations', () => {
     const config = getConfig() as any;
 
     expect(config.kgLlm).toEqual({
       enabled: false,
-      provider: 'ollama',
-      model: 'qwen2.5:7b-instruct',
-      baseUrl: 'http://127.0.0.1:11434',
+      provider: 'transformers_local',
+      model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+      baseUrl: null,
       timeoutMs: 8000,
       minContentChars: 12000,
     });
@@ -253,9 +253,9 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.hyde.provider).toBe('transformers_local');
     expect(saved.kgLlm).toEqual({
       enabled: false,
-      provider: 'ollama',
-      model: 'qwen2.5:7b-instruct',
-      baseUrl: 'http://127.0.0.1:11434',
+      provider: 'transformers_local',
+      model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+      baseUrl: null,
       timeoutMs: 8000,
       minContentChars: 12000,
     });

@@ -1,7 +1,34 @@
 import type { KgLlmConfig } from '../config.js';
+import { resolveLocalHydePipelineOptions } from '../retrieval/hyde-generator.js';
 import { KG_RELATION_TYPES } from './kg-extractor.js';
 
 const KG_RELATION_TYPE_SET = new Set<string>(KG_RELATION_TYPES);
+type PipelineModule = typeof import('@huggingface/transformers');
+type ChatMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+type TextGenerationOutput = Array<{
+  generated_text?: string | ChatMessage[];
+}>;
+type TextGenerationPipeline = (
+  input: string | ChatMessage[],
+  options: {
+    max_new_tokens: number;
+    do_sample: boolean;
+    temperature?: number;
+  },
+) => Promise<TextGenerationOutput>;
+
+let cachedPipelineModule: Promise<PipelineModule> | null = null;
+
+async function loadTransformersModule(): Promise<PipelineModule> {
+  if (!cachedPipelineModule) {
+    cachedPipelineModule = import('@huggingface/transformers');
+  }
+
+  return cachedPipelineModule;
+}
 
 export interface KgLlmTripleDraft {
   subject: string;
@@ -214,10 +241,75 @@ function extractTextFromRemoteResponse(response: unknown): string {
   throw new Error('KG LLM response did not include text content');
 }
 
+function extractGeneratedText(output: TextGenerationOutput): string {
+  const generated = output[0]?.generated_text;
+  if (typeof generated === 'string') {
+    return generated.trim();
+  }
+
+  if (Array.isArray(generated)) {
+    const assistant = [...generated].reverse().find((message) => message.role === 'assistant');
+    return (assistant?.content ?? generated.at(-1)?.content ?? '').trim();
+  }
+
+  return '';
+}
+
+class LocalTransformersKgLlmExtractor implements KgLlmExtractor {
+  private pipelinePromise: Promise<TextGenerationPipeline> | null = null;
+
+  constructor(private readonly config: KgLlmConfig) {
+    if (config.provider !== 'transformers_local') {
+      throw new Error(`LocalTransformersKgLlmExtractor requires provider "transformers_local", got "${config.provider}".`);
+    }
+  }
+
+  private async getPipeline(): Promise<TextGenerationPipeline> {
+    if (!this.pipelinePromise) {
+      this.pipelinePromise = (async () => {
+        const transformers = await loadTransformersModule();
+        const pipe = await transformers.pipeline(
+          'text-generation',
+          this.config.model,
+          resolveLocalHydePipelineOptions(this.config.model),
+        );
+        return pipe as TextGenerationPipeline;
+      })();
+    }
+
+    return this.pipelinePromise;
+  }
+
+  async extract(input: KgLlmExtractionInput): Promise<KgLlmTripleDraft[]> {
+    const generator = await this.getPipeline();
+    const output = await generator(
+      [
+        { role: 'system', content: systemPrompt() },
+        { role: 'user', content: buildKgLlmPrompt(input) },
+      ],
+      {
+        max_new_tokens: 1000,
+        do_sample: false,
+        temperature: 0,
+      },
+    );
+    const text = extractGeneratedText(output);
+    if (!text) {
+      throw new Error('KG LLM local Transformers response was empty.');
+    }
+
+    return triplesFromJson(findJsonPayload(text));
+  }
+}
+
 class RemoteKgLlmExtractor implements KgLlmExtractor {
   constructor(private readonly config: KgLlmConfig) {}
 
   async extract(input: KgLlmExtractionInput): Promise<KgLlmTripleDraft[]> {
+    if (!this.config.baseUrl) {
+      throw new Error(`KG LLM provider "${this.config.provider}" requires a baseUrl.`);
+    }
+
     const prompt = buildKgLlmPrompt(input);
     const response = this.config.provider === 'ollama'
       ? await fetchJson(ollamaGenerateUrl(this.config.baseUrl), {
@@ -245,6 +337,10 @@ class RemoteKgLlmExtractor implements KgLlmExtractor {
 export function createKgLlmExtractor(config: KgLlmConfig | null | undefined): KgLlmExtractor | null {
   if (!config?.enabled) {
     return null;
+  }
+
+  if (config.provider === 'transformers_local') {
+    return new LocalTransformersKgLlmExtractor(config);
   }
 
   return new RemoteKgLlmExtractor(config);

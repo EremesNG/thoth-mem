@@ -1,6 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createKgLlmExtractor } from '../../src/indexing/kg-llm-generator.js';
 
+vi.mock('@huggingface/transformers', () => ({
+  pipeline: vi.fn(async () => vi.fn(async () => [
+    {
+      generated_text: [
+        { role: 'system', content: 'system' },
+        {
+          role: 'assistant',
+          content: JSON.stringify({
+            triples: [
+              {
+                subject: 'Local KG',
+                relation: 'IMPLEMENTS',
+                object: 'Transformers Extractor',
+              },
+            ],
+          }),
+        },
+      ],
+    },
+  ])),
+}));
+
 describe('kg llm generator', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -113,6 +135,37 @@ describe('kg llm generator', () => {
         subject: 'session worker',
         relation: 'RUNS_IN',
         object: 'background queue',
+        confidence: 0.86,
+      },
+    ]);
+  });
+
+  it('supports local Transformers text generation using the HyDE-compatible model', async () => {
+    const { pipeline } = await import('@huggingface/transformers');
+    const extractor = createKgLlmExtractor({
+      enabled: true,
+      provider: 'transformers_local',
+      model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+      baseUrl: null,
+      timeoutMs: 5000,
+      minContentChars: 1000,
+    });
+
+    const triples = await extractor!.extract({
+      content: 'Local KG implements Transformers Extractor.',
+      provenance: 'observation:3',
+    });
+
+    expect(pipeline).toHaveBeenCalledWith(
+      'text-generation',
+      'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
+      { dtype: 'q4' },
+    );
+    expect(triples).toEqual([
+      {
+        subject: 'local kg',
+        relation: 'IMPLEMENTS',
+        object: 'transformers extractor',
         confidence: 0.86,
       },
     ]);

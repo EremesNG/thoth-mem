@@ -14,7 +14,7 @@ export interface RetrievalDefaults {
 export type LocalModelProvider = 'ollama' | 'lmstudio' | 'transformers_local';
 export type EmbeddingProvider = LocalModelProvider;
 export type HydeProvider = LocalModelProvider;
-export type KgLlmProvider = Exclude<LocalModelProvider, 'transformers_local'>;
+export type KgLlmProvider = LocalModelProvider;
 
 export interface HydeConfig {
   enabled: boolean;
@@ -28,7 +28,7 @@ export interface KgLlmConfig {
   enabled: boolean;
   provider: KgLlmProvider;
   model: string;
-  baseUrl: string;
+  baseUrl: string | null;
   timeoutMs: number;
   minContentChars: number;
 }
@@ -103,9 +103,9 @@ const DEFAULT_HYDE_CONFIG: HydeConfig = {
 
 const DEFAULT_KG_LLM_CONFIG: KgLlmConfig = {
   enabled: false,
-  provider: 'ollama',
-  model: 'qwen2.5:7b-instruct',
-  baseUrl: 'http://127.0.0.1:11434',
+  provider: 'transformers_local',
+  model: DEFAULT_LOCAL_HYDE_MODEL,
+  baseUrl: null,
   timeoutMs: 8000,
   minContentChars: 12_000,
 };
@@ -180,7 +180,7 @@ function parseProvider(value: string | null | undefined, fallback: LocalModelPro
 
 function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmProvider): KgLlmProvider {
   const normalized = value?.trim();
-  if (normalized === 'ollama' || normalized === 'lmstudio') {
+  if (normalized === 'ollama' || normalized === 'lmstudio' || normalized === 'transformers_local') {
     return normalized;
   }
 
@@ -340,12 +340,20 @@ function resolveKgLlmConfig(persisted: PersistedConfig): KgLlmConfig {
     provider,
     model: process.env.THOTH_KG_LLM_MODEL
       ?? persistedKg.model
-      ?? (provider === 'ollama' ? DEFAULT_KG_LLM_CONFIG.model : 'loaded_model'),
+      ?? (provider === 'transformers_local'
+        ? DEFAULT_KG_LLM_CONFIG.model
+        : provider === 'ollama'
+          ? 'qwen2.5:7b-instruct'
+          : 'loaded_model'),
     baseUrl: normalizeBaseUrl(
       process.env.THOTH_KG_LLM_BASE_URL
         ?? persistedKg.baseUrl
-        ?? (provider === 'ollama' ? DEFAULT_KG_LLM_CONFIG.baseUrl : 'http://127.0.0.1:1234/v1'),
-    ) ?? DEFAULT_KG_LLM_CONFIG.baseUrl,
+        ?? (provider === 'ollama'
+          ? 'http://127.0.0.1:11434'
+          : provider === 'lmstudio'
+            ? 'http://127.0.0.1:1234/v1'
+            : DEFAULT_KG_LLM_CONFIG.baseUrl),
+    ),
     timeoutMs: timeoutFromEnv ?? persistedKg.timeoutMs ?? DEFAULT_KG_LLM_CONFIG.timeoutMs,
     minContentChars: minCharsFromEnv ?? persistedKg.minContentChars ?? DEFAULT_KG_LLM_CONFIG.minContentChars,
   };
