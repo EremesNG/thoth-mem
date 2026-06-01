@@ -32,7 +32,7 @@ Agent Session 1                    Agent Session 2
 ## Features
 
 - **6 compact MCP tools** — workflow-level tools instead of one tool per internal view
-- **Local read-only dashboard** served by the HTTP bridge at `/`, with OpenAPI docs preserved at `/docs`
+- **Dashboard v2 operations console** served by the HTTP bridge at `/`, with OpenAPI docs preserved at `/docs`
 - **CLI + MCP dual mode** — use as a server or directly from the terminal
 - **SQLite + FTS5** full-text search (fast, zero external dependencies)
 - **Git-friendly sync** — export memory as gzipped chunks for version control
@@ -50,6 +50,7 @@ Agent Session 1                    Agent Session 2
 - **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples, optional LLM KG acceptance)
 - **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
 - **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
+- **Operation trace logging** — MCP and HTTP calls persist sanitized request/response traces for dashboard inspection
 
 ## Quick Start
 
@@ -142,14 +143,16 @@ thoth-mem --no-http                    # Disable HTTP bridge
 
 ## HTTP REST API
 
-Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The bridge listens on port `7438`, serves a local read-only dashboard at `/` when dashboard assets are built, and provides full access to memory operations via standard HTTP.
+Thoth-Mem runs an HTTP REST API bridge alongside the MCP server by default. The bridge listens on port `7438`, serves Dashboard v2 at `/` when dashboard assets are built, and provides full access to memory operations via standard HTTP.
 
 **Local dashboard:**
 
 - Dashboard: `http://localhost:7438/`
 - Build assets locally with `pnpm run dashboard:build` during development or release packaging.
 - If `dist/dashboard/index.html` is missing, `/` returns a clear local build message while `/docs`, `/openapi.json`, and REST APIs remain available.
-- The dashboard is read-only and local-first: it uses existing GET endpoints only, adds no auth/multi-user mode, and does not create, update, delete, sync, migrate, or vector-search memories.
+- Dashboard v2 is a local operations console for retrieval lanes, operation traces, indexing/background state, graph exploration, and HTTP/CLI-equivalent commands.
+- Dashboard deep links live under `/console/*` so API routes such as `/operations` and `/graph/rebuild` are never shadowed.
+- The console can create observations and queue rebuild operations through the same REST contracts documented in OpenAPI.
 
 **Interactive Documentation:**
 
@@ -176,7 +179,21 @@ curl http://localhost:7438/observations/search?query=auth+pattern
 curl http://localhost:7438/stats
 ```
 
-The HTTP API supports all memory operations: sessions, observations, prompts, search, export/import, and sync. See the interactive `/docs` interface for the full API reference.
+**Example: Inspect operation traces**
+
+```bash
+curl "http://localhost:7438/operation-traces?origin=http&status=error&limit=20"
+```
+
+**Example: Queue an index rebuild**
+
+```bash
+curl -X POST http://localhost:7438/index/rebuild \
+  -H "content-type: application/json" \
+  -d '{"project":"my-project","reason":"manual","process_limit":0}'
+```
+
+The HTTP API supports sessions, observations, prompts, search, export/import, sync, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection. See the interactive `/docs` interface for the full API reference.
 
 ## Development Checks
 
@@ -211,7 +228,7 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
 | `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
-> **Admin operations** (export, import, sync, migrate-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, and migration are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+> **Admin operations** (export, import, sync, migrate-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Retrieval and Embeddings
 
@@ -221,8 +238,8 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 - Lexical ranking filters low-signal query stopwords and scores prefix matches by content-term coverage, so a broad one-word overlap cannot outrank stronger semantic/KG evidence under noisy corpora.
 - Surgical trimming is explicit in `mem_recall mode=context`: sentence hits return a `primary_sentence` and, when the score clears the small-to-big threshold, a labeled `surrounding_parent_chunk`. Lexical hits return matching sentences instead of whole observations. Each context hit includes `retrieval_contract`, `compression_ratio`, `evidence_chars`, and `full_chars` so noise reduction is measured rather than claimed.
 - Semantic indexing is eventual and non-blocking. Save/update operations can return while indexing stays pending in the background. Terminal job failures keep `last_error` and `finished_at`, and later queued jobs continue processing instead of being starved by failed work.
-- `/viz/health` and `/observatory/health` include product telemetry for semantic lanes, job totals, vector coverage ratios, and recent indexing/KG warnings. Optional KG LLM failures are recorded as job telemetry while deterministic KG extraction still completes.
-- Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>` and `thoth-mem rebuild-index --all`. Use `thoth-mem rebuild-index --status` to inspect queue progress, lane state, recent errors, and vector coverage.
+- `/viz/health`, `/observatory/health`, and `/index/status` include product telemetry for semantic lanes, job totals, job-kind breakdowns, queue lag, vector coverage ratios, and recent indexing/KG warnings. Optional KG LLM failures are recorded as job telemetry while deterministic KG extraction still completes.
+- Automatic rebuild is triggered when embedding configuration hash changes; manual rebuild is available through `thoth-mem rebuild-index --project <name>`, `thoth-mem rebuild-index --all`, and `POST /index/rebuild`. Use `thoth-mem rebuild-index --status` or `GET /index/status` to inspect queue progress, lane state, recent errors, and vector coverage.
 - When semantic lanes are pending or unavailable, retrieval degrades safely to lexical recall with graph enrichment where matching facts exist, and reports fallback metadata (`pending`, `degraded_fallback`) instead of failing.
 - `sqlite-vec` is optional at runtime: if unavailable, Thoth-Mem marks semantic lanes degraded and continues serving lexical retrieval with KG enrichment.
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
