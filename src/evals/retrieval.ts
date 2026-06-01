@@ -12,7 +12,7 @@ interface EvalCase {
   name: string;
   query: string;
   expectedKey: string;
-  kind?: 'direct' | 'rephrase';
+  kind?: 'direct' | 'rephrase' | 'non-synthetic';
   project?: string;
   limit?: number;
   hydeAnswer?: string;
@@ -25,6 +25,7 @@ export interface RetrievalEvalOptions {
 export interface RetrievalEvalCaseResult {
   name: string;
   query: string;
+  kind: 'direct' | 'rephrase' | 'non-synthetic';
   expected_title: string;
   found: boolean;
   rank: number | null;
@@ -47,10 +48,12 @@ export interface RetrievalEvalSummary {
     total_observations: number;
     signal_observations: number;
     noise_observations: number;
+    non_synthetic_observations: number;
   };
   case_mix: {
     direct_cases: number;
     rephrased_cases: number;
+    non_synthetic_cases: number;
   };
   retrieval_defaults: {
     lane_order: string;
@@ -232,6 +235,62 @@ const FIXTURES: EvalFixture[] = [
   },
 ];
 
+const NON_SYNTHETIC_FIXTURES: EvalFixture[] = [
+  {
+    key: 'docs-recall-filters',
+    observation: {
+      title: 'README mem_recall precision filters',
+      type: 'architecture',
+      project: 'docs-project',
+      topic_key: 'docs/mem-recall-filters',
+      content: [
+        'The README documents mem_recall as the primary retrieval tool.',
+        'It accepts precision filters for project, session_id, scope, topic_key, type, time_from, and time_to.',
+        'Those filters pass through to all retrieval lanes so narrowed recalls do not leak unrelated project evidence.',
+      ].join('\n'),
+    },
+  },
+  {
+    key: 'docs-admin-tools',
+    observation: {
+      title: 'README admin tools boundary',
+      type: 'decision',
+      project: 'docs-project',
+      topic_key: 'docs/admin-tools-boundary',
+      content: [
+        'Admin operations such as export, import, sync, migrate-project, rebuild-graph, and rebuild-index are available via CLI and HTTP.',
+        'They are intentionally not registered as MCP tools so the agent tool surface stays lean.',
+      ].join('\n'),
+    },
+  },
+  {
+    key: 'codemap-store-pattern',
+    observation: {
+      title: 'Codemap store-centric architecture',
+      type: 'architecture',
+      project: 'docs-project',
+      topic_key: 'codemap/store-centric-architecture',
+      content: [
+        'The repository atlas describes a store-centric architecture.',
+        'Tool handlers are thin adapters that delegate durable persistence, recall, session, and project operations to Store.',
+      ].join('\n'),
+    },
+  },
+  {
+    key: 'codemap-http-bridge',
+    observation: {
+      title: 'Codemap HTTP bridge ownership',
+      type: 'architecture',
+      project: 'docs-project',
+      topic_key: 'codemap/http-bridge-ownership',
+      content: [
+        'The HTTP bridge pattern handles ownership takeover for port conflicts.',
+        'Incoming HTTP requests are matched against routes and route handlers delegate to Store operations.',
+      ].join('\n'),
+    },
+  },
+];
+
 function resolveNoiseObservationCount(options: RetrievalEvalOptions): number {
   const envNoiseCount = Number.parseInt(process.env.THOTH_RETRIEVAL_EVAL_NOISE ?? '', 10);
   const noiseCount = options.noiseCount ?? (Number.isFinite(envNoiseCount) ? envNoiseCount : DEFAULT_NOISE_OBSERVATION_COUNT);
@@ -383,12 +442,40 @@ const CASES: EvalCase[] = [
     project: 'graph-project',
     expectedKey: 'graph-rank',
   },
+  {
+    name: 'non-synthetic README filter recall',
+    query: 'precision filters session scope topic key time range',
+    kind: 'non-synthetic',
+    project: 'docs-project',
+    expectedKey: 'docs-recall-filters',
+  },
+  {
+    name: 'non-synthetic admin boundary recall',
+    query: 'admin operations CLI HTTP not registered as MCP tools',
+    kind: 'non-synthetic',
+    project: 'docs-project',
+    expectedKey: 'docs-admin-tools',
+  },
+  {
+    name: 'non-synthetic store architecture recall',
+    query: 'thin tool handlers delegate durable operations to Store',
+    kind: 'non-synthetic',
+    project: 'docs-project',
+    expectedKey: 'codemap-store-pattern',
+  },
+  {
+    name: 'non-synthetic HTTP bridge recall',
+    query: 'HTTP bridge ownership takeover port conflicts routes delegate Store',
+    kind: 'non-synthetic',
+    project: 'docs-project',
+    expectedKey: 'codemap-http-bridge',
+  },
 ];
 
 function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
   const idsByKey = new Map<string, number>();
 
-  for (const fixture of [...FIXTURES, ...buildNoiseFixtures(noiseCount)]) {
+  for (const fixture of [...FIXTURES, ...NON_SYNTHETIC_FIXTURES, ...buildNoiseFixtures(noiseCount)]) {
     const result = store.saveObservation(fixture.observation);
     idsByKey.set(fixture.key, result.observation.id);
   }
@@ -485,8 +572,10 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Total observations | ${summary.corpus.total_observations} |`,
     `| Signal observations | ${summary.corpus.signal_observations} |`,
     `| Noise observations | ${summary.corpus.noise_observations} |`,
+    `| Non-synthetic observations | ${summary.corpus.non_synthetic_observations} |`,
     `| Direct cases | ${summary.case_mix.direct_cases} |`,
     `| Rephrased cases | ${summary.case_mix.rephrased_cases} |`,
+    `| Non-synthetic cases | ${summary.case_mix.non_synthetic_cases} |`,
     '',
     '## Retrieval Defaults',
     '',
@@ -545,7 +634,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
       }>;
     };
-    const seededObservationCount = FIXTURES.length + noiseCount;
+    const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + noiseCount;
     await runtime.processSemanticJobs({ limit: seededObservationCount * 4 + 20, embeddingProvider });
 
     const staleSeed = store.saveObservation({
@@ -615,7 +704,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const cases: RetrievalEvalCaseResult[] = [];
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
-      const expected = FIXTURES.find((fixture) => fixture.key === evalCase.expectedKey);
+      const expected = [...FIXTURES, ...NON_SYNTHETIC_FIXTURES].find((fixture) => fixture.key === evalCase.expectedKey);
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -686,6 +775,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       cases.push({
         name: evalCase.name,
         query: evalCase.query,
+        kind: evalCase.kind ?? 'direct',
         expected_title: expected?.observation.title ?? evalCase.expectedKey,
         found: rankIndex >= 0,
         rank: rankIndex >= 0 ? rankIndex + 1 : null,
@@ -717,10 +807,12 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         total_observations: corpusTotal,
         signal_observations: FIXTURES.length,
         noise_observations: noiseCount,
+        non_synthetic_observations: NON_SYNTHETIC_FIXTURES.length,
       },
       case_mix: {
-        direct_cases: CASES.filter((evalCase) => evalCase.kind !== 'rephrase').length,
+        direct_cases: CASES.filter((evalCase) => !evalCase.kind || evalCase.kind === 'direct').length,
         rephrased_cases: CASES.filter((evalCase) => evalCase.kind === 'rephrase').length,
+        non_synthetic_cases: CASES.filter((evalCase) => evalCase.kind === 'non-synthetic').length,
       },
       retrieval_defaults: defaultsCapture ?? {
         lane_order: 'sentence > kg > chunk > lexical',

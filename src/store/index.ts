@@ -181,6 +181,42 @@ const DEFAULT_CONFIG: ThothConfig = {
   },
 };
 
+const RETRIEVAL_QUERY_STOPWORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'before',
+  'by',
+  'can',
+  'do',
+  'does',
+  'for',
+  'from',
+  'how',
+  'in',
+  'into',
+  'is',
+  'it',
+  'keep',
+  'of',
+  'on',
+  'or',
+  'the',
+  'this',
+  'to',
+  'under',
+  'what',
+  'when',
+  'where',
+  'while',
+  'with',
+  'without',
+]);
+
 const VIZ_LIMITS = {
   maxNodesHard: 1200,
   maxEdgesHard: 3600,
@@ -1261,7 +1297,7 @@ export class Store {
     pending: boolean;
   }> {
     const defaults = resolveRetrievalDefaults(this.config.retrievalDefaults);
-    const lexicalQuery = sanitizeFTSPrefix(input.query);
+    const lexicalQuery = this.buildPrefixQueryFromTerms(this.getQueryTerms(input.query));
     const degradedFallback: string[] = [];
     const filters: RetrievalCandidateFilters = {
       project: input.project,
@@ -1482,7 +1518,13 @@ export class Store {
       .toLowerCase()
       .split(/[^a-z0-9_./:-]+/)
       .map((term) => term.trim())
-      .filter((term) => term.length >= 3);
+      .filter((term) => term.length >= 3 && !RETRIEVAL_QUERY_STOPWORDS.has(term));
+  }
+
+  private buildPrefixQueryFromTerms(terms: string[]): string {
+    const uniqueTerms = Array.from(new Set(terms));
+    if (uniqueTerms.length === 0) return '';
+    return uniqueTerms.map((term) => `"${term.replace(/"/g, '""')}"*`).join(' OR ');
   }
 
   private splitEvidenceSentences(content: string): string[] {
@@ -1499,12 +1541,16 @@ export class Store {
   }
 
   private sentenceMatchesTerms(sentence: string, terms: string[]): boolean {
-    const words = sentence
+    return this.countMatchingTerms(sentence, terms) > 0;
+  }
+
+  private countMatchingTerms(text: string, terms: string[]): number {
+    const words = text
       .toLowerCase()
       .split(/[^a-z0-9_./:-]+/)
       .filter(Boolean);
 
-    return terms.some((term) => words.some((word) => word.startsWith(term) || word.includes(term)));
+    return terms.filter((term) => words.some((word) => word.startsWith(term) || word.includes(term))).length;
   }
 
   private buildLexicalEvidenceText(observationId: number, content: string, terms: string[]): string {
@@ -1521,9 +1567,9 @@ export class Store {
   }
 
   private queryLexicalLane(input: { query: string; lexicalLimit: number; filters?: RetrievalCandidateFilters }): LaneCandidate[] {
-    const prefixQuery = sanitizeFTSPrefix(input.query);
-    if (prefixQuery === '') return [];
     const terms = this.getQueryTerms(input.query);
+    const prefixQuery = this.buildPrefixQueryFromTerms(terms);
+    if (prefixQuery === '') return [];
     const params: Array<string | number | Buffer> = [prefixQuery];
     const sql = [
       'SELECT o.id as observation_id, o.title, o.content, fts.rank',
@@ -1538,9 +1584,10 @@ export class Store {
     const rows = this.db.prepare(sql.join(' ')).all(...params) as Array<{ observation_id: number; title: string; content: string; rank: number }>;
     const singleTermPenalty = terms.length <= 1 ? 0.65 : 1;
     return rows.map((row) => {
-      const evidenceMatchesTitleOrContent = this.sentenceMatchesTerms(`${row.title} ${row.content}`, terms);
+      const matchedTerms = this.countMatchingTerms(`${row.title} ${row.content}`, terms);
+      const matchRatio = terms.length > 0 ? matchedTerms / terms.length : 0;
       const baseScore = 1 / (1 + Math.abs(row.rank));
-      const score = (evidenceMatchesTitleOrContent ? baseScore : baseScore * 0.1) * singleTermPenalty;
+      const score = (matchedTerms > 0 ? baseScore * Math.pow(matchRatio, 1.5) : baseScore * 0.05) * singleTermPenalty;
       return {
         lane: 'lexical' as const,
         observationId: row.observation_id,

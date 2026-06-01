@@ -10,9 +10,9 @@ describe('retrieval eval baseline', () => {
 
   it('measures deterministic hybrid recall under synthetic noise', async () => {
     expect(report.summary.total_cases).toBeGreaterThanOrEqual(5);
-    expect(report.summary.recall_at_1).toBeGreaterThanOrEqual(0.75);
+    expect(report.summary.recall_at_1).toBe(1);
     expect(report.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
-    expect(report.summary.mean_reciprocal_rank).toBeGreaterThanOrEqual(0.8);
+    expect(report.summary.mean_reciprocal_rank).toBe(1);
     expect(report.summary.context_compression).toBeGreaterThan(0);
     expect(report.summary.retrieval_defaults.lane_order).toBe('sentence > kg > chunk > lexical');
     expect(report.summary.retrieval_defaults.sentence_top_k).toBe(100);
@@ -62,7 +62,7 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.hyde_lift_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.hybrid_rank_source_rate).toBe(1);
     expect(report.cases.some((result) => (
-      result.raw_rank !== null && result.hyde_rank !== null && result.hyde_rank < result.raw_rank
+      result.hyde_rank !== null && (result.raw_rank === null || result.hyde_rank < result.raw_rank)
     ))).toBe(true);
     expect(report.markdown).toContain('## Corpus');
     expect(report.markdown).toContain('| Surgical Compression |');
@@ -81,8 +81,17 @@ describe('retrieval eval baseline', () => {
     const scaledReport = await runRetrievalEval({ noiseCount: 120 });
 
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
-    expect(scaledReport.summary.corpus.total_observations).toBe(127);
+    expect(scaledReport.summary.corpus.total_observations).toBe(131);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
+    expect(scaledReport.summary.recall_at_1).toBe(1);
     expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
   }, 20_000);
+
+  it('includes a curated non-synthetic corpus slice in the ranking gate', async () => {
+    expect(report.summary.corpus.non_synthetic_observations).toBeGreaterThanOrEqual(4);
+    expect(report.summary.case_mix.non_synthetic_cases).toBeGreaterThanOrEqual(4);
+    expect(report.cases.filter((result) => result.kind === 'non-synthetic').every((result) => result.rank === 1)).toBe(true);
+    expect(report.markdown).toContain('| Non-synthetic observations |');
+    expect(report.markdown).toContain('| Non-synthetic cases |');
+  });
 });
