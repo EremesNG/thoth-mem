@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && pnpm --dir dashboard build",
+    "build": "tsc --noEmit && node scripts/build.mjs && pnpm --dir dashboard build",
     "dashboard:build": "pnpm --dir dashboard build",
     "dashboard:typecheck": "pnpm --dir dashboard typecheck",
     "dev": "tsx watch src/index.ts",
@@ -52,12 +52,15 @@
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.10.0",
+    "onnxruntime-common": "1.24.3",
+    "onnxruntime-node": "1.24.3",
     "sqlite-vec": "^0.1.9",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.1",
+    "esbuild": "^0.25.5",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.7"
