@@ -6,3 +6,7 @@ allowBuilds:
   onnxruntime-node: true
   protobufjs: true
   sharp: true
+packageExtensions:
+  '@huggingface/transformers':
+    dependencies:
+      onnxruntime-common: 1.24.3
