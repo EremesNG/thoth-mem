@@ -617,6 +617,7 @@ async function handleRebuildIndex(positionals: string[], globals: GlobalOptions)
     }
 
     const reason = parsedReason.value?.trim() || 'cli-manual';
+    const requeued = store.requeueFailedEmbeddingJobs();
     const rebuild = store.enqueueManualSemanticRebuild({
       scope: project ?? 'all',
       reason,
@@ -637,6 +638,7 @@ async function handleRebuildIndex(positionals: string[], globals: GlobalOptions)
       '## Semantic Index Rebuild',
       `- **Scope:** ${scopeLabel}`,
       `- **Queued key:** ${rebuild.dedupeKey}`,
+      `- **Requeued failed jobs:** ${requeued}`,
       `- **Jobs processed:** ${processed}`,
       `- **Pending:** ${state.pending ? 'yes' : 'no'}`,
       `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,

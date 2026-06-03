@@ -78,6 +78,7 @@ import {
   processSemanticJobs,
   recoverRetriableSemanticJobs,
   recoverStaleSemanticJobs,
+  requeueFailedEmbeddingJobs,
 } from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
 import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
@@ -562,6 +563,10 @@ export class Store {
     const processed = await processSemanticJobs(this, input);
     this.reconcileSemanticIndexState();
     return processed;
+  }
+
+  requeueFailedEmbeddingJobs(): number {
+    return requeueFailedEmbeddingJobs(this);
   }
 
   assembleHybridEvidence(input: {

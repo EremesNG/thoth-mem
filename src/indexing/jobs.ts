@@ -66,6 +66,23 @@ export function recoverRetriableSemanticJobs(store: Store): number {
   return result.changes;
 }
 
+export function requeueFailedEmbeddingJobs(store: Store): number {
+  const db = store.getDb();
+  const result = db.prepare(
+    `UPDATE semantic_jobs
+     SET state = 'pending',
+         attempt_count = 0,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now'),
+         last_error = NULL
+     WHERE state = 'failed'
+       AND kind IN ('chunk','sentence')`
+  ).run();
+  return result.changes;
+}
+
 export async function processNextSemanticJob(
   store: Store,
   input?: SemanticJobRuntime
