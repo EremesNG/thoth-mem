@@ -6,6 +6,18 @@ describe('Store — Context, Timeline, Prompts', () => {
   beforeEach(() => { store = new Store(':memory:'); });
   afterEach(() => { store.close(); });
 
+  function saveLargeContext(project = 'caps-project'): string {
+    const fullMarker = 'FULL-CONTENT-MARKER-DO-NOT-INLINE';
+    for (let i = 0; i < 30; i++) {
+      store.saveObservation({
+        title: `Large item ${i}`,
+        content: `${'large context body '.repeat(220)}${fullMarker}-${i}`,
+        project,
+      });
+    }
+    return fullMarker;
+  }
+
   describe('getContext', () => {
     it('returns markdown with all sections', () => {
       store.saveObservation({ title: 'Test', content: 'Content', project: 'p1' });
@@ -33,6 +45,59 @@ describe('Store — Context, Timeline, Prompts', () => {
       const ctx = store.getContext({ limit: 2 });
       const obsMatches = ctx.match(/### \[/g);
       expect(obsMatches?.length).toBe(2);
+    });
+
+    it('bounds default context output with previews, structure, and mem_get escalation', () => {
+      const fullMarker = saveLargeContext();
+
+      const ctx = store.getContext({});
+
+      expect(ctx.length).toBeLessThanOrEqual(8000);
+      expect(ctx).toContain('## Memory from Previous Sessions');
+      expect(ctx).toContain('### Recent Sessions');
+      expect(ctx).toContain('### Recent Prompts');
+      expect(ctx).toContain('### Recent Observations');
+      expect(ctx).toContain('Memory stats:');
+      expect(ctx).toContain('Showing');
+      expect(ctx).toContain('omitted');
+      expect(ctx).toContain('mem_get(id=');
+      expect(ctx).not.toContain(fullMarker);
+    });
+
+    it('uses per-call maxOutputChars without mutating the configured default', () => {
+      saveLargeContext();
+
+      const tight = store.getContext({ maxOutputChars: 1200 });
+      const defaultBound = store.getContext({});
+
+      expect(tight.length).toBeLessThanOrEqual(1200);
+      expect(defaultBound.length).toBeGreaterThan(tight.length);
+      expect(defaultBound.length).toBeLessThanOrEqual(store.config.maxContextChars);
+      expect(store.config.maxContextChars).toBe(8000);
+    });
+
+    it('treats maxOutputChars 0 as the unbounded full-content path', () => {
+      const fullMarker = saveLargeContext();
+
+      const ctx = store.getContext({ maxOutputChars: 0 });
+
+      expect(ctx.length).toBeGreaterThan(8000);
+      expect(ctx).toContain(fullMarker);
+      expect(ctx).not.toContain('mem_get(id=');
+    });
+
+    it('keeps a visible observation fragment and pointer when the budget is very small', () => {
+      store.saveObservation({
+        title: 'Too large for budget',
+        content: `${'single preview body '.repeat(60)}single-tail`,
+        project: 'tiny-budget',
+      });
+
+      const ctx = store.getContext({ project: 'tiny-budget', maxOutputChars: 500 });
+
+      expect(ctx.length).toBeLessThanOrEqual(500);
+      expect(ctx).toContain('Too large for budget');
+      expect(ctx).toContain('mem_get');
     });
   });
 

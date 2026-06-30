@@ -61,7 +61,7 @@ import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
-import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
+import { formatObservationMarkdown, formatSearchResults, trimToBudget, truncateForPreview, validateContentLength } from '../utils/content.js';
 import { prepareHydeSemanticInputs } from '../retrieval/hyde.js';
 import type { HydeGenerator, SemanticInput } from '../retrieval/hyde.js';
 import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
@@ -184,6 +184,7 @@ const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
   dbPath: ':memory:',
   maxContentLength: 100_000,
+  maxContextChars: 8000,
   maxContextResults: 20,
   maxSearchResults: 20,
   dedupeWindowMinutes: 15,
@@ -1209,8 +1210,6 @@ export class Store {
       .map((prompt) => `- ${prompt.created_at}: ${truncateForPreview(prompt.content, 100)}`)
       .join('\n');
 
-    const observationBlocks = observations.map((obs) => formatObservationMarkdown(obs)).join('\n\n');
-
     const totalSessions = this.db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
     const totalObs = this.db.prepare('SELECT COUNT(*) as count FROM observations WHERE deleted_at IS NULL').get() as { count: number };
     const projects = this.db.prepare(
@@ -1224,7 +1223,7 @@ export class Store {
        ORDER BY project`
     ).all() as Array<{ project: string }>;
 
-    return [
+    const renderContext = (observationBlocks: string): string => [
       '## Memory from Previous Sessions',
       '',
       '### Recent Sessions',
@@ -1239,6 +1238,82 @@ export class Store {
       '---',
       `Memory stats: ${totalSessions.count} sessions, ${totalObs.count} observations across projects: ${projects.map((p) => p.project).join(', ')}`,
     ].join('\n');
+
+    const budget = input.maxOutputChars ?? this.config.maxContextChars;
+
+    if (budget === 0) {
+      return renderContext(observations.map((obs) => formatObservationMarkdown(obs)).join('\n\n'));
+    }
+
+    const positiveBudget = Math.max(0, budget);
+
+    if (observations.length === 0) {
+      return trimToBudget(renderContext('No recent observations.'), positiveBudget);
+    }
+
+    const prefix = [
+      '## Memory from Previous Sessions',
+      '',
+      '### Recent Sessions',
+      sessionLines || '- None',
+      '',
+      '### Recent Prompts',
+      promptLines || '- None',
+      '',
+      '### Recent Observations',
+    ].join('\n');
+    const suffix = [
+      '',
+      '---',
+      `Memory stats: ${totalSessions.count} sessions, ${totalObs.count} observations across projects: ${projects.map((p) => p.project).join(', ')}`,
+    ].join('\n');
+    const footerFor = (shown: number): string => {
+      const omitted = Math.max(0, observations.length - shown);
+      const omittedText = omitted > 0 ? `; ${omitted} more omitted` : '; 0 omitted';
+      return `> Showing ${shown} of ${observations.length} observations (budget ${positiveBudget}c). Use mem_get(id=...) for full content${omittedText}.`;
+    };
+    const assemble = (blocks: string[], shown: number): string => [
+      prefix,
+      blocks.length > 0 ? blocks.join('\n\n') : 'No observation preview fit in the available budget.',
+      '',
+      footerFor(shown),
+      suffix,
+    ].join('\n');
+
+    const blocks: string[] = [];
+    let shown = 0;
+
+    for (const observation of observations) {
+      const block = formatObservationMarkdown(observation, {
+        preview: true,
+        previewLength: this.config.previewLength,
+      });
+      const candidateBlocks = [...blocks, block];
+      const candidate = assemble(candidateBlocks, shown + 1);
+
+      if (candidate.length <= positiveBudget) {
+        blocks.push(block);
+        shown += 1;
+        continue;
+      }
+
+      if (shown === 0) {
+        const overhead = assemble([''], 1).length;
+        const availableForBlock = positiveBudget - overhead;
+        const visibleBlock = availableForBlock > 0
+          ? trimToBudget(block, availableForBlock, '\n[preview truncated]')
+          : '';
+
+        if (visibleBlock.length > 0) {
+          blocks.push(visibleBlock);
+          shown = 1;
+        }
+      }
+
+      break;
+    }
+
+    return trimToBudget(assemble(blocks, shown), positiveBudget);
   }
 
   getTimeline(input: TimelineInput): TimelineResult {

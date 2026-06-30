@@ -43,6 +43,29 @@ function seedStore(dataDir: string): void {
   }
 }
 
+function seedLargeContextStore(dataDir: string): string {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+  const marker = 'CLI-CONTEXT-FULL-MARKER';
+
+  try {
+    store.startSession('large-context-session', 'cli-large-project', '/workspace/cli-large-project');
+    for (let i = 0; i < 30; i++) {
+      store.saveObservation({
+        session_id: 'large-context-session',
+        title: `Large CLI observation ${i}`,
+        content: `${'cli context body '.repeat(220)}${marker}-${i}`,
+        type: 'manual',
+        project: 'cli-large-project',
+      });
+    }
+  } finally {
+    store.close();
+  }
+
+  return marker;
+}
+
 function clearObservationFacts(dataDir: string): void {
   const store = new Store(join(dataDir, 'thoth.db'));
 
@@ -208,6 +231,17 @@ describe('runCli', () => {
     expect(stdout).toContain('## Memory from Previous Sessions');
     expect(stdout).toContain('### Recent Prompts');
     expect(stdout).toContain('cli-project');
+  });
+
+  it('prints bounded recent context through shared store rendering', async () => {
+    const dataDir = join(tempDir, 'data');
+    const marker = seedLargeContextStore(dataDir);
+
+    const { stdout } = await captureCli(['context', '--data-dir', dataDir, '--project', 'cli-large-project']);
+
+    expect(stdout.length).toBeLessThanOrEqual(8001);
+    expect(stdout).toContain('mem_get(id=');
+    expect(stdout).not.toContain(marker);
   });
 
   it('prints memory statistics', async () => {

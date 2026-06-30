@@ -149,6 +149,7 @@ export interface ContextInput {
   session_id?: string;
   scope?: ObservationScope;
   limit?: number;
+  maxOutputChars?: number;
 }
 
 export interface TimelineInput {

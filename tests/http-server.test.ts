@@ -1448,6 +1448,34 @@ describe('createHttpBridge', () => {
       expect(openapi.body.components.schemas.ProjectGraphResponse).toBeDefined();
       expect(openapi.body.components.schemas.TopicKeysResponse).toBeDefined();
     });
+
+    it('bounds project summary text through the shared getContext layer', async () => {
+      const bridge = await startBridge();
+      const marker = 'HTTP-SUMMARY-FULL-MARKER';
+
+      for (let i = 0; i < 30; i++) {
+        await fetchJson(
+          '/observations',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: `Large HTTP summary ${i}`,
+              content: `${'http summary body '.repeat(220)}${marker}-${i}`,
+              project: 'http-summary-project',
+            }),
+          },
+          bridge.port,
+        );
+      }
+
+      const summary = await fetchJson('/projects/http-summary-project/summary', undefined, bridge.port);
+
+      expect(summary.response.status).toBe(200);
+      expect(summary.body.text.length).toBeLessThanOrEqual(8000);
+      expect(summary.body.text).toContain('mem_get(id=');
+      expect(summary.body.text).not.toContain(marker);
+    });
   });
 
   describe('search mode via HTTP', () => {

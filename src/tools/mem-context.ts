@@ -4,6 +4,7 @@ import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
+import { trimToBudget } from "../utils/content.js";
 
 export function registerMemContext(
   server: McpServer,
@@ -18,21 +19,25 @@ export function registerMemContext(
 
 Use this at the start of a session to recover context, or when the user asks to recall past work.
 
-Returns formatted Markdown with:
+Returns bounded Markdown with:
 - Recent sessions (last 5 with activity)
 - Recent user prompts (last 10)
 - Recent observations (configurable limit)
-- Memory stats (total counts)`,
+- Memory stats (total counts)
+
+Observation bodies are previewed by default; use mem_get(id=...) for full content.`,
     {
       project: z.string().optional().describe("Filter by project name"),
       session_id: z.string().optional().describe('Filter to a specific session'),
       scope: z.enum(['project', 'personal'] as const).optional().describe("Filter by scope"),
       limit: z.number().optional().describe("Number of observations to retrieve (default: 20)"),
+      max_chars: z.number().min(0).optional().describe("Output character budget; 0 disables the context cap"),
       recall_query: z.string().optional().describe('Optional query to append fused recall evidence without changing base context sections'),
     },
-    async ({ project, session_id, scope, limit, recall_query }) => {
+    async ({ project, session_id, scope, limit, recall_query, max_chars }) => {
       try {
-        const context = store.getContext({ project, session_id, scope, limit });
+        const selectedMaxChars = max_chars ?? store.config.maxContextChars;
+        const context = store.getContext({ project, session_id, scope, limit, maxOutputChars: selectedMaxChars });
         let recallSection = '';
 
         if (recall_query && recall_query.trim().length > 0) {
@@ -63,7 +68,10 @@ Returns formatted Markdown with:
           };
         }
 
-        return { content: [{ type: "text" as const, text: `${context}${recallSection}` }] };
+        const fullText = `${context}${recallSection}`;
+        const boundedText = selectedMaxChars === 0 ? fullText : trimToBudget(fullText, selectedMaxChars);
+
+        return { content: [{ type: "text" as const, text: boundedText }] };
       } catch (error) {
         return {
           isError: true,

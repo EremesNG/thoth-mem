@@ -26,6 +26,7 @@ describe('getConfig', () => {
   it('returns sensible defaults', () => {
     const config = getConfig();
     expect(config.maxContentLength).toBe(100_000);
+    expect(config.maxContextChars).toBe(8000);
     expect(config.maxContextResults).toBe(20);
     expect(config.maxSearchResults).toBe(20);
     expect(config.dedupeWindowMinutes).toBe(15);
@@ -47,6 +48,7 @@ describe('getConfig', () => {
 
   it('respects numeric env var overrides', () => {
     process.env.THOTH_MAX_CONTENT_LENGTH = '50000';
+    process.env.THOTH_MAX_CONTEXT_CHARS = '2500';
     process.env.THOTH_MAX_CONTEXT_RESULTS = '10';
     process.env.THOTH_MAX_SEARCH_RESULTS = '5';
     process.env.THOTH_DEDUPE_WINDOW_MINUTES = '30';
@@ -55,6 +57,7 @@ describe('getConfig', () => {
     process.env.THOTH_HTTP_DISABLED = 'true';
     const config = getConfig();
     expect(config.maxContentLength).toBe(50000);
+    expect(config.maxContextChars).toBe(2500);
     expect(config.maxContextResults).toBe(10);
     expect(config.maxSearchResults).toBe(5);
     expect(config.dedupeWindowMinutes).toBe(30);
@@ -69,6 +72,27 @@ describe('getConfig', () => {
     const config = getConfig();
     expect(config.dbPath).toBe(join(dataDir, 'thoth.db'));
     rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('resolves maxContextChars from persisted config when env is unset', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      maxContextChars: 4321,
+    }, null, 2));
+
+    const config = getConfig();
+
+    expect(config.maxContextChars).toBe(4321);
+  });
+
+  it('resolves THOTH_MAX_CONTEXT_CHARS before persisted config and preserves sentinel 0', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      maxContextChars: 4321,
+    }, null, 2));
+    process.env.THOTH_MAX_CONTEXT_CHARS = '0';
+
+    const config = getConfig();
+
+    expect(config.maxContextChars).toBe(0);
   });
 });
 
@@ -281,6 +305,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       minContentChars: 12000,
     });
     expect(saved.maxContentLength).toBe(100_000);
+    expect(saved.maxContextChars).toBe(8000);
   });
 
   it('config file: environment overrides do not rewrite the editable config file', () => {

@@ -45,7 +45,10 @@ export interface EmbeddingConfig {
 export interface ThothConfig {
   dataDir: string;
   dbPath: string; // resolved: {dataDir}/thoth.db
+  /** Input-side save validation warning threshold; never truncates stored content. */
   maxContentLength: number;
+  /** Output-side context/summary response budget; 0 explicitly disables the cap. */
+  maxContextChars: number;
   maxContextResults: number;
   maxSearchResults: number;
   dedupeWindowMinutes: number;
@@ -66,6 +69,7 @@ interface PersistedConfig {
   $schema?: string;
   version?: number;
   maxContentLength?: number;
+  maxContextChars?: number;
   maxContextResults?: number;
   maxSearchResults?: number;
   dedupeWindowMinutes?: number;
@@ -195,6 +199,7 @@ function defaultPersistedConfig(): PersistedConfig {
     $schema: CONFIG_SCHEMA_REF,
     version: 1,
     maxContentLength: 100_000,
+    maxContextChars: 8000,
     maxContextResults: 20,
     maxSearchResults: 20,
     dedupeWindowMinutes: 15,
@@ -418,6 +423,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     dataDir,
     dbPath: join(dataDir, 'thoth.db'),
     maxContentLength: parseNumber(process.env.THOTH_MAX_CONTENT_LENGTH) ?? persisted.maxContentLength ?? 100_000,
+    maxContextChars: parseNumber(process.env.THOTH_MAX_CONTEXT_CHARS) ?? persisted.maxContextChars ?? 8000,
     maxContextResults: parseNumber(process.env.THOTH_MAX_CONTEXT_RESULTS) ?? persisted.maxContextResults ?? 20,
     maxSearchResults: parseNumber(process.env.THOTH_MAX_SEARCH_RESULTS) ?? persisted.maxSearchResults ?? 20,
     dedupeWindowMinutes: parseNumber(process.env.THOTH_DEDUPE_WINDOW_MINUTES) ?? persisted.dedupeWindowMinutes ?? 15,

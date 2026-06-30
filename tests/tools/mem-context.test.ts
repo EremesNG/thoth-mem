@@ -77,6 +77,18 @@ describe('mem_context tool (handler)', () => {
   let store: Store;
   let toolHandler: ((input: any) => Promise<any>) | undefined;
 
+  function seedLargeStore(): string {
+    const fullMarker = 'MEM-CONTEXT-FULL-MARKER';
+    for (let i = 0; i < 30; i++) {
+      store.saveObservation({
+        title: `Large context ${i}`,
+        content: `${'tool context body '.repeat(220)}${fullMarker}-${i}`,
+        project: 'ctx-project',
+      });
+    }
+    return fullMarker;
+  }
+
   beforeEach(() => {
     store = new Store(':memory:');
     toolHandler = undefined;
@@ -113,5 +125,61 @@ describe('mem_context tool (handler)', () => {
     expect(result?.content[0].text).toContain('## Memory from Previous Sessions');
     expect(result?.content[0].text).toContain('### Optional Fused Recall');
     expect(result?.content[0].text).toContain('pending:');
+  });
+
+  it('bounds large default output and reports omitted observations', async () => {
+    seedLargeStore();
+
+    const result = await toolHandler?.({ project: 'ctx-project' });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(8000);
+    expect(text).toContain('Showing');
+    expect(text).toContain('omitted');
+    expect(text).toContain('mem_get(id=');
+  });
+
+  it('honors max_chars per call without mutating the store default', async () => {
+    seedLargeStore();
+
+    const tight = await toolHandler?.({ project: 'ctx-project', max_chars: 900 });
+    const normal = await toolHandler?.({ project: 'ctx-project' });
+    const tightText = tight?.content[0].text ?? '';
+    const normalText = normal?.content[0].text ?? '';
+
+    expect(tightText.length).toBeLessThanOrEqual(900);
+    expect(normalText.length).toBeGreaterThan(tightText.length);
+    expect(normalText.length).toBeLessThanOrEqual(8000);
+    expect(store.config.maxContextChars).toBe(8000);
+  });
+
+  it('enforces max_chars on context plus optional recall output', async () => {
+    store.startSession('ctx-3', 'ctx-project');
+    store.saveObservation({
+      title: 'Recall cap target',
+      content: 'fused recall marker that should appear in recall section'.repeat(40),
+      session_id: 'ctx-3',
+      project: 'ctx-project',
+    });
+
+    const result = await toolHandler?.({ project: 'ctx-project', recall_query: 'fused recall marker', max_chars: 2000 });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(2000);
+    expect(text).toContain('### Optional Fused Recall');
+    expect(text).toContain('fused recall marker');
+  });
+
+  it('treats max_chars 0 as an unbounded full-content override', async () => {
+    const fullMarker = seedLargeStore();
+
+    const result = await toolHandler?.({ project: 'ctx-project', max_chars: 0 });
+    const text = result?.content[0].text ?? '';
+
+    expect(text.length).toBeGreaterThan(8000);
+    expect(text).toContain(fullMarker);
+    expect(text).not.toContain('mem_get(id=');
   });
 });

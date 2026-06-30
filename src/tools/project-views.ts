@@ -1,4 +1,5 @@
 import { Store } from '../store/index.js';
+import { trimToBudget } from '../utils/content.js';
 
 interface ProjectGraphOptions {
   topicKey?: string;
@@ -7,12 +8,24 @@ interface ProjectGraphOptions {
   maxChars?: number;
 }
 
-export function formatProjectSummary(store: Store, project: string, limit: number = 10): string {
-  return [
+export function formatProjectSummary(
+  store: Store,
+  project: string,
+  limit: number = 10,
+  maxOutputChars?: number,
+): string {
+  const header = [
     `## Project Summary: ${project}`,
     '',
-    store.getContext({ project, limit }),
   ].join('\n');
+  const budget = maxOutputChars ?? store.config.maxContextChars;
+  const contextBudget = budget === 0 ? 0 : Math.max(1, budget - header.length - 1);
+  const summary = [
+    header,
+    store.getContext({ project, limit, maxOutputChars: contextBudget }),
+  ].join('\n');
+
+  return budget === 0 ? summary : trimToBudget(summary, budget);
 }
 
 export function formatProjectGraph(store: Store, project: string, options: ProjectGraphOptions = {}): string {

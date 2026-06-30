@@ -25,15 +25,37 @@ export function validateContentLength(content: string, maxLength: number): { val
   };
 }
 
-export function formatObservationMarkdown(obs: Observation): string {
+export function trimToBudget(text: string, maxChars: number, marker: string = '\n[truncated for context budget]'): string {
+  if (maxChars <= 0) {
+    return '';
+  }
+
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  if (maxChars <= marker.length) {
+    return text.slice(0, maxChars);
+  }
+
+  return `${text.slice(0, Math.max(0, maxChars - marker.length)).trimEnd()}${marker}`;
+}
+
+export function formatObservationMarkdown(
+  obs: Observation,
+  options: { preview?: boolean; previewLength?: number } = {},
+): string {
   const topicLine = obs.topic_key ? `**Topic:** ${obs.topic_key} | ` : '';
+  const content = options.preview
+    ? truncateForPreview(obs.content, options.previewLength ?? 300)
+    : obs.content;
 
   return [
     `### [${obs.type}] ${obs.title} (ID: ${obs.id})`,
     `**Project:** ${obs.project || 'none'} | **Scope:** ${obs.scope} | **Created:** ${obs.created_at}`,
     `${topicLine}**Revisions:** ${obs.revision_count} | **Duplicates:** ${obs.duplicate_count}`,
     '',
-    obs.content,
+    content,
   ].join('\n');
 }
 

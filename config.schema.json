@@ -17,6 +17,11 @@
       "type": "integer",
       "minimum": 1
     },
+    "maxContextChars": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Output character budget for context and project-summary renders. Set 0 to disable the output cap explicitly."
+    },
     "maxContextResults": {
       "type": "integer",
       "minimum": 1

@@ -47,6 +47,31 @@ describe('mem_recall tool', () => {
     expect(result?.content[0].text).toContain('</retrieved_context>');
   });
 
+  it('does not use maxContextChars for context-mode recall output', async () => {
+    store.close();
+    store = new Store(':memory:', { maxContextChars: 50 });
+    registerMemRecall({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    store.saveObservation({
+      title: 'Independent recall budget',
+      content: 'independent recall marker '.repeat(80),
+      project: 'recall-project',
+    });
+
+    const result = await toolHandler?.({ query: 'independent recall marker', project: 'recall-project', mode: 'context' });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text.length).toBeGreaterThan(50);
+    expect(text.length).toBeLessThanOrEqual(6000);
+    expect(text).toContain('<retrieved_context observation_id=');
+  });
+
   it('context mode keeps primary sentence first and labels promoted parent context', async () => {
     const saved = store.saveObservation({
       title: 'Sentence-first context',
