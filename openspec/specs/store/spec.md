@@ -479,3 +479,43 @@ change as a result of this consolidation.
   structured-migration helper is NOT assumed to exist; design MUST NOT depend on
   one. The idempotency + final-step-ordering requirements below hold under this
   mechanism.
+
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Store MUST Provide a Flag-Gated Multi-Hop Knowledge Lane in hybridRetrieve
+The store MUST add a traversal path adjacent to `queryKnowledgeLane` and integrate it into `hybridRetrieve` behind `kgMultiHopEnabled`. Traversal must accept seed observation ids and `RetrievalCandidateFilters`, then emit `kg` lane candidates with `source: 'kg_multi_hop'`.
+
+#### Scenario: Flag on issues traversal and can add observations
+- GIVEN `kgMultiHopEnabled = true` and fused seeds
+- WHEN `hybridRetrieve` runs
+- THEN traversal runs and may add non-seed observations via re-fusion of `kg_multi_hop` candidates
+
+#### Scenario: Flag off issues no traversal query
+- GIVEN `kgMultiHopEnabled = false`
+- WHEN `hybridRetrieve` runs
+- THEN no traversal query is issued and output remains baseline-identical
+
+### Requirement: Multi-Hop Traversal Cost MUST Be Bounded With Coarse Elapsed Degrade
+Traversal MUST honor deterministic bounds (`kgMaxDepth`, `kgNeighborhoodLimit`, relation allow-list). If elapsed guard or a traversal error is hit, the direct result must be returned and `degradedFallback` must include `kg_multi_hop`.
+
+#### Scenario: Deterministic ceiling bounds traversal work
+- GIVEN a high-degree reachable hub
+- WHEN traversal runs
+- THEN expansions stop at depth and result cap limits
+
+#### Scenario: Elapsed guard degrades to direct result and signals it
+- GIVEN traversal exceeds `kgTraversalTimeoutMs` or throws
+- WHEN retrieval completes
+- THEN no multi-hop candidates are retained and `degradedFallback` includes `kg_multi_hop`
+
+### Requirement: Multi-Hop Candidate Emission and Evidence Shape
+Each traversal hit emitted to ranking must be `lane: 'kg'` and `source: 'kg_multi_hop'` with KG provenance/confidence and bridge-path text, distinguishable from direct KG-fact candidates.
+
+#### Scenario: Candidate shape is distinguishable
+- GIVEN an observation is reached via traversal
+- WHEN its candidate is emitted
+- THEN output evidence includes bridge path and traversal metadata and is tagged `kg_multi_hop`
+
+## MODIFIED Requirements
+
+## REMOVED Requirements

@@ -117,3 +117,39 @@ in retrieval purpose to what they produced via `observation_facts`.
   candidate set (`tripleCandidates.length > 0 && factCandidates.length > 0`,
   `src/evals/retrieval.ts:769`), which is why it MUST be redefined to pass on
   `kg_triples` evidence alone.
+
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Evals MUST Validate Shared-Entity Multi-Hop Recall
+The evaluation suite MUST include a multi-hop recall case whose answer is reachable ONLY via a shared entity and has no direct lexical/semantic overlap, using the consolidated KG path (`kg_entities` + `kg_triples`) through an allow-listed structural relation (for example `DEPENDS_ON`). The case MUST assert:
+- with `kgMultiHopEnabled = true`, answer surfaces as `lane: 'kg'` / `source: 'kg_multi_hop'`;
+- with `kgMultiHopEnabled = false`, answer does not surface via multi-hop and no error is thrown;
+- excluded metadata relations are not followed as bridge edges.
+
+#### Scenario: Multi-hop answer surfaces only with the flag on
+- GIVEN an eval fixture where the answer shares a structural entity with a seed-matching observation and has no direct query overlap
+- WHEN the retrieval eval runs with `kgMultiHopEnabled = true`
+- THEN the answer observation MUST appear with `lane: 'kg'` and `source: 'kg_multi_hop'`
+
+#### Scenario: Multi-hop answer does not surface with the flag off
+- GIVEN the same fixture
+- WHEN the retrieval eval runs with `kgMultiHopEnabled = false`
+- THEN the answer observation MUST not be surfaced via multi-hop and no error is thrown
+
+#### Scenario: Metadata relations do not bridge the answer
+- GIVEN a distractor connected by excluded relations (`HAS_TOPIC`/`MENTIONS`)
+- WHEN the multi-hop eval runs
+- THEN the distractor MUST NOT be returned through multi-hop
+
+### Requirement: Eval Suite MUST Gate on No Multi-Hop Regression Versus the Single-Hop Baseline
+The existing retrieval-quality fixtures MUST pass both with multi-hop OFF and ON; for each case, ON outcomes MUST be no worse than OFF on pass/rank criteria. The gate is the acceptance condition for defaulting `kgMultiHopEnabled` to ON.
+
+#### Scenario: Existing fixtures do not regress with multi-hop enabled
+- GIVEN existing retrieval fixtures
+- WHEN the suite runs once with `kgMultiHopEnabled = false` and once with `true`
+- THEN all passing OFF cases MUST still pass ON and must not worsen in rank
+
+#### Scenario: Regression flips the documented default
+- GIVEN a failing case in the no-regression comparison
+- WHEN acceptance is recorded
+- THEN the documented default MUST be flipped to OFF until weights/filters are tuned

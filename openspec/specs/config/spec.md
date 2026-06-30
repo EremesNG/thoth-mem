@@ -119,3 +119,53 @@ conflated, and changing one MUST NOT change the behavior governed by the other.
 ## MODIFIED Requirements
 
 ## REMOVED Requirements
+
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Multi-Hop Traversal Knobs MUST Resolve Deterministically With Env Overrides
+The system MUST provide configuration knobs governing entity-anchored multi-hop KG traversal and MUST resolve each in the established precedence order: explicit `THOTH_*` environment override, then persisted config in the resolved data dir (`{THOTH_DATA_DIR|~/.thoth}/config.json`), then a built-in default — mirroring the existing `graphFactsSource` and embedding resolution patterns. The knobs and their defaults are:
+
+| Knob | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `kgMultiHopEnabled` | boolean | `true` | `THOTH_KG_MULTI_HOP_ENABLED` |
+| `kgMaxDepth` | integer | `2` | `THOTH_KG_MAX_DEPTH` |
+| `kgNeighborhoodLimit` | integer | `50` | `THOTH_KG_NEIGHBORHOOD_LIMIT` |
+| `kgMultiHopWeight` | number | `0.7` | `THOTH_KG_MULTI_HOP_WEIGHT` |
+| `kgDepthDecay` | number | `0.5` | `THOTH_KG_DEPTH_DECAY` |
+| `kgTraversalTimeoutMs` | integer | `50` | `THOTH_KG_TRAVERSAL_TIMEOUT_MS` |
+| `kgRelationAllowList` | string[] | 18 structural relations | `THOTH_KG_RELATION_ALLOW_LIST` |
+
+Boolean env values MUST be parsed via the existing `parseBoolean` helper and numeric env values via `parseNumber`. The resolved knobs MUST govern whether traversal runs, recursion depth, neighborhood cap, effective sub-source weight, per-hop decay, and coarse elapsed guard behavior in the retrieval layer.
+
+#### Scenario: Environment override wins for a multi-hop knob
+- GIVEN both a persisted multi-hop knob value and its matching `THOTH_*` environment variable are set to different values
+- WHEN the effective config is computed
+- THEN the environment value MUST take precedence
+
+#### Scenario: Persisted value is used when environment is unset
+- GIVEN no environment override for a knob is set
+- WHEN persisted config contains a value
+- THEN the effective config MUST match the persisted value
+
+#### Scenario: Built-in defaults apply when unset everywhere
+- GIVEN neither an environment override nor a persisted value is present
+- WHEN the effective config is computed
+- THEN `kgMultiHopEnabled` MUST be `true`, `kgMaxDepth` MUST be `2`, `kgNeighborhoodLimit` MUST be `50`, `kgMultiHopWeight` MUST be `0.7`, `kgDepthDecay` MUST be `0.5`, `kgTraversalTimeoutMs` MUST be `50`, and `kgRelationAllowList` MUST default to the 18 structural relations
+
+#### Scenario: Empty or invalid configured allow-list fails safe
+- GIVEN a configured relation allow-list that is empty or contains no recognized relation
+- WHEN the effective allow-list is resolved
+- THEN traversal MUST NOT fall back to excluded metadata/synthetic relations
+
+### Requirement: Multi-Hop Relation Allow-List MUST Be Configurable and Default to the Structural Set
+The system MUST provide a configurable allow-list for traversal relations, parsed with the same env>persisted>default precedence. The default MUST be the 18 structural relations (`USES`, `DEPENDS_ON`, `BELONGS_TO`, `PART_OF`, `OWNS`, `CONFIGURES`, `IMPLEMENTS`, `RUNS_IN`, `DEPLOYS_TO`, `CAUSES`, `FIXES`, `BLOCKS`, `UNBLOCKS`, `AFFECTS`, `REFERENCES`, `AUTHENTICATES_WITH`, `PRECEDES`, `FOLLOWS`) and MUST exclude the 8 metadata/synthetic relations.
+
+#### Scenario: Default allow-list follows only structural relations
+- GIVEN no relation-allow-list override is configured
+- WHEN the effective allow-list is resolved
+- THEN it MUST contain exactly the 18 structural relations and MUST NOT contain excluded relations
+
+#### Scenario: Configured allow-list overrides the default
+- GIVEN a persisted or environment relation allow-list differs from the default
+- WHEN the effective allow-list is resolved
+- THEN it MUST match the configured set rather than the built-in default

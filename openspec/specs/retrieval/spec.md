@@ -92,4 +92,55 @@ A newly saved or updated memory item MUST be available through primary persisten
 
 ## MODIFIED Requirements
 
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Multi-Hop KG Evidence MUST Fuse as a Lower-Weighted Sub-Source of the KG Lane
+Entity-anchored multi-hop traversal evidence MUST be emitted as `LaneCandidate` entries with `lane: 'kg'` and `source: 'kg_multi_hop'`, then fused through existing `fuseCandidates` so multi-hop observations can be introduced into final output. Their effective contribution MUST be strictly below direct KG (default `0.7` vs `0.9`) via sub-source weighting or score pre-scaling; four-lane fusion remains unchanged.
+
+#### Scenario: Multi-hop introduces a new observation into fused output
+- GIVEN a reachable observation with no direct lexical/semantic/KG match
+- WHEN fusion runs
+- THEN that observation MAY appear with `lane: 'kg'` and `source: 'kg_multi_hop'`
+
+#### Scenario: Multi-hop ranks below an otherwise-equal direct match
+- GIVEN equal-strength direct and multi-hop candidates
+- WHEN scoring is computed
+- THEN multi-hop contribution MUST be lower than direct KG
+
+#### Scenario: Four-lane contract is preserved
+- GIVEN multi-hop is enabled
+- WHEN fusion runs
+- THEN lane set remains `sentence`, `chunk`, `lexical`, `kg`
+
+### Requirement: Multi-Hop Candidates MUST Be De-Duplicated by Observation With Direct Evidence Winning
+When the same observation is reached both directly and via multi-hop, de-duplication by `observationId` MUST keep a single output row and direct evidence must remain primary.
+
+#### Scenario: Direct hit wins primary evidence over multi-hop
+- GIVEN an observation produced by direct and multi-hop candidates
+- WHEN primary evidence is selected
+- THEN direct evidence MUST win and the row appears once
+
+### Requirement: Multi-Hop Evidence MUST Attenuate by Hop Depth
+Depth penalty MUST apply so depth-2 evidence is lower than depth-1 via `score = confidence * kgDepthDecay^(depth-1)` with `kgDepthDecay` default `0.5`.
+
+#### Scenario: Depth-2 evidence scores below depth-1 evidence
+- GIVEN two reached observations with equal confidence at depths 1 and 2
+- WHEN scoring is computed
+- THEN the depth-2 score MUST be lower
+
+### Requirement: Multi-Hop Must Degrade to Single-Hop Baseline
+When disabled or bounded by timeout/error, the engine MUST return the full direct result without hard-fail and signal `degradedFallback` for multi-hop.
+
+#### Scenario: Disabled flag yields identical baseline output
+- GIVEN `kgMultiHopEnabled = false`
+- WHEN `hybridRetrieve` runs
+- THEN no multi-hop candidates are produced and results are identical to baseline
+
+#### Scenario: Cost-bound degrade returns complete direct result
+- GIVEN traversal exceeds the allowed cost or errors
+- WHEN retrieval completes
+- THEN complete direct-lane result is returned and `degradedFallback` includes `kg_multi_hop`
+
+## MODIFIED Requirements
+
 ## REMOVED Requirements

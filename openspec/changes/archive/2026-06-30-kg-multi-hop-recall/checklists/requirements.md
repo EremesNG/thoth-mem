@@ -109,3 +109,9 @@
 ### Testability
 - [x] Flag-on-surfaces, flag-off-does-not-surface, distractor-not-bridged, no-regression, and disabled-baseline each have a GWT scenario
 - [x] Scenarios reuse the existing eval runtime + `hybridRetrieve` with the flag toggled
+
+## Implementation Close Notes
+
+- [x] Shipped default decision: `kgMultiHopEnabled` remains `true`; `pnpm run eval:retrieval` passed with Recall@5 100.0% and no multi-hop regression.
+- [x] Deferred follow-ups remain out of B2 scope: optional `idx_kg_triples_source` and hard `db.interrupt()` / progress-handler support.
+- [x] CL-1 through CL-6 remain resolved as recorded in `design.md`; no post-implementation clarification reopened them.

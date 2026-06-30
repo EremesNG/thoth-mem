@@ -23,7 +23,7 @@
 
 ## Phase 1: Infrastructure
 
-- [ ] 1.1 Add `KnowledgeGraphConfig` interface and defaults to `src/config.ts` — `src/config.ts`
+- [x] 1.1 Add `KnowledgeGraphConfig` interface and defaults to `src/config.ts` — `src/config.ts`
   **[USN-1]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking`
   Add `KnowledgeGraphConfig` interface with fields: `kgMultiHopEnabled: boolean`,
@@ -43,7 +43,7 @@
   - Run: `pnpm run build`
   - Expected: No TypeScript errors in `src/config.ts`
 
-- [ ] 1.2 Implement `resolveKnowledgeGraphConfig` resolver in `src/config.ts` — `src/config.ts`
+- [x] 1.2 Implement `resolveKnowledgeGraphConfig` resolver in `src/config.ts` — `src/config.ts`
   **[USN-1]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking`
   Mirror the pattern of `resolveKgLlmConfig` (line ~350). Apply env > persisted > default
@@ -68,7 +68,7 @@
   - Run: `pnpm run build`
   - Expected: `src/config.ts` compiles; `resolveKnowledgeGraphConfig` is exported
 
-- [ ] 1.3 Add `knowledgeGraph` block to `config.schema.json` — `config.schema.json`
+- [x] 1.3 Add `knowledgeGraph` block to `config.schema.json` — `config.schema.json`
   **[USN-1]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking`
   Add a sibling `knowledgeGraph` object (peer of `kgLlm` at line ~130) with
@@ -88,7 +88,7 @@
   - Run: `pnpm test -- -t "config"`
   - Expected: All config tests pass; schema validation tests do not error
 
-- [ ] 1.4 Add `'kg_multi_hop'` to `LaneCandidate.source` union — `src/retrieval/ranking.ts`
+- [x] 1.4 Add `'kg_multi_hop'` to `LaneCandidate.source` union — `src/retrieval/ranking.ts`
   **[USN-1]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking`
   Extend line ~22 of `src/retrieval/ranking.ts`:
@@ -109,7 +109,7 @@
 
 ## Phase 2: Implementation
 
-- [ ] 2.1 Implement `queryKnowledgeMultiHopLane` private method — `src/store/index.ts`
+- [x] 2.1 Implement `queryKnowledgeMultiHopLane` private method — `src/store/index.ts`
   **[USN-2]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` #2-hop neighbor surfaced
   Place adjacent to `queryKnowledgeLane` (after line ~2113). Signature:
@@ -174,7 +174,7 @@
   - Run: `pnpm run build`
   - Expected: No TypeScript errors in `src/store/index.ts`
 
-- [ ] 2.2 Wire multi-hop into `hybridRetrieve` with flag-gate and degrade path — `src/store/index.ts`
+- [x] 2.2 Wire multi-hop into `hybridRetrieve` with flag-gate and degrade path — `src/store/index.ts`
   **[USN-2]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` #multi-hop introduces new observation
   At lines ~1797-1817, after `const fused = fuseCandidates(...).slice(0, fusedLimit)`:
@@ -210,7 +210,7 @@
   - Run: `pnpm run build`
   - Expected: No TypeScript errors; `hybridRetrieve` return type unchanged
 
-- [ ] 2.3 Verify `src/store/schema.ts` — no DDL change required — `src/store/schema.ts`
+- [x] 2.3 Verify `src/store/schema.ts` — no DDL change required — `src/store/schema.ts`
   **[USN-2]** | Priority: P2
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking`
   Confirm that the five existing indexes (`idx_kg_triples_subject`, `idx_kg_triples_object`,
@@ -224,7 +224,7 @@
   - Run: `pnpm test -- -t "schema"`
   - Expected: All schema tests pass; no new DDL
 
-- [ ] 2.4 Add shared-entity recall fixture and no-regression gate to evals — `src/evals/retrieval.ts`
+- [x] 2.4 Add shared-entity recall fixture and no-regression gate to evals — `src/evals/retrieval.ts`
   **[USN-2]** | Priority: P1
   **Spec:** `evals/Facts-Source Eval MUST Assert on kg_triples` #Graph fixtures populate KG-lane evidence
   Using the existing `seedGraphFactTriple` helper (line ~325) and the
@@ -257,7 +257,7 @@
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Author traversal unit tests — `tests/store/kg-multi-hop.test.ts` (new file)
+- [x] 3.1 Author traversal unit tests — `tests/store/kg-multi-hop.test.ts` (new file)
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` #bidirectional; #cycle guard; #depth guard
   Create `tests/store/kg-multi-hop.test.ts` using `new Store(':memory:')` and the
@@ -282,7 +282,7 @@
   - Run: `pnpm test tests/store/kg-multi-hop.test.ts`
   - Expected: All traversal unit tests pass
 
-- [ ] 3.2 REQUIRED — EXPLAIN QUERY PLAN index-coverage assertion — `tests/store/kg-multi-hop.test.ts`
+- [x] 3.2 REQUIRED — EXPLAIN QUERY PLAN index-coverage assertion — `tests/store/kg-multi-hop.test.ts`
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` — design EXPLAIN decision (load-bearing CTE shape)
   In `tests/store/kg-multi-hop.test.ts`, add an EXPLAIN assertion test that:
@@ -302,7 +302,7 @@
   - Expected: EXPLAIN plan assertions pass; `idx_kg_triples_subject` and
     `idx_kg_triples_object` both appear; no bare `SCAN kg_triples` in recursive step
 
-- [ ] 3.3 Author fusion/ranking integration tests — extend `tests/store/index.test.ts`
+- [x] 3.3 Author fusion/ranking integration tests — extend `tests/store/index.test.ts`
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` #dedup-direct-wins; #depth-decay ordering
   Extend `tests/store/index.test.ts` (or a focused `tests/store/kg-multi-hop-fusion.test.ts`)
@@ -324,7 +324,7 @@
   - Run: `pnpm test tests/store/index.test.ts`
   - Expected: All existing tests pass; new fusion/ranking cases pass
 
-- [ ] 3.4 Author degrade and flag-off tests — extend `tests/store/index.test.ts` (or new focused file)
+- [x] 3.4 Author degrade and flag-off tests — extend `tests/store/index.test.ts` (or new focused file)
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` #flag-off byte-identical; #forced timeout signals kg_multi_hop
   Required cases via `hybridRetrieve`:
@@ -343,7 +343,7 @@
   - Run: `pnpm test -- -t "kg_multi_hop|degrade|flag"`
   - Expected: All three degrade cases pass; no throw observed
 
-- [ ] 3.5 Author config unit tests — extend `tests/config.test.ts`
+- [x] 3.5 Author config unit tests — extend `tests/config.test.ts`
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/KG Evidence MUST Participate in Fused Retrieval Ranking` — design §Config tests
   Mirror the `graphFactsSource`/`kgLlm` patterns (lines ~99/~202 in `tests/config.test.ts`).
@@ -372,7 +372,7 @@
 
 ## Phase 4: Verification and Close
 
-- [ ] 4.1 Run full test suite and confirm no regression — all modules
+- [x] 4.1 Run full test suite and confirm no regression — all modules
   **[USN-4]** | Priority: P1
   **Spec:** All requirements above (full-suite gate)
   Run the complete test suite. All pre-existing tests MUST pass unchanged.
@@ -384,7 +384,7 @@
   - Run: `pnpm test`
   - Expected: All tests pass; zero failures; no unexpected skips
 
-- [ ] 4.2 Run eval:retrieval no-regression gate and record shipped default — `src/evals/retrieval.ts`, `src/config.ts`
+- [x] 4.2 Run eval:retrieval no-regression gate and record shipped default — `src/evals/retrieval.ts`, `src/config.ts`
   **[USN-4]** | Priority: P1
   **Spec:** `evals/Facts-Source Eval MUST Assert on kg_triples` #no-regression gate; Design CL-5
   Run `pnpm run eval:retrieval` with `kgMultiHopEnabled = true` (the B2 default).
@@ -401,7 +401,7 @@
   - Expected: Multi-hop ON does not regress single-hop baseline; eval exits 0;
     shipped default recorded in this checklist
 
-- [ ] 4.3 Build artifact — all modules
+- [x] 4.3 Build artifact — all modules
   **[USN-4]** | Priority: P1
   **Spec:** Design §Migration/Rollout — MINOR additive
   Confirm the final build is clean with no TypeScript errors across all changed
@@ -412,7 +412,7 @@
   - Run: `pnpm run build`
   - Expected: Zero TypeScript errors; build artifacts produced successfully
 
-- [ ] 4.4 Update change checklist — `openspec/changes/kg-multi-hop-recall/checklists/requirements.md`
+- [x] 4.4 Update change checklist — `openspec/changes/kg-multi-hop-recall/checklists/requirements.md`
   **[USN-4]** | Priority: P2
   **Spec:** `config.yaml` archive rules
   Mark all B2 checklist items as complete. Record the shipped default decision

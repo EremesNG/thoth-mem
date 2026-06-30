@@ -231,6 +231,64 @@ triples rather than accumulate them.
 - THEN the combined result MUST NOT contain duplicate equivalent triples for that
   observation
 
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Entity-Anchored Multi-Hop Traversal MUST Surface Observations Reachable Through Shared Entities
+Given seed observations, the system MUST perform bounded, bidirectional multi-hop traversal over `kg_triples` to return other observations reachable by shared entities, with seed entities resolved from `kg_triples` rows whose `source_id` is the seed observation.
+
+#### Scenario: Two-hop neighbor is surfaced via a shared entity
+- GIVEN a seed observation whose entity is linked to another observation's entity by an allowed relation
+- WHEN traversal runs within `kgMaxDepth`
+- THEN the reached observation MUST be returned and the seed MUST NOT be returned as reached
+
+#### Scenario: Traversal is bidirectional across edge direction
+- GIVEN a triple where the seed entity appears as object side
+- WHEN traversal expands
+- THEN traversal MUST follow from object to subject as well as subject to object
+
+#### Scenario: Depth distinguishes evidence
+- GIVEN observations at different hop distances from the same seed
+- WHEN traversal returns reached observations
+- THEN each reached observation MUST carry the hop depth
+
+### Requirement: Multi-Hop Traversal MUST Follow Only the Configured Structural Relation Allow-List
+Traversal MUST use the configured allow-list and not follow excluded metadata/synthetic relations. The default list is the 18 structural relations and excludes `HAS_WHAT`, `HAS_WHY`, `HAS_WHERE`, `HAS_LEARNED`, `HAS_TOPIC`, `HAS_SCOPE`, `MENTIONS`, `EXTRACTED_FROM`.
+
+#### Scenario: Structural relations extend the frontier
+- GIVEN a seed entity connected by a structural relation in the allow-list
+- WHEN traversal runs
+- THEN the adjacent observation MUST be eligible for projection
+
+#### Scenario: Metadata relations do not extend the frontier
+- GIVEN edges to neighbors only via excluded relations
+- WHEN traversal runs
+- THEN excluded edges MUST not contribute reached observations
+
+### Requirement: Multi-Hop Traversal MUST Be Cycle-Guarded and Bounded
+Traversal MUST terminate with `depth < kgMaxDepth`, must not revisit visited entities, and must cap reached observations by `kgNeighborhoodLimit`.
+
+#### Scenario: Cycles terminate
+- GIVEN a cycle in the graph
+- WHEN traversal runs
+- THEN it MUST terminate and not exceed the configured depth
+
+#### Scenario: Neighborhood cap bounds a hub
+- GIVEN a high-degree seed neighborhood and a small cap
+- WHEN traversal runs
+- THEN at most `kgNeighborhoodLimit` observations are returned
+
+### Requirement: Multi-Hop Evidence MUST Carry KG Provenance, Confidence, and Bridge Path
+Each reached observation MUST emit a `kg` lane candidate with `source: 'kg_multi_hop'`, KG provenance/confidence, and bridge-path text such as `"<seed entity> →(<relation>)→ <bridge entity>"`.
+
+#### Scenario: Reached observation carries bridge-path evidence
+- GIVEN a reached observation from one hop bridge
+- WHEN evidence is emitted
+- THEN `kg`/`kg_multi_hop` provenance, confidence, and bridge text MUST be present
+
+## MODIFIED Requirements
+
+## REMOVED Requirements
+
 ## Assumptions
 - **CL-1 (RESOLVED — synchronous deterministic write-on-save):** Per the
   orchestrator-endorsed decision, graph facts are written synchronously and
