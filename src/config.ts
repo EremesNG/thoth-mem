@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getVersion } from './version.js';
+import { KG_RELATION_TYPES } from './indexing/kg-extractor.js';
 
 export interface RetrievalDefaults {
   sentenceTopK: number;
@@ -35,6 +36,16 @@ export interface KgLlmConfig {
   minContentChars: number;
 }
 
+export interface KnowledgeGraphConfig {
+  kgMultiHopEnabled: boolean;
+  kgMaxDepth: number;
+  kgNeighborhoodLimit: number;
+  kgMultiHopWeight: number;
+  kgDepthDecay: number;
+  kgTraversalTimeoutMs: number;
+  kgRelationAllowList: string[];
+}
+
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
   model: string;
@@ -61,6 +72,7 @@ export interface ThothConfig {
   embedding?: EmbeddingConfig;
   hyde?: HydeConfig;
   kgLlm?: KgLlmConfig;
+  knowledgeGraph?: KnowledgeGraphConfig;
 }
 
 interface PersistedEmbeddingConfig extends Partial<EmbeddingConfig> {
@@ -83,6 +95,7 @@ interface PersistedConfig {
   embedding?: PersistedEmbeddingConfig;
   hyde?: Partial<HydeConfig>;
   kgLlm?: Partial<KgLlmConfig>;
+  knowledgeGraph?: Partial<KnowledgeGraphConfig>;
   graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: Partial<RetrievalDefaults>;
 }
@@ -118,6 +131,37 @@ const DEFAULT_KG_LLM_CONFIG: KgLlmConfig = {
   baseUrl: null,
   timeoutMs: 8000,
   minContentChars: 12_000,
+};
+
+export const DEFAULT_KG_RELATION_ALLOW_LIST = [
+  'USES',
+  'DEPENDS_ON',
+  'BELONGS_TO',
+  'PART_OF',
+  'OWNS',
+  'CONFIGURES',
+  'IMPLEMENTS',
+  'RUNS_IN',
+  'DEPLOYS_TO',
+  'CAUSES',
+  'FIXES',
+  'BLOCKS',
+  'UNBLOCKS',
+  'AFFECTS',
+  'REFERENCES',
+  'AUTHENTICATES_WITH',
+  'PRECEDES',
+  'FOLLOWS',
+] as const;
+
+export const DEFAULT_KNOWLEDGE_GRAPH_CONFIG: KnowledgeGraphConfig = {
+  kgMultiHopEnabled: true,
+  kgMaxDepth: 2,
+  kgNeighborhoodLimit: 50,
+  kgMultiHopWeight: 0.7,
+  kgDepthDecay: 0.5,
+  kgTraversalTimeoutMs: 50,
+  kgRelationAllowList: [...DEFAULT_KG_RELATION_ALLOW_LIST],
 };
 
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
@@ -206,6 +250,20 @@ function parseGraphFactsSource(value: string | null | undefined): GraphFactsSour
   return null;
 }
 
+function normalizeRelationAllowList(value: readonly string[] | undefined): string[] | null {
+  if (!value) return null;
+  const validRelations = new Set<string>(KG_RELATION_TYPES);
+  const normalized = Array.from(new Set(value
+    .map((relation) => relation.trim().toUpperCase())
+    .filter((relation) => validRelations.has(relation))));
+  return normalized.length > 0 ? normalized : null;
+}
+
+function parseRelationAllowList(value: string | undefined): string[] | null {
+  if (value === undefined) return null;
+  return normalizeRelationAllowList(value.split(/[,\s]+/));
+}
+
 function defaultPersistedConfig(): PersistedConfig {
   return {
     $schema: CONFIG_SCHEMA_REF,
@@ -229,6 +287,7 @@ function defaultPersistedConfig(): PersistedConfig {
     },
     hyde: { ...DEFAULT_HYDE_CONFIG },
     kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
+    knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
     graphFactsSource: 'kg',
   };
 }
@@ -275,6 +334,10 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
     kgLlm: {
       ...defaults.kgLlm,
       ...(existing.kgLlm ?? {}),
+    },
+    knowledgeGraph: {
+      ...defaults.knowledgeGraph,
+      ...(existing.knowledgeGraph ?? {}),
     },
   };
 }
@@ -381,6 +444,35 @@ function resolveKgLlmConfig(persisted: PersistedConfig): KgLlmConfig {
   };
 }
 
+export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): KnowledgeGraphConfig {
+  const persistedKg = persisted.knowledgeGraph ?? {};
+  const enabledFromEnv = parseBoolean(process.env.THOTH_KG_MULTI_HOP_ENABLED);
+  const maxDepthFromEnv = parseNumber(process.env.THOTH_KG_MAX_DEPTH);
+  const neighborhoodLimitFromEnv = parseNumber(process.env.THOTH_KG_NEIGHBORHOOD_LIMIT);
+  const multiHopWeightFromEnv = parseNumber(process.env.THOTH_KG_MULTI_HOP_WEIGHT);
+  const depthDecayFromEnv = parseNumber(process.env.THOTH_KG_DEPTH_DECAY);
+  const traversalTimeoutFromEnv = parseNumber(process.env.THOTH_KG_TRAVERSAL_TIMEOUT_MS);
+  const relationAllowList = parseRelationAllowList(process.env.THOTH_KG_RELATION_ALLOW_LIST)
+    ?? normalizeRelationAllowList(persistedKg.kgRelationAllowList)
+    ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgRelationAllowList;
+
+  return {
+    kgMultiHopEnabled: enabledFromEnv ?? persistedKg.kgMultiHopEnabled ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgMultiHopEnabled,
+    kgMaxDepth: maxDepthFromEnv ?? persistedKg.kgMaxDepth ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgMaxDepth,
+    kgNeighborhoodLimit: neighborhoodLimitFromEnv
+      ?? persistedKg.kgNeighborhoodLimit
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgNeighborhoodLimit,
+    kgMultiHopWeight: multiHopWeightFromEnv
+      ?? persistedKg.kgMultiHopWeight
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgMultiHopWeight,
+    kgDepthDecay: depthDecayFromEnv ?? persistedKg.kgDepthDecay ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgDepthDecay,
+    kgTraversalTimeoutMs: traversalTimeoutFromEnv
+      ?? persistedKg.kgTraversalTimeoutMs
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgTraversalTimeoutMs,
+    kgRelationAllowList: [...relationAllowList],
+  };
+}
+
 function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   const persistedEmbedding = persisted.embedding ?? {};
   const provider = parseProvider(process.env.THOTH_EMBEDDING_PROVIDER ?? persistedEmbedding.provider, 'transformers_local');
@@ -429,6 +521,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
   const persisted = loadPersistedConfig(dataDir);
   const hyde = resolveHydeConfig(persisted);
   const kgLlm = resolveKgLlmConfig(persisted);
+  const knowledgeGraph = resolveKnowledgeGraphConfig(persisted);
   const httpPortFromPersisted = persisted.http?.port;
   const httpDisabledFromPersisted = persisted.http?.disabled;
 
@@ -451,6 +544,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     embedding: resolveEmbeddingConfig(persisted),
     hyde,
     kgLlm,
+    knowledgeGraph,
   };
 }
 

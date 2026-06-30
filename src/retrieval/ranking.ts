@@ -19,7 +19,7 @@ export interface LaneCandidate {
   observationId: number;
   score: number;
   /** `observation_facts` is legacy-only and must not be emitted on the default KG path. */
-  source: 'raw_query' | 'hyde_answer' | 'lexical_prefix' | 'kg_triples' | 'observation_facts';
+  source: 'raw_query' | 'hyde_answer' | 'lexical_prefix' | 'kg_triples' | 'kg_multi_hop' | 'observation_facts';
   text: string;
   chunkKey?: string | null;
   sentenceKey?: string | null;
@@ -27,6 +27,7 @@ export interface LaneCandidate {
   kg?: {
     provenance: string;
     confidence: number;
+    depth?: number;
     sourceType?: string;
   };
 }

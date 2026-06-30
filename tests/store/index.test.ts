@@ -27,6 +27,43 @@ function createLegacyObservationFactsTable(store: Store) {
   `);
 }
 
+function insertKgEntity(store: Store, key: string, canonicalName: string): number {
+  return (store.getDb().prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json)
+     VALUES (?, 'service', ?, '[]', '{}')
+     ON CONFLICT(entity_key) DO UPDATE SET canonical_name = excluded.canonical_name
+     RETURNING id`
+  ).get(key, canonicalName) as { id: number }).id;
+}
+
+function insertKgTestTriple(store: Store, input: {
+  subjectId: number;
+  relation: string;
+  objectId: number;
+  observationId: number;
+  project: string;
+  confidence?: number;
+  hash: string;
+}): void {
+  const observation = store.getObservation(input.observationId);
+  store.getDb().prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+      project, topic_key, provenance, confidence, triple_hash, extractor_version
+    ) VALUES (?, ?, ?, 'observation', ?, ?, ?, NULL, ?, ?, ?, 'test')`
+  ).run(
+    input.subjectId,
+    input.relation,
+    input.objectId,
+    input.observationId,
+    observation?.sync_id ?? null,
+    input.project,
+    `test:${input.hash}`,
+    input.confidence ?? 0.9,
+    input.hash,
+  );
+}
+
 describe('Store', () => {
   let store: Store;
 
@@ -1022,6 +1059,204 @@ describe('Store', () => {
 
       const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
       expect(response.results.length).toBe(0);
+    });
+
+    it('kg multi-hop: introduces a new observation under the kg lane', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios seed',
+        content: 'Helios query seed should be the direct result.',
+        project: 'kg-mh-fusion',
+      });
+      const reached = store.saveObservation({
+        title: 'Silent dependency',
+        content: 'Unrelated body deliberately avoids the query token.',
+        project: 'kg-mh-fusion',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmh:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmh:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmh:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-fusion', hash: 'kgmh-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-fusion', hash: 'kgmh-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-fusion', limit: 5 });
+      const hit = response.results.find((result: any) => result.observation.id === reached.observation.id);
+
+      expect(hit).toBeDefined();
+      expect(hit.evidence.primary.lane).toBe('kg');
+      expect(hit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(hit.evidence.byLane.kg.some((candidate: any) => candidate.source === 'kg_multi_hop')).toBe(true);
+    });
+
+    it('kg multi-hop: preserves direct primary evidence and ranks depth one above depth two', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios depth seed',
+        content: 'Helios direct seed for depth traversal.',
+        project: 'kg-mh-depth',
+      });
+      const direct = store.saveObservation({
+        title: 'Helios direct graph hit',
+        content: 'Unrelated content.',
+        project: 'kg-mh-depth',
+      });
+      const depthOne = store.saveObservation({
+        title: 'Depth one neighbor',
+        content: 'No query token here.',
+        project: 'kg-mh-depth',
+      });
+      const depthTwo = store.saveObservation({
+        title: 'Depth two neighbor',
+        content: 'Still no query token here.',
+        project: 'kg-mh-depth',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmhd:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmhd:auth', 'Auth service');
+      const directEntity = insertKgEntity(store, 'kgmhd:direct', 'Direct KG target');
+      const token = insertKgEntity(store, 'kgmhd:token', 'Token store');
+      const vault = insertKgEntity(store, 'kgmhd:vault', 'Vault');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-depth', confidence: 0.9, hash: 'kgmhd-seed' });
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: directEntity, observationId: direct.observation.id, project: 'kg-mh-depth', confidence: 0.9, hash: 'kgmhd-direct' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: depthOne.observation.id, project: 'kg-mh-depth', confidence: 0.8, hash: 'kgmhd-depth-one' });
+      insertKgTestTriple(store, { subjectId: token, relation: 'DEPENDS_ON', objectId: vault, observationId: depthTwo.observation.id, project: 'kg-mh-depth', confidence: 0.8, hash: 'kgmhd-depth-two' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-depth', limit: 10 });
+      const directHit = response.results.find((result: any) => result.observation.id === direct.observation.id);
+      const depthOneHit = response.results.find((result: any) => result.observation.id === depthOne.observation.id);
+      const depthTwoHit = response.results.find((result: any) => result.observation.id === depthTwo.observation.id);
+
+      expect(directHit.evidence.primary.source).toBe('kg_triples');
+      expect(depthOneHit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(depthTwoHit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(depthOneHit.evidence.primary.kg?.depth).toBe(1);
+      expect(depthTwoHit.evidence.primary.kg?.depth).toBe(2);
+      expect(depthTwoHit.evidence.primary.text).toContain('Auth service');
+      expect(depthTwoHit.evidence.primary.text).toContain('DEPENDS_ON');
+      expect(depthTwoHit.evidence.primary.text).toContain('Token store');
+      expect(depthOneHit.score).toBeGreaterThan(depthTwoHit.score);
+      expect(depthOneHit.score).toBeCloseTo(0.8 * 0.7, 8);
+      expect(depthTwoHit.score).toBeCloseTo(0.8 * 0.5 * 0.7, 8);
+      expect(depthOneHit.score).toBeLessThan(directHit.score);
+    });
+
+    it('fusion: direct KG candidate wins primary evidence over multi-hop for the same observation', () => {
+      store = new Store(':memory:');
+      const saved = store.saveObservation({
+        title: 'Direct and multi-hop candidate',
+        content: 'Direct graph evidence should remain primary.',
+        project: 'kg-mh-dedup',
+      });
+      const observations = new Map([[saved.observation.id, saved.observation]]);
+
+      const [hit] = fuseCandidates(observations, [
+        {
+          lane: 'kg',
+          observationId: saved.observation.id,
+          score: 0.9,
+          source: 'kg_triples',
+          text: 'Direct KG evidence',
+        },
+        {
+          lane: 'kg',
+          observationId: saved.observation.id,
+          score: 0.8 * (0.7 / 0.9),
+          source: 'kg_multi_hop',
+          text: 'Multi-hop KG evidence',
+          kg: { provenance: 'test:multi-hop', confidence: 0.8, sourceType: 'observation' },
+        },
+      ]);
+
+      expect(hit.observation.id).toBe(saved.observation.id);
+      expect(hit.evidence.primary.source).toBe('kg_triples');
+      expect(hit.evidence.byLane.kg?.map((candidate) => candidate.source)).toEqual(['kg_triples', 'kg_multi_hop']);
+    });
+
+    it('kg multi-hop: flag-off skips traversal and leaves direct output unchanged', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+        knowledgeGraph: {
+          kgMultiHopEnabled: false,
+          kgMaxDepth: 2,
+          kgNeighborhoodLimit: 50,
+          kgMultiHopWeight: 0.7,
+          kgDepthDecay: 0.5,
+          kgTraversalTimeoutMs: 50,
+          kgRelationAllowList: ['USES', 'DEPENDS_ON'],
+        },
+      });
+      const runtime = store as any;
+      let traversalCalls = 0;
+      runtime.queryKnowledgeMultiHopLane = () => {
+        traversalCalls += 1;
+        return [];
+      };
+      const seed = store.saveObservation({
+        title: 'Helios disabled seed',
+        content: 'Helios direct seed only.',
+        project: 'kg-mh-off',
+      });
+      const reached = store.saveObservation({
+        title: 'Disabled neighbor',
+        content: 'Unrelated body.',
+        project: 'kg-mh-off',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmho:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmho:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmho:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-off', hash: 'kgmho-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-off', hash: 'kgmho-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-off', limit: 5 });
+
+      expect(traversalCalls).toBe(0);
+      expect(response.results.map((result: any) => result.observation.id)).toEqual([seed.observation.id]);
+      expect(response.results.flatMap((result: any) => result.evidence.byLane.kg ?? []).some((candidate: any) => candidate.source === 'kg_multi_hop')).toBe(false);
+    });
+
+    it('kg multi-hop: timeout degrade returns direct results and signals fallback', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+        knowledgeGraph: {
+          kgMultiHopEnabled: true,
+          kgMaxDepth: 2,
+          kgNeighborhoodLimit: 50,
+          kgMultiHopWeight: 0.7,
+          kgDepthDecay: 0.5,
+          kgTraversalTimeoutMs: 0,
+          kgRelationAllowList: ['USES', 'DEPENDS_ON'],
+        },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios timeout seed',
+        content: 'Helios direct seed.',
+        project: 'kg-mh-timeout',
+      });
+      const reached = store.saveObservation({
+        title: 'Timeout neighbor',
+        content: 'Unrelated body.',
+        project: 'kg-mh-timeout',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmht:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmht:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmht:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-timeout', hash: 'kgmht-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-timeout', hash: 'kgmht-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-timeout', limit: 5 });
+
+      expect(response.degradedFallback).toContain('kg_multi_hop');
+      expect(response.results.map((result: any) => result.observation.id)).toEqual([seed.observation.id]);
     });
 
     it('fusion: deterministically merges lane evidence and uses stable tie-breakers', async () => {

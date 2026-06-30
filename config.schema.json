@@ -154,6 +154,71 @@
           "minimum": 1
         }
       }
+    },
+    "knowledgeGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kgMultiHopEnabled": {
+          "type": "boolean"
+        },
+        "kgMaxDepth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kgNeighborhoodLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kgMultiHopWeight": {
+          "type": "number",
+          "minimum": 0
+        },
+        "kgDepthDecay": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "kgTraversalTimeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kgRelationAllowList": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "USES",
+              "DEPENDS_ON",
+              "BELONGS_TO",
+              "PART_OF",
+              "OWNS",
+              "CONFIGURES",
+              "IMPLEMENTS",
+              "RUNS_IN",
+              "DEPLOYS_TO",
+              "CAUSES",
+              "FIXES",
+              "BLOCKS",
+              "UNBLOCKS",
+              "AFFECTS",
+              "REFERENCES",
+              "MENTIONS",
+              "EXTRACTED_FROM",
+              "HAS_TOPIC",
+              "HAS_SCOPE",
+              "PRECEDES",
+              "FOLLOWS",
+              "AUTHENTICATES_WITH",
+              "HAS_WHAT",
+              "HAS_WHY",
+              "HAS_WHERE",
+              "HAS_LEARNED"
+            ]
+          }
+        }
+      }
     }
   }
 }

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { ThothConfig } from '../config.js';
+import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   ContextInput,
@@ -67,6 +67,7 @@ import type { HydeGenerator, SemanticInput } from '../retrieval/hyde.js';
 import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
 import {
   DEFAULT_LANE_ORDER,
+  DEFAULT_LANE_WEIGHTS,
   fuseCandidates,
   type FusionOptions,
   type HybridHit,
@@ -210,6 +211,7 @@ const DEFAULT_CONFIG: ThothConfig = {
     timeoutMs: 8000,
     minContentChars: 12_000,
   },
+  knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
 };
 
 const RETRIEVAL_QUERY_STOPWORDS = new Set([
@@ -269,7 +271,15 @@ export class Store {
   };
 
   constructor(dbPath: string, config?: Partial<ThothConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config, dbPath };
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      dbPath,
+      knowledgeGraph: {
+        ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+        ...(config?.knowledgeGraph ?? {}),
+      },
+    };
     this.db = new Database(dbPath);
 
     for (const pragma of PRAGMAS) {
@@ -1795,12 +1805,53 @@ export class Store {
     };
     const fusedLimit = input.limit ?? defaults.lexicalLimit;
     const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, fusedLimit);
+    let refused = fused;
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    if (knowledgeGraph.kgMultiHopEnabled && fused.length > 0) {
+      const startedAt = Date.now();
+      try {
+        const multiHopCandidates = this.queryKnowledgeMultiHopLane({
+          seedObservationIds: fused.map((hit) => hit.observation.id),
+          filters,
+          maxDepth: knowledgeGraph.kgMaxDepth,
+          neighborhoodLimit: knowledgeGraph.kgNeighborhoodLimit,
+          relationAllowList: knowledgeGraph.kgRelationAllowList,
+          multiHopWeight: knowledgeGraph.kgMultiHopWeight,
+          depthDecay: knowledgeGraph.kgDepthDecay,
+        });
+        const elapsed = Date.now() - startedAt;
+        const exceededTimeout = multiHopCandidates.length > 0
+          && (knowledgeGraph.kgTraversalTimeoutMs === 0 || elapsed > knowledgeGraph.kgTraversalTimeoutMs);
+        if (exceededTimeout) {
+          degradedFallback.push('kg_multi_hop');
+        } else if (multiHopCandidates.length > 0) {
+          const newIds = Array.from(new Set(
+            multiHopCandidates
+              .map((candidate) => candidate.observationId)
+              .filter((id) => !observations.has(id))
+          ));
+          if (newIds.length > 0) {
+            const extraRows = this.db.prepare(
+              `SELECT * FROM observations
+               WHERE deleted_at IS NULL
+               AND id IN (${newIds.map(() => '?').join(',')})`
+            ).all(...newIds) as ObservationRow[];
+            for (const row of extraRows) {
+              observations.set(row.id, row);
+            }
+          }
+          refused = fuseCandidates(observations, [...coreCandidates, ...multiHopCandidates], fusionOptions).slice(0, fusedLimit);
+        }
+      } catch {
+        degradedFallback.push('kg_multi_hop');
+      }
+    }
     const effectiveLaneOrder = this.resolveEffectiveLaneOrder(input.laneOrder);
     const parentPromotionThreshold = defaults.minSemanticScore;
     const graphEnrichmentCandidates = this.queryKnowledgeLane({
       query: input.query,
       filters,
-      observationIds: fused.map((hit) => hit.observation.id),
+      observationIds: refused.map((hit) => hit.observation.id),
       includeUnmatched: true,
     });
     const graphByObservation = new Map<number, LaneCandidate[]>();
@@ -1816,7 +1867,7 @@ export class Store {
       }
     }
 
-    for (const hit of fused) {
+    for (const hit of refused) {
       const graphEvidence = graphByObservation.get(hit.observation.id);
       if (graphEvidence && graphEvidence.length > 0) {
         const existing = hit.evidence.byLane.kg ?? [];
@@ -1855,7 +1906,7 @@ export class Store {
       lexicalQuery,
       scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
       semanticInputs,
-      results: fused,
+      results: refused,
       pending: this.semanticRuntime.pending,
     };
   }
@@ -2110,6 +2161,175 @@ export class Store {
       }];
     });
     return [...tripleCandidates, ...factCandidates];
+  }
+
+  private queryKnowledgeMultiHopLane(input: {
+    seedObservationIds: number[];
+    filters?: RetrievalCandidateFilters;
+    maxDepth: number;
+    neighborhoodLimit: number;
+    relationAllowList: string[];
+    multiHopWeight: number;
+    depthDecay: number;
+  }): LaneCandidate[] {
+    const seedObservationIds = Array.from(new Set(input.seedObservationIds.filter((id) => Number.isInteger(id))));
+    const relationAllowList = Array.from(new Set(input.relationAllowList.map((relation) => relation.trim().toUpperCase()).filter(Boolean)));
+    if (seedObservationIds.length === 0 || relationAllowList.length === 0 || input.maxDepth < 1 || input.neighborhoodLimit < 1) {
+      return [];
+    }
+
+    const seedEntityRows = this.db.prepare(
+      `SELECT DISTINCT subject_entity_id AS entity_id
+       FROM kg_triples
+       WHERE source_type = 'observation'
+       AND source_id IN (${seedObservationIds.map(() => '?').join(',')})
+       UNION
+       SELECT DISTINCT object_entity_id AS entity_id
+       FROM kg_triples
+       WHERE source_type = 'observation'
+       AND source_id IN (${seedObservationIds.map(() => '?').join(',')})`
+    ).all(...seedObservationIds, ...seedObservationIds) as Array<{ entity_id: number }>;
+    const seedEntityIds = seedEntityRows.map((row) => row.entity_id);
+    if (seedEntityIds.length === 0) return [];
+
+    const built = this.buildKnowledgeMultiHopTraversalSql({
+      seedEntityIds,
+      seedObservationIds,
+      relationAllowList,
+      maxDepth: Math.floor(input.maxDepth),
+      neighborhoodLimit: Math.floor(input.neighborhoodLimit),
+      filters: input.filters,
+    });
+    const rows = this.db.prepare(built.sql).all(...built.params) as Array<{
+      observation_id: number;
+      depth: number;
+      provenance: string;
+      confidence: number;
+      source_type: string;
+      seed_name: string;
+      from_name: string;
+      relation: string;
+      to_name: string;
+    }>;
+    const scoreScale = input.multiHopWeight / DEFAULT_LANE_WEIGHTS.kg;
+
+    return rows
+      .map((row) => ({
+        lane: 'kg' as const,
+        observationId: row.observation_id,
+        score: row.confidence * Math.pow(input.depthDecay, Math.max(row.depth - 1, 0)) * scoreScale,
+        source: 'kg_multi_hop' as const,
+        text: `${row.seed_name} -> ... -> ${row.from_name} ->(${row.relation})-> ${row.to_name}`,
+        kg: {
+          provenance: row.provenance,
+          confidence: row.confidence,
+          depth: row.depth,
+          sourceType: row.source_type,
+        },
+      }))
+      .sort((a, b) => {
+        if (a.score !== b.score) return b.score - a.score;
+        return a.observationId - b.observationId;
+      })
+      .slice(0, input.neighborhoodLimit);
+  }
+
+  private buildKnowledgeMultiHopTraversalSql(input: {
+    seedEntityIds: number[];
+    seedObservationIds: number[];
+    relationAllowList: string[];
+    maxDepth: number;
+    neighborhoodLimit: number;
+    filters?: RetrievalCandidateFilters;
+  }): { sql: string; params: Array<string | number> } {
+    const seedEntitySelects = input.seedEntityIds
+      .map(() => 'SELECT ? AS entity_id, ? AS seed_entity_id, 0 AS depth, ? AS path')
+      .join(' UNION ALL ');
+    const relationPlaceholders = input.relationAllowList.map(() => '?').join(',');
+    const seedObservationPlaceholders = input.seedObservationIds.map(() => '?').join(',');
+    const expandedLimit = Math.max(input.neighborhoodLimit * 4, input.neighborhoodLimit);
+    const params: Array<string | number> = [];
+    for (const id of input.seedEntityIds) {
+      params.push(id, id, `,${id},`);
+    }
+
+    const addTraversalParams = () => {
+      params.push(input.maxDepth, ...input.relationAllowList);
+    };
+    addTraversalParams();
+    addTraversalParams();
+
+    const addCandidateParams = () => {
+      params.push(input.maxDepth, ...input.relationAllowList, ...input.seedObservationIds);
+    };
+    addCandidateParams();
+    addCandidateParams();
+
+    const sql = [
+      'WITH RECURSIVE frontier(entity_id, seed_entity_id, depth, path) AS (',
+      seedEntitySelects,
+      'UNION ALL',
+      'SELECT t.object_entity_id, f.seed_entity_id, f.depth + 1, f.path || t.object_entity_id || \',\'',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_subject ON t.subject_entity_id = f.entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      `AND t.relation IN (${relationPlaceholders})`,
+      'AND instr(f.path, \',\' || t.object_entity_id || \',\') = 0',
+      'UNION ALL',
+      'SELECT t.subject_entity_id, f.seed_entity_id, f.depth + 1, f.path || t.subject_entity_id || \',\'',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_object ON t.object_entity_id = f.entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      `AND t.relation IN (${relationPlaceholders})`,
+      'AND instr(f.path, \',\' || t.subject_entity_id || \',\') = 0',
+      '),',
+      'candidate_edges AS (',
+      'SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, t.confidence, t.source_type,',
+      '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_subject ON t.subject_entity_id = f.entity_id',
+      'JOIN kg_entities se ON se.id = f.seed_entity_id',
+      'JOIN kg_entities fe ON fe.id = f.entity_id',
+      'JOIN kg_entities te ON te.id = t.object_entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      'AND t.source_id IS NOT NULL',
+      `AND t.relation IN (${relationPlaceholders})`,
+      `AND t.source_id NOT IN (${seedObservationPlaceholders})`,
+      'UNION ALL',
+      'SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, t.confidence, t.source_type,',
+      '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_object ON t.object_entity_id = f.entity_id',
+      'JOIN kg_entities se ON se.id = f.seed_entity_id',
+      'JOIN kg_entities fe ON fe.id = f.entity_id',
+      'JOIN kg_entities te ON te.id = t.subject_entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      'AND t.source_id IS NOT NULL',
+      `AND t.relation IN (${relationPlaceholders})`,
+      `AND t.source_id NOT IN (${seedObservationPlaceholders})`,
+      '),',
+      'ranked AS (',
+      'SELECT ce.*, ROW_NUMBER() OVER (PARTITION BY ce.observation_id ORDER BY ce.depth ASC, ce.confidence DESC, ce.relation ASC) AS rn',
+      'FROM candidate_edges ce',
+      'JOIN observations o ON o.id = ce.observation_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    this.appendObservationFilters(sql, params, input.filters);
+    params.push(expandedLimit);
+    sql.push(
+      ')',
+      'SELECT observation_id, depth, provenance, confidence, source_type, seed_name, from_name, relation, to_name',
+      'FROM ranked',
+      'WHERE rn = 1',
+      'ORDER BY depth ASC, confidence DESC, observation_id ASC',
+      'LIMIT ?',
+    );
+
+    return { sql: sql.join(' '), params };
   }
 
   private resolveEffectiveLaneOrder(laneOrder?: RetrievalLane[]): RetrievalLane[] {

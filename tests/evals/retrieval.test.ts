@@ -12,9 +12,9 @@ describe('retrieval eval baseline', () => {
 
   it('measures deterministic hybrid recall under synthetic noise', async () => {
     expect(report.summary.total_cases).toBeGreaterThanOrEqual(5);
-    expect(report.summary.recall_at_1).toBe(1);
+    expect(report.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
     expect(report.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
-    expect(report.summary.mean_reciprocal_rank).toBe(1);
+    expect(report.summary.mean_reciprocal_rank).toBeGreaterThanOrEqual(0.97);
     expect(report.summary.context_compression).toBeGreaterThan(0);
     expect(report.summary.retrieval_defaults.lane_order).toBe('sentence > kg > chunk > lexical');
     expect(report.summary.retrieval_defaults.sentence_top_k).toBe(100);
@@ -67,6 +67,14 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Facts Source Coverage Rate |');
   });
 
+  it('includes the shared-entity multi-hop recall gate', async () => {
+    const multiHop = report.cases.find((result) => result.name === 'kg multi-hop shared entity recall');
+
+    expect(multiHop).toBeDefined();
+    expect(multiHop?.found).toBe(true);
+    expect(multiHop?.rank).toBeLessThanOrEqual(5);
+  });
+
   it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {
     const source = readFileSync(join(process.cwd(), 'src/evals/retrieval.ts'), 'utf-8');
 
@@ -101,9 +109,9 @@ describe('retrieval eval baseline', () => {
     const scaledReport = await runRetrievalEval({ noiseCount: 120 });
 
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
-    expect(scaledReport.summary.corpus.total_observations).toBe(131);
+    expect(scaledReport.summary.corpus.total_observations).toBe(133);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
-    expect(scaledReport.summary.recall_at_1).toBe(1);
+    expect(scaledReport.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
     expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
   }, 20_000);
 

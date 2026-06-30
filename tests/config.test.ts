@@ -2,7 +2,12 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { getConfig, resolveDataDir } from '../src/config.js';
+import {
+  DEFAULT_KG_RELATION_ALLOW_LIST,
+  DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+  getConfig,
+  resolveDataDir,
+} from '../src/config.js';
 import { getVersion } from '../src/version.js';
 
 describe('getConfig', () => {
@@ -34,6 +39,7 @@ describe('getConfig', () => {
     expect(config.httpPort).toBe(7438);
     expect(config.httpDisabled).toBe(false);
     expect(config.graphFactsSource).toBe('kg');
+    expect(config.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
     expect(config.dataDir).toBe(tmpDataDir);
     expect(config.dbPath).toBe(join(tmpDataDir!, 'thoth.db'));
   });
@@ -104,6 +110,75 @@ describe('getConfig', () => {
     const config = getConfig();
 
     expect(config.graphFactsSource).toBe('legacy');
+  });
+
+  it('resolves knowledgeGraph from persisted config when env is unset', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      knowledgeGraph: {
+        kgMultiHopEnabled: false,
+        kgMaxDepth: 3,
+        kgNeighborhoodLimit: 12,
+        kgMultiHopWeight: 0.6,
+        kgDepthDecay: 0.4,
+        kgTraversalTimeoutMs: 25,
+        kgRelationAllowList: ['USES', 'MENTIONS', 'NOT_A_RELATION'],
+      },
+    }, null, 2));
+
+    const config = getConfig();
+
+    expect(config.knowledgeGraph).toEqual({
+      kgMultiHopEnabled: false,
+      kgMaxDepth: 3,
+      kgNeighborhoodLimit: 12,
+      kgMultiHopWeight: 0.6,
+      kgDepthDecay: 0.4,
+      kgTraversalTimeoutMs: 25,
+      kgRelationAllowList: ['USES', 'MENTIONS'],
+    });
+  });
+
+  it('resolves THOTH_KG env vars before persisted knowledgeGraph config', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      knowledgeGraph: {
+        kgMultiHopEnabled: false,
+        kgMaxDepth: 3,
+        kgNeighborhoodLimit: 12,
+        kgMultiHopWeight: 0.6,
+        kgDepthDecay: 0.4,
+        kgTraversalTimeoutMs: 25,
+        kgRelationAllowList: ['USES'],
+      },
+    }, null, 2));
+    process.env.THOTH_KG_MULTI_HOP_ENABLED = 'true';
+    process.env.THOTH_KG_MAX_DEPTH = '4';
+    process.env.THOTH_KG_NEIGHBORHOOD_LIMIT = '7';
+    process.env.THOTH_KG_MULTI_HOP_WEIGHT = '0.55';
+    process.env.THOTH_KG_DEPTH_DECAY = '0.25';
+    process.env.THOTH_KG_TRAVERSAL_TIMEOUT_MS = '0';
+    process.env.THOTH_KG_RELATION_ALLOW_LIST = 'depends_on, affects NOT_A_RELATION';
+
+    const config = getConfig();
+
+    expect(config.knowledgeGraph).toEqual({
+      kgMultiHopEnabled: true,
+      kgMaxDepth: 4,
+      kgNeighborhoodLimit: 7,
+      kgMultiHopWeight: 0.55,
+      kgDepthDecay: 0.25,
+      kgTraversalTimeoutMs: 0,
+      kgRelationAllowList: ['DEPENDS_ON', 'AFFECTS'],
+    });
+  });
+
+  it('fails safe to the structural KG relation allow-list for empty or invalid overrides', () => {
+    process.env.THOTH_KG_RELATION_ALLOW_LIST = 'UNKNOWN, ALSO_UNKNOWN';
+    const invalid = getConfig();
+    expect(invalid.knowledgeGraph?.kgRelationAllowList).toEqual(DEFAULT_KG_RELATION_ALLOW_LIST);
+
+    process.env.THOTH_KG_RELATION_ALLOW_LIST = '   ';
+    const empty = getConfig();
+    expect(empty.knowledgeGraph?.kgRelationAllowList).toEqual(DEFAULT_KG_RELATION_ALLOW_LIST);
   });
 });
 
@@ -265,6 +340,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.hyde).toEqual(config.hyde);
     expect(saved.kgLlm).toEqual(config.kgLlm);
     expect(saved.graphFactsSource).toBe('kg');
+    expect(saved.knowledgeGraph).toEqual(config.knowledgeGraph);
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
     expect(schema).toMatchObject({
@@ -284,6 +360,15 @@ describe('embedding config (hybrid retrieval baseline)', () => {
         },
         graphFactsSource: {
           enum: ['legacy', 'kg'],
+        },
+        knowledgeGraph: {
+          properties: {
+            kgRelationAllowList: {
+              items: {
+                enum: expect.arrayContaining(['USES', 'DEPENDS_ON', 'HAS_TOPIC', 'MENTIONS']),
+              },
+            },
+          },
         },
       },
     });
@@ -321,6 +406,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     });
     expect(saved.maxContentLength).toBe(100_000);
     expect(saved.maxContextChars).toBe(8000);
+    expect(saved.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
   });
 
   it('config file: environment overrides do not rewrite the editable config file', () => {

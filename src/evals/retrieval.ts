@@ -233,6 +233,26 @@ const FIXTURES: EvalFixture[] = [
       content: 'Archived operational note. Supporting context is intentionally sparse.',
     },
   },
+  {
+    key: 'kg-multi-hop',
+    observation: {
+      title: 'Shared entity downstream finding',
+      type: 'discovery',
+      project: 'graph-project',
+      topic_key: 'retrieval/kg-multi-hop',
+      content: 'Downstream finding deliberately avoids the direct graph query terms and is reachable only through a structural entity bridge.',
+    },
+  },
+  {
+    key: 'kg-multi-hop-distractor',
+    observation: {
+      title: 'Metadata-only graph distractor',
+      type: 'manual',
+      project: 'graph-project',
+      topic_key: 'retrieval/kg-multi-hop-distractor',
+      content: 'Metadata-only distractor should not be reached by structural traversal.',
+    },
+  },
 ];
 
 const NON_SYNTHETIC_FIXTURES: EvalFixture[] = [
@@ -503,6 +523,12 @@ const CASES: EvalCase[] = [
     expectedKey: 'graph-rank',
   },
   {
+    name: 'kg multi-hop shared entity recall',
+    query: 'xylophonic',
+    project: 'graph-project',
+    expectedKey: 'kg-multi-hop',
+  },
+  {
     name: 'non-synthetic README filter recall',
     query: 'precision filters session scope topic key time range',
     kind: 'non-synthetic',
@@ -759,6 +785,34 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         tripleHash: `graph-rank:${graphRankId}:DEPENDS_ON:1`,
       });
     }
+    const multiHopId = idsByKey.get('kg-multi-hop');
+    if (multiHopId) {
+      seedGraphFactTriple({
+        store,
+        observationId: multiHopId,
+        subject: 'zephyrcache',
+        relation: 'DEPENDS_ON',
+        object: 'quiet-bridge-store',
+        project: 'graph-project',
+        topicKey: 'retrieval/kg-multi-hop',
+        provenance: 'eval-fixture:kg-multi-hop',
+        tripleHash: `kg-multi-hop:${multiHopId}:DEPENDS_ON:1`,
+      });
+    }
+    const multiHopDistractorId = idsByKey.get('kg-multi-hop-distractor');
+    if (multiHopDistractorId) {
+      seedGraphFactTriple({
+        store,
+        observationId: multiHopDistractorId,
+        subject: 'zephyrcache',
+        relation: 'MENTIONS',
+        object: 'metadata-only-distractor',
+        project: 'graph-project',
+        topicKey: 'retrieval/kg-multi-hop-distractor',
+        provenance: 'eval-fixture:kg-multi-hop-distractor',
+        tripleHash: `kg-multi-hop-distractor:${multiHopDistractorId}:MENTIONS:1`,
+      });
+    }
 
     const pendingCases: boolean[] = [];
     const degradedCases: boolean[] = [];
@@ -778,9 +832,29 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
+    const setKgMultiHopEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgMultiHopEnabled = enabled;
+      }
+    };
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
       const expected = [...FIXTURES, ...NON_SYNTHETIC_FIXTURES].find((fixture) => fixture.key === evalCase.expectedKey);
+      setKgMultiHopEnabled(false);
+      const rawBaseline = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+      });
+      const hydeBaseline = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setKgMultiHopEnabled(true);
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -796,6 +870,22 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       });
       const rawRankIndex = raw.results.findIndex((hit) => hit.observation.id === expectedId);
       const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      const baselineHydeRankIndex = hydeBaseline.results.findIndex((hit) => hit.observation.id === expectedId);
+      if (evalCase.expectedKey !== 'kg-multi-hop' && baselineHydeRankIndex >= 0) {
+        if (hydeRankIndex === -1 || hydeRankIndex > baselineHydeRankIndex) {
+          throw new Error(`kg multi-hop regression in eval case "${evalCase.name}"`);
+        }
+      }
+      if (evalCase.expectedKey === 'kg-multi-hop') {
+        const baselineMultiHop = hydeBaseline.results.some((hit) =>
+          hit.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop')
+        );
+        const onHit = hydeRankIndex >= 0 ? hyde.results[hydeRankIndex] : undefined;
+        const hasMultiHopEvidence = onHit?.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop') ?? false;
+        if (baselineMultiHop || !hasMultiHopEvidence) {
+          throw new Error('kg multi-hop eval did not isolate ON-only multi-hop evidence');
+        }
+      }
       const rankIndex = hydeRankIndex;
       const expectedHit = rankIndex >= 0 ? hyde.results[rankIndex] : undefined;
       const primaryEvidenceChars = expectedHit?.evidence.primary.text.length ?? 0;
