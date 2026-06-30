@@ -44,7 +44,7 @@
 
 ### 1.1 Add `graphFactsSource` config field and JSON schema — `src/config.ts`, `config.schema.json`
 
-- [ ] 1.1 Add `graphFactsSource?: 'legacy' | 'kg'` to the config type
+- [x] 1.1 Add `graphFactsSource?: 'legacy' | 'kg'` to the config type
   (`src/config.ts` around `:50-62`) and resolver (default `'kg'`), mirroring
   the `httpDisabled`/`kgLlm` env-override pattern (~`:420-432`). Update
   `config.schema.json` with the matching enum property.
@@ -60,7 +60,7 @@
 
 ### 1.2 Extract `writeDeterministicKgFacts` helper from `processKgJob` — `src/indexing/jobs.ts`
 
-- [ ] 1.2 Factor the deterministic block currently inline in `processKgJob`
+- [x] 1.2 Factor the deterministic block currently inline in `processKgJob`
   (`src/indexing/jobs.ts:462-513`: taxonomy upsert, `DELETE kg_triples WHERE
   source_id=obsId`, entity upsert, triple `ON CONFLICT(triple_hash) DO UPDATE`)
   into an exported no-LLM helper `writeDeterministicKgFacts(store,
@@ -81,7 +81,7 @@
 
 ### 1.3 Remove 500-char section cap in `extractStructuredSections` (OQ-1) — `src/indexing/kg-extractor.ts`
 
-- [ ] 1.3 In `extractStructuredSections` (`src/indexing/kg-extractor.ts:185-214`),
+- [x] 1.3 In `extractStructuredSections` (`src/indexing/kg-extractor.ts:185-214`),
   remove or relax the `object.slice(0, 500)` cap at `:194` so section-content
   objects are stored uncapped, matching the legacy `extractStructuredFacts`
   semantics (`src/store/index.ts:1032-1036`). This applies to BOTH the
@@ -105,7 +105,7 @@
 
 ### 2.1 Implement `getObservationFactsFromKg` adapter — `src/store/index.ts`
 
-- [ ] 2.1 Add `getObservationFactsFromKg(input: ObservationFactsInput):
+- [x] 2.1 Add `getObservationFactsFromKg(input: ObservationFactsInput):
   ObservationFact[]` to `src/store/index.ts`. The method emits two unioned row
   groups per in-scope observation (not soft-deleted):
   - **Content rows**: `kg_triples ⋈ kg_entities ⋈ observations` filtered to
@@ -139,7 +139,7 @@
 
 ### 2.2 Redirect `getObservationFacts` to the adapter — `src/store/index.ts`
 
-- [ ] 2.2 In `getObservationFacts` (`src/store/index.ts:2969-2996`), add a branch
+- [x] 2.2 In `getObservationFacts` (`src/store/index.ts:2969-2996`), add a branch
   gated on `config.graphFactsSource`:
   - `'kg'` (default) → return `this.getObservationFactsFromKg(input)`
   - `'legacy'` → retain the existing `observation_facts` SQL query
@@ -159,7 +159,7 @@
 
 ### 2.3 Migrate `queryKnowledgeLane` — remove `factCandidates` branch — `src/store/index.ts`
 
-- [ ] 2.3 In `queryKnowledgeLane` (`src/store/index.ts:2002-2088`): under
+- [x] 2.3 In `queryKnowledgeLane` (`src/store/index.ts:2002-2088`): under
   `graphFactsSource='kg'`, remove the `factCandidates` `observation_facts`
   branch (`:2060-2087`); the `tripleCandidates` branch (`:2040-2058`,
   `source:'kg_triples'`) becomes the sole KG-lane source. Under
@@ -176,7 +176,7 @@
 
 ### 2.4 Remove ranking tiebreaker `observation_facts` special-case — `src/retrieval/ranking.ts`, `src/store/index.ts`
 
-- [ ] 2.4 Drop the `a.source === 'observation_facts' ? -1 : 1` tiebreaker
+- [x] 2.4 Drop the `a.source === 'observation_facts' ? -1 : 1` tiebreaker
   (`src/store/index.ts:1785-1789`) under `graphFactsSource='kg'`; reduce to
   score-then-`observationId`. Annotate `LaneCandidate.source`
   (`src/retrieval/ranking.ts:21`) `'observation_facts'` member as legacy-only
@@ -193,7 +193,7 @@
 
 ### 2.5 Migrate relation-distinct listing and `getVisualizationRows` — `src/store/index.ts`
 
-- [ ] 2.5 Under `graphFactsSource='kg'`:
+- [x] 2.5 Under `graphFactsSource='kg'`:
   - **Relation-distinct listing** (`:2666-2673`, visualization-filters options
     provider): source DISTINCT relations from the adapter's projection (call
     `getObservationFactsFromKg` or an equivalent SQL view over it) so it still
@@ -217,7 +217,7 @@
 
 ### 2.6 Remove schema DDL for `observation_facts` table and indexes — `src/store/schema.ts`
 
-- [ ] 2.6 Remove the `observation_facts` table DDL (`:280-292`) and its 3 indexes
+- [x] 2.6 Remove the `observation_facts` table DDL (`:280-292`) and its 3 indexes
   (`idx_observation_facts_observation`/`_project`/`_topic`, `:350-352`) from
   `SCHEMA_SQL` in `src/store/schema.ts` so fresh databases never create the
   table.
@@ -233,7 +233,7 @@
 
 ### 2.7 Replace synchronous `refreshObservationFacts` calls with `writeDeterministicKgFacts` — `src/store/index.ts`
 
-- [ ] 2.7 In `saveObservation` (`:1483` upsert path and `:1513` create path) and
+- [x] 2.7 In `saveObservation` (`:1483` upsert path and `:1513` create path) and
   `updateObservation` (`:1632`): under `graphFactsSource='kg'`, replace each
   `refreshObservationFacts(...)` call with `writeDeterministicKgFacts(this,
   observationId)` (imported from `src/indexing/jobs.ts`). Under
@@ -253,7 +253,7 @@
 
 ### 2.8 Guard delete-path to stop referencing `observation_facts` — `src/store/index.ts`
 
-- [ ] 2.8 In `deleteKnowledgeArtifactsForObservation` (`:1118-1121`): keep the
+- [x] 2.8 In `deleteKnowledgeArtifactsForObservation` (`:1118-1121`): keep the
   `kg_triples` delete by `source_id`. Under `graphFactsSource='kg'` (or when
   the table is confirmed absent), remove / guard the `observation_facts` delete.
   Pre-drop / `'legacy'` path still cleans `observation_facts`.
@@ -269,7 +269,7 @@
 
 ### 2.9 Repoint `rebuildObservationFacts` to rebuild the KG — `src/store/index.ts`, `src/cli.ts`
 
-- [ ] 2.9 In `rebuildObservationFacts` (`src/store/index.ts:2998-3029`): under
+- [x] 2.9 In `rebuildObservationFacts` (`src/store/index.ts:2998-3029`): under
   `graphFactsSource='kg'`, iterate in-scope observations and call
   `writeDeterministicKgFacts(this, obs.id)` per observation instead of
   `replaceObservationFacts`. Keep the `{project?}` filter; return
@@ -291,7 +291,7 @@
 
 ### 2.10 Add idempotent DROP to `runMigrationsWithSemantic` (OQ-3) — `src/store/migrations.ts`
 
-- [ ] 2.10 In `runMigrationsWithSemantic` (`src/store/migrations.ts:213`), inside
+- [x] 2.10 In `runMigrationsWithSemantic` (`src/store/migrations.ts:213`), inside
   the transaction, ordered LAST, add idempotent drops:
   ```sql
   DROP INDEX IF EXISTS idx_observation_facts_observation;
@@ -314,7 +314,7 @@
 
 ### 2.11 Migrate eval fixtures and `factsSourceChecks` — `src/evals/retrieval.ts`
 
-- [ ] 2.11 In `src/evals/retrieval.ts`:
+- [x] 2.11 In `src/evals/retrieval.ts`:
   - **Fixtures** (`graph-lite`/`graph-rank`, `:674-685`): replace the two
     `INSERT INTO observation_facts` statements with KG seeding (`INSERT INTO
     kg_entities` + `INSERT INTO kg_triples`, `source_type='observation'`),
@@ -341,7 +341,7 @@
 
 ### 3.1 Adapter byte-for-byte parity tests — `tests/store/context.test.ts` or new `tests/store/kg-adapter.test.ts`
 
-- [ ] 3.1 Write unit tests for `getObservationFactsFromKg`:
+- [x] 3.1 Write unit tests for `getObservationFactsFromKg`:
   - Seed observations covering all 4 content sections + `type`/`project`/
     `topic_key`; run both the legacy `replaceObservationFacts` path AND the
     adapter; assert `getObservationFactsFromKg` output equals the legacy
@@ -363,7 +363,7 @@
 
 ### 3.2 Adapter filter and exclusion tests — same file as 3.1
 
-- [ ] 3.2 Write tests for:
+- [x] 3.2 Write tests for:
   - `observation_id`/`project`/`topic_key` filters return only matching rows
     with legacy filter semantics.
   - Soft-deleted observation (`deleted_at` set) is excluded.
@@ -381,7 +381,7 @@
 
 ### 3.3 Migrated reader tests — `tests/store/context.test.ts`, `tests/tools/mem-project.test.ts`, existing reader tests
 
-- [ ] 3.3 Extend or add tests for each migrated reader under
+- [x] 3.3 Extend or add tests for each migrated reader under
   `graphFactsSource='kg'`:
   - `queryKnowledgeLane`: emits only `kg_triples` candidates; no candidate
     carries `source='observation_facts'`.
@@ -407,7 +407,7 @@
 
 ### 3.4 Synchronous availability test — `tests/store/context.test.ts` or new file
 
-- [ ] 3.4 Test: after `saveObservation` returns (with NO job runner invoked),
+- [x] 3.4 Test: after `saveObservation` returns (with NO job runner invoked),
   `getObservationFacts({observation_id})` returns the expected deterministic
   facts immediately. Assert:
   - At least one `HAS_WHAT`/`HAS_WHY`/`HAS_WHERE`/`HAS_LEARNED` row is present
@@ -427,7 +427,7 @@
 
 ### 3.5 Idempotency and update-safety tests — same suite
 
-- [ ] 3.5 Test:
+- [x] 3.5 Test:
   - Re-save the same observation: `kg_triples` count for that `source_id` MUST
     NOT grow on second save (converges to same triple count).
   - Run `writeDeterministicKgFacts` then `processKgJob` for the same
@@ -446,11 +446,15 @@
 
 ### 3.6 Graceful degrade pre-backfill test — same suite
 
-- [ ] 3.6 Test: insert an observation row directly (bypassing `saveObservation`,
-  so no KG facts exist). Assert:
-  - `getObservationFactsFromKg` returns an empty array (not an error).
-  - `mem_project action=graph` renders an empty-but-valid ledger (no crash).
-  - `queryKnowledgeLane` succeeds and returns zero graph candidates (no error).
+- [x] 3.6 Test: insert an observation row directly (bypassing `saveObservation`,
+  so no KG content triples exist). Assert:
+  - `getObservationFactsFromKg` returns only synthesized metadata rows for the
+    observation (for example `HAS_TYPE`, plus `IN_PROJECT`/`HAS_TOPIC_KEY` when
+    present), and no content-section rows.
+  - `mem_project action=graph` renders an empty-or-metadata-only valid ledger
+    (no crash).
+  - `queryKnowledgeLane` succeeds and returns zero graph candidates for content
+    terms that are absent from KG triples (no error).
 
   **[USN-3]** | Priority: P1
   **Spec:** `knowledge-graph/Reader returns empty-but-valid output pre-backfill`; `tools/Project graph degrades gracefully before backfill`
@@ -462,7 +466,7 @@
 
 ### 3.7 Rebuild repoint tests — `tests/store/context.test.ts` or CLI test
 
-- [ ] 3.7 Test `rebuildObservationFacts` and the CLI `rebuild-graph` path:
+- [x] 3.7 Test `rebuildObservationFacts` and the CLI `rebuild-graph` path:
   - After rebuild, `kg_triples`/`kg_entities` populated for each in-scope
     observation; `observation_facts` table NOT written.
   - Repeated rebuild converges: no duplicate triples (`triple_hash` dedup).
@@ -480,7 +484,7 @@
 
 ### 3.8 Migration idempotency and flag-rollback tests — `tests/store/context.test.ts` (migration section)
 
-- [ ] 3.8 Extend `tests/store/context.test.ts` (or migration-specific test file) to
+- [x] 3.8 Extend `tests/store/context.test.ts` (or migration-specific test file) to
   cover:
   - `runMigrationsWithSemantic` on a DB that had `observation_facts`: table and
     indexes are absent after migration.
@@ -502,7 +506,7 @@
 
 ### 3.9 Evals `kg_triples` and fixture tests — `tests/` eval harness
 
-- [ ] 3.9 Test that:
+- [x] 3.9 Test that:
   - `factsSourceChecks` passes on `kg_triples` evidence alone (no
     `observation_facts` source required).
   - No eval path inserts into `observation_facts` or filters `source ===
@@ -520,7 +524,7 @@
 
 ### 3.10 Export/import unchanged test — `tests/store/context.test.ts`
 
-- [ ] 3.10 Assert:
+- [x] 3.10 Assert:
   - `exportData` output contains only `sessions`/`observations`/`prompts`;
     `version` unchanged.
   - `importData` round-trip succeeds and produces no reference to
@@ -537,7 +541,7 @@
 
 ### 3.11 Migrate and retire legacy test suite references to `observation_facts` — multiple test files
 
-- [ ] 3.11 Update every pre-existing test file that references `observation_facts`
+- [x] 3.11 Update every pre-existing test file that references `observation_facts`
   so none operates on the dropped table under the default `graphFactsSource='kg'`
   path. Per-file actions:
 
@@ -579,8 +583,9 @@
     grep -r "observation_facts" tests/
     ```
     and confirm ZERO remaining matches except for intentional-absence assertions in
-    `tests/store/schema.test.ts`. Any other hit is a missed migration and MUST be
-    resolved before Phase 4.
+    `tests/store/schema.test.ts` and explicit legacy/rollback fixtures that create
+    the table under `graphFactsSource='legacy'`. Any default-path hit is a missed
+    migration and MUST be resolved before Phase 4.
 
   **[USN-3]** | Priority: P1
   **Spec:** store delta — table removal / adapter parity (task 2.6 removes DDL,
@@ -591,9 +596,10 @@
   `observation_facts` table present.
   **Verification**:
   - Run: `pnpm test`
-  - Expected: The named suites pass with no live `observation_facts` references;
-    `grep -r "observation_facts" tests/` returns only intentional-absence
-    assertions in `tests/store/schema.test.ts`
+  - Expected: The named suites pass with no default-path `observation_facts`
+    references; `grep -r "observation_facts" tests/` returns only
+    intentional-absence assertions in `tests/store/schema.test.ts` and explicit
+    legacy/rollback fixtures.
 
 ---
 
@@ -601,7 +607,7 @@
 
 ### 4.1 Full test suite and build pass
 
-- [ ] 4.1 Run the full test suite and build to confirm all phases are integrated
+- [x] 4.1 Run the full test suite and build to confirm all phases are integrated
   and passing. Update the phase 1-3 task checkboxes to `[x]` as each is
   verified. No regressions in any pre-existing test.
 
