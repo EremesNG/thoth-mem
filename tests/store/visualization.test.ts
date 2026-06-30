@@ -1,5 +1,42 @@
 import { describe, expect, it } from 'vitest';
+import { writeDeterministicKgFacts } from '../../src/indexing/jobs.js';
 import { Store } from '../../src/store/index.js';
+import { formatProjectGraph } from '../../src/tools/project-views.js';
+
+function insertKgTriple(store: Store, input: {
+  observationId: number;
+  subject: string;
+  relation: string;
+  object: string;
+  project: string | null;
+  topicKey?: string | null;
+}) {
+  const db = store.getDb();
+  const upsertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'concept', ?, '[]', '{}', datetime('now'))
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  );
+  const subject = upsertEntity.get(`test:${input.subject.toLowerCase()}`, input.subject) as { id: number };
+  const object = upsertEntity.get(`test:${input.object.toLowerCase()}`, input.object) as { id: number };
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, topic_key, provenance, confidence, triple_hash, extractor_version
+    ) VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, 0.9, ?, 'test')`
+  ).run(
+    subject.id,
+    input.relation,
+    object.id,
+    input.observationId,
+    input.project,
+    input.topicKey ?? null,
+    `observation:${input.observationId}`,
+    `test:${input.observationId}:${input.relation}:${input.subject}:${input.object}`
+  );
+}
 
 describe('Store visualization', () => {
   it('returns deterministic projection coordinates for unchanged slice scope', () => {
@@ -72,7 +109,7 @@ describe('Store visualization', () => {
     try {
       const first = store.saveObservation({
         title: 'Auth decision',
-        content: 'Use token cache for API auth',
+        content: '**What**: Token cache',
         project: 'viz-rich',
         session_id: 'session-a',
         topic_key: 'architecture/auth',
@@ -80,19 +117,14 @@ describe('Store visualization', () => {
       });
       const second = store.saveObservation({
         title: 'Billing discovery',
-        content: 'Billing retries are exponential',
+        content: '**Why**: Retry strategy',
         project: 'viz-rich',
         session_id: 'session-b',
         topic_key: 'product/billing',
         type: 'discovery',
       });
-
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(first.observation.id, 'Auth', 'HAS_WHAT', 'Token cache', 'viz-rich', 'architecture/auth', 'decision');
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(second.observation.id, 'Billing', 'HAS_WHY', 'Retry strategy', 'viz-rich', 'product/billing', 'discovery');
+      writeDeterministicKgFacts(store, first.observation.id);
+      writeDeterministicKgFacts(store, second.observation.id);
 
       const slice = store.getVisualizationSlice({
         project: 'viz-rich',
@@ -120,12 +152,74 @@ describe('Store visualization', () => {
     }
   });
 
+  it('lists the full graph-lite relation vocabulary and exposes public graph row shapes', () => {
+    const store = new Store(':memory:');
+    try {
+      const saved = store.saveObservation({
+        title: 'Vocabulary graph memory',
+        content: [
+          '**What**: Vocabulary content',
+          '**Why**: Relation filters should be complete',
+          '**Where**: tests/store/visualization.test.ts',
+          '**Learned**: Public graph rows stay KG-backed',
+        ].join('\n'),
+        project: 'viz-vocabulary',
+        session_id: 'viz-vocabulary-session',
+        topic_key: 'kg/vocabulary',
+        type: 'decision',
+      });
+
+      const filters = store.getVisualizationFilters({ project: 'viz-vocabulary' });
+      const slice = store.getVisualizationSlice({
+        project: 'viz-vocabulary',
+        relation: 'HAS_LEARNED',
+        query: 'public graph',
+        max_nodes: 50,
+        max_edges: 50,
+      });
+      const ledger = store.getObservatoryLedgerDetail({ observation_id: saved.observation.id });
+      const projectGraph = formatProjectGraph(store, 'viz-vocabulary', { relation: 'HAS_LEARNED', maxChars: 1000 });
+
+      expect(filters.relations).toEqual([
+        'HAS_LEARNED',
+        'HAS_TOPIC_KEY',
+        'HAS_TYPE',
+        'HAS_WHAT',
+        'HAS_WHERE',
+        'HAS_WHY',
+        'IN_PROJECT',
+      ]);
+      expect(slice.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          source_id: `obs:${saved.observation.id}`,
+          target_id: expect.any(String),
+          relation: 'HAS_LEARNED',
+          kind: 'fact',
+        }),
+      ]));
+      expect(slice.nodes.some((node) => node.id === `obs:${saved.observation.id}` && node.kind === 'observation')).toBe(true);
+      expect(ledger?.facts.map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+        'HAS_WHAT',
+        'HAS_WHY',
+        'HAS_WHERE',
+        'HAS_LEARNED',
+      ]);
+      expect(projectGraph).toContain('Vocabulary graph memory -- HAS_LEARNED --> Public graph rows stay KG-backed');
+    } finally {
+      store.close();
+    }
+  });
+
   it('supports observatory context/recall/frontier/ledger/timeline with deterministic frontier semantics', async () => {
     const store = new Store(':memory:');
     try {
       const first = store.saveObservation({
         title: 'Auth decision',
-        content: '<private>secret</private> use JWT rotation',
+        content: '<private>secret</private>\n**What**: JWT rotation',
         project: 'obs-project',
         session_id: 'obs-session',
         topic_key: 'auth/jwt',
@@ -136,12 +230,10 @@ describe('Store visualization', () => {
         content: 'token rotation interval is 5m',
         project: 'obs-project',
         session_id: 'obs-session',
-        topic_key: 'auth/jwt',
+        topic_key: 'auth/jwt-learning',
         type: 'learning',
       });
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(first.observation.id, 'Auth', 'HAS_WHAT', '<private>raw</private> JWT rotation', 'obs-project', 'auth/jwt', 'decision');
+      writeDeterministicKgFacts(store, first.observation.id);
 
       const context = store.getObservatoryContext({ project: 'obs-project', session_id: 'obs-session', query: 'jwt' });
       const recall = await store.getObservatoryRecall({ context_token: context.context_token, lanes: ['lexical'], limit: 10 });
@@ -177,7 +269,7 @@ describe('Store visualization', () => {
     }
   });
 
-  it('observatory lane truth: reports semantic/kg lanes as unavailable when no lane-specific evidence exists', async () => {
+  it('observatory lane truth: reports semantic lanes as unavailable while synchronous KG evidence is ready', async () => {
     const store = new Store(':memory:');
     try {
       store.saveObservation({
@@ -197,14 +289,14 @@ describe('Store visualization', () => {
       expect(recall.lanes.lexical.length).toBeGreaterThan(0);
       expect(recall.lanes['sentence-vector'].length).toBe(0);
       expect(recall.lanes['chunk-vector'].length).toBe(0);
-      expect(recall.lanes['fact-kg'].length).toBe(0);
+      expect(recall.lanes['fact-kg'].length).toBeGreaterThan(0);
       expect(recall.lane_states?.lexical?.status).toBe('ready');
       expect(recall.lane_states?.['sentence-vector']?.status).toBe('pending');
       expect(recall.lane_states?.['chunk-vector']?.status).toBe('pending');
-      expect(recall.lane_states?.['fact-kg']?.status).toBe('unavailable');
+      expect(recall.lane_states?.['fact-kg']?.status).toBe('ready');
       expect(recall.lane_states?.['sentence-vector']?.reason).toMatch(/^semantic-/);
       expect(recall.lane_states?.['chunk-vector']?.reason).toMatch(/^semantic-/);
-      expect(recall.lane_states?.['fact-kg']?.reason).toBe('kg-no-match');
+      expect(recall.lane_states?.['fact-kg']?.reason).toBe('ok');
     } finally {
       store.close();
     }
@@ -219,9 +311,13 @@ describe('Store visualization', () => {
         project: 'obs-kg-only',
         session_id: 'obs-kg-session',
       });
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(saved.observation.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'obs-kg-only', null, 'decision');
+      insertKgTriple(store, {
+        observationId: saved.observation.id,
+        subject: 'Helios',
+        relation: 'HAS_WHAT',
+        object: 'Redis cache decision',
+        project: 'obs-kg-only',
+      });
 
       const context = store.getObservatoryContext({ project: 'obs-kg-only', session_id: 'obs-kg-session', query: 'helios' });
       const recall = await store.getObservatoryRecall({
@@ -247,9 +343,13 @@ describe('Store visualization', () => {
         project: 'obs-kg-core',
         session_id: 'obs-kg-core-session',
       });
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(saved.observation.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'obs-kg-core', null, 'decision');
+      insertKgTriple(store, {
+        observationId: saved.observation.id,
+        subject: 'Helios',
+        relation: 'HAS_WHAT',
+        object: 'Redis cache decision',
+        project: 'obs-kg-core',
+      });
 
       const context = store.getObservatoryContext({ project: 'obs-kg-core', session_id: 'obs-kg-core-session', query: 'helios' });
       const recall = await store.getObservatoryRecall({

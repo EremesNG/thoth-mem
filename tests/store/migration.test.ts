@@ -110,6 +110,110 @@ describe('Store — Migration behaviors', () => {
     }).not.toThrow();
   });
 
+  it('drops legacy observation_facts table and indexes idempotently in semantic migrations', () => {
+    const db = store.getDb();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_facts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        subject        TEXT NOT NULL,
+        relation       TEXT NOT NULL,
+        object         TEXT NOT NULL,
+        project        TEXT,
+        topic_key      TEXT,
+        type           TEXT NOT NULL,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+    `);
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+    }).not.toThrow();
+
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+    ).get() as { name: string } | undefined;
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_observation_facts_%'"
+    ).all() as Array<{ name: string }>;
+
+    expect(table).toBeUndefined();
+    expect(indexes).toEqual([]);
+  });
+
+  it('runMigrationsWithSemantic remains idempotent after the legacy graph table has already been dropped', () => {
+    const db = store.getDb();
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {
+        sqliteVecReady: true,
+        embeddingDimensions: 384,
+        embeddingConfigHash: 'post-drop-idempotent',
+      });
+    }).not.toThrow();
+
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+    ).get() as { name: string } | undefined;
+    expect(table).toBeUndefined();
+  });
+
+  it('legacy graphFactsSource can rebuild a recreated legacy table for rollback fixtures', () => {
+    const legacyStore = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      const db = legacyStore.getDb();
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS observation_facts (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id INTEGER NOT NULL,
+          subject        TEXT NOT NULL,
+          relation       TEXT NOT NULL,
+          object         TEXT NOT NULL,
+          project        TEXT,
+          topic_key      TEXT,
+          type           TEXT NOT NULL,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+      `);
+      const saved = legacyStore.saveObservation({
+        title: 'Rollback graph fixture',
+        type: 'decision',
+        project: 'rollback-project',
+        topic_key: 'rollback/graph',
+        content: '**What**: Recreated legacy table remains readable',
+      }).observation;
+      db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(saved.id);
+
+      const result = legacyStore.rebuildObservationFacts({ project: 'rollback-project' });
+
+      expect(result).toMatchObject({
+        project: 'rollback-project',
+        observations_scanned: 1,
+        facts_deleted: 0,
+        facts_created: 4,
+      });
+      expect(legacyStore.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+        'HAS_WHAT',
+      ]);
+    } finally {
+      legacyStore.close();
+    }
+  });
+
   it('rebuilds observations FTS when topic_key column is missing', () => {
     const db = store.getDb();
     const saved = store.saveObservation({

@@ -277,20 +277,6 @@ CREATE TABLE IF NOT EXISTS observation_versions (
   FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
 );
 
--- Graph-lite derived facts for structured observations and metadata
-CREATE TABLE IF NOT EXISTS observation_facts (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  observation_id INTEGER NOT NULL,
-  subject        TEXT NOT NULL,
-  relation       TEXT NOT NULL,
-  object         TEXT NOT NULL,
-  project        TEXT,
-  topic_key      TEXT,
-  type           TEXT NOT NULL,
-  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
-);
-
 -- FTS5 virtual table for full-text search on observations
 ${OBSERVATIONS_FTS_SQL}
 
@@ -347,9 +333,6 @@ CREATE INDEX IF NOT EXISTS idx_obs_topic ON observations(topic_key);
 CREATE INDEX IF NOT EXISTS idx_obs_deleted ON observations(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_obs_dedupe ON observations(normalized_hash, project, scope, type, title, created_at);
 CREATE INDEX IF NOT EXISTS idx_obs_versions_obs ON observation_versions(observation_id);
-CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
-CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
-CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
 CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id);
 CREATE INDEX IF NOT EXISTS idx_prompts_project ON user_prompts(project);
 CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);

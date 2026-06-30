@@ -191,7 +191,7 @@ function extractStructuredSections(content: string): Array<{ relation: RelationT
     if (!currentRelation) return;
     const object = currentValue.join('\n').trim();
     if (object.length > 0) {
-      sections.push({ relation: currentRelation, object: object.slice(0, 500) });
+      sections.push({ relation: currentRelation, object });
     }
   };
 

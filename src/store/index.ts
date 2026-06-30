@@ -79,6 +79,7 @@ import {
   recoverRetriableSemanticJobs,
   recoverStaleSemanticJobs,
   requeueFailedEmbeddingJobs,
+  writeDeterministicKgFacts,
 } from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
 import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
@@ -179,6 +180,7 @@ const STRUCTURED_FACT_RELATIONS = {
 } as const;
 
 type StructuredFactKey = keyof typeof STRUCTURED_FACT_RELATIONS;
+const KG_OBSERVATION_FACT_CONTENT_RELATIONS = ['HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED'] as const;
 
 const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
@@ -191,6 +193,7 @@ const DEFAULT_CONFIG: ThothConfig = {
   previewLength: 300,
   httpPort: 7438,
   httpDisabled: false,
+  graphFactsSource: 'kg',
   retrievalDefaults: DEFAULT_RETRIEVAL_DEFAULTS,
   hyde: {
     enabled: true,
@@ -1095,6 +1098,23 @@ export class Store {
     this.replaceObservationFacts(observation);
   }
 
+  private observationFactsTableExists(): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts' LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+
+    return row !== undefined;
+  }
+
+  private refreshGraphFacts(observation: Observation): void {
+    if (this.config.graphFactsSource === 'legacy') {
+      this.refreshObservationFacts(observation);
+      return;
+    }
+
+    writeDeterministicKgFacts(this, observation.id);
+  }
+
   private deleteSemanticArtifactsForObservation(observationId: number): void {
     const rows = this.db.prepare(
       "SELECT lane, vec_rowid FROM semantic_vector_rowids WHERE observation_id = ?"
@@ -1117,7 +1137,9 @@ export class Store {
 
   private deleteKnowledgeArtifactsForObservation(observationId: number): void {
     this.db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
-    this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
+    if (this.config.graphFactsSource === 'legacy' && this.observationFactsTableExists()) {
+      this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
+    }
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
@@ -1480,7 +1502,7 @@ export class Store {
         }
 
         this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-        this.refreshObservationFacts(observation);
+        this.refreshGraphFacts(observation);
         this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
         return { observation, action: 'upserted' };
@@ -1510,7 +1532,7 @@ export class Store {
     }
 
     this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
-    this.refreshObservationFacts(observation);
+    this.refreshGraphFacts(observation);
     this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
     return { observation, action: 'created' };
@@ -1629,7 +1651,7 @@ export class Store {
 
     if (updated) {
       this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
-      this.refreshObservationFacts(updated);
+      this.refreshGraphFacts(updated);
       this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
     }
 
@@ -1784,8 +1806,7 @@ export class Store {
     const graphByObservation = new Map<number, LaneCandidate[]>();
     graphEnrichmentCandidates.sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score;
-      if (a.source !== b.source) return a.source === 'observation_facts' ? -1 : 1;
-      return a.observationId - b.observationId;
+      return b.observationId - a.observationId;
     });
     for (const candidate of graphEnrichmentCandidates) {
       const list = graphByObservation.get(candidate.observationId) ?? [];
@@ -2056,6 +2077,10 @@ export class Store {
         kg: { provenance: row.provenance, confidence: row.confidence, sourceType: row.source_type },
       }];
     });
+
+    if (this.config.graphFactsSource !== 'legacy') {
+      return tripleCandidates;
+    }
 
     const fallbackParams: Array<string | number | Buffer> = [];
     const fallbackSql = [
@@ -2663,14 +2688,19 @@ export class Store {
     const sessionRows = this.db.prepare(
       `SELECT DISTINCT session_id FROM observations WHERE deleted_at IS NULL ${input.project ? 'AND project = ?' : ''} ORDER BY session_id ASC LIMIT 500`
     ).all(...(input.project ? [input.project] : [])) as Array<{ session_id: string }>;
-    const relationRows = this.db.prepare(
-      `SELECT DISTINCT f.relation
-       FROM observation_facts f
-       JOIN observations o ON o.id = f.observation_id
-       WHERE o.deleted_at IS NULL
-       ${input.project ? 'AND o.project = ?' : ''}
-       ORDER BY f.relation ASC LIMIT 500`
-    ).all(...(input.project ? [input.project] : [])) as Array<{ relation: string }>;
+    const relationRows = this.config.graphFactsSource === 'legacy'
+      ? this.db.prepare(
+          `SELECT DISTINCT f.relation
+           FROM observation_facts f
+           JOIN observations o ON o.id = f.observation_id
+           WHERE o.deleted_at IS NULL
+           ${input.project ? 'AND o.project = ?' : ''}
+           ORDER BY f.relation ASC LIMIT 500`
+        ).all(...(input.project ? [input.project] : [])) as Array<{ relation: string }>
+      : Array.from(new Set(this.getObservationFactsFromKg({ project: input.project }).map((fact) => fact.relation)))
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 500)
+        .map((relation) => ({ relation }));
     return {
       projects: projectRows.map((row) => row.project).filter((value): value is string => Boolean(value)),
       sessions: sessionRows.map((row) => row.session_id).filter((value): value is string => Boolean(value)),
@@ -2681,6 +2711,47 @@ export class Store {
   }
 
   private getVisualizationRows(input: VizSliceRequest, limit: number): VizEdgeRow[] {
+    if (this.config.graphFactsSource !== 'legacy') {
+      const facts = this.getObservationFactsFromKg({
+        project: input.project,
+        topic_key: input.topic_key,
+      });
+      const observationIds = Array.from(new Set(facts.map((fact) => fact.observation_id)));
+      if (observationIds.length === 0) return [];
+      const observations = this.db.prepare(
+        `SELECT id, session_id, title, type, project, topic_key, content
+         FROM observations
+         WHERE deleted_at IS NULL
+         AND id IN (${observationIds.map(() => '?').join(',')})`
+      ).all(...observationIds) as Array<Omit<VizEdgeRow, 'observation_id' | 'relation' | 'object'> & { id: number }>;
+      const observationsById = new Map(observations.map((row) => [row.id, row]));
+      const query = input.query ? sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase() : '';
+
+      return facts.flatMap((fact): VizEdgeRow[] => {
+        const observation = observationsById.get(fact.observation_id);
+        if (!observation) return [];
+        if (input.type && observation.type !== input.type) return [];
+        if (input.observation_type && observation.type !== input.observation_type) return [];
+        if (input.session_id && observation.session_id !== input.session_id) return [];
+        if (input.relation && fact.relation !== input.relation) return [];
+        if (query) {
+          const haystack = `${observation.title} ${observation.content} ${fact.object}`.toLowerCase();
+          if (!haystack.includes(query)) return [];
+        }
+        return [{
+          observation_id: fact.observation_id,
+          session_id: observation.session_id,
+          title: observation.title,
+          type: observation.type,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          content: observation.content,
+          relation: fact.relation,
+          object: fact.object,
+        }];
+      }).slice(0, limit);
+    }
+
     const params: Array<string | number> = [];
     const sql = [
       'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content, f.relation, f.object',
@@ -2967,6 +3038,10 @@ export class Store {
   }
 
   getObservationFacts(input: ObservationFactsInput = {}): ObservationFact[] {
+    if (this.config.graphFactsSource !== 'legacy') {
+      return this.getObservationFactsFromKg(input);
+    }
+
     const sql = [
       'SELECT f.*',
       'FROM observation_facts f',
@@ -2995,6 +3070,98 @@ export class Store {
     return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
   }
 
+  getObservationFactsFromKg(input: ObservationFactsInput = {}): ObservationFact[] {
+    const params: Array<string | number> = [];
+    const observationSql = [
+      'SELECT * FROM observations',
+      'WHERE deleted_at IS NULL',
+    ];
+
+    if (input.observation_id !== undefined) {
+      observationSql.push('AND id = ?');
+      params.push(input.observation_id);
+    }
+
+    if (input.project) {
+      observationSql.push('AND project = ?');
+      params.push(input.project);
+    }
+
+    if (input.topic_key) {
+      observationSql.push('AND topic_key = ?');
+      params.push(input.topic_key);
+    }
+
+    observationSql.push('ORDER BY id ASC');
+
+    const observations = this.mapObservationRows(
+      this.db.prepare(observationSql.join(' ')).all(...params) as ObservationRow[]
+    );
+    if (observations.length === 0) return [];
+
+    const observationIds = observations.map((observation) => observation.id);
+    const contentRows = this.db.prepare(
+      `SELECT t.id, t.source_id as observation_id, t.relation, oe.canonical_name as object, t.created_at
+       FROM kg_triples t
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       JOIN observations o ON o.id = t.source_id
+       WHERE t.source_type = 'observation'
+       AND o.deleted_at IS NULL
+       AND t.relation IN (${KG_OBSERVATION_FACT_CONTENT_RELATIONS.map(() => '?').join(',')})
+       AND t.source_id IN (${observationIds.map(() => '?').join(',')})
+       ORDER BY t.source_id ASC, t.id ASC`
+    ).all(...KG_OBSERVATION_FACT_CONTENT_RELATIONS, ...observationIds) as Array<{
+      id: number;
+      observation_id: number;
+      relation: string;
+      object: string;
+      created_at: string;
+    }>;
+    const contentRowsByObservation = new Map<number, typeof contentRows>();
+    for (const row of contentRows) {
+      const rows = contentRowsByObservation.get(row.observation_id) ?? [];
+      rows.push(row);
+      contentRowsByObservation.set(row.observation_id, rows);
+    }
+
+    const facts: ObservationFact[] = [];
+    for (const observation of observations) {
+      const metadata = [
+        { relation: 'HAS_TYPE', object: observation.type },
+        ...(observation.project ? [{ relation: 'IN_PROJECT', object: observation.project }] : []),
+        ...(observation.topic_key ? [{ relation: 'HAS_TOPIC_KEY', object: observation.topic_key }] : []),
+      ];
+      metadata.forEach((fact, index) => {
+        facts.push({
+          id: -((observation.id * 10) + index + 1),
+          observation_id: observation.id,
+          subject: observation.title,
+          relation: fact.relation,
+          object: fact.object,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          type: observation.type,
+          created_at: observation.created_at,
+        });
+      });
+      for (const row of contentRowsByObservation.get(observation.id) ?? []) {
+        facts.push({
+          id: row.id,
+          observation_id: observation.id,
+          subject: observation.title,
+          relation: row.relation,
+          object: row.object,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          type: observation.type,
+          created_at: row.created_at,
+        });
+      }
+    }
+
+    return facts;
+  }
+
   rebuildObservationFacts(input: RebuildObservationFactsInput = {}): RebuildObservationFactsResult {
     const sql = [
       'SELECT * FROM observations',
@@ -3016,9 +3183,22 @@ export class Store {
     let factsCreated = 0;
 
     for (const observation of observations) {
-      const result = this.replaceObservationFacts(observation);
-      factsDeleted += result.deleted;
-      factsCreated += result.created;
+      if (this.config.graphFactsSource === 'legacy') {
+        const result = this.replaceObservationFacts(observation);
+        factsDeleted += result.deleted;
+        factsCreated += result.created;
+        continue;
+      }
+
+      const existingTriples = this.db.prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(observation.id) as { count: number };
+      writeDeterministicKgFacts(this, observation.id);
+      const createdTriples = this.db.prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(observation.id) as { count: number };
+      factsDeleted += existingTriples.count;
+      factsCreated += createdTriples.count;
     }
 
     return {

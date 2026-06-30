@@ -26,6 +26,15 @@ interface LaneStateUpdate {
   stale: number;
   degraded: number;
 }
+type KgExtractionResult = ReturnType<typeof extractKnowledgeTriples>;
+type ObservationKgRow = {
+  id: number;
+  title: string;
+  content: string;
+  project: string | null;
+  topic_key: string | null;
+  sync_id: string | null;
+};
 
 const STALE_RUNNING_JOB_MODIFIER = '-15 minutes';
 const MAX_VEC_ROWID_PROBES = 2048;
@@ -417,9 +426,7 @@ function processRebuildJob(store: Store, jobKey: string): void {
 
 async function processKgJob(store: Store, observationId: number, kgLlmExtractor: KgLlmExtractor | null): Promise<string | null> {
   const db = store.getDb();
-  const obs = db.prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
-    | { id: number; title: string; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
-    | undefined;
+  const obs = loadObservationForKg(store, observationId);
   if (!obs) {
     db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
     return null;
@@ -441,6 +448,8 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
   let extraction = extractKnowledgeTriples(extractionInput);
   let warning: string | null = null;
 
+  writeDeterministicKgFacts(store, observationId);
+
   if (extraction.strategy.llmFallback === 'recommended' && kgLlmExtractor) {
     try {
       const llmTriples = await kgLlmExtractor.extract({
@@ -459,6 +468,39 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       extraction = extractKnowledgeTriples(extractionInput);
     }
   }
+  if (extraction.strategy.llmFallback === 'used') {
+    persistKgExtraction(store, obs, extraction);
+  }
+  return warning;
+}
+
+function loadObservationForKg(store: Store, observationId: number): ObservationKgRow | undefined {
+  return store.getDb().prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
+    | ObservationKgRow
+    | undefined;
+}
+
+export function writeDeterministicKgFacts(store: Store, observationId: number): void {
+  const db = store.getDb();
+  const obs = loadObservationForKg(store, observationId);
+  if (!obs) {
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
+    return;
+  }
+
+  const extraction = extractKnowledgeTriples({
+    content: obs.content,
+    provenance: `observation:${obs.id}`,
+    subjectHint: obs.topic_key ?? obs.title,
+    project: obs.project,
+    topicKey: obs.topic_key,
+  });
+
+  persistKgExtraction(store, obs, extraction);
+}
+
+function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: KgExtractionResult): void {
+  const db = store.getDb();
   db.prepare(
     `INSERT INTO kg_taxonomy_metadata (id, taxonomy_version, entity_types_json, relation_types_json, updated_at)
      VALUES (1, ?, ?, ?, datetime('now'))
@@ -511,7 +553,6 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       extraction.taxonomy.version
     );
   }
-  return warning;
 }
 
 function cleanupSemanticArtifactsForObservation(store: Store, observationId: number): void {

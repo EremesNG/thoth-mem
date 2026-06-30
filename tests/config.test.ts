@@ -33,6 +33,7 @@ describe('getConfig', () => {
     expect(config.previewLength).toBe(300);
     expect(config.httpPort).toBe(7438);
     expect(config.httpDisabled).toBe(false);
+    expect(config.graphFactsSource).toBe('kg');
     expect(config.dataDir).toBe(tmpDataDir);
     expect(config.dbPath).toBe(join(tmpDataDir!, 'thoth.db'));
   });
@@ -93,6 +94,16 @@ describe('getConfig', () => {
     const config = getConfig();
 
     expect(config.maxContextChars).toBe(0);
+  });
+
+  it('resolves graphFactsSource from persisted config when provided', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      graphFactsSource: 'legacy',
+    }, null, 2));
+
+    const config = getConfig();
+
+    expect(config.graphFactsSource).toBe('legacy');
   });
 });
 
@@ -253,6 +264,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     });
     expect(saved.hyde).toEqual(config.hyde);
     expect(saved.kgLlm).toEqual(config.kgLlm);
+    expect(saved.graphFactsSource).toBe('kg');
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
     expect(schema).toMatchObject({
@@ -269,6 +281,9 @@ describe('embedding config (hybrid retrieval baseline)', () => {
           properties: {
             provider: { enum: ['transformers_local', 'ollama', 'lmstudio'] },
           },
+        },
+        graphFactsSource: {
+          enum: ['legacy', 'kg'],
         },
       },
     });

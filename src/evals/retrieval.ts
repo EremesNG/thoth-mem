@@ -322,6 +322,66 @@ function buildNoiseFixtures(noiseCount: number): EvalFixture[] {
   });
 }
 
+function seedGraphFactTriple(input: {
+  store: Store;
+  observationId: number;
+  subject: string;
+  relation: string;
+  object: string;
+  project: string;
+  topicKey: string;
+  provenance: string;
+  tripleHash: string;
+  confidence?: number;
+  extractorVersion?: string;
+}): void {
+  const db = input.store.getDb();
+  const upsertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'observation', ?, '[]', '{}', datetime('now'))
+     ON CONFLICT(entity_key) DO UPDATE SET
+      entity_type = excluded.entity_type,
+      canonical_name = excluded.canonical_name,
+      aliases_json = excluded.aliases_json,
+      metadata_json = excluded.metadata_json,
+      updated_at = datetime('now')
+     RETURNING id`
+  );
+
+  const insertTriple = db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+       project, topic_key, provenance, confidence, triple_hash, extractor_version, updated_at
+     ) VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(triple_hash) DO UPDATE SET
+      source_id = excluded.source_id,
+      source_sync_id = excluded.source_sync_id,
+      project = excluded.project,
+      topic_key = excluded.topic_key,
+      provenance = excluded.provenance,
+      confidence = excluded.confidence,
+      extractor_version = excluded.extractor_version,
+      updated_at = datetime('now')`
+  );
+
+  const subjectEntity = upsertEntity.get(`fixture:${input.observationId}:${input.subject}`, input.subject) as { id: number };
+  const objectEntity = upsertEntity.get(`fixture:${input.observationId}:${input.object}`, input.object) as { id: number };
+
+  insertTriple.run(
+    subjectEntity.id,
+    input.relation,
+    objectEntity.id,
+    input.observationId,
+    null,
+    input.project,
+    input.topicKey,
+    input.provenance,
+    input.confidence ?? 0.85,
+    input.tripleHash,
+    input.extractorVersion ?? 'eval'
+  );
+}
+
 const CASES: EvalCase[] = [
   {
     name: 'direct auth recall',
@@ -673,15 +733,31 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
 
     const graphLiteId = idsByKey.get('graph-lite');
     if (graphLiteId) {
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(graphLiteId, 'graph lite facts', 'supports', 'structured facts before vector embeddings', 'memory-project', 'retrieval/graph-lite-derived-facts', 'discovery');
+      seedGraphFactTriple({
+        store,
+        observationId: graphLiteId,
+        subject: 'graph lite facts',
+        relation: 'supports',
+        object: 'structured facts before vector embeddings',
+        project: 'memory-project',
+        topicKey: 'retrieval/graph-lite-derived-facts',
+        provenance: 'eval-fixture:graph-lite',
+        tripleHash: `graph-lite:${graphLiteId}:supports:1`,
+      });
     }
     const graphRankId = idsByKey.get('graph-rank');
     if (graphRankId) {
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(graphRankId, 'xylophonic', 'DEPENDS_ON', 'zephyrcache', 'graph-project', 'retrieval/graph-only-ranking', 'decision');
+      seedGraphFactTriple({
+        store,
+        observationId: graphRankId,
+        subject: 'xylophonic',
+        relation: 'DEPENDS_ON',
+        object: 'zephyrcache',
+        project: 'graph-project',
+        topicKey: 'retrieval/graph-only-ranking',
+        provenance: 'eval-fixture:graph-rank',
+        tripleHash: `graph-rank:${graphRankId}:DEPENDS_ON:1`,
+      });
     }
 
     const pendingCases: boolean[] = [];
@@ -764,9 +840,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       }));
       const kgCandidates = raw.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
       const tripleCandidates = kgCandidates.filter((candidate) => candidate.source === 'kg_triples');
-      const factCandidates = kgCandidates.filter((candidate) => candidate.source === 'observation_facts');
-      kgProvenanceChecks.push(tripleCandidates.length > 0 && tripleCandidates.every((candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0));
-      factsSourceChecks.push(tripleCandidates.length > 0 && factCandidates.length > 0);
+      kgProvenanceChecks.push(
+        tripleCandidates.length > 0 && tripleCandidates.every(
+          (candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0
+        )
+      );
+      factsSourceChecks.push(
+        tripleCandidates.length > 0 && tripleCandidates.every(
+          (candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0
+        )
+      );
       lineageCoverageHits.push(raw.results.some((hit) => {
         const primary = hit.evidence.primary;
         return Boolean(primary.chunkKey || primary.sentenceKey || primary.kg?.provenance || primary.source);

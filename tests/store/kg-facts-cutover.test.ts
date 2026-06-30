@@ -1,0 +1,552 @@
+import { describe, expect, it } from 'vitest';
+import { Store } from '../../src/store/index.js';
+
+function createLegacyObservationFactsTable(store: Store) {
+  store.getDb().exec(`
+    CREATE TABLE IF NOT EXISTS observation_facts (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      observation_id INTEGER NOT NULL,
+      subject        TEXT NOT NULL,
+      relation       TEXT NOT NULL,
+      object         TEXT NOT NULL,
+      project        TEXT,
+      topic_key      TEXT,
+      type           TEXT NOT NULL,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+  `);
+}
+
+function seedKgBackedObservation(store: Store) {
+  const saved = store.saveObservation({
+    title: 'JWT auth middleware',
+    type: 'decision',
+    project: 'auth-project',
+    session_id: 'session-auth',
+    topic_key: 'architecture/auth-model',
+    content: [
+      '**What**: Implemented JWT middleware',
+      '**Why**: Routes need authenticated access',
+      '**Where**: src/auth/middleware.ts',
+      '**Learned**: Keep token parsing isolated',
+    ].join('\n'),
+  }).observation;
+
+  return saved;
+}
+
+function countObservationTriples(store: Store, observationId: number): number {
+  return (store.getDb().prepare(
+    "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+  ).get(observationId) as { count: number }).count;
+}
+
+function insertKgTriple(store: Store, input: {
+  observationId: number;
+  subject: string;
+  relation: string;
+  object: string;
+  project: string | null;
+  tripleHash: string;
+}) {
+  const db = store.getDb();
+  const upsertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'concept', ?, '[]', '{}', datetime('now'))
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  );
+  const subject = upsertEntity.get(`test:${input.tripleHash}:subject`, input.subject) as { id: number };
+  const object = upsertEntity.get(`test:${input.tripleHash}:object`, input.object) as { id: number };
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, provenance, confidence, triple_hash, extractor_version
+    ) VALUES (?, ?, ?, 'observation', ?, ?, ?, 0.9, ?, 'test')`
+  ).run(
+    subject.id,
+    input.relation,
+    object.id,
+    input.observationId,
+    input.project,
+    `observation:${input.observationId}`,
+    input.tripleHash
+  );
+}
+
+function dropLegacyObservationFactsTable(store: Store) {
+  store.getDb().exec(`
+    DROP INDEX IF EXISTS idx_observation_facts_observation;
+    DROP INDEX IF EXISTS idx_observation_facts_project;
+    DROP INDEX IF EXISTS idx_observation_facts_topic;
+    DROP TABLE IF EXISTS observation_facts;
+  `);
+}
+
+describe('Store KG-backed observation facts cutover', () => {
+  it('projects ObservationFact rows from KG triples plus synthesized metadata in deterministic order', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = seedKgBackedObservation(store);
+
+      const facts = store.getObservationFactsFromKg({ observation_id: saved.id });
+
+      expect(facts.map((fact) => [fact.subject, fact.relation, fact.object])).toEqual([
+        ['JWT auth middleware', 'HAS_TYPE', 'decision'],
+        ['JWT auth middleware', 'IN_PROJECT', 'auth-project'],
+        ['JWT auth middleware', 'HAS_TOPIC_KEY', 'architecture/auth-model'],
+        ['JWT auth middleware', 'HAS_WHAT', 'Implemented JWT middleware'],
+        ['JWT auth middleware', 'HAS_WHY', 'Routes need authenticated access'],
+        ['JWT auth middleware', 'HAS_WHERE', 'src/auth/middleware.ts'],
+        ['JWT auth middleware', 'HAS_LEARNED', 'Keep token parsing isolated'],
+      ]);
+      expect(facts.every((fact) => fact.observation_id === saved.id)).toBe(true);
+      expect(facts.every((fact) => fact.project === 'auth-project')).toBe(true);
+      expect(facts.every((fact) => fact.topic_key === 'architecture/auth-model')).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('projects uncapped content sections byte-for-byte with legacy-compatible metadata order', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const longLearned = `Long learned ${'0123456789'.repeat(60)}`;
+      const saved = store.saveObservation({
+        title: 'Long structured memory',
+        type: 'architecture',
+        project: 'long-project',
+        topic_key: 'architecture/long-structured-memory',
+        content: [
+          '**What**: Build the direct adapter parity fixture',
+          '**Why**: Coverage must prove KG rows match the old ledger shape',
+          '**Where**: tests/store/kg-facts-cutover.test.ts',
+          `**Learned**: ${longLearned}`,
+        ].join('\n'),
+      }).observation;
+
+      const facts = store.getObservationFactsFromKg({ observation_id: saved.id });
+
+      expect(facts.map((fact) => [fact.subject, fact.relation, fact.object])).toEqual([
+        ['Long structured memory', 'HAS_TYPE', 'architecture'],
+        ['Long structured memory', 'IN_PROJECT', 'long-project'],
+        ['Long structured memory', 'HAS_TOPIC_KEY', 'architecture/long-structured-memory'],
+        ['Long structured memory', 'HAS_WHAT', 'Build the direct adapter parity fixture'],
+        ['Long structured memory', 'HAS_WHY', 'Coverage must prove KG rows match the old ledger shape'],
+        ['Long structured memory', 'HAS_WHERE', 'tests/store/kg-facts-cutover.test.ts'],
+        ['Long structured memory', 'HAS_LEARNED', longLearned],
+      ]);
+      expect(facts.find((fact) => fact.relation === 'HAS_LEARNED')?.object.length).toBeGreaterThan(500);
+      expect(facts.every((fact) => fact.observation_id === saved.id)).toBe(true);
+      expect(facts.every((fact) => fact.project === 'long-project')).toBe(true);
+      expect(facts.every((fact) => fact.topic_key === 'architecture/long-structured-memory')).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('honors filters and excludes soft-deleted observations plus non-observation triples', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const auth = seedKgBackedObservation(store);
+      const cache = store.saveObservation({
+        title: 'Cache memory',
+        type: 'learning',
+        project: 'cache-project',
+        topic_key: 'architecture/cache-model',
+        content: '**What**: Cache graph content',
+      }).observation;
+
+      const objectEntity = store.getDb().prepare("SELECT id FROM kg_entities WHERE canonical_name = 'Cache graph content'").get() as { id: number };
+      const subjectEntity = store.getDb().prepare("SELECT id FROM kg_entities WHERE canonical_name = 'architecture/cache-model'").get() as { id: number };
+      store.getDb().prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          provenance, confidence, triple_hash
+        ) VALUES (?, 'HAS_WHAT', ?, 'prompt', ?, 'prompt:1', 0.9, 'prompt:cache-fact')`
+      ).run(subjectEntity.id, objectEntity.id, cache.id);
+
+      expect(store.getObservationFactsFromKg({ project: 'auth-project' }).map((fact) => fact.observation_id))
+        .toEqual(Array(7).fill(auth.id));
+      expect(store.getObservationFactsFromKg({ topic_key: 'architecture/cache-model' }).map((fact) => fact.relation))
+        .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT']);
+
+      expect(store.deleteObservation(auth.id)).toBe(true);
+      expect(store.getObservationFactsFromKg({ observation_id: auth.id })).toEqual([]);
+      expect(store.getObservationFactsFromKg({ observation_id: cache.id }).filter((fact) => fact.object === 'Cache graph content'))
+        .toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('honors observation_id filter and emits only HAS_TYPE when project/topic_key are absent', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const withoutMetadata = store.saveObservation({
+        title: 'Metadata only memory',
+        type: 'manual',
+        content: 'No structured sections here.',
+      }).observation;
+      const other = seedKgBackedObservation(store);
+
+      const facts = store.getObservationFactsFromKg({ observation_id: withoutMetadata.id });
+
+      expect(facts).toEqual([
+        {
+          id: expect.any(Number),
+          observation_id: withoutMetadata.id,
+          subject: 'Metadata only memory',
+          relation: 'HAS_TYPE',
+          object: 'manual',
+          project: null,
+          topic_key: null,
+          type: 'manual',
+          created_at: expect.any(String),
+        },
+      ]);
+      expect(store.getObservationFactsFromKg({ observation_id: other.id }).map((fact) => fact.observation_id))
+        .toEqual(Array(7).fill(other.id));
+    } finally {
+      store.close();
+    }
+  });
+
+  it('uses KG facts by default while the legacy flag still reads observation_facts', () => {
+    const kgStore = new Store(':memory:');
+    const legacyStore = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      const kgSaved = seedKgBackedObservation(kgStore);
+      expect(kgStore.getObservationFacts({ observation_id: kgSaved.id }).map((fact) => fact.relation))
+        .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED']);
+
+      createLegacyObservationFactsTable(legacyStore);
+      const legacySaved = legacyStore.saveObservation({
+        title: 'Legacy facts',
+        type: 'decision',
+        project: 'legacy-project',
+        content: '**What**: Legacy table content',
+      }).observation;
+      expect(legacyStore.getObservationFacts({ observation_id: legacySaved.id }).map((fact) => fact.relation))
+        .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_WHAT']);
+    } finally {
+      kgStore.close();
+      legacyStore.close();
+    }
+  });
+
+  it('does not use observation_facts as a default KG-lane source', async () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Graph-only legacy fallback',
+        content: 'plain body without the codename',
+        project: 'kg-cutover',
+      }).observation;
+      store.getDb().prepare('DELETE FROM kg_triples WHERE source_id = ?').run(saved.id);
+      createLegacyObservationFactsTable(store);
+      store.getDb().prepare(
+        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(saved.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'kg-cutover', null, 'decision');
+
+      const response = await (store as any).hybridRetrieve({ query: 'helios', project: 'kg-cutover', limit: 5 });
+
+      expect(response.results).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('ranks equal KG-only candidates by observation id without a legacy facts table', async () => {
+    const store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+    const runtime = store as any;
+
+    try {
+      const first = store.saveObservation({
+        title: 'First equal KG candidate',
+        content: 'unrelated body one',
+        project: 'kg-tie',
+      }).observation;
+      const second = store.saveObservation({
+        title: 'Second equal KG candidate',
+        content: 'unrelated body two',
+        project: 'kg-tie',
+      }).observation;
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      dropLegacyObservationFactsTable(store);
+      insertKgTriple(store, {
+        observationId: second.id,
+        subject: 'Helios',
+        relation: 'USES',
+        object: 'Shared cache',
+        project: 'kg-tie',
+        tripleHash: 'tie:second',
+      });
+      insertKgTriple(store, {
+        observationId: first.id,
+        subject: 'Helios',
+        relation: 'USES',
+        object: 'Shared cache',
+        project: 'kg-tie',
+        tripleHash: 'tie:first',
+      });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-tie', limit: 5 });
+
+      expect(response.results.map((result: any) => result.observation.id).slice(0, 2)).toEqual([first.id, second.id]);
+      expect(response.results.every((result: any) => result.evidence.primary.source === 'kg_triples')).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('synchronously writes default KG facts on save without observation_facts', () => {
+    const store = new Store(':memory:');
+
+    try {
+      dropLegacyObservationFactsTable(store);
+
+      const saved = store.saveObservation({
+        title: 'Sync KG save',
+        type: 'decision',
+        project: 'sync-kg',
+        topic_key: 'sync/kg-save',
+        content: [
+          '**What**: Sync KG content',
+          '**Why**: Save must return with graph facts',
+        ].join('\n'),
+      }).observation;
+
+      const table = store.getDb().prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+      ).get();
+      const facts = store.getObservationFacts({ observation_id: saved.id });
+      const triples = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+      const pendingJobs = store.getDb().prepare(
+        "SELECT kind, state FROM semantic_jobs WHERE observation_id = ? ORDER BY kind"
+      ).all(saved.id) as Array<{ kind: string; state: string }>;
+
+      expect(table).toBeUndefined();
+      expect(facts.map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+        'HAS_WHAT',
+        'HAS_WHY',
+      ]);
+      expect(triples.count).toBeGreaterThan(0);
+      expect(pendingJobs).toEqual([
+        { kind: 'chunk', state: 'pending' },
+        { kind: 'extract_kg', state: 'pending' },
+        { kind: 'sentence', state: 'pending' },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('synchronously refreshes default KG facts on update without observation_facts', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Sync KG update',
+        type: 'decision',
+        project: 'sync-kg',
+        content: '**What**: Initial graph content',
+      }).observation;
+      dropLegacyObservationFactsTable(store);
+
+      const updated = store.updateObservation({
+        id: saved.id,
+        content: '**What**: Updated graph content',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => [fact.relation, fact.object]))
+        .toEqual([
+          ['HAS_TYPE', 'decision'],
+          ['IN_PROJECT', 'sync-kg'],
+          ['HAS_WHAT', 'Updated graph content'],
+        ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('hard deletes KG artifacts without observation_facts', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = seedKgBackedObservation(store);
+      dropLegacyObservationFactsTable(store);
+
+      expect(() => store.deleteObservation(saved.id, true)).not.toThrow();
+
+      const triples = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+      expect(triples.count).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rebuilds deterministic KG facts without observation_facts and converges on repeat', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Rebuild KG only',
+        type: 'decision',
+        project: 'rebuild-kg',
+        topic_key: 'rebuild/kg-only',
+        content: [
+          '**What**: Rebuild graph content',
+          '**Where**: src/store/index.ts',
+        ].join('\n'),
+      }).observation;
+      const skipped = store.saveObservation({
+        title: 'Skipped project',
+        content: '**What**: Other project content',
+        project: 'other-project',
+      }).observation;
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      dropLegacyObservationFactsTable(store);
+
+      const first = store.rebuildObservationFacts({ project: 'rebuild-kg' });
+      const second = store.rebuildObservationFacts({ project: 'rebuild-kg' });
+
+      const inScopeTriples = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+      const outOfScopeTriples = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(skipped.id) as { count: number };
+
+      expect(first).toMatchObject({
+        project: 'rebuild-kg',
+        observations_scanned: 1,
+        facts_deleted: 0,
+      });
+      expect(first.facts_created).toBeGreaterThan(0);
+      expect(second.facts_created).toBe(inScopeTriples.count);
+      expect(inScopeTriples.count).toBeGreaterThan(0);
+      expect(outOfScopeTriples.count).toBe(0);
+      expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation))
+        .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHERE']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not duplicate deterministic triples across re-save and background KG processing', async () => {
+    const store = new Store(':memory:');
+    const runtime = store as any;
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Idempotent KG write',
+        type: 'decision',
+        project: 'idempotent-kg',
+        topic_key: 'kg/idempotent-write',
+        content: '**What**: Stable graph fact',
+      }).observation;
+      const initial = countObservationTriples(store, saved.id);
+
+      const resaved = store.saveObservation({
+        title: 'Idempotent KG write',
+        type: 'decision',
+        project: 'idempotent-kg',
+        topic_key: 'kg/idempotent-write',
+        content: '**What**: Stable graph fact',
+      }).observation;
+      await runtime.processSemanticJobs({ limit: 20 });
+      const afterJobs = countObservationTriples(store, saved.id);
+      const duplicateHashes = store.getDb().prepare(
+        `SELECT triple_hash, COUNT(*) AS count
+         FROM kg_triples
+         WHERE source_type = 'observation' AND source_id = ?
+         GROUP BY triple_hash
+         HAVING COUNT(*) > 1`
+      ).all(saved.id) as Array<{ triple_hash: string; count: number }>;
+
+      expect(resaved.id).toBe(saved.id);
+      expect(afterJobs).toBe(initial);
+      expect(duplicateHashes).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('raw inserted observations without KG content return metadata-only rows and safe empty KG search', async () => {
+    const store = new Store(':memory:');
+    const runtime = store as any;
+
+    try {
+      store.startSession('raw-session', 'raw-project');
+      const result = store.getDb().prepare(
+        `INSERT INTO observations (session_id, type, title, content, project, scope)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run('raw-session', 'manual', 'Raw metadata memory', 'No graph content marker here', 'raw-project', 'project');
+      const observationId = Number(result.lastInsertRowid);
+
+      const facts = store.getObservationFactsFromKg({ observation_id: observationId });
+      const graph = store.getVisualizationSlice({ project: 'raw-project', max_nodes: 20, max_edges: 20 });
+      const response = await runtime.hybridRetrieve({ query: 'absent-term', project: 'raw-project', limit: 5 });
+
+      expect(facts.map((fact) => [fact.relation, fact.object])).toEqual([
+        ['HAS_TYPE', 'manual'],
+        ['IN_PROJECT', 'raw-project'],
+      ]);
+      expect(graph.edges.map((edge) => edge.relation)).toEqual(expect.arrayContaining(['HAS_TYPE', 'IN_PROJECT']));
+      expect(response.results).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('builds visualization relation filters and edges from the KG projection by default', () => {
+    const store = new Store(':memory:');
+
+    try {
+      seedKgBackedObservation(store);
+
+      const filters = store.getVisualizationFilters({ project: 'auth-project' });
+      expect(filters.relations).toEqual([
+        'HAS_LEARNED',
+        'HAS_TOPIC_KEY',
+        'HAS_TYPE',
+        'HAS_WHAT',
+        'HAS_WHERE',
+        'HAS_WHY',
+        'IN_PROJECT',
+      ]);
+
+      const slice = store.getVisualizationSlice({
+        project: 'auth-project',
+        relation: 'HAS_WHAT',
+        query: 'middleware',
+        max_nodes: 100,
+        max_edges: 100,
+      });
+
+      expect(slice.edges.some((edge) => edge.relation === 'HAS_WHAT')).toBe(true);
+      expect(slice.nodes.some((node) => node.label === 'Implemented JWT middleware')).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+});

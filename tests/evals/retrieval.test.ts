@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runRetrievalEval, type RetrievalEvalReport } from '../../src/evals/retrieval.js';
 
@@ -52,6 +54,24 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.kg_provenance_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.lane_truth_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.facts_source_rate).toBeGreaterThan(0);
+  });
+
+  it('facts source checks pass on KG-only evidence and graph cases use kg_triples candidates', async () => {
+    expect(report.summary.hybrid.facts_source_rate).toBeGreaterThan(0);
+
+    const graphLite = report.cases.find((result) => result.name === 'graph-lite recall');
+    const graphRank = report.cases.find((result) => result.name === 'graph-only ranked recall');
+
+    expect(graphLite?.found).toBe(true);
+    expect(graphRank?.found).toBe(true);
+    expect(report.markdown).toContain('| Facts Source Coverage Rate |');
+  });
+
+  it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {
+    const source = readFileSync(join(process.cwd(), 'src/evals/retrieval.ts'), 'utf-8');
+
+    expect(source).toContain('INSERT INTO kg_triples');
+    expect(source).not.toContain('observation_facts');
   });
 
   it('reports ArcRift-style evidence gap metrics from hybrid retrieval', async () => {

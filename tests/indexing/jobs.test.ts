@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
-import { requeueFailedEmbeddingJobs, recoverRetriableSemanticJobs } from '../../src/indexing/jobs.js';
+import { requeueFailedEmbeddingJobs, recoverRetriableSemanticJobs, writeDeterministicKgFacts } from '../../src/indexing/jobs.js';
 
 describe('requeueFailedEmbeddingJobs', () => {
   let store: Store;
@@ -155,5 +155,72 @@ describe('recoverRetriableSemanticJobs (existing — ensure not broken)', () => 
       "SELECT state FROM semantic_jobs WHERE job_key = 'chunk:21'"
     ).get() as { state: string };
     expect(otherRow.state).toBe('failed');
+  });
+});
+
+describe('writeDeterministicKgFacts', () => {
+  let store: Store;
+
+  afterEach(() => {
+    if (store) {
+      try { store.close(); } catch { /* already closed */ }
+    }
+  });
+
+  it('loads an observation internally and persists deterministic KG triples without running jobs', () => {
+    store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Deterministic KG helper',
+      content: 'Auth service depends on Redis cache.',
+      project: 'indexing-test',
+      topic_key: 'kg/helper',
+    });
+    const db = store.getDb();
+
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(saved.observation.id);
+
+    writeDeterministicKgFacts(store, saved.observation.id);
+
+    const triples = db.prepare(
+      `SELECT se.canonical_name AS subject, kt.relation, oe.canonical_name AS object, kt.provenance
+       FROM kg_triples kt
+       JOIN kg_entities se ON se.id = kt.subject_entity_id
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation' AND kt.source_id = ?
+       ORDER BY kt.id`
+    ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; provenance: string }>;
+
+    expect(triples).toContainEqual(expect.objectContaining({
+      subject: 'auth service',
+      relation: 'DEPENDS_ON',
+      object: 'redis cache',
+      provenance: `observation:${saved.observation.id}`,
+    }));
+  });
+
+  it('stores structured section content longer than 500 characters byte-for-byte in KG entities', () => {
+    store = new Store(':memory:');
+    const longSection = `prefix-${'x'.repeat(520)}-suffix`;
+    const saved = store.saveObservation({
+      title: 'Long structured section',
+      content: `What: ${longSection}`,
+      project: 'indexing-test',
+      topic_key: 'kg/long-section',
+    });
+    const db = store.getDb();
+
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(saved.observation.id);
+    writeDeterministicKgFacts(store, saved.observation.id);
+
+    const row = db.prepare(
+      `SELECT oe.canonical_name AS object
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'`
+    ).get(saved.observation.id) as { object: string } | undefined;
+
+    expect(row?.object).toBe(longSection);
   });
 });

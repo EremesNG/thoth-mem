@@ -271,6 +271,11 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
       db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[${resolvedDimensions}])`);
       db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_sentences USING vec0(embedding float[${resolvedDimensions}])`);
     }
+
+    db.exec('DROP INDEX IF EXISTS idx_observation_facts_observation');
+    db.exec('DROP INDEX IF EXISTS idx_observation_facts_project');
+    db.exec('DROP INDEX IF EXISTS idx_observation_facts_topic');
+    db.exec('DROP TABLE IF EXISTS observation_facts');
   });
 
   migrate();

@@ -149,4 +149,19 @@ describe('kg-extractor relation quality', () => {
     expect(hasTriple(extraction.triples, 'memory router', 'DEPENDS_ON', 'context budget')).toBe(true);
     expect(extraction.triples.some((triple) => triple.relation === 'IMAGINES')).toBe(false);
   });
+
+  it('preserves structured section content beyond 500 characters', () => {
+    const longSection = `prefix-${'x'.repeat(520)}-suffix`;
+    const triples = extractKnowledgeTriples({
+      content: `What: ${longSection}`,
+      provenance: 'test://kg-extractor',
+      subjectHint: 'long-section-source',
+    }).triples.map((triple) => ({
+      subject: triple.subject,
+      relation: triple.relation,
+      object: triple.object,
+    }));
+
+    expect(hasTriple(triples, 'long-section-source', 'HAS_WHAT', longSection)).toBe(true);
+  });
 });

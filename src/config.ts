@@ -16,6 +16,7 @@ export type LocalModelProvider = 'ollama' | 'lmstudio' | 'transformers_local';
 export type EmbeddingProvider = LocalModelProvider;
 export type HydeProvider = LocalModelProvider;
 export type KgLlmProvider = LocalModelProvider;
+export type GraphFactsSource = 'legacy' | 'kg';
 
 export interface HydeConfig {
   enabled: boolean;
@@ -55,6 +56,7 @@ export interface ThothConfig {
   previewLength: number;
   httpPort: number;
   httpDisabled: boolean;
+  graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: RetrievalDefaults;
   embedding?: EmbeddingConfig;
   hyde?: HydeConfig;
@@ -81,6 +83,7 @@ interface PersistedConfig {
   embedding?: PersistedEmbeddingConfig;
   hyde?: Partial<HydeConfig>;
   kgLlm?: Partial<KgLlmConfig>;
+  graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: Partial<RetrievalDefaults>;
 }
 
@@ -194,6 +197,15 @@ function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmPro
   return fallback;
 }
 
+function parseGraphFactsSource(value: string | null | undefined): GraphFactsSource | null {
+  const normalized = value?.trim();
+  if (normalized === 'legacy' || normalized === 'kg') {
+    return normalized;
+  }
+
+  return null;
+}
+
 function defaultPersistedConfig(): PersistedConfig {
   return {
     $schema: CONFIG_SCHEMA_REF,
@@ -217,6 +229,7 @@ function defaultPersistedConfig(): PersistedConfig {
     },
     hyde: { ...DEFAULT_HYDE_CONFIG },
     kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
+    graphFactsSource: 'kg',
   };
 }
 
@@ -430,6 +443,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     previewLength: parseNumber(process.env.THOTH_PREVIEW_LENGTH) ?? persisted.previewLength ?? 300,
     httpPort: parseNumber(process.env.THOTH_HTTP_PORT) ?? httpPortFromPersisted ?? 7438,
     httpDisabled: parseBoolean(process.env.THOTH_HTTP_DISABLED) ?? httpDisabledFromPersisted ?? false,
+    graphFactsSource: parseGraphFactsSource(process.env.THOTH_GRAPH_FACTS_SOURCE) ?? persisted.graphFactsSource ?? 'kg',
     retrievalDefaults: {
       ...DEFAULT_RETRIEVAL_DEFAULTS,
       ...(persisted.retrievalDefaults ?? {}),

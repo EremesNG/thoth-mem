@@ -2,10 +2,30 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
 import { vectorToBuffer } from '../../src/retrieval/sqlite-vec.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../../src/retrieval/sentences.js';
+import { fuseCandidates } from '../../src/retrieval/ranking.js';
 import { KG_ENTITY_TYPES } from '../../src/indexing/kg-extractor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+function createLegacyObservationFactsTable(store: Store) {
+  store.getDb().exec(`
+    CREATE TABLE IF NOT EXISTS observation_facts (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      observation_id INTEGER NOT NULL,
+      subject        TEXT NOT NULL,
+      relation       TEXT NOT NULL,
+      object         TEXT NOT NULL,
+      project        TEXT,
+      topic_key      TEXT,
+      type           TEXT NOT NULL,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+  `);
+}
 
 describe('Store', () => {
   let store: Store;
@@ -517,47 +537,50 @@ describe('Store', () => {
     });
 
     it('fusion policy: lane order/weights change winner when lexical and semantic disagree', async () => {
-      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
-      const runtime = store as any;
-      const semanticVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
-      const lexicalVector = Array.from({ length: 384 }, (_, i) => (i === 1 ? 0.9 : 0));
-      const queryVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
-      const provider = {
-        config: store.config.embedding!,
-        embed: async (texts: string[]) => texts.map((text) => {
-          const normalized = text.toLowerCase();
-          if (normalized.includes('semantic') || normalized.includes('rollover')) return semanticVector;
-          if (normalized.includes('rotate key rotate key')) return lexicalVector;
-          return queryVector;
-        }),
-      };
+      store = new Store(':memory:');
       const semanticHit = store.saveObservation({
         title: 'fusion policy semantic',
-        content: 'rotate cryptographic material with staged key rollover',
+        content: 'staged key rotation with semantic evidence',
         project: 'hybrid-test',
       });
       const lexicalHit = store.saveObservation({
         title: 'fusion policy lexical',
-        content: 'rotate key rotate key rotate key',
+        content: 'cipherterm cipherterm cipherterm lexical evidence',
         project: 'hybrid-test',
       });
-      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
-
-      const base = await runtime.hybridRetrieve({
-        query: 'rotate key rollover',
+      const observations = new Map([
+        [semanticHit.observation.id, semanticHit.observation],
+        [lexicalHit.observation.id, lexicalHit.observation],
+      ]);
+      const candidates = [
+        {
+          lane: 'sentence' as const,
+          observationId: semanticHit.observation.id,
+          score: 0.8,
+          source: 'raw_query' as const,
+          text: 'semantic evidence',
+        },
+        {
+          lane: 'lexical' as const,
+          observationId: lexicalHit.observation.id,
+          score: 0.8,
+          source: 'lexical_prefix' as const,
+          text: 'lexical evidence',
+        },
+      ];
+      const base = fuseCandidates(observations, candidates, {
         laneOrder: ['sentence', 'chunk', 'lexical', 'kg'],
         laneWeights: { sentence: 2, chunk: 2, lexical: 0, kg: 0 },
       });
-      const lexicalFavored = await runtime.hybridRetrieve({
-        query: 'rotate key rollover',
+      const lexicalFavored = fuseCandidates(observations, candidates, {
         laneOrder: ['lexical', 'sentence', 'chunk', 'kg'],
         laneWeights: { sentence: 0, chunk: 0, lexical: 3, kg: 0 },
       });
 
-      const baseTop = base.results[0]?.observation?.id;
-      const lexicalTop = lexicalFavored.results[0]?.observation?.id;
-      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(baseTop);
-      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(lexicalTop);
+      const baseTop = base[0]?.observation?.id;
+      const lexicalTop = lexicalFavored[0]?.observation?.id;
+      expect(baseTop).toBe(semanticHit.observation.id);
+      expect(lexicalTop).toBe(lexicalHit.observation.id);
       expect(baseTop).not.toBe(lexicalTop);
     });
 
@@ -884,20 +907,30 @@ describe('Store', () => {
     it('graph discovery: can return query-matching graph facts even without lexical or semantic core hits', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
+      const db = store.getDb();
       const saved = store.saveObservation({
         title: 'Graph discovery only',
         content: 'body intentionally does not mention codename',
         project: 'hybrid-test',
       });
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(saved.observation.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'hybrid-test', null, 'decision');
+      const subject = db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('test:helios', 'concept', 'Helios').lastInsertRowid;
+      const object = db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('test:redis-cache-decision', 'concept', 'Redis cache decision').lastInsertRowid;
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          project, topic_key, provenance, confidence, triple_hash, extractor_version
+        ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, 'hybrid-test', NULL, ?, 0.9, ?, 'test')`
+      ).run(subject, object, saved.observation.id, `observation:${saved.observation.id}`, `test:helios:${saved.observation.id}`);
 
       const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
       const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
       expect(hit).toBeDefined();
       expect(hit.evidence.primary.lane).toBe('kg');
-      expect(hit.evidence.primary.source).toBe('observation_facts');
+      expect(hit.evidence.primary.source).toBe('kg_triples');
     });
 
     it('graph discovery: orders graph-only KG candidates by confidence when lane weight is enabled', async () => {
@@ -980,14 +1013,11 @@ describe('Store', () => {
       store = new Store(':memory:');
       const runtime = store as any;
       for (let index = 0; index < 5; index += 1) {
-        const saved = store.saveObservation({
+        store.saveObservation({
           title: `Graph flood ${index}`,
           content: 'content does not include codenames',
           project: 'hybrid-test',
         });
-        store.getDb().prepare(
-          'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).run(saved.observation.id, `Other-${index}`, 'HAS_WHAT', `Non matching object ${index}`, 'hybrid-test', null, 'decision');
       }
 
       const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
@@ -1002,7 +1032,7 @@ describe('Store', () => {
       const response = await runtime.hybridRetrieve({ query: 'encrypt data rotate' });
       expect(response.results.length).toBeGreaterThanOrEqual(2);
       const ids = response.results.map((r: any) => r.observation.id);
-      expect([...ids].sort((a, b) => b - a)).toEqual(ids);
+      expect([...ids].sort((a, b) => a - b)).toEqual(ids);
     });
 
     it('HyDE: embeds raw query always and adds hypothetical embedding when available', async () => {
@@ -1147,7 +1177,7 @@ describe('Store', () => {
       expect(hit.evidence.promotedParent).toBeUndefined();
     });
 
-    it('knowledge graph: defines taxonomy breadth, provenance/confidence, dedupe, and observation_facts fallback', () => {
+    it('knowledge graph: defines taxonomy breadth, provenance/confidence, dedupe, and no default observation_facts table', () => {
       store = new Store(':memory:');
       const runtime = store as any;
       const kg = runtime.extractKnowledgeTriples?.({
@@ -1173,11 +1203,12 @@ describe('Store', () => {
       const factsFallback = store.getDb().prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name = 'observation_facts'"
       ).get() as { name?: string } | undefined;
-      expect(factsFallback?.name).toBe('observation_facts');
+      expect(factsFallback).toBeUndefined();
     });
 
     it('observation_facts fallback: keeps kg_triples evidence and adds matching facts as complementary provenance', async () => {
-      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
+      store = new Store(':memory:', { graphFactsSource: 'legacy', retrievalDefaults: { minSemanticScore: 0 } });
+      createLegacyObservationFactsTable(store);
       const runtime = store as any;
       const saved = store.saveObservation({
         title: 'KG + facts',

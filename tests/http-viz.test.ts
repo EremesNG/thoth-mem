@@ -43,17 +43,14 @@ describe('viz routes', () => {
       topic_key: 'architecture/auth',
       type: 'architecture',
     });
-    const saved = store.saveObservation({
+    store.saveObservation({
       title: 'Billing relation',
-      content: 'billing visible',
+      content: 'What: Payments',
       project: 'viz-http',
       session_id: 'viz-session-b',
       topic_key: 'architecture/billing',
       type: 'discovery',
     });
-    store.getDb().prepare(
-      'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(saved.observation.id, 'Billing', 'HAS_WHAT', 'Payments', 'viz-http', 'architecture/billing', 'discovery');
     const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
     await bridge.start();
     active.push({ store, port, stop: () => bridge.stop() });
@@ -91,6 +88,52 @@ describe('viz routes', () => {
     const filtersBody = await filtersResponse.json();
     expect(filtersBody.sessions).toContain('viz-session-b');
     expect(filtersBody.relations).toContain('HAS_WHAT');
+  });
+
+  it('rebuilds graph-lite facts through HTTP POST /graph/rebuild without legacy table dependency', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'HTTP rebuild graph',
+      content: '**What**: HTTP rebuild KG content',
+      project: 'http-rebuild',
+      session_id: 'http-rebuild-session',
+      topic_key: 'http/rebuild',
+      type: 'decision',
+    }).observation;
+    store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const response = await fetch(`http://127.0.0.1:${port}/graph/rebuild`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'http-rebuild' }),
+    });
+    const body = await response.json();
+    const triples = store.getDb().prepare(
+      "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+    ).get(saved.id) as { count: number };
+    const legacyTable = store.getDb().prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+    ).get() as { name: string } | undefined;
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      project: 'http-rebuild',
+      observations_scanned: 1,
+      facts_deleted: 0,
+    });
+    expect(body.facts_created).toBeGreaterThan(0);
+    expect(triples.count).toBeGreaterThan(0);
+    expect(legacyTable).toBeUndefined();
+    expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation)).toEqual([
+      'HAS_TYPE',
+      'IN_PROJECT',
+      'HAS_TOPIC_KEY',
+      'HAS_WHAT',
+    ]);
   });
 
   it('signals empty/sparse/dense states across slice sizes', async () => {
@@ -201,14 +244,14 @@ describe('viz routes', () => {
     expect(recallBody.lanes.lexical.length).toBeGreaterThan(0);
     expect(recallBody.lanes['sentence-vector'].length).toBe(0);
     expect(recallBody.lanes['chunk-vector'].length).toBe(0);
-    expect(recallBody.lanes['fact-kg'].length).toBe(0);
+    expect(recallBody.lanes['fact-kg'].length).toBeGreaterThan(0);
     expect(recallBody.lane_states.lexical.status).toBe('ready');
     expect(recallBody.lane_states['sentence-vector'].status).toBe('pending');
     expect(recallBody.lane_states['chunk-vector'].status).toBe('pending');
-    expect(recallBody.lane_states['fact-kg'].status).toBe('unavailable');
+    expect(recallBody.lane_states['fact-kg'].status).toBe('ready');
     expect(recallBody.lane_states['sentence-vector'].reason).toMatch(/^semantic-/);
     expect(recallBody.lane_states['chunk-vector'].reason).toMatch(/^semantic-/);
-    expect(recallBody.lane_states['fact-kg'].reason).toBe('kg-no-match');
+    expect(recallBody.lane_states['fact-kg'].reason).toBe('ok');
   });
 
   it('exposes background indexing failures through HTTP index status', async () => {

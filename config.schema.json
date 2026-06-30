@@ -52,6 +52,11 @@
         }
       }
     },
+    "graphFactsSource": {
+      "type": "string",
+      "enum": ["legacy", "kg"],
+      "description": "Graph-facts source switch used for observation_facts rollback during KG consolidation."
+    },
     "retrievalDefaults": {
       "type": "object",
       "additionalProperties": false,

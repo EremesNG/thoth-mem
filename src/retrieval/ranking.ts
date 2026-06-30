@@ -18,6 +18,7 @@ export interface LaneCandidate {
   lane: RetrievalLane;
   observationId: number;
   score: number;
+  /** `observation_facts` is legacy-only and must not be emitted on the default KG path. */
   source: 'raw_query' | 'hyde_answer' | 'lexical_prefix' | 'kg_triples' | 'observation_facts';
   text: string;
   chunkKey?: string | null;
@@ -117,7 +118,7 @@ function compareHits(a: HybridHit, b: HybridHit, laneOrderRank: Record<Retrieval
     const rankB = laneOrderRank[b.evidence.primary.lane] ?? Number.MAX_SAFE_INTEGER;
     return rankA - rankB;
   }
-  return b.observation.id - a.observation.id;
+  return a.observation.id - b.observation.id;
 }
 
 function resolveLaneOrder(laneOrder?: RetrievalLane[]): RetrievalLane[] {

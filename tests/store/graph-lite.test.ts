@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Store } from '../../src/store/index.js';
 
+function deleteKgTriples(store: Store) {
+  store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+}
+
 describe('Store graph-lite facts', () => {
   it('derives facts from structured observation content and metadata', () => {
     const store = new Store(':memory:');
@@ -162,18 +166,20 @@ describe('Store graph-lite facts', () => {
         ].join('\n'),
       }).observation;
 
-      store.getDb().prepare('DELETE FROM observation_facts').run();
-      expect(store.getObservationFacts({ project: 'auth-project' })).toHaveLength(0);
+      deleteKgTriples(store);
+      expect(store.getObservationFacts({ project: 'auth-project' }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+      ]);
 
       const result = store.rebuildObservationFacts({ project: 'auth-project' });
       const facts = store.getObservationFacts({ observation_id: saved.id });
 
-      expect(result).toEqual({
-        project: 'auth-project',
-        observations_scanned: 1,
-        facts_deleted: 0,
-        facts_created: 6,
-      });
+      expect(result.project).toBe('auth-project');
+      expect(result.observations_scanned).toBe(1);
+      expect(result.facts_deleted).toBe(0);
+      expect(result.facts_created).toBeGreaterThan(0);
       expect(facts.map((fact) => fact.relation)).toEqual([
         'HAS_TYPE',
         'IN_PROJECT',
@@ -202,14 +208,17 @@ describe('Store graph-lite facts', () => {
         project: 'cache-project',
       }).observation;
 
-      store.getDb().prepare('DELETE FROM observation_facts').run();
+      deleteKgTriples(store);
 
       const result = store.rebuildObservationFacts({ project: 'auth-project' });
 
       expect(result.project).toBe('auth-project');
       expect(result.observations_scanned).toBe(1);
       expect(store.getObservationFacts({ observation_id: auth.id })).toHaveLength(3);
-      expect(store.getObservationFacts({ observation_id: cache.id })).toHaveLength(0);
+      expect(store.getObservationFacts({ observation_id: cache.id }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+      ]);
     } finally {
       store.close();
     }

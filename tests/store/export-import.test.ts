@@ -83,10 +83,14 @@ describe('Store — exportData/importData', () => {
 
     const exported = store.exportData();
 
+    expect(Object.keys(exported).sort()).toEqual(['exported_at', 'observations', 'project', 'prompts', 'sessions', 'version']);
     expect(exported.version).toBe(1);
     expect(exported.sessions).toHaveLength(2);
     expect(exported.observations).toHaveLength(2);
     expect(exported.prompts).toHaveLength(2);
+    expect(exported).not.toHaveProperty('kg_triples');
+    expect(exported).not.toHaveProperty('kg_entities');
+    expect(exported).not.toHaveProperty('observation_facts');
   });
 
   it('exportData with a project filter only returns data from that project', () => {
