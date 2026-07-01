@@ -84,7 +84,7 @@ No `[NEEDS CLARIFICATION]` markers remain.
   and master-flag gating composed with B3
 - [x] clarity: env > persisted > default precedence and `parseBoolean`/`parseNumber`
   parsing stated; automatic-vs-manual gating boundary is explicit
-- [x] measurability: default values are concrete (`false`/`10`/`true`), keep-N=0 is
+- [x] measurability: default values are concrete (`true`/`10`/`true`), keep-N=0 is
   a valid non-substituted value, and schema accept/reject are checkable
 - [x] testability: env-wins, persisted-when-unset, defaults-when-unset, keep-N=0,
   schema-validate, and schema-reject-unknown scenarios are each runnable
@@ -121,3 +121,11 @@ No `[NEEDS CLARIFICATION]` markers remain.
   outcomes
 - [x] completeness: B2 multi-hop and B3 supersession cases explicitly re-validated
   under pruning ON
+
+## Apply/Eval Outcome
+- [x] shipped default: `kgPruneEnabled` remains default `true` because
+  `pnpm run eval:retrieval` reported `KG Prune OFF/ON No-Regression Rate` =
+  100.0% (0% regression) and `KG Prune Retention Rate` = 100.0%.
+- [x] rollout label: MINOR — additive config knobs, one additive
+  `CREATE INDEX IF NOT EXISTS` index, and additive CLI/HTTP admin operation; no
+  new KG column, no export/import version change, and no MCP surface expansion.

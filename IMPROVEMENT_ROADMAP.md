@@ -6,10 +6,10 @@
 > resuming without re-discovery. When memory reconnects, mirror this into the
 > `review/thoth-mem/improvement-roadmap` topic.
 
-- **Last updated:** 2026-06-30
+- **Last updated:** 2026-07-01
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.6`
-- **Program status:** A · B1 · B2 · B3 · atomic-writes **SHIPPED** · **C1 planned (at plan gate, not implemented)** · C2 / C3 / cross-harness deferred
+- **Program status:** A · B1 · B2 · B3 · atomic-writes **SHIPPED** · **C1 implemented + verified + archived (uncommitted)** · C2 / C3 / cross-harness deferred
 
 ---
 
@@ -86,7 +86,7 @@ save this roadmap to `review/thoth-mem/improvement-roadmap` → save "B3 shipped
 | **B2** | `kg-multi-hop-recall` | Entity-anchored multi-hop KG recall | ✅ Shipped + archived | `3e27e25` plan · `dfcbdfc` feat · `c12d52d` archive |
 | **B3** | `kg-supersedes-edges` | Supersede-on-update (mark, don't blind-delete) | ✅ Shipped + archived | `d378bd7` plan · `b7c1b5d` feat · `aee8131` archive |
 | **—** | `atomic-observation-writes` | Wrap sync observation writes in a transaction (hardening from B3 review) | ✅ Shipped + archived | `54ac604` fix · `f9a2a2f` archive |
-| **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | 📝 **Planned — at plan gate (not reviewed, not implemented)** | plan artifacts uncommitted → committing with this roadmap |
+| **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ **Implemented + verified + archived (uncommitted)** | pending commit |
 | **C2** | *(not started)* | Consolidation / reflection / decay | ⏳ Backlog | — |
 | **C3** | *(not started)* | Community summaries (LazyGraphRAG / Leiden) | ⏳ Backlog | — |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
@@ -197,7 +197,7 @@ deterministic + optional-LLM KG extraction.
 
 ---
 
-## 6. In Progress — C1 `kg-superseded-pruning` (PLANNED, AT PLAN GATE)
+## 6. Completed — C1 `kg-superseded-pruning` (IMPLEMENTED, VERIFIED, ARCHIVED)
 
 **Why:** After B3, superseded `kg_triples` are marked and **kept forever**. No
 retention/pruning/TTL/VACUUM exists anywhere (greenfield). With
@@ -248,10 +248,10 @@ unbounded graph growth → erodes P4 token-efficiency. C1 bounds it.
   SELECT (`src/indexing/jobs.ts:544-551`) so `collectTouchedSlots` gets slot
   keys without an extra query.
 
-**Artifacts (11 files, in `openspec/changes/kg-superseded-pruning/`):**
+**Artifacts (archived in `openspec/changes/archive/2026-07-01-kg-superseded-pruning/`):**
 `proposal.md` · `design.md` · `tasks.md` (**35 tasks / 4 phases**) ·
 `checklists/requirements.md` · `specs/{config,knowledge-graph,store,indexing,
-retrieval,tools,evals}/spec.md` (20 requirements, 51 scenarios; all
+retrieval,tools,evals}/spec.md` (21 requirements, 55 scenarios; all
 `[NEEDS CLARIFICATION]` resolved; note: **`indexing` is a new baseline spec
 domain** created on archive).
 
@@ -261,30 +261,30 @@ Phase 3 Testing (16, covering ~27 design tests) · Phase 4 Verification & Close
 (`Spec:` + `Design anchor:` + Independent Test + Verification per task); no
 unsatisfiable gates.
 
-**Current status:** plan **complete**, **NOT** oracle-reviewed, **NOT**
-implemented. Stopped at the plan gate by user (time).
+**Current status:** implemented by `sdd-apply`, verified by oracle `sdd-verify`
+round 2 as **PASS** (55/55 scenarios), and archived to
+`openspec/changes/archive/2026-07-01-kg-superseded-pruning/`. The only blocker
+found in round 1 was real prune orphan cleanup deleting unrelated pre-existing
+orphans while dry-run counted only prune-set-caused orphans; fixed by scoping
+real orphan deletion to prune candidate entities. No critical issues or warnings
+remain. Working tree is not yet committed.
 
 ---
 
 ## 7. Resume Checklist (exact next actions for C1)
 
-1. **Plan gate → oracle `plan-reviewer`** on `openspec/changes/kg-superseded-pruning/`.
-   Look for: unsatisfiable gates, correctness/data-loss risks, flag-off
-   byte-identity proof soundness, spec↔design↔tasks coherence, the nested-txn/
-   plain-core reasoning, eval-gated default. Loop until `[OKAY]`.
-2. On `[OKAY]` → give the deep approved-plan overview → **implement-or-stop**
-   gate (user).
-3. Implementation (user externally, or `sdd-apply`) — watch the C1-specific
-   risks: flag-off byte-identical (automatic path + retrieval); nested-txn
-   avoidance (automatic hook must NOT wrap a txn); dangling-ref NULLing +
-   orphan cleanup; `subject_entity_id` prior-SELECT fix; dry-run == real
-   selection; steady-state rebuild does not over-prune.
-4. **Verify** (`sdd-verify`): `pnpm test` + `pnpm run build` +
-   `pnpm run eval:retrieval`. The **OFF-vs-ON no-regression eval gate governs
-   the shipped `kgPruneEnabled` default** (pass → ship ON; regress → flip to
-   `false`, document). Bounded verify-loop (≤3 rounds).
-5. If GREEN → **commit** (`feat` + `chore archive`), merge deltas, archive to
-   `openspec/changes/archive/{date}-kg-superseded-pruning/`. Update this roadmap.
+1. ✅ Plan gate → oracle `plan-reviewer` returned `[OKAY]`.
+2. ✅ User approved implementation.
+3. ✅ Implementation completed via `sdd-apply`.
+4. ✅ Verify loop completed: round 1 failed on scoped orphan cleanup, targeted fix
+   applied, round 2 passed with `pnpm test`, `pnpm run build`, and
+   `pnpm run eval:retrieval` green.
+5. ✅ Archive completed:
+   `openspec/changes/archive/2026-07-01-kg-superseded-pruning/`; deltas merged
+   into baseline specs.
+6. ⬜ Commit working tree. Suggested split: `feat(graph): prune superseded KG
+   history with keep-N retention` and `chore(openspec): archive
+   kg-superseded-pruning`.
 
 ---
 
