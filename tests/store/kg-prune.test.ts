@@ -45,6 +45,47 @@ function countRows(store: Store, where: string, ...params: unknown[]): number {
   return (store.getDb().prepare(`SELECT COUNT(*) AS count FROM ${where}`).get(...params) as { count: number }).count;
 }
 
+const SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES = 16_384;
+
+function seedSupersededPruneCandidatesAboveVariableBoundary(store: Store): void {
+  const db = store.getDb();
+  const subjectId = upsertEntity(store, 'subject:variable-boundary', 'Variable boundary subject');
+  const currentObjectId = upsertEntity(store, 'object:variable-boundary:current', 'Current object');
+  insertTriple(store, {
+    sourceId: 30,
+    subjectId,
+    objectId: currentObjectId,
+    project: 'variable-boundary',
+    hash: 'variable-boundary:current',
+  });
+
+  const insertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'concept', ?, '[]', '{}', datetime('now'))`
+  );
+  const insertPruneTriple = db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, provenance, confidence, triple_hash, extractor_version,
+      superseded_at, superseded_by_triple_id
+    ) VALUES (?, 'HAS_WHAT', ?, 'observation', 30, 'variable-boundary', ?, 0.9, ?, 'test', '2026-01-01 00:00:00', NULL)`
+  );
+  const seed = db.transaction(() => {
+    for (let i = 0; i < SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES; i++) {
+      const key = `object:variable-boundary:old:${i}`;
+      const entity = insertEntity.run(key, `Old object ${i}`);
+      insertPruneTriple.run(
+        subjectId,
+        Number(entity.lastInsertRowid),
+        `observation:30:${i}`,
+        `variable-boundary:old:${i}`,
+      );
+    }
+  });
+
+  seed();
+}
+
 describe('Store KG superseded pruning', () => {
   it('dry-run previews the same keep-N prune that the real run applies', () => {
     const store = new Store(':memory:', {
@@ -191,6 +232,44 @@ describe('Store KG superseded pruning', () => {
       });
       expect(countRows(store, 'kg_entities WHERE id = ?', pruneObjectId)).toBe(0);
       expect(countRows(store, 'kg_entities WHERE id = ?', unrelatedOrphanId)).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('counts orphan cleanup above SQLite variable limits for dry-run and real prune', () => {
+    const store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersededKeepN: 0,
+      },
+    });
+
+    try {
+      seedSupersededPruneCandidatesAboveVariableBoundary(store);
+
+      const dryRun = store.pruneSupersededTriples({ project: 'variable-boundary', dryRun: true });
+      expect(dryRun).toMatchObject({
+        dry_run: true,
+        triples_pruned: SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES,
+        entities_pruned: SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES,
+        superseded_before: SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES,
+        superseded_after: 0,
+      });
+      expect(countRows(store, "kg_triples WHERE project = 'variable-boundary'")).toBe(
+        SQLITE_VARIABLE_BOUNDARY_PRUNE_CANDIDATES + 1,
+      );
+
+      const real = store.pruneSupersededTriples({ project: 'variable-boundary' });
+      expect(real).toMatchObject({
+        dry_run: false,
+        triples_pruned: dryRun.triples_pruned,
+        entities_pruned: dryRun.entities_pruned,
+        superseded_before: dryRun.superseded_before,
+        superseded_after: dryRun.superseded_after,
+      });
+      expect(countRows(store, "kg_triples WHERE project = 'variable-boundary'")).toBe(1);
+      expect(countRows(store, "kg_entities WHERE entity_key LIKE 'object:variable-boundary:old:%'")).toBe(0);
+      expect(countRows(store, "kg_entities WHERE entity_key IN ('subject:variable-boundary', 'object:variable-boundary:current')")).toBe(2);
     } finally {
       store.close();
     }

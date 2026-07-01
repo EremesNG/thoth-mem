@@ -385,34 +385,49 @@ function countDanglingRefsToPruneSet(db: Database.Database, pruneIds: number[]):
   return count;
 }
 
-function countEntitiesOrphanedByPruneSet(db: Database.Database, pruneIds: number[]): number {
-  if (pruneIds.length === 0) {
+function entityIdsFromPruneCandidates(candidates: PruneCandidateRow[]): number[] {
+  return Array.from(new Set(
+    candidates.flatMap((candidate) => [candidate.subject_entity_id, candidate.object_entity_id])
+  ));
+}
+
+function countEntitiesOrphanedByPruneSet(db: Database.Database, candidates: PruneCandidateRow[]): number {
+  if (candidates.length === 0) {
     return 0;
   }
 
-  const ids = placeholders(pruneIds.length);
-  return (db.prepare(
-    `SELECT COUNT(*) AS count
-     FROM kg_entities e
-     WHERE EXISTS (
-       SELECT 1
-       FROM kg_triples pruned
-       WHERE pruned.id IN (${ids})
-         AND (pruned.subject_entity_id = e.id OR pruned.object_entity_id = e.id)
-     )
-       AND NOT EXISTS (
-         SELECT 1
-         FROM kg_triples survivor
-         WHERE survivor.id NOT IN (${ids})
-           AND (survivor.subject_entity_id = e.id OR survivor.object_entity_id = e.id)
-       )`
-  ).get(...pruneIds, ...pruneIds) as { count: number }).count;
+  const pruneIds = new Set(candidates.map((candidate) => candidate.id));
+  const entityIds = entityIdsFromPruneCandidates(candidates);
+  const candidateEntityIds = new Set(entityIds);
+  const entitiesWithSurvivorRefs = new Set<number>();
+
+  for (const chunk of chunkIds(entityIds)) {
+    const rows = db.prepare(
+      `SELECT id, subject_entity_id, object_entity_id
+       FROM kg_triples
+       WHERE subject_entity_id IN (${placeholders(chunk.length)})
+          OR object_entity_id IN (${placeholders(chunk.length)})`
+    ).all(...chunk, ...chunk) as PruneCandidateRow[];
+
+    for (const row of rows) {
+      if (pruneIds.has(row.id)) {
+        continue;
+      }
+
+      if (candidateEntityIds.has(row.subject_entity_id)) {
+        entitiesWithSurvivorRefs.add(row.subject_entity_id);
+      }
+      if (candidateEntityIds.has(row.object_entity_id)) {
+        entitiesWithSurvivorRefs.add(row.object_entity_id);
+      }
+    }
+  }
+
+  return entityIds.filter((entityId) => !entitiesWithSurvivorRefs.has(entityId)).length;
 }
 
 function deleteEntitiesOrphanedByPruneSet(db: Database.Database, candidates: PruneCandidateRow[]): number {
-  const entityIds = Array.from(new Set(
-    candidates.flatMap((candidate) => [candidate.subject_entity_id, candidate.object_entity_id])
-  ));
+  const entityIds = entityIdsFromPruneCandidates(candidates);
 
   if (entityIds.length === 0) {
     return 0;
@@ -447,7 +462,7 @@ export function runSupersededPrune(
   const slotsScanned = countSlots(db, normalizedOptions);
   const danglingRefs = countDanglingRefsToPruneSet(db, pruneIds);
   const entitiesToPrune = normalizedOptions.orphanCleanup
-    ? countEntitiesOrphanedByPruneSet(db, pruneIds)
+    ? countEntitiesOrphanedByPruneSet(db, candidates)
     : 0;
 
   if (normalizedOptions.dryRun) {
