@@ -26,7 +26,7 @@ Every task carries a `Spec:` tag tracing to:
 
 ## Phase 1: Infrastructure
 
-- [ ] 1.1 Append `SUPERSEDES` to `KG_RELATION_TYPES`; add `SUPERSESSION_CONTENT_PATTERNS` constant — `src/indexing/kg-extractor.ts`
+- [x] 1.1 Append `SUPERSEDES` to `KG_RELATION_TYPES`; add `SUPERSESSION_CONTENT_PATTERNS` constant — `src/indexing/kg-extractor.ts`
   **[USN-1]** | Priority: P1
   **Spec:** `knowledge-graph/SUPERSEDES MUST Be Added to the KG Relation Vocabulary`
   **Design anchor:** `File Changes` row `src/indexing/kg-extractor.ts`; Architecture Decision "`SUPERSEDES` joins `KG_RELATION_TYPES` but is EXCLUDED from the multi-hop allow-list"
@@ -38,7 +38,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "kg-extractor"`
   - Expected: Existing KG extractor tests pass; `KG_RELATION_TYPES` length is 27; `SUPERSEDES` is present; constant is exported.
 
-- [ ] 1.2 Add four B3 config knobs to `KnowledgeGraphConfig`, defaults, and env resolver — `src/config.ts`
+- [x] 1.2 Add four B3 config knobs to `KnowledgeGraphConfig`, defaults, and env resolver — `src/config.ts`
   **[USN-2]** | Priority: P1
   **Spec:** `config/Supersession Knobs MUST Resolve Deterministically With Env Overrides`; `config/Supersession Master Flag MUST Gate All B3 Behavior`
   **Design anchor:** Architecture Decision "Single master flag gates everything"; `Interfaces / Contracts` — `KnowledgeGraphConfig`
@@ -51,7 +51,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "config"`
   - Expected: Config tests pass; four knobs present with correct defaults; env override precedence validated.
 
-- [ ] 1.3 Document four B3 knobs in `config.schema.json`; add `"SUPERSEDES"` to relation enum — `config.schema.json`
+- [x] 1.3 Document four B3 knobs in `config.schema.json`; add `"SUPERSEDES"` to relation enum — `config.schema.json`
   **[USN-2]** | Priority: P1
   **Spec:** `config/config.schema.json MUST Document the Supersession Knobs`
   **Design anchor:** `File Changes` row `config.schema.json`; Architecture Decision "`SUPERSEDES` joins `KG_RELATION_TYPES`"
@@ -62,7 +62,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "config"`
   - Expected: Schema validation test passes for a config object carrying all four B3 knobs and `"SUPERSEDES"` in the relation list.
 
-- [ ] 1.4 Add `superseded_by_triple_id` / `superseded_at` to `kg_triples` DDL (fresh-DB schema) — `src/store/schema.ts`
+- [x] 1.4 Add `superseded_by_triple_id` / `superseded_at` to `kg_triples` DDL (fresh-DB schema) — `src/store/schema.ts`
   **[USN-3]** | Priority: P1
   **Spec:** `store/kg_triples MUST Gain Nullable Supersession Columns via Additive Migration`
   **Design anchor:** Architecture Decision "Record supersession as two additive nullable columns"; `File Changes` row `src/store/schema.ts`
@@ -73,7 +73,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "schema"`
   - Expected: `tests/store/schema.test.ts` passes; fresh `kg_triples` contains both nullable supersession columns.
 
-- [ ] 1.5 Add additive migration for the two supersession columns via `addColumnIfMissing` — `src/store/migrations.ts`
+- [x] 1.5 Add additive migration for the two supersession columns via `addColumnIfMissing` — `src/store/migrations.ts`
   **[USN-3]** | Priority: P1
   **Spec:** `store/kg_triples MUST Gain Nullable Supersession Columns via Additive Migration`
   **Design anchor:** Architecture Decision "Record supersession as two additive nullable columns"; `File Changes` row `src/store/migrations.ts`; `addColumnIfMissing` (`:103`), `LEGACY_COLUMN_MIGRATIONS` (`:27-30`)
@@ -88,7 +88,7 @@ Every task carries a `Spec:` tag tracing to:
 
 ## Phase 2: Implementation
 
-- [ ] 2.1 Add optional `superseded?: boolean` to `LaneCandidate.kg` evidence type — `src/retrieval/ranking.ts`
+- [x] 2.1 Add optional `superseded?: boolean` to `LaneCandidate.kg` evidence type — `src/retrieval/ranking.ts`
   **[USN-4]** | Priority: P1
   **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`
   **Design anchor:** `Interfaces / Contracts` — `LaneCandidate.kg`; `File Changes` row `src/retrieval/ranking.ts`
@@ -98,7 +98,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "ranking"`
   - Expected: Existing ranking tests pass; TypeScript compilation succeeds with the additive field.
 
-- [ ] 2.2 Add optional `include_superseded?: boolean` to `ObservationFactsInput` and `ObservationFact` — `src/store/types.ts`
+- [x] 2.2 Add optional `include_superseded?: boolean` to `ObservationFactsInput` and `ObservationFact` — `src/store/types.ts`
   **[USN-5]** | Priority: P1
   **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them` (current-state default for graph view)
   **Design anchor:** `Interfaces / Contracts` — `ObservationFactsInput`; `File Changes` row `src/store/index.ts` (`getObservationFactsFromKg`)
@@ -109,7 +109,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test`
   - Expected: TypeScript compilation succeeds; no existing test breaks due to the additive field.
 
-- [ ] 2.3 **CORE DIFF TASK** — Replace blind DELETE with diff-and-mark-superseded in `persistKgExtraction`; extend `ON CONFLICT` to revive superseded rows — `src/indexing/jobs.ts`
+- [x] 2.3 **CORE DIFF TASK** — Replace blind DELETE with diff-and-mark-superseded in `persistKgExtraction`; extend `ON CONFLICT` to revive superseded rows — `src/indexing/jobs.ts`
   **[USN-6]** | Priority: P1
   **Spec:** `store/The Deterministic Writer MUST Diff and Mark Superseded Instead of Delete-and-Reinsert`; `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts`; `knowledge-graph/Superseded Facts MUST Be Preserved, Not Deleted`
   **Design anchor:** Architecture Decision "Diff-and-mark-superseded inside the shared writer"; Diff Algorithm pseudocode; `File Changes` row `src/indexing/jobs.ts`
@@ -126,7 +126,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed|persist|kg.triple"`
   - Expected: Replace X→Y test passes; X is kept and marked; Y is current; flag-off is byte-identical; idempotent re-extract supersedes nothing.
 
-- [ ] 2.4 **CRITICAL — LLM union fix in `processKgJob`** — ensure enriched second `persistKgExtraction` receives `deterministic ∪ llm` — `src/indexing/jobs.ts`
+- [x] 2.4 **CRITICAL — LLM union fix in `processKgJob`** — ensure enriched second `persistKgExtraction` receives `deterministic ∪ llm` — `src/indexing/jobs.ts`
   **[USN-6]** | Priority: P1
   **Spec:** `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts#Detection requires no model or remote service` (LLM MUST NOT gate deterministic supersession); design Architecture Decision "`extract_kg` LLM double-write must not mass-supersede deterministic facts"
   **Design anchor:** `File Changes` row `src/indexing/jobs.ts` — `processKgJob` (`:427-474`), enriched second write (`:472`); Design open question: "prefer rebuilding the merged extraction via `extractKnowledgeTriples({...extractionInput, llmTriples})`"
@@ -138,9 +138,22 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "llm|extract.kg|processKgJob|mass.supersed"`
   - Expected: LLM double-write test (task 3.9) passes; deterministic facts are NOT mass-superseded by LLM enrichment.
 
-- [ ] 2.5 Deprioritize and flag superseded triples in `queryKnowledgeLane` — `src/store/index.ts`
+- [x] 2.5 Apply gated content-pattern supersession hints in the same-source diff path — `src/indexing/jobs.ts`
+  **[USN-6]** | Priority: P2
+  **Spec:** `knowledge-graph/Content-Pattern Supersession Hints MUST Be Gated and Lower-Confidence`; `knowledge-graph/Supersession MUST NOT Falsely Cross Unrelated Facts`
+  **Design anchor:** Diff Algorithm optional secondary signal; `File Changes` row `src/indexing/kg-extractor.ts`; Testing Strategy item 9
+  - When `kgSupersedeContentPatterns` is false, do not apply content-pattern supersession hints; the primary diff still operates.
+  - When `kgSupersedeContentPatterns` is true, scan only the current observation content with `SUPERSESSION_CONTENT_PATTERNS`, require `confidence >= kgSupersedeConfidenceThreshold`, and require a concrete same-`source_id` prior fact match before marking anything.
+  - Mark only matched prior facts from the same observation; do not supersede unrelated observations or broad unmatched facts.
+  - Keep the secondary signal lower-confidence than the primary diff; the primary per-observation diff remains deterministic and model-free.
+  **Independent Test:** Above-threshold concrete content hint marks one matched prior fact; disabled flag, below-threshold hint, or no concrete match produces no content-pattern marking.
+  **Verification:**
+  - Run: `pnpm test -- -t "content.pattern|supersed"`
+  - Expected: Content-pattern hints are gated by flag + threshold + concrete same-source match; no unrelated fact is superseded.
+
+- [x] 2.6 Deprioritize and flag superseded triples in `queryKnowledgeLane` — `src/store/index.ts`
   **[USN-4]** | Priority: P1
-  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`
+  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`; `retrieval/Superseded KG Evidence MUST Be Deprioritized in Fusion While Preserving the Four-Lane Contract`; `retrieval/Supersession Deprioritization MUST Be Byte-Identical to Baseline When Disabled`
   **Design anchor:** `File Changes` row `src/store/index.ts` — `queryKnowledgeLane` (`:2074-2164`), KG SELECT (`:2095-2096`), candidate emission (`:2112-2130`); Architecture Decision "Deprioritize-and-flag in retrieval (never delete)"
   - When `kgSupersedeEnabled` is true: add `t.superseded_by_triple_id, t.superseded_at` to the SELECT (`:2095-2096`); for rows where `superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL`, multiply the candidate `score` by `kgSupersedeDeprioritizeWeight`; set `kg.superseded = true` on the emitted candidate (`:2112-2130`).
   - When `kgSupersedeEnabled` is false: do NOT add columns or alter scoring — SQL and results are byte-identical to pre-B3.
@@ -150,9 +163,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "query|knowledge.lane|recall|supersed"`
   - Expected: Superseded candidate emitted with `kg.superseded=true` and down-weighted score; flag-off identical to pre-B3; no candidate dropped.
 
-- [ ] 2.6 Deprioritize superseded bridge edges in `buildKnowledgeMultiHopTraversalSql` / `queryKnowledgeMultiHopLane` — `src/store/index.ts`
+- [x] 2.7 Deprioritize superseded bridge edges in `buildKnowledgeMultiHopTraversalSql` / `queryKnowledgeMultiHopLane` — `src/store/index.ts`
   **[USN-4]** | Priority: P1
-  **Spec:** `knowledge-graph/Entity-Anchored Multi-Hop Traversal MUST Surface Observations Reachable Through Shared Entities`; `knowledge-graph/Multi-Hop Traversal MUST Follow Only the Configured Structural Relation Allow-List`
+  **Spec:** `retrieval/Multi-Hop Traversal MUST Prefer Current Truth Over Superseded Edges`; `retrieval/Supersession Deprioritization MUST Be Byte-Identical to Baseline When Disabled`; ``knowledge-graph/`SUPERSEDES` MUST Be Added to the KG Relation Vocabulary``
   **Design anchor:** `File Changes` row `src/store/index.ts` — `buildKnowledgeMultiHopTraversalSql` (`:2237-2333`); Design Architecture Decision "multi-hop CTE deprioritize (index.ts:2288-2316, flag-off byte-identical)"; Open Question resolved: CASE-on-column inside `candidate_edges` CTE
   - When `kgSupersedeEnabled` is true: in `candidate_edges` (`:2288-2314`), wrap edge confidence contribution with `CASE WHEN t.superseded_by_triple_id IS NOT NULL OR t.superseded_at IS NOT NULL THEN confidence * :deprioritizeWeight ELSE confidence END`. Build SQL string conditionally so flag-off emits no CASE expression at all.
   - When `kgSupersedeEnabled` is false: emit `candidate_edges` SQL with no CASE — byte-identical to B2.
@@ -162,7 +175,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "multi.hop|multihop|supersed"`
   - Expected: Superseded bridge edges deprioritized; B2 bounds (cycle-guard, depth, cap) unchanged; `SUPERSEDES` not traversed; flag-off byte-identical.
 
-- [ ] 2.7 Dangling-ref cleanup in `deleteObservation` hard-delete path — `src/store/index.ts`
+- [x] 2.8 Dangling-ref cleanup in `deleteObservation` hard-delete path — `src/store/index.ts`
   **[USN-7]** | Priority: P2
   **Spec:** `store/The Deterministic Writer MUST Diff and Mark Superseded Instead of Delete-and-Reinsert` (delete-path interaction assumption); Design Architecture Decision "Tolerate dangling `superseded_by_triple_id` with best-effort delete-path cleanup"
   **Design anchor:** `File Changes` row `src/store/index.ts` — `deleteObservation` hard-delete txn (`:1583-1588`), `deleteKnowledgeArtifactsForObservation` (`:1148-1153`)
@@ -174,9 +187,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "delete|hard.delete|supersed"`
   - Expected: Delete-path test passes; orphaned prior triple NULLed and treated as current; no error.
 
-- [ ] 2.8 Update `getObservationFactsFromKg` to honor `include_superseded` flag and current-state default — `src/store/index.ts`
+- [x] 2.9 Update `getObservationFactsFromKg` to honor `include_superseded` flag and current-state default — `src/store/index.ts`
   **[USN-5]** | Priority: P1
-  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them` (current-state default for graph view); Design Architecture Decision "current-state default ONLY for `mem_project action=graph`"
+  **Spec:** ``tools/`mem_project action=graph` MUST Default to a Current-State View With History Reachable``; `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`
   **Design anchor:** `File Changes` row `src/store/index.ts` — `getObservationFactsFromKg` (`:3293-3383`), content-row query (`:3323-3333`), `getObservationFacts` (`:3260`); Open Question resolved: `include_superseded` on `ObservationFactsInput`
   - When `kgSupersedeEnabled` is true and `input.include_superseded` is false (default): in the content-row query, add `AND (t.superseded_at IS NULL AND t.superseded_by_triple_id IS NULL)` to exclude superseded content facts from the current-state ledger. Metadata facts (`HAS_TYPE`, `IN_PROJECT`, `HAS_TOPIC_KEY`) are synthesized and never superseded.
   - When `include_superseded=true` or `kgSupersedeEnabled=false`: include all rows; optionally annotate `superseded: true` for history rows.
@@ -186,9 +199,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "graph|getObservation|visualization|observation.facts"`
   - Expected: Default returns current-state only; history reachable with `include_superseded=true`; flag-off byte-identical to pre-B3.
 
-- [ ] 2.9 Update `formatProjectGraph` / `ProjectGraphOptions` to pass current-state default and accept history toggle — `src/tools/project-views.ts`
+- [x] 2.10 Update `formatProjectGraph` / `ProjectGraphOptions` to pass current-state default and accept history toggle — `src/tools/project-views.ts`
   **[USN-5]** | Priority: P2
-  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them` (current-state for graph view); Design Architecture Decision "current-state default ONLY for `mem_project action=graph`"; Open Question resolved
+  **Spec:** ``tools/`mem_project action=graph` MUST Default to a Current-State View With History Reachable``
   **Design anchor:** `File Changes` row `src/tools/project-views.ts` — `formatProjectGraph` (`:31-70`), `ProjectGraphOptions` (`:4-9`)
   - Add optional `includeSuperseded?: boolean` to `ProjectGraphOptions` (default false).
   - `formatProjectGraph` passes `include_superseded: options.includeSuperseded ?? false` to `store.getObservationFacts`.
@@ -199,7 +212,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "project.view|graph|visualization"`
   - Expected: Default `mem_project action=graph` omits superseded; history reachable with `includeSuperseded: true`; `max_chars` behavior unchanged; flag-off byte-identical.
 
-- [ ] 2.10 Update `rebuildObservationFacts` KG branch counters — `src/store/index.ts`
+- [x] 2.11 Update `rebuildObservationFacts` KG branch counters — `src/store/index.ts`
   **[USN-6]** | Priority: P2
   **Spec:** `store/The Deterministic Writer MUST Diff and Mark Superseded Instead of Delete-and-Reinsert#Re-extracting identical content converges with no new supersession`; Design Open Question resolved (recommendation (a))
   **Design anchor:** `File Changes` row `src/store/index.ts` — `rebuildObservationFacts` KG branch (`:3413-3421`); Design requirement: rebuild steady-state supersedes ZERO facts
@@ -212,7 +225,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "rebuild|rebuild.graph|supersed"`
   - Expected: Steady-state rebuild supersedes zero facts; counters reflect the new semantics; flag-off retains pre-B3 counter meaning.
 
-- [ ] 2.11 Add supersession-wins eval case and OFF/ON B2 no-regression gate to `src/evals/retrieval.ts`
+- [x] 2.12 Add supersession-wins eval case and OFF/ON B2 no-regression gate to `src/evals/retrieval.ts`
   **[USN-8]** | Priority: P1
   **Spec:** `evals/Evals MUST Validate That an Updated Fact Outranks the Fact It Replaced`; `evals/Eval Suite MUST Gate on No Retrieval Regression With Supersession Enabled`
   **Design anchor:** `File Changes` row `src/evals/retrieval.ts`; Evals delta "RE-SCOPED FIXTURE — save-then-update, NOT pre-seeded cross-obs facts"
@@ -229,7 +242,7 @@ Every task carries a `Spec:` tag tracing to:
 
 ## Phase 3: Testing
 
-- [ ] 3.1 Write diff-core tests: replace X→Y supersedes X (kept); unchanged-not-superseded; pure removal — `tests/store/kg-supersedes.test.ts` (new or extend `tests/store/kg-facts-cutover.test.ts`)
+- [x] 3.1 Write diff-core tests: replace X→Y supersedes X (kept); unchanged-not-superseded; pure removal — `tests/store/kg-supersedes.test.ts` (new or extend `tests/store/kg-facts-cutover.test.ts`)
   **[USN-9]** | Priority: P1
   **Spec:** `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts#Updating a topic_key observation replaces a fact`; `#Unchanged facts are not superseded`; `#A removed fact with no replacement is superseded with a null pointer`
   **Design anchor:** Testing Strategy items 1, 2, 3; Diff Algorithm properties "Update-safe", "Idempotent"
@@ -241,7 +254,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed"`
   - Expected: All three diff-core cases pass; X is kept and marked; Z unchanged; pure removal with NULL pointer.
 
-- [ ] 3.2 Write first-extract no-op and idempotent re-extract no-op tests
+- [x] 3.2 Write first-extract no-op and idempotent re-extract no-op tests
   **[USN-9]** | Priority: P1
   **Spec:** `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts#First-ever extraction supersedes nothing`; `knowledge-graph/Superseded Facts MUST Be Preserved, Not Deleted#Re-extracting identical content supersedes nothing`
   **Design anchor:** Testing Strategy items 4, 5; Diff Algorithm properties "First-ever extract", "Idempotent"
@@ -252,7 +265,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed|idempotent"`
   - Expected: First-extract produces zero superseded rows; idempotent re-extract produces no new supersession; no duplicates.
 
-- [ ] 3.3 Write revive-on-reassert test
+- [x] 3.3 Write revive-on-reassert test
   **[USN-9]** | Priority: P1
   **Spec:** `knowledge-graph/Superseded Facts MUST Be Preserved, Not Deleted` (revive via ON CONFLICT)
   **Design anchor:** Architecture Decision "Revive a superseded row on re-assert via `ON CONFLICT(triple_hash) DO UPDATE`"; Testing Strategy item 6 (re-assert revive)
@@ -262,7 +275,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed|revive|reassert"`
   - Expected: Revive-on-reassert test passes; single row; supersession cleared.
 
-- [ ] 3.4 Write no-false-cross-observation and no-model-required tests
+- [x] 3.4 Write no-false-cross-observation and no-model-required tests
   **[USN-9]** | Priority: P1
   **Spec:** `knowledge-graph/Supersession MUST NOT Falsely Cross Unrelated Facts#No supersession across different observations`; `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts#Detection requires no model or remote service`
   **Design anchor:** Testing Strategy items 7, 8; Diff Algorithm property "No false cross-observation supersession"; Diff Algorithm property "Deterministic / model-free"
@@ -273,7 +286,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed|cross.obs|model.free"`
   - Expected: No cross-observation supersession; diff operates without any model/remote.
 
-- [ ] 3.5 Write content-pattern gated tests
+- [x] 3.5 Write content-pattern gated tests
   **[USN-9]** | Priority: P2
   **Spec:** `knowledge-graph/Content-Pattern Supersession Hints MUST Be Gated and Lower-Confidence`
   **Design anchor:** Testing Strategy item (content-pattern); Design Architecture Decision "content-pattern secondary signal gated"
@@ -285,9 +298,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "content.pattern|supersed"`
   - Expected: Flag-off produces no content-pattern markings; above-threshold hit marks; below-threshold does not.
 
-- [ ] 3.6 Write recall deprioritization test: current outranks superseded; superseded still emitted with marker
+- [x] 3.6 Write recall deprioritization test: current outranks superseded; superseded still emitted with marker
   **[USN-10]** | Priority: P1
-  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`
+  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them`; `retrieval/Superseded KG Evidence MUST Be Deprioritized in Fusion While Preserving the Four-Lane Contract`
   **Design anchor:** Testing Strategy item 10; Recall / multi-hop data flow diagram
   - Seed a supersession via the diff path (save-then-update).
   - Call `queryKnowledgeLane` (or `hybridRetrieve`) and assert: (a) the current fact's candidate has a higher score than the superseded fact's candidate; (b) the superseded candidate is still present (`kg.superseded === true`); (c) the superseded candidate is NOT absent from the output (not dropped).
@@ -296,9 +309,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "supersed|recall|deprioritize"`
   - Expected: Current outranks superseded; superseded candidate present with `kg.superseded=true`.
 
-- [ ] 3.7 Write multi-hop deprioritization test + B2 no-regression test + flag-off byte-identical test
+- [x] 3.7 Write multi-hop deprioritization test + B2 no-regression test + flag-off byte-identical test
   **[USN-10]** | Priority: P1
-  **Spec:** `knowledge-graph/Entity-Anchored Multi-Hop Traversal MUST Surface Observations Reachable Through Shared Entities`; `knowledge-graph/Multi-Hop Traversal MUST Be Cycle-Guarded and Bounded`
+  **Spec:** `retrieval/Multi-Hop Traversal MUST Prefer Current Truth Over Superseded Edges`; `retrieval/Supersession Deprioritization MUST Be Byte-Identical to Baseline When Disabled`; ``knowledge-graph/`SUPERSEDES` MUST Be Added to the KG Relation Vocabulary``
   **Design anchor:** Testing Strategy items 11, 12; Architecture Decision "flag-off byte-identical"
   - **Multi-hop deprioritization:** Superseded bridge edge in the graph; traversal does not preferentially advance through it; B2 bounds (cycle-guard, depth, cap, allow-list) remain intact; `SUPERSEDES` not in default traversal allow-list.
   - **Flag-off byte-identical:** `kgSupersedeEnabled=false` → `queryKnowledgeLane` output, multi-hop SQL results, `hybridRetrieve` fused output match pre-B3 (compare against flag=false control with same fixtures); writer does delete+reinsert (prior rows are gone, not superseded).
@@ -308,7 +321,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "multi.hop|multihop|supersed"`
   - Expected: Superseded bridge deprioritized; B2 bounds unchanged; flag-off byte-identical; B2 cases pass under supersession ON.
 
-- [ ] 3.8 Write migration idempotency and backward-compat test — `tests/store/migration.test.ts`
+- [x] 3.8 Write migration idempotency and backward-compat test — `tests/store/migration.test.ts`
   **[USN-11]** | Priority: P1
   **Spec:** `store/kg_triples MUST Gain Nullable Supersession Columns via Additive Migration`
   **Design anchor:** Testing Strategy item 13; Architecture Decision "addColumnIfMissing"
@@ -320,7 +333,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "migration"`
   - Expected: All migration tests pass; idempotent; backward-compat confirmed.
 
-- [ ] 3.9 **CRITICAL TEST** — Write LLM double-write no-mass-supersede test (#2 risk)
+- [x] 3.9 **CRITICAL TEST** — Write LLM double-write no-mass-supersede test (#2 risk)
   **[USN-6]** | Priority: P1
   **Spec:** `knowledge-graph/Supersession MUST Be Detected by Diffing an Observation's Re-Extracted Facts#Detection requires no model or remote service` (LLM MUST NOT gate/remove deterministic supersession); Design Architecture Decision "`extract_kg` LLM double-write must not mass-supersede deterministic facts"
   **Design anchor:** Testing Strategy item 15; design critical risk #2
@@ -331,7 +344,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "llm|mass.supersed|extract.kg|double.write"`
   - Expected: REQUIRED — deterministic facts NOT superseded by LLM enrichment; LLM additions inserted as current.
 
-- [ ] 3.10 **CRITICAL TEST** — Write rebuild-graph steady-state supersedes-zero test (#1 risk)
+- [x] 3.10 **CRITICAL TEST** — Write rebuild-graph steady-state supersedes-zero test (#1 risk)
   **[USN-6]** | Priority: P1
   **Spec:** `store/The Deterministic Writer MUST Diff and Mark Superseded Instead of Delete-and-Reinsert#Re-extracting identical content converges with no new supersession`; Design Open Question "rebuild-graph counters"
   **Design anchor:** Testing Strategy item 16; design critical risk #1; `File Changes` row rebuild counters (`:3413-3421`)
@@ -344,7 +357,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "rebuild|rebuild.graph|supersed"`
   - Expected: REQUIRED — steady-state rebuild supersedes zero facts; counters reflect new semantics; stale-triple case correctly supersedes when extractor output genuinely changes.
 
-- [ ] 3.11 Write delete-path no-error test
+- [x] 3.11 Write delete-path no-error test
   **[USN-7]** | Priority: P2
   **Spec:** `store/The Deterministic Writer MUST Diff and Mark Superseded Instead of Delete-and-Reinsert` (delete-path interaction)
   **Design anchor:** Testing Strategy item 14; Architecture Decision "Tolerate dangling superseded_by_triple_id"
@@ -355,9 +368,9 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "delete|hard.delete|supersed"`
   - Expected: No error; X's marker NULLed; history intact.
 
-- [ ] 3.12 Write `mem_project action=graph` current-state default and history-reachable test — `tests/store/visualization.test.ts` or `tests/http-viz.test.ts`
+- [x] 3.12 Write `mem_project action=graph` current-state default and history-reachable test — `tests/store/visualization.test.ts` or `tests/http-viz.test.ts`
   **[USN-5]** | Priority: P1
-  **Spec:** `store/queryKnowledgeLane MUST Deprioritize and Flag Superseded Triples, Not Drop Them` (graph view current-state default); Architecture Decision "current-state default ONLY for `mem_project action=graph`"
+  **Spec:** ``tools/`mem_project action=graph` MUST Default to a Current-State View With History Reachable``
   **Design anchor:** Testing Strategy item 17; Architecture Decision "graph-view history surface via `include_superseded`"
   - Flag ON + superseded observation: default `formatProjectGraph` omits superseded content facts; `formatProjectGraph({ includeSuperseded: true })` returns full history including superseded facts.
   - `max_chars` min-200 / no `0` sentinel unchanged (#4 non-regression).
@@ -367,7 +380,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "visualization|graph|project.view"`
   - Expected: Default hides superseded; history reachable; `max_chars` behavior unchanged; flag-off byte-identical.
 
-- [ ] 3.13 Write config env precedence and schema validation tests — `tests/config.test.ts`
+- [x] 3.13 Write config env precedence and schema validation tests — `tests/config.test.ts`
   **[USN-2]** | Priority: P1
   **Spec:** `config/Supersession Knobs MUST Resolve Deterministically With Env Overrides`; `config/config.schema.json MUST Document the Supersession Knobs`
   **Design anchor:** Testing Strategy item 18; Architecture Decision "env > persisted > default"
@@ -379,7 +392,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "config"`
   - Expected: All config precedence and schema validation tests pass.
 
-- [ ] 3.14 Write export/import unchanged test — `tests/store/export-import.test.ts`
+- [x] 3.14 Write export/import unchanged test — `tests/store/export-import.test.ts`
   **[USN-12]** | Priority: P2
   **Spec:** `store/Supersession Columns MUST NOT Enter the Portable Export/Import Format`
   **Design anchor:** Testing Strategy item 19; proposal "Out of Scope — portable export/import format unchanged"
@@ -390,11 +403,23 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test -- -t "export|import"`
   - Expected: Export/import tests pass; no new supersession fields in export payload; version unchanged.
 
+- [x] 3.15 Write MCP tool registry unchanged test — `tests/tools/mem-project.test.ts` or nearest tool-registration suite
+  **[USN-12]** | Priority: P1
+  **Spec:** `tools/B3 MUST NOT Change the MCP Tool Surface`
+  **Design anchor:** Tools delta "B3 MUST NOT Change the MCP Tool Surface"; proposal "No change to the MCP tool count/names"
+  - Assert the registered MCP tool names remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
+  - Assert no supersession-specific MCP tool is registered.
+  - Keep B3 behavior inside existing tools only (`mem_project action=graph` default view and `mem_recall` superseded annotation/deprioritization).
+  **Independent Test:** Tool registration can be inspected without executing KG supersession writes.
+  **Verification:**
+  - Run: `pnpm test -- -t "tool|registry|mem_project|supersed"`
+  - Expected: Tool registry is unchanged; no supersession-specific tool appears.
+
 ---
 
 ## Phase 4: Verification and Close
 
-- [ ] 4.1 Full test suite green gate
+- [x] 4.1 Full test suite green gate
   **[USN-13]** | Priority: P1
   **Spec:** all B3 requirements in scope
   **Design anchor:** Testing Strategy "vitest + in-memory SQLite (`pnpm test`)"
@@ -404,7 +429,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm test`
   - Expected: All tests pass with zero failures; no pre-existing test regressed.
 
-- [ ] 4.2 Eval gate: supersession-wins pass + B2 no-regression (0% regression condition for default-ON)
+- [x] 4.2 Eval gate: supersession-wins pass + B2 no-regression (0% regression condition for default-ON)
   **[USN-13]** | Priority: P1
   **Spec:** `evals/Evals MUST Validate That an Updated Fact Outranks the Fact It Replaced`; `evals/Eval Suite MUST Gate on No Retrieval Regression With Supersession Enabled`
   **Design anchor:** Testing Strategy item 20; Architecture Decision "Default ON is conditional on the eval no-regression gate"
@@ -416,7 +441,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm run eval:retrieval`
   - Expected: Supersession-wins passes; OFF/ON 0% regression; B2 multi-hop cases surface expected answers under supersession ON.
 
-- [ ] 4.3 Build clean gate
+- [x] 4.3 Build clean gate
   **[USN-13]** | Priority: P1
   **Spec:** all requirements in scope
   **Design anchor:** `openspec/config.yaml` `verify.build_command: 'pnpm run build'`
@@ -426,7 +451,7 @@ Every task carries a `Spec:` tag tracing to:
   - Run: `pnpm run build`
   - Expected: Build succeeds with zero TypeScript errors; dist artifacts produced.
 
-- [ ] 4.4 Record shipped `kgSupersedeEnabled` default and update checklist
+- [x] 4.4 Record shipped `kgSupersedeEnabled` default and update checklist
   **[USN-13]** | Priority: P2
   **Spec:** `config/Supersession Master Flag MUST Gate All B3 Behavior`; proposal success criteria "flag-gated, default ON conditional on eval gate"
   **Design anchor:** Architecture Decision "Default ON is conditional on the eval no-regression gate"; `Migration / Rollout` — MINOR version bump
@@ -439,6 +464,18 @@ Every task carries a `Spec:` tag tracing to:
   **Verification:**
   - Run: `pnpm test && pnpm run build`
   - Expected: Suite green; build clean; checklist updated with shipped default and eval outcome.
+
+- [x] 4.5 Remediate verify round 2 C2: prevent structural `SUPERSEDES` triple emission
+  **[USN-13]** | Priority: P1
+  **Spec:** `knowledge-graph/SUPERSEDES MUST Be Added to the KG Relation Vocabulary`; design invariant "B3 emits NO `SUPERSEDES` triple rows"
+  **Design anchor:** Architecture Decision "`SUPERSEDES` joins `KG_RELATION_TYPES` but is EXCLUDED from the multi-hop allow-list"; Handoff Hint "No `SUPERSEDES` triple rows emitted"
+  - Keep `SUPERSEDES` in vocabulary/schema for diagnostics.
+  - Reject `SUPERSEDES` as a structural relation from explicit graph notation, structured triple blocks, and LLM triple ingestion.
+  - Add tests proving `A -- SUPERSEDES --> B`, structured `relation: SUPERSEDES`, and LLM `SUPERSEDES` inputs produce no emitted KG triples.
+  **Independent Test:** Structural extractor paths return zero `SUPERSEDES` triples while `KG_RELATION_TYPES.includes('SUPERSEDES')` remains true.
+  **Verification:**
+  - Run: `pnpm exec vitest run tests/indexing/kg-extractor.test.ts tests/store/index.test.ts`
+  - Expected: `SUPERSEDES` remains vocabulary-only and no structural extraction path emits it.
 
 ---
 

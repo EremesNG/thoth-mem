@@ -105,3 +105,17 @@ every item being `- [x]` or explicitly waived.
   registry-unchanged scenarios are each runnable
 - [x] clarity: constitution **P1** (no tool surface change) and **P5** (history
   preserved) are explicitly tied to scenarios
+
+## Final Implementation Gate
+- [x] full suite passed on 2026-07-01: `pnpm test` reported 46 files and 529
+  tests passing.
+- [x] retrieval eval passed on 2026-07-01: `pnpm run eval:retrieval` reported 23
+  passing cases, including `supersession current fact wins`, with Recall@5 100.0%
+  and MRR 0.978; supersession OFF/ON no-regression and flag-off behavior gates
+  both reported 100.0%.
+- [x] build passed on 2026-07-01: `pnpm run build` completed TypeScript and
+  dashboard builds successfully.
+- [x] shipped default: `DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeEnabled`
+  remains `true` because the default-ON eval gate passed without regression.
+- [x] version bump label: MINOR, because the change is additive and
+  backward-compatible with no portable export/import contract expansion.
