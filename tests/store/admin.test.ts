@@ -425,6 +425,50 @@ describe('Store — Stats, Delete, Update', () => {
       expect(store.getDb().prepare("SELECT COUNT(*) AS count FROM observations WHERE tool_name = 'maintenance-reflection'").get()).toEqual({ count: 1 });
     });
 
+    it('preserves consolidations when bounded automatic maintenance evaluates only part of the cluster', () => {
+      store.close();
+      store = new Store(':memory:', {
+        maintenance: {
+          automatic: { enabled: true, maxRecordsPerRun: 1 },
+          reflection: { enabled: false },
+          decay: { enabled: false },
+        },
+      });
+      const first = store.saveObservation({
+        title: 'Automatic consolidation source A',
+        content: 'automatic bounded consolidation duplicate',
+        project: 'auto-consolidation-project',
+        type: 'decision',
+      }).observation;
+      const secondId = Number(store.getDb().prepare(
+        `INSERT INTO observations (
+           session_id, type, title, content, project, scope, normalized_hash, sync_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        first.session_id,
+        first.type,
+        'Automatic consolidation source B',
+        first.content,
+        first.project,
+        first.scope,
+        first.normalized_hash,
+        '44444444-4444-4444-8444-444444444444'
+      ).lastInsertRowid);
+
+      store.runMaintenance({ scope: { project: 'auto-consolidation-project' } });
+      const before = store.getDb().prepare(
+        'SELECT source_id FROM maintenance_consolidation_members ORDER BY source_id'
+      ).all() as Array<{ source_id: number }>;
+
+      store.runAutomaticMaintenance({ scope: { project: 'auto-consolidation-project' } });
+      const after = store.getDb().prepare(
+        'SELECT source_id FROM maintenance_consolidation_members ORDER BY source_id'
+      ).all() as Array<{ source_id: number }>;
+
+      expect(before.map((row) => row.source_id)).toEqual([first.id, secondId]);
+      expect(after.map((row) => row.source_id)).toEqual([first.id, secondId]);
+    });
+
     it('does not clear decay metadata for records outside a bounded automatic maintenance batch', () => {
       store.close();
       store = new Store(':memory:', {

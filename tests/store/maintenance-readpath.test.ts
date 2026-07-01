@@ -48,6 +48,47 @@ describe('Store maintenance read-path consumption', () => {
       expect(store.getObservation(second.id)?.content).toContain('source reachable');
     });
 
+    it('clears stale consolidation metadata when an evaluated source stops being a duplicate', async () => {
+      const first = store.saveObservation({
+        title: 'Mutable duplicate source A',
+        content: 'mutable consolidation marker starts duplicated',
+        project: 'consolidation-rollback',
+        type: 'learning',
+      }).observation;
+      const second = store.saveObservation({
+        title: 'Mutable duplicate source B',
+        content: 'mutable consolidation marker starts duplicated',
+        project: 'consolidation-rollback',
+        type: 'learning',
+      }).observation;
+      store.runMaintenance({ scope: { project: 'consolidation-rollback' } });
+
+      store.updateObservation({
+        id: second.id,
+        content: 'fresh solitary zephyr quasar should surface by itself',
+      });
+      store.runMaintenance({ scope: { project: 'consolidation-rollback' } });
+
+      const staleMemberRow = store.getDb().prepare(
+        `SELECT m.source_id
+         FROM maintenance_consolidation_members m
+         JOIN maintenance_consolidations c ON c.id = m.consolidation_id
+         WHERE m.source_kind = 'observation'
+           AND m.source_id = ?`
+      ).get(second.id);
+      const retrieval = await store.hybridRetrieve({
+        query: 'fresh solitary zephyr quasar',
+        project: 'consolidation-rollback',
+        limit: 10,
+      });
+
+      expect(staleMemberRow).toBeUndefined();
+      expect(retrieval.results.map((hit) => hit.observation.id)).toEqual([second.id]);
+      expect(retrieval.results[0].evidence.maintenance?.consolidation).toBeUndefined();
+      expect(store.getObservation(first.id)?.content).toContain('starts duplicated');
+      expect(store.getObservation(second.id)?.content).toContain('should surface by itself');
+    });
+
     it('does not consolidate exact-hash records across different topic keys', async () => {
       store.saveObservation({
         title: 'Topic A duplicate',

@@ -1961,6 +1961,8 @@ export class Store {
         }
       }
 
+      this.clearStaleMaintenanceConsolidations(plan);
+
       const appliedReflections = plan.reflections.map((reflection) => {
         const upserted = this.upsertMaintenanceReflection(runId, reflection);
         this.db.prepare(
@@ -2042,6 +2044,49 @@ export class Store {
     });
 
     return this.applyMaintenancePlan(plan);
+  }
+
+  private clearStaleMaintenanceConsolidations(plan: MaintenancePlan): void {
+    const evaluatedIds = plan.evaluated_observation_ids;
+    if (evaluatedIds.length === 0) {
+      return;
+    }
+
+    const currentClusterKeys = new Set(plan.consolidations.map((consolidation) => consolidation.cluster_key));
+    const evaluatedIdSet = new Set(evaluatedIds);
+    const staleConsolidationIds = new Set<number>();
+    const selectConsolidationMemberIds = this.db.prepare(
+      `SELECT source_id
+       FROM maintenance_consolidation_members
+       WHERE consolidation_id = ?
+         AND source_kind = 'observation'`
+    );
+
+    for (const chunk of chunkIds(evaluatedIds)) {
+      const rows = this.db.prepare(
+        `SELECT DISTINCT c.id, c.cluster_key
+         FROM maintenance_consolidations c
+         JOIN maintenance_consolidation_members m ON m.consolidation_id = c.id
+         WHERE m.source_kind = 'observation'
+           AND m.source_id IN (${placeholders(chunk.length)})`
+      ).all(...chunk) as Array<{ id: number; cluster_key: string }>;
+
+      for (const row of rows) {
+        if (!currentClusterKeys.has(row.cluster_key)) {
+          const memberRows = selectConsolidationMemberIds.all(row.id) as Array<{ source_id: number }>;
+          if (memberRows.every((member) => evaluatedIdSet.has(member.source_id))) {
+            staleConsolidationIds.add(row.id);
+          }
+        }
+      }
+    }
+
+    for (const chunk of chunkIds([...staleConsolidationIds])) {
+      this.db.prepare(
+        `DELETE FROM maintenance_consolidations
+         WHERE id IN (${placeholders(chunk.length)})`
+      ).run(...chunk);
+    }
   }
 
   private clearStaleMaintenanceDecay(plan: MaintenancePlan, runId: number): void {
