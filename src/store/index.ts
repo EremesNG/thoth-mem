@@ -16,6 +16,8 @@ import type {
   OperationTrace,
   OperationTraceListResult,
   ObservationVersion,
+  PruneSupersededTriplesInput,
+  PruneSupersededTriplesResult,
   RebuildObservationFactsInput,
   RebuildObservationFactsResult,
   SaveOperationTraceInput,
@@ -103,6 +105,30 @@ type RetrievalCandidateFilters = {
   time_from?: string;
   time_to?: string;
 };
+
+type PruneSlotPair = {
+  subjectEntityId: number;
+  relation: string;
+};
+
+interface SupersededPruneOptions {
+  keepN: number;
+  project?: string;
+  dryRun?: boolean;
+  orphanCleanup: boolean;
+  slotFilter?: {
+    sourceId: number;
+    pairs: PruneSlotPair[];
+  };
+}
+
+interface PruneCandidateRow {
+  id: number;
+  subject_entity_id: number;
+  object_entity_id: number;
+}
+
+const PRUNE_ID_BATCH_SIZE = 500;
 type SemanticLaneReadiness = Record<SemanticLaneName, {
   pending: boolean;
   degraded: boolean;
@@ -259,6 +285,215 @@ const VIZ_LIMITS = {
 
 const OBSERVATORY_CONTEXT_TTL_MS = 1000 * 60 * 30;
 const OBSERVATORY_PIVOT_TTL_MS = 1000 * 60 * 10;
+
+function chunkIds(ids: number[], size = PRUNE_ID_BATCH_SIZE): number[][] {
+  const chunks: number[][] = [];
+  for (let index = 0; index < ids.length; index += size) {
+    chunks.push(ids.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function placeholders(count: number): string {
+  return Array(count).fill('?').join(', ');
+}
+
+function supersededScopeClause(options: SupersededPruneOptions, alias = 't'): { clause: string; params: unknown[] } {
+  const parts = [
+    `${alias}.source_type = 'observation'`,
+    `(${alias}.superseded_at IS NOT NULL OR ${alias}.superseded_by_triple_id IS NOT NULL)`,
+  ];
+  const params: unknown[] = [];
+
+  if (options.project) {
+    parts.push(`${alias}.project = ?`);
+    params.push(options.project);
+  }
+
+  if (options.slotFilter) {
+    if (options.slotFilter.pairs.length === 0) {
+      parts.push('1 = 0');
+    } else {
+      parts.push(`${alias}.source_id = ?`);
+      params.push(options.slotFilter.sourceId);
+      const pairClauses = options.slotFilter.pairs.map(() => `(${alias}.subject_entity_id = ? AND ${alias}.relation = ?)`);
+      parts.push(`(${pairClauses.join(' OR ')})`);
+      for (const pair of options.slotFilter.pairs) {
+        params.push(pair.subjectEntityId, pair.relation);
+      }
+    }
+  }
+
+  return {
+    clause: parts.join(' AND '),
+    params,
+  };
+}
+
+function selectPruneCandidates(db: Database.Database, options: SupersededPruneOptions): PruneCandidateRow[] {
+  const scope = supersededScopeClause(options);
+  return db.prepare(
+    `WITH ranked AS (
+       SELECT
+         t.id,
+         t.subject_entity_id,
+         t.object_entity_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.source_id, t.subject_entity_id, t.relation
+           ORDER BY t.superseded_at DESC, t.id DESC
+         ) AS rn
+       FROM kg_triples t
+       WHERE ${scope.clause}
+     )
+     SELECT id, subject_entity_id, object_entity_id
+     FROM ranked
+     WHERE rn > ?`
+  ).all(...scope.params, options.keepN) as PruneCandidateRow[];
+}
+
+function countSuperseded(db: Database.Database, options: SupersededPruneOptions): number {
+  const scope = supersededScopeClause(options);
+  return (db.prepare(`SELECT COUNT(*) AS count FROM kg_triples t WHERE ${scope.clause}`).get(...scope.params) as { count: number }).count;
+}
+
+function countSlots(db: Database.Database, options: SupersededPruneOptions): number {
+  const scope = supersededScopeClause(options);
+  return (db.prepare(
+    `SELECT COUNT(*) AS count
+     FROM (
+       SELECT 1
+       FROM kg_triples t
+       WHERE ${scope.clause}
+       GROUP BY t.source_id, t.subject_entity_id, t.relation
+     )`
+  ).get(...scope.params) as { count: number }).count;
+}
+
+function countDanglingRefsToPruneSet(db: Database.Database, pruneIds: number[]): number {
+  if (pruneIds.length === 0) {
+    return 0;
+  }
+
+  let count = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    count += (db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE superseded_by_triple_id IN (${placeholders(chunk.length)})`
+    ).get(...chunk) as { count: number }).count;
+  }
+  return count;
+}
+
+function countEntitiesOrphanedByPruneSet(db: Database.Database, pruneIds: number[]): number {
+  if (pruneIds.length === 0) {
+    return 0;
+  }
+
+  const ids = placeholders(pruneIds.length);
+  return (db.prepare(
+    `SELECT COUNT(*) AS count
+     FROM kg_entities e
+     WHERE EXISTS (
+       SELECT 1
+       FROM kg_triples pruned
+       WHERE pruned.id IN (${ids})
+         AND (pruned.subject_entity_id = e.id OR pruned.object_entity_id = e.id)
+     )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM kg_triples survivor
+         WHERE survivor.id NOT IN (${ids})
+           AND (survivor.subject_entity_id = e.id OR survivor.object_entity_id = e.id)
+       )`
+  ).get(...pruneIds, ...pruneIds) as { count: number }).count;
+}
+
+function deleteEntitiesOrphanedByPruneSet(db: Database.Database, candidates: PruneCandidateRow[]): number {
+  const entityIds = Array.from(new Set(
+    candidates.flatMap((candidate) => [candidate.subject_entity_id, candidate.object_entity_id])
+  ));
+
+  if (entityIds.length === 0) {
+    return 0;
+  }
+
+  let changes = 0;
+  for (const chunk of chunkIds(entityIds)) {
+    changes += db.prepare(
+      `DELETE FROM kg_entities
+       WHERE id IN (${placeholders(chunk.length)})
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kg_triples
+           WHERE kg_triples.subject_entity_id = kg_entities.id
+              OR kg_triples.object_entity_id = kg_entities.id
+         )`
+    ).run(...chunk).changes;
+  }
+
+  return changes;
+}
+
+export function runSupersededPrune(
+  db: Database.Database,
+  options: SupersededPruneOptions,
+): PruneSupersededTriplesResult {
+  const keepN = Math.max(0, Math.floor(options.keepN));
+  const normalizedOptions = { ...options, keepN };
+  const candidates = selectPruneCandidates(db, normalizedOptions);
+  const pruneIds = candidates.map((candidate) => candidate.id);
+  const supersededBefore = countSuperseded(db, normalizedOptions);
+  const slotsScanned = countSlots(db, normalizedOptions);
+  const danglingRefs = countDanglingRefsToPruneSet(db, pruneIds);
+  const entitiesToPrune = normalizedOptions.orphanCleanup
+    ? countEntitiesOrphanedByPruneSet(db, pruneIds)
+    : 0;
+
+  if (normalizedOptions.dryRun) {
+    return {
+      project: normalizedOptions.project ?? null,
+      dry_run: true,
+      slots_scanned: slotsScanned,
+      triples_pruned: pruneIds.length,
+      entities_pruned: entitiesToPrune,
+      dangling_refs_nulled: danglingRefs,
+      superseded_before: supersededBefore,
+      superseded_after: Math.max(0, supersededBefore - pruneIds.length),
+    };
+  }
+
+  let danglingRefsNulled = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    danglingRefsNulled += db.prepare(
+      `UPDATE kg_triples
+       SET superseded_by_triple_id = NULL,
+           superseded_at = NULL
+       WHERE superseded_by_triple_id IN (${placeholders(chunk.length)})`
+    ).run(...chunk).changes;
+  }
+
+  let triplesPruned = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    triplesPruned += db.prepare(
+      `DELETE FROM kg_triples WHERE id IN (${placeholders(chunk.length)})`
+    ).run(...chunk).changes;
+  }
+
+  const entitiesPruned = normalizedOptions.orphanCleanup ? deleteEntitiesOrphanedByPruneSet(db, candidates) : 0;
+  const supersededAfter = countSuperseded(db, normalizedOptions);
+
+  return {
+    project: normalizedOptions.project ?? null,
+    dry_run: false,
+    slots_scanned: slotsScanned,
+    triples_pruned: triplesPruned,
+    entities_pruned: entitiesPruned,
+    dangling_refs_nulled: danglingRefsNulled,
+    superseded_before: supersededBefore,
+    superseded_after: supersededAfter,
+  };
+}
 
 export class Store {
   private db: Database.Database;
@@ -3503,6 +3738,18 @@ export class Store {
       facts_deleted: factsDeleted,
       facts_created: factsCreated,
     };
+  }
+
+  pruneSupersededTriples(input: PruneSupersededTriplesInput = {}): PruneSupersededTriplesResult {
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const prune = this.db.transaction(() => runSupersededPrune(this.db, {
+      keepN: knowledgeGraph.kgSupersededKeepN,
+      project: input.project,
+      dryRun: input.dryRun,
+      orphanCleanup: knowledgeGraph.kgPruneOrphanEntities,
+    }));
+
+    return prune();
   }
 
   getObservationVersions(observationId: number): ObservationVersion[] {

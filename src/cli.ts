@@ -32,6 +32,7 @@ Commands:
    migrate-project <old> <new>  Rename a project
    delete-project <project>     Delete a project safely
    rebuild-graph          Rebuild derived graph facts
+   prune-graph            Bound superseded graph history (keep-N)
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    version                Show version
@@ -588,6 +589,41 @@ async function handleRebuildGraph(positionals: string[], globals: GlobalOptions)
   });
 }
 
+async function handlePruneGraph(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const dryRun = positionals.includes('--dry-run');
+  const all = positionals.includes('--all');
+  const rest = positionals.filter((arg) => arg !== '--all' && arg !== '--dry-run');
+  const hasProject = globals.project !== undefined;
+
+  if (all && hasProject) {
+    fail('Use either --project or --all, not both');
+  }
+
+  if (!all && !hasProject) {
+    fail('prune-graph requires --project <name> or --all');
+  }
+
+  ensureNoExtraArgs(rest, 'prune-graph');
+
+  const project = hasProject
+    ? parseRequiredProjectName(globals.project, 'prune-graph --project')
+    : undefined;
+
+  await withStore(globals.dataDir, ({ store }) => {
+    const result = store.pruneSupersededTriples({ project, dryRun });
+    printStdout([
+      '## Graph Prune Complete',
+      `- **Scope:** ${result.project ? `project ${result.project}` : 'all projects'}`,
+      `- **Dry run:** ${result.dry_run ? 'yes' : 'no'}`,
+      `- **Slots scanned:** ${result.slots_scanned}`,
+      `- **Triples pruned:** ${result.triples_pruned}`,
+      `- **Entities pruned:** ${result.entities_pruned}`,
+      `- **Dangling refs NULLed:** ${result.dangling_refs_nulled}`,
+      `- **Superseded before -> after:** ${result.superseded_before} -> ${result.superseded_after}`,
+    ].join('\n'));
+  });
+}
+
 async function handleRebuildIndex(positionals: string[], globals: GlobalOptions): Promise<void> {
   const parsedReason = parseOptionValue(positionals, ['--reason']);
   const parsedProcess = parseOptionValue(parsedReason.rest, ['--process']);
@@ -699,6 +735,9 @@ export async function runCli(args: string[]): Promise<void> {
          return;
        case 'rebuild-graph':
          await handleRebuildGraph(parsed.positionals, parsed.globals);
+         return;
+       case 'prune-graph':
+         await handlePruneGraph(parsed.positionals, parsed.globals);
          return;
        case 'rebuild-index':
          await handleRebuildIndex(parsed.positionals, parsed.globals);

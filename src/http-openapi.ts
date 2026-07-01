@@ -214,6 +214,30 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/graph/prune': {
+        post: {
+          summary: 'Prune superseded graph history',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/PruneGraphRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Graph prune result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/PruneGraphResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -1142,6 +1166,36 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             facts_created: { type: 'integer' },
           },
           required: ['project', 'observations_scanned', 'facts_deleted', 'facts_created'],
+        },
+        PruneGraphRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            dryRun: { type: 'boolean' },
+          },
+        },
+        PruneGraphResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            dry_run: { type: 'boolean' },
+            slots_scanned: { type: 'integer' },
+            triples_pruned: { type: 'integer' },
+            entities_pruned: { type: 'integer' },
+            dangling_refs_nulled: { type: 'integer' },
+            superseded_before: { type: 'integer' },
+            superseded_after: { type: 'integer' },
+          },
+          required: [
+            'project',
+            'dry_run',
+            'slots_scanned',
+            'triples_pruned',
+            'entities_pruned',
+            'dangling_refs_nulled',
+            'superseded_before',
+            'superseded_after',
+          ],
         },
         DeleteProjectRequest: {
           type: 'object',

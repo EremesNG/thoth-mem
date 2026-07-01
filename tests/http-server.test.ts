@@ -87,6 +87,36 @@ function createDashboardFixture(): string {
   return directory;
 }
 
+function seedPrunableGraphRows(store: Store, project = 'ops-project'): void {
+  const db = store.getDb();
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(`http-prune:${project}:subject`, 'HTTP prune subject') as { id: number };
+  db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')`
+  ).run(`http-prune:${project}:unrelated-orphan`, 'HTTP unrelated prune orphan');
+
+  for (let index = 1; index <= 3; index++) {
+    const object = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+       RETURNING id`
+    ).get(`http-prune:${project}:object:${index}`, `HTTP prune object ${index}`) as { id: number };
+    db.prepare(
+      `INSERT INTO kg_triples (
+        subject_entity_id, relation, object_entity_id, source_type, source_id,
+        project, provenance, confidence, triple_hash, extractor_version, superseded_at
+      ) VALUES (?, 'HAS_WHAT', ?, 'observation', 9101, ?, 'test', 0.9, ?, 'test', ?)`
+    ).run(subject.id, object.id, project, `http-prune:${project}:${index}`, `2026-01-0${index} 00:00:00`);
+  }
+}
+
 function getUrl(port: number, path: string): string {
   return `http://127.0.0.1:${port}${path}`;
 }
@@ -397,6 +427,7 @@ describe('createHttpBridge', () => {
       expect.objectContaining({ id: 'mcp-mem-recall', origin: 'mcp', target: 'mem_recall' }),
       expect.objectContaining({ id: 'rebuild-index', origin: 'http', method: 'POST', path: '/index/rebuild' }),
       expect.objectContaining({ id: 'rebuild-graph', origin: 'http', method: 'POST', path: '/graph/rebuild' }),
+      expect.objectContaining({ id: 'prune-graph', origin: 'http', method: 'POST', path: '/graph/prune' }),
     ]));
 
     const version = await fetchJson('/version', undefined, bridge.port);
@@ -412,6 +443,7 @@ describe('createHttpBridge', () => {
     expect(openapi.body.paths['/index/status']).toBeDefined();
     expect(openapi.body.paths['/index/rebuild']).toBeDefined();
     expect(openapi.body.paths['/graph/rebuild']).toBeDefined();
+    expect(openapi.body.paths['/graph/prune']).toBeDefined();
     expect(openapi.body.components.schemas.OperationTrace).toBeDefined();
 
     const indexRebuild = await fetchJson(
@@ -453,6 +485,44 @@ describe('createHttpBridge', () => {
     });
     expect(graphRebuild.body.facts_created).toBe(0);
     expect(graphRebuild.body.facts_deleted).toBe(0);
+
+    bridge.store.config.knowledgeGraph!.kgSupersededKeepN = 1;
+    seedPrunableGraphRows(bridge.store);
+    const graphPruneDryRun = await fetchJson(
+      '/graph/prune',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project', dryRun: true }),
+      },
+      bridge.port,
+    );
+    expect(graphPruneDryRun.response.status).toBe(200);
+    expect(graphPruneDryRun.body).toMatchObject({
+      project: 'ops-project',
+      dry_run: true,
+      triples_pruned: 2,
+      entities_pruned: 2,
+    });
+    const graphPruneReal = await fetchJson(
+      '/graph/prune',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project' }),
+      },
+      bridge.port,
+    );
+    expect(graphPruneReal.response.status).toBe(200);
+    expect(graphPruneReal.body).toMatchObject({
+      project: 'ops-project',
+      dry_run: false,
+      triples_pruned: 2,
+      entities_pruned: 2,
+    });
+    expect(bridge.store.getDb().prepare(
+      "SELECT COUNT(*) AS count FROM kg_entities WHERE entity_key = 'http-prune:ops-project:unrelated-orphan'"
+    ).get()).toEqual({ count: 1 });
   });
 
   it('supports observation CRUD, search, and paginated retrieval', async () => {

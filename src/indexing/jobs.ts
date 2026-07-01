@@ -1,4 +1,5 @@
 import type { Store } from '../store/index.js';
+import { runSupersededPrune } from '../store/index.js';
 import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG } from '../config.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../retrieval/sentences.js';
@@ -35,6 +36,10 @@ type ObservationKgRow = {
   project: string | null;
   topic_key: string | null;
   sync_id: string | null;
+};
+type TouchedPruneSlot = {
+  subjectEntityId: number;
+  relation: string;
 };
 
 const STALE_RUNNING_JOB_MODIFIER = '-15 minutes';
@@ -542,7 +547,7 @@ function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: Kg
 
   const priorRows = supersedeEnabled
     ? db.prepare(
-      `SELECT t.id, t.triple_hash, t.relation, se.canonical_name AS subject, oe.canonical_name AS object,
+      `SELECT t.id, t.triple_hash, t.subject_entity_id, t.relation, se.canonical_name AS subject, oe.canonical_name AS object,
               t.superseded_by_triple_id, t.superseded_at
        FROM kg_triples t
        JOIN kg_entities se ON se.id = t.subject_entity_id
@@ -552,6 +557,7 @@ function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: Kg
     ).all(obs.id) as Array<{
       id: number;
       triple_hash: string;
+      subject_entity_id: number;
       relation: string;
       subject: string;
       object: string;
@@ -613,6 +619,15 @@ function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: Kg
        AND superseded_at IS NULL
        AND superseded_by_triple_id IS NULL`
   );
+  const touchedSlots = new Map<string, TouchedPruneSlot>();
+  const rememberTouchedSlot = (prior: { subject_entity_id: number; relation: string }) => {
+    const key = `${prior.subject_entity_id}\u0000${prior.relation}`;
+    touchedSlots.set(key, {
+      subjectEntityId: prior.subject_entity_id,
+      relation: prior.relation,
+    });
+  };
+
   for (const prior of priorByHash.values()) {
     if (newHashes.has(prior.triple_hash)) continue;
     const replacement = newRows.find((row) => (
@@ -620,26 +635,39 @@ function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: Kg
       && row.relation === prior.relation
       && row.object !== prior.object
     ));
-    markSuperseded.run(replacement?.id ?? null, prior.id);
-  }
-
-  if (!knowledgeGraphConfig.kgSupersedeContentPatterns) {
-    return;
-  }
-
-  const contentHasSupersessionHint = SUPERSESSION_CONTENT_PATTERNS.some((hint) => (
-    hint.confidence >= knowledgeGraphConfig.kgSupersedeConfidenceThreshold && hint.pattern.test(obs.content)
-  ));
-  if (!contentHasSupersessionHint) {
-    return;
-  }
-
-  const normalizedContent = obs.content.toLowerCase();
-  for (const prior of priorByHash.values()) {
-    if (!normalizedContent.includes(prior.object.toLowerCase())) {
-      continue;
+    const result = markSuperseded.run(replacement?.id ?? null, prior.id);
+    if (result.changes > 0) {
+      rememberTouchedSlot(prior);
     }
-    markSuperseded.run(null, prior.id);
+  }
+
+  if (knowledgeGraphConfig.kgSupersedeContentPatterns) {
+    const contentHasSupersessionHint = SUPERSESSION_CONTENT_PATTERNS.some((hint) => (
+      hint.confidence >= knowledgeGraphConfig.kgSupersedeConfidenceThreshold && hint.pattern.test(obs.content)
+    ));
+    if (contentHasSupersessionHint) {
+      const normalizedContent = obs.content.toLowerCase();
+      for (const prior of priorByHash.values()) {
+        if (!normalizedContent.includes(prior.object.toLowerCase())) {
+          continue;
+        }
+        const result = markSuperseded.run(null, prior.id);
+        if (result.changes > 0) {
+          rememberTouchedSlot(prior);
+        }
+      }
+    }
+  }
+
+  if (knowledgeGraphConfig.kgPruneEnabled && touchedSlots.size > 0) {
+    runSupersededPrune(db, {
+      keepN: knowledgeGraphConfig.kgSupersededKeepN,
+      orphanCleanup: knowledgeGraphConfig.kgPruneOrphanEntities,
+      slotFilter: {
+        sourceId: obs.id,
+        pairs: Array.from(touchedSlots.values()),
+      },
+    });
   }
 }
 

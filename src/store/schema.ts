@@ -229,6 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_relation ON kg_triples(relation);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_project ON kg_triples(project);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_topic ON kg_triples(topic_key);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by_triple_id);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at);
 `;
 
 /**

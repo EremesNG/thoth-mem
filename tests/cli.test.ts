@@ -76,6 +76,43 @@ function clearGraphFacts(dataDir: string): void {
   }
 }
 
+function seedPrunableGraph(dataDir: string, project = 'cli-project'): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    const db = store.getDb();
+    const subject = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+       RETURNING id`
+    ).get('prune:subject', 'Prune subject') as { id: number };
+    db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')`
+    ).run('prune:unrelated-orphan', 'Unrelated prune orphan');
+
+    for (let index = 1; index <= 3; index++) {
+      const object = db.prepare(
+        `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+         VALUES (?, 'concept', ?)
+         ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+         RETURNING id`
+      ).get(`prune:object:${index}`, `Prune object ${index}`) as { id: number };
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          project, provenance, confidence, triple_hash, extractor_version, superseded_at
+        ) VALUES (?, 'HAS_WHAT', ?, 'observation', 9001, ?, 'test', 0.9, ?, 'test', ?)`
+      ).run(subject.id, object.id, project, `prune:${index}`, `2026-01-0${index} 00:00:00`);
+    }
+  } finally {
+    store.close();
+  }
+}
+
 function seedDeleteProjectStore(dataDir: string): void {
   ensureDir(dataDir);
   const store = new Store(join(dataDir, 'thoth.db'));
@@ -395,6 +432,50 @@ describe('runCli', () => {
     expect(stdout).toContain('- **Facts created:**');
   });
 
+  it('prunes graph history from the CLI with dry-run and real modes', async () => {
+    const dataDir = join(tempDir, 'data');
+    ensureDir(dataDir);
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      knowledgeGraph: {
+        kgSupersededKeepN: 1,
+      },
+    }));
+    seedPrunableGraph(dataDir);
+
+    const dryRun = await captureCli(['prune-graph', '--project', 'cli-project', '--dry-run', '--data-dir', dataDir]);
+
+    expect(dryRun.stderr).toBe('');
+    expect(dryRun.stdout).toContain('## Graph Prune Complete');
+    expect(dryRun.stdout).toContain('- **Dry run:** yes');
+    expect(dryRun.stdout).toContain('- **Triples pruned:** 2');
+    expect(dryRun.stdout).toContain('- **Entities pruned:** 2');
+
+    const afterDryRunStore = new Store(join(dataDir, 'thoth.db'));
+    try {
+      const count = afterDryRunStore.getDb().prepare('SELECT COUNT(*) AS count FROM kg_triples').get() as { count: number };
+      expect(count.count).toBe(3);
+    } finally {
+      afterDryRunStore.close();
+    }
+
+    const real = await captureCli(['prune-graph', '--project', 'cli-project', '--data-dir', dataDir]);
+    expect(real.stdout).toContain('- **Dry run:** no');
+    expect(real.stdout).toContain('- **Triples pruned:** 2');
+    expect(real.stdout).toContain('- **Entities pruned:** 2');
+
+    const afterRealStore = new Store(join(dataDir, 'thoth.db'));
+    try {
+      const count = afterRealStore.getDb().prepare('SELECT COUNT(*) AS count FROM kg_triples').get() as { count: number };
+      expect(count.count).toBe(1);
+      const unrelatedOrphan = afterRealStore.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_entities WHERE entity_key = 'prune:unrelated-orphan'"
+      ).get() as { count: number };
+      expect(unrelatedOrphan.count).toBe(1);
+    } finally {
+      afterRealStore.close();
+    }
+  });
+
   it('requires exactly one rebuild-graph scope', async () => {
     let missingScopeError: unknown;
     try {
@@ -415,6 +496,18 @@ describe('runCli', () => {
 
     expect(conflictingScopeError).toBeInstanceOf(Error);
     expect((conflictingScopeError as Error).message).toContain('Use either --project or --all, not both');
+  });
+
+  it('requires exactly one prune-graph scope', async () => {
+    let missingScopeError: unknown;
+    try {
+      await captureCli(['prune-graph']);
+    } catch (caught) {
+      missingScopeError = caught;
+    }
+
+    expect(missingScopeError).toBeInstanceOf(Error);
+    expect((missingScopeError as Error).message).toContain('prune-graph requires --project <name> or --all');
   });
 
   it('queues and reports semantic rebuild-index for a project', async () => {
@@ -563,6 +656,7 @@ describe('runCli', () => {
     expect(shouldRunCli(['migrate-project', 'old', 'new'])).toBe(true);
     expect(shouldRunCli(['delete-project', 'project-name'])).toBe(true);
     expect(shouldRunCli(['rebuild-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['prune-graph', '--all'])).toBe(true);
     expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
     expect(shouldRunCli(['mcp'])).toBe(false);
   });

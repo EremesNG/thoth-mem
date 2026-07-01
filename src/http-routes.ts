@@ -59,6 +59,7 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'rebuild-index', origin: 'http', label: 'Rebuild index', kind: 'indexing', method: 'POST', path: '/index/rebuild', description: 'Queue semantic index rebuild work and optionally process queued jobs.' },
   { id: 'index-status', origin: 'http', label: 'Index status', kind: 'indexing', method: 'GET', path: '/index/status', description: 'Inspect semantic lane readiness, queue counts, coverage, and recent failures.' },
   { id: 'rebuild-graph', origin: 'http', label: 'Rebuild graph', kind: 'indexing', method: 'POST', path: '/graph/rebuild', description: 'Rebuild deterministic graph-lite facts from saved observations.' },
+  { id: 'prune-graph', origin: 'http', label: 'Prune graph', kind: 'indexing', method: 'POST', path: '/graph/prune', description: 'Bound superseded KG history using the configured keep-N policy.' },
   { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
   { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
   { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
@@ -69,6 +70,7 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'mcp-mem-session', origin: 'mcp', label: 'mem_session', kind: 'write', target: 'mem_session', description: 'Start, checkpoint, or summarize a memory session.' },
   { id: 'cli-rebuild-index', origin: 'cli', label: 'rebuild-index', kind: 'indexing', target: 'rebuild-index', description: 'CLI equivalent for queueing or inspecting semantic index rebuild jobs.' },
   { id: 'cli-rebuild-graph', origin: 'cli', label: 'rebuild-graph', kind: 'indexing', target: 'rebuild-graph', description: 'CLI equivalent for rebuilding graph-lite facts.' },
+  { id: 'cli-prune-graph', origin: 'cli', label: 'prune-graph', kind: 'indexing', target: 'prune-graph', description: 'CLI equivalent for bounding superseded graph history.' },
   { id: 'cli-version', origin: 'cli', label: 'version', kind: 'read', target: 'version', description: 'CLI equivalent for package version output.' },
 ];
 
@@ -216,6 +218,18 @@ function parseOptionalBoolean(value: string | null, fieldName: string): boolean 
   }
 
   throw new HttpRouteError(400, `Invalid boolean field: ${fieldName}`);
+}
+
+function optionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'boolean') {
+    throw new HttpRouteError(400, `Invalid field: ${fieldName}`);
+  }
+
+  return value;
 }
 
 function parseObservationType(value: unknown, fieldName: string): ObservationType | undefined {
@@ -576,6 +590,17 @@ export async function handleRebuildGraph(store: Store, request: HttpRouteRequest
     status: 200,
     body: store.rebuildObservationFacts({
       project: optionalString(body?.project, 'project'),
+    }),
+  };
+}
+
+export async function handlePruneGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.pruneSupersededTriples({
+      project: optionalString(body?.project, 'project'),
+      dryRun: optionalBoolean(body?.dryRun, 'dryRun') ?? false,
     }),
   };
 }

@@ -83,6 +83,8 @@ export interface RetrievalEvalSummary {
     hybrid_rank_source_rate: number;
     supersession_no_regression_rate: number;
     supersession_flag_off_rate: number;
+    kg_prune_retention_rate: number;
+    kg_prune_no_regression_rate: number;
   };
 }
 
@@ -677,6 +679,8 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Hybrid Rank Source Rate | ${formatPercent(summary.hybrid.hybrid_rank_source_rate)} |`,
     `| Supersession OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.supersession_no_regression_rate)} |`,
     `| Supersession Flag-Off Behavior Rate | ${formatPercent(summary.hybrid.supersession_flag_off_rate)} |`,
+    `| KG Prune Retention Rate | ${formatPercent(summary.hybrid.kg_prune_retention_rate)} |`,
+    `| KG Prune OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.kg_prune_no_regression_rate)} |`,
     '',
     '## Corpus',
     '',
@@ -774,6 +778,87 @@ async function validateSupersessionFlagOffBehavior(): Promise<boolean> {
     );
   } finally {
     controlStore.close();
+  }
+}
+
+async function validateKgPruneRetentionCase(
+  store: Store,
+  runtime: Store & {
+    processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+    hybridRetrieve: (input: {
+      query: string;
+      limit?: number;
+      project?: string;
+      embeddingProvider?: EmbeddingProviderAdapter | null;
+    }) => Promise<{ results: Array<{ observation: { id: number } }> }>;
+  },
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<boolean> {
+  const knowledgeGraph = store.config.knowledgeGraph;
+  if (!knowledgeGraph) return false;
+
+  const previousPruneEnabled = knowledgeGraph.kgPruneEnabled;
+  const previousKeepN = knowledgeGraph.kgSupersededKeepN;
+
+  try {
+    knowledgeGraph.kgPruneEnabled = false;
+    knowledgeGraph.kgSupersededKeepN = 1;
+
+    const saved = store.saveObservation({
+      title: 'KG prune retention eval',
+      type: 'decision',
+      project: 'kg-prune-eval',
+      topic_key: 'eval/kg-prune-retention',
+      content: '**What**: Retention cache uses Redis',
+    }).observation;
+
+    for (const value of ['Retention cache uses Valkey', 'Retention cache uses Dragonfly', 'Retention cache uses Garnet']) {
+      store.updateObservation({
+        id: saved.id,
+        content: `**What**: ${value}`,
+      });
+    }
+
+    const supersededBefore = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND (superseded_at IS NOT NULL OR superseded_by_triple_id IS NOT NULL)`
+    ).get(saved.id) as { count: number }).count;
+    const dryRun = store.pruneSupersededTriples({ project: 'kg-prune-eval', dryRun: true });
+    const real = store.pruneSupersededTriples({ project: 'kg-prune-eval' });
+    const supersededAfter = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND (superseded_at IS NOT NULL OR superseded_by_triple_id IS NOT NULL)`
+    ).get(saved.id) as { count: number }).count;
+    const currentAfter = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND superseded_at IS NULL AND superseded_by_triple_id IS NULL`
+    ).get(saved.id) as { count: number }).count;
+
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    const retrieval = await runtime.hybridRetrieve({
+      query: 'Garnet retention cache',
+      project: 'kg-prune-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+
+    return (
+      supersededBefore === 3
+      && dryRun.triples_pruned > 0
+      && real.triples_pruned === dryRun.triples_pruned
+      && supersededAfter === 1
+      && currentAfter === 1
+      && retrieval.results.some((hit) => hit.observation.id === saved.id)
+    );
+  } finally {
+    knowledgeGraph.kgPruneEnabled = previousPruneEnabled;
+    knowledgeGraph.kgSupersededKeepN = previousKeepN;
   }
 }
 
@@ -926,6 +1011,8 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const hydeLiftChecks: boolean[] = [];
     const supersessionNoRegressionChecks: boolean[] = [];
     const supersessionFlagOffChecks: boolean[] = [];
+    const kgPruneRetentionChecks: boolean[] = [];
+    const kgPruneNoRegressionChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
@@ -937,6 +1024,11 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const setKgSupersedeEnabled = (enabled: boolean): void => {
       if (store.config.knowledgeGraph) {
         store.config.knowledgeGraph.kgSupersedeEnabled = enabled;
+      }
+    };
+    const setKgPruneEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgPruneEnabled = enabled;
       }
     };
     for (const evalCase of CASES) {
@@ -968,6 +1060,15 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       });
       setKgSupersedeEnabled(true);
       setKgMultiHopEnabled(true);
+      setKgPruneEnabled(false);
+      const pruneOffHyde = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setKgPruneEnabled(true);
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -985,6 +1086,14 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
       const baselineHydeRankIndex = hydeBaseline.results.findIndex((hit) => hit.observation.id === expectedId);
       const supersedeOffHydeRankIndex = supersedeOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      const pruneOffHydeRankIndex = pruneOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      if (pruneOffHydeRankIndex === -1) {
+        throw new Error(`kg pruning OFF eval failed in case "${evalCase.name}"`);
+      }
+      if (hydeRankIndex === -1 || hydeRankIndex > pruneOffHydeRankIndex) {
+        throw new Error(`kg pruning ON regression in eval case "${evalCase.name}"`);
+      }
+      kgPruneNoRegressionChecks.push(true);
       if (evalCase.expectedKey !== 'kg-supersession') {
         if (supersedeOffHydeRankIndex === -1) {
           throw new Error(`kg supersession OFF eval failed in case "${evalCase.name}"`);
@@ -1102,6 +1211,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       throw new Error('kg supersession flag-off eval retained or flagged stale superseded history');
     }
     supersessionFlagOffChecks.push(flagOffBehaviorOk);
+    kgPruneRetentionChecks.push(await validateKgPruneRetentionCase(store, runtime, embeddingProvider));
 
     const found = cases.filter((result) => result.found);
     const reciprocalRankSum = cases.reduce((sum, result) => sum + (result.rank ? 1 / result.rank : 0), 0);
@@ -1156,6 +1266,8 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         hybrid_rank_source_rate: ratio(countTrue(hybridRankSourceChecks), totalHybridCases),
         supersession_no_regression_rate: ratio(countTrue(supersessionNoRegressionChecks), supersessionNoRegressionChecks.length),
         supersession_flag_off_rate: ratio(countTrue(supersessionFlagOffChecks), supersessionFlagOffChecks.length),
+        kg_prune_retention_rate: ratio(countTrue(kgPruneRetentionChecks), kgPruneRetentionChecks.length),
+        kg_prune_no_regression_rate: ratio(countTrue(kgPruneNoRegressionChecks), kgPruneNoRegressionChecks.length),
       },
     };
 

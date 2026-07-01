@@ -202,6 +202,19 @@
           "minimum": 0,
           "description": "Score multiplier applied to superseded KG evidence during retrieval."
         },
+        "kgPruneEnabled": {
+          "type": "boolean",
+          "description": "Enables automatic keep-N pruning of old superseded KG triples during supersession writes."
+        },
+        "kgSupersededKeepN": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of most-recent superseded KG triples retained per source/subject/relation slot."
+        },
+        "kgPruneOrphanEntities": {
+          "type": "boolean",
+          "description": "Removes KG entities left with no referencing triples after a superseded-triple prune."
+        },
         "kgRelationAllowList": {
           "type": "array",
           "uniqueItems": true,

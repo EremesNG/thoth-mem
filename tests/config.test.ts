@@ -140,6 +140,9 @@ describe('getConfig', () => {
       kgSupersedeContentPatterns: false,
       kgSupersedeConfidenceThreshold: 0.8,
       kgSupersedeDeprioritizeWeight: 0.5,
+      kgPruneEnabled: true,
+      kgSupersededKeepN: 10,
+      kgPruneOrphanEntities: true,
     });
   });
 
@@ -177,6 +180,9 @@ describe('getConfig', () => {
       kgSupersedeContentPatterns: false,
       kgSupersedeConfidenceThreshold: 0.8,
       kgSupersedeDeprioritizeWeight: 0.5,
+      kgPruneEnabled: true,
+      kgSupersededKeepN: 10,
+      kgPruneOrphanEntities: true,
     });
   });
 
@@ -230,6 +236,43 @@ describe('getConfig', () => {
       kgSupersedeContentPatterns: false,
       kgSupersedeConfidenceThreshold: 0.9,
       kgSupersedeDeprioritizeWeight: 0.4,
+    });
+  });
+
+  it('resolves KG pruning knobs from env, persisted config, then defaults', () => {
+    expect(resolveKnowledgeGraphConfig({})).toMatchObject({
+      kgPruneEnabled: true,
+      kgSupersededKeepN: 10,
+      kgPruneOrphanEntities: true,
+    });
+
+    const persisted = resolveKnowledgeGraphConfig({
+      knowledgeGraph: {
+        kgPruneEnabled: false,
+        kgSupersededKeepN: 0,
+        kgPruneOrphanEntities: false,
+      },
+    });
+    expect(persisted).toMatchObject({
+      kgPruneEnabled: false,
+      kgSupersededKeepN: 0,
+      kgPruneOrphanEntities: false,
+    });
+
+    process.env.THOTH_KG_PRUNE_ENABLED = 'true';
+    process.env.THOTH_KG_SUPERSEDED_KEEP_N = '3';
+    process.env.THOTH_KG_PRUNE_ORPHAN_ENTITIES = 'true';
+
+    expect(resolveKnowledgeGraphConfig({
+      knowledgeGraph: {
+        kgPruneEnabled: false,
+        kgSupersededKeepN: 7,
+        kgPruneOrphanEntities: false,
+      },
+    })).toMatchObject({
+      kgPruneEnabled: true,
+      kgSupersededKeepN: 3,
+      kgPruneOrphanEntities: true,
     });
   });
 });
@@ -424,6 +467,9 @@ describe('embedding config (hybrid retrieval baseline)', () => {
             kgSupersedeContentPatterns: { type: 'boolean' },
             kgSupersedeConfidenceThreshold: { type: 'number', minimum: 0, maximum: 1 },
             kgSupersedeDeprioritizeWeight: { type: 'number', minimum: 0 },
+            kgPruneEnabled: { type: 'boolean' },
+            kgSupersededKeepN: { type: 'integer', minimum: 0 },
+            kgPruneOrphanEntities: { type: 'boolean' },
           },
         },
       },

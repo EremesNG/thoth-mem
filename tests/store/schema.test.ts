@@ -81,6 +81,7 @@ describe('Database Schema', () => {
     expect(indexNames).toContain('idx_prompts_session');
     expect(indexNames).toContain('idx_prompts_project');
     expect(indexNames).toContain('idx_kg_triples_superseded');
+    expect(indexNames).toContain('idx_kg_triples_slot_superseded');
     db.close();
   });
 

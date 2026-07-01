@@ -19,6 +19,7 @@ const CLI_SUBCOMMANDS = new Set([
   'migrate-project',
   'delete-project',
   'rebuild-graph',
+  'prune-graph',
   'rebuild-index',
   'version',
   'help',

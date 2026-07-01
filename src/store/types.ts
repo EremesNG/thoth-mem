@@ -336,6 +336,22 @@ export interface RebuildObservationFactsResult {
   facts_created: number;
 }
 
+export interface PruneSupersededTriplesInput {
+  project?: string;
+  dryRun?: boolean;
+}
+
+export interface PruneSupersededTriplesResult {
+  project: string | null;
+  dry_run: boolean;
+  slots_scanned: number;
+  triples_pruned: number;
+  entities_pruned: number;
+  dangling_refs_nulled: number;
+  superseded_before: number;
+  superseded_after: number;
+}
+
 export interface VizSliceRequest {
   project?: string;
   session_id?: string;

@@ -90,6 +90,13 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Supersession Flag-Off Behavior Rate |');
   });
 
+  it('reports KG pruning keep-N and OFF/ON no-regression evidence', async () => {
+    expect(report.summary.hybrid.kg_prune_retention_rate).toBe(1);
+    expect(report.summary.hybrid.kg_prune_no_regression_rate).toBe(1);
+    expect(report.markdown).toContain('| KG Prune Retention Rate |');
+    expect(report.markdown).toContain('| KG Prune OFF/ON No-Regression Rate |');
+  });
+
   it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {
     const source = readFileSync(join(process.cwd(), 'src/evals/retrieval.ts'), 'utf-8');
 
@@ -124,7 +131,7 @@ describe('retrieval eval baseline', () => {
     const scaledReport = await runRetrievalEval({ noiseCount: 120 });
 
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
-    expect(scaledReport.summary.corpus.total_observations).toBe(134);
+    expect(scaledReport.summary.corpus.total_observations).toBe(135);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
     expect(scaledReport.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
     expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);

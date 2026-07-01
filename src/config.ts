@@ -48,6 +48,9 @@ export interface KnowledgeGraphConfig {
   kgSupersedeContentPatterns: boolean;
   kgSupersedeConfidenceThreshold: number;
   kgSupersedeDeprioritizeWeight: number;
+  kgPruneEnabled: boolean;
+  kgSupersededKeepN: number;
+  kgPruneOrphanEntities: boolean;
 }
 
 export interface EmbeddingConfig {
@@ -170,6 +173,9 @@ export const DEFAULT_KNOWLEDGE_GRAPH_CONFIG: KnowledgeGraphConfig = {
   kgSupersedeContentPatterns: false,
   kgSupersedeConfidenceThreshold: 0.8,
   kgSupersedeDeprioritizeWeight: 0.5,
+  kgPruneEnabled: true,
+  kgSupersededKeepN: 10,
+  kgPruneOrphanEntities: true,
 };
 
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
@@ -464,6 +470,9 @@ export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): Knowled
   const supersedeContentPatternsFromEnv = parseBoolean(process.env.THOTH_KG_SUPERSEDE_CONTENT_PATTERNS);
   const supersedeConfidenceThresholdFromEnv = parseNumber(process.env.THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD);
   const supersedeDeprioritizeWeightFromEnv = parseNumber(process.env.THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT);
+  const pruneEnabledFromEnv = parseBoolean(process.env.THOTH_KG_PRUNE_ENABLED);
+  const supersededKeepNFromEnv = parseNumber(process.env.THOTH_KG_SUPERSEDED_KEEP_N);
+  const pruneOrphanEntitiesFromEnv = parseBoolean(process.env.THOTH_KG_PRUNE_ORPHAN_ENTITIES);
   const relationAllowList = parseRelationAllowList(process.env.THOTH_KG_RELATION_ALLOW_LIST)
     ?? normalizeRelationAllowList(persistedKg.kgRelationAllowList)
     ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgRelationAllowList;
@@ -494,6 +503,15 @@ export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): Knowled
     kgSupersedeDeprioritizeWeight: supersedeDeprioritizeWeightFromEnv
       ?? persistedKg.kgSupersedeDeprioritizeWeight
       ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeDeprioritizeWeight,
+    kgPruneEnabled: pruneEnabledFromEnv
+      ?? persistedKg.kgPruneEnabled
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgPruneEnabled,
+    kgSupersededKeepN: supersededKeepNFromEnv
+      ?? persistedKg.kgSupersededKeepN
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersededKeepN,
+    kgPruneOrphanEntities: pruneOrphanEntitiesFromEnv
+      ?? persistedKg.kgPruneOrphanEntities
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgPruneOrphanEntities,
   };
 }
 

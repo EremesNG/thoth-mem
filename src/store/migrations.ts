@@ -225,6 +225,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     db.exec(SEMANTIC_METADATA_SQL);
     rebuildSemanticRowidsWithoutObservationForeignKey(db);
     db.exec(SEMANTIC_METADATA_INDEXES_SQL);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at)');
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);
     const missingTopicKeyFtsColumn = !ftsHasColumn(

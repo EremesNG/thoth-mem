@@ -253,11 +253,15 @@ describe('Store — Migration behaviors', () => {
       const index = db.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_kg_triples_superseded'"
       ).get() as { name?: string } | undefined;
+      const pruneIndex = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_kg_triples_slot_superseded'"
+      ).get() as { name?: string } | undefined;
 
       expect(byName.get('superseded_by_triple_id')).toMatchObject({ type: 'INTEGER', notnull: 0 });
       expect(byName.get('superseded_at')).toMatchObject({ type: 'TEXT', notnull: 0 });
       expect(row).toEqual({ superseded_by_triple_id: null, superseded_at: null });
       expect(index?.name).toBe('idx_kg_triples_superseded');
+      expect(pruneIndex?.name).toBe('idx_kg_triples_slot_superseded');
     } finally {
       db.close();
     }
