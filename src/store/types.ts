@@ -99,6 +99,7 @@ export interface ObservationFact {
   topic_key: string | null;
   type: ObservationType;
   created_at: string;
+  superseded?: boolean;
 }
 
 export interface TopicKeySummary {
@@ -138,6 +139,7 @@ export interface ObservationFactsInput {
   observation_id?: number;
   project?: string;
   topic_key?: string;
+  include_superseded?: boolean;
 }
 
 export interface RebuildObservationFactsInput {

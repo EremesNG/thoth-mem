@@ -214,6 +214,77 @@ describe('Store visualization', () => {
     }
   });
 
+  it('formats project graph as current-state by default while history remains reachable', () => {
+    const store = new Store(':memory:');
+    try {
+      store.saveObservation({
+        title: 'Superseded ledger memory',
+        content: '**What**: Redis cache',
+        project: 'viz-superseded',
+        topic_key: 'kg/superseded-ledger',
+        type: 'decision',
+      });
+      store.saveObservation({
+        title: 'Superseded ledger memory',
+        content: '**What**: Valkey cache',
+        project: 'viz-superseded',
+        topic_key: 'kg/superseded-ledger',
+        type: 'decision',
+      });
+
+      const currentGraph = formatProjectGraph(store, 'viz-superseded', { maxChars: 2000 });
+      const historyGraph = formatProjectGraph(store, 'viz-superseded', { includeSuperseded: true, maxChars: 2000 });
+      const historyFacts = store.getObservationFacts({ project: 'viz-superseded', include_superseded: true });
+      const supersededFact = historyFacts.find((fact) => fact.object === 'Redis cache');
+
+      expect(currentGraph).toContain('Superseded ledger memory -- HAS_WHAT --> Valkey cache');
+      expect(currentGraph).not.toContain('Superseded ledger memory -- HAS_WHAT --> Redis cache');
+      expect(historyGraph).toContain('Superseded ledger memory -- HAS_WHAT --> Redis cache');
+      expect(supersededFact?.superseded).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('formats flag-off graph ledger as legacy current output even if rows carry supersession markers', () => {
+    const store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeEnabled: false,
+      },
+    } as any);
+    try {
+      const saved = store.saveObservation({
+        title: 'Flag-off ledger memory',
+        content: '**What**: Redis cache',
+        project: 'viz-flag-off',
+        topic_key: 'kg/flag-off-ledger',
+        type: 'decision',
+      });
+      const row = store.getDb().prepare(
+        `SELECT kt.id
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ?
+           AND kt.relation = 'HAS_WHAT'
+           AND oe.canonical_name = 'Redis cache'`
+      ).get(saved.observation.id) as { id: number };
+      store.getDb().prepare(
+        "UPDATE kg_triples SET superseded_at = datetime('now') WHERE id = ?"
+      ).run(row.id);
+
+      const facts = store.getObservationFacts({ project: 'viz-flag-off' });
+      const graph = formatProjectGraph(store, 'viz-flag-off', { maxChars: 2000 });
+
+      expect(facts.find((fact) => fact.object === 'Redis cache')).toEqual(expect.objectContaining({
+        object: 'Redis cache',
+      }));
+      expect(facts.find((fact) => fact.object === 'Redis cache')?.superseded).toBeUndefined();
+      expect(graph).toContain('Flag-off ledger memory -- HAS_WHAT --> Redis cache');
+    } finally {
+      store.close();
+    }
+  });
+
   it('supports observatory context/recall/frontier/ledger/timeline with deterministic frontier semantics', async () => {
     const store = new Store(':memory:');
     try {

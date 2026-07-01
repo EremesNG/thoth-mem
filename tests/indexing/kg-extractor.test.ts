@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { extractKnowledgeTriples } from '../../src/indexing/kg-extractor.js';
+import {
+  DEFAULT_KG_RELATION_ALLOW_LIST,
+} from '../../src/config.js';
+import {
+  KG_RELATION_TYPES,
+  SUPERSESSION_CONTENT_PATTERNS,
+  extractKnowledgeTriples,
+} from '../../src/indexing/kg-extractor.js';
 
 interface TripleShape {
   subject: string;
@@ -25,6 +32,24 @@ function hasTriple(triples: TripleShape[], subject: string, relation: string, ob
 }
 
 describe('kg-extractor relation quality', () => {
+  it('exposes SUPERSEDES as vocabulary without structural extraction patterns', () => {
+    expect(KG_RELATION_TYPES).toContain('SUPERSEDES');
+    expect(KG_RELATION_TYPES).toHaveLength(27);
+    expect(DEFAULT_KG_RELATION_ALLOW_LIST).not.toContain('SUPERSEDES');
+
+    expect(SUPERSESSION_CONTENT_PATTERNS.map(({ pattern }) => pattern.source)).toEqual([
+      '\\bno longer\\b',
+      '\\breplaced by\\b',
+      '\\bdeprecated\\b',
+      '\\bchanged to\\b',
+      '\\bsuperseded by\\b',
+    ]);
+    expect(SUPERSESSION_CONTENT_PATTERNS.every(({ confidence }) => confidence < 0.95)).toBe(true);
+
+    const triples = triplesFrom('Auth service was replaced by identity gateway.');
+    expect(triples.some((triple) => triple.relation === 'SUPERSEDES')).toBe(false);
+  });
+
   it('reverses direction for passive by-relations', () => {
     const triples = triplesFrom(
       [
@@ -66,6 +91,14 @@ describe('kg-extractor relation quality', () => {
     expect(hasTriple(triples, 'cache layer', 'INVALID_EDGE', 'redis')).toBe(false);
   });
 
+  it('does not emit SUPERSEDES triples from explicit graph notation', () => {
+    const triples = triplesFrom('A -- SUPERSEDES --> B');
+
+    expect(KG_RELATION_TYPES).toContain('SUPERSEDES');
+    expect(triples.some((triple) => triple.relation === 'SUPERSEDES')).toBe(false);
+    expect(hasTriple(triples, 'a', 'SUPERSEDES', 'b')).toBe(false);
+  });
+
   it('parses structured subject-relation-object blocks', () => {
     const triples = triplesFrom(
       [
@@ -81,6 +114,19 @@ describe('kg-extractor relation quality', () => {
 
     expect(hasTriple(triples, 'arcrift retrieval engine', 'DEPENDS_ON', 'sentence vector index')).toBe(true);
     expect(hasTriple(triples, 'memory sync pipeline', 'IMPLEMENTS', 'portable backup chunks')).toBe(true);
+  });
+
+  it('does not emit SUPERSEDES triples from structured subject-relation-object blocks', () => {
+    const triples = triplesFrom(
+      [
+        'Subject: old memory fact',
+        'Relation: SUPERSEDES',
+        'Object: new memory fact',
+      ].join('\n')
+    );
+
+    expect(triples.some((triple) => triple.relation === 'SUPERSEDES')).toBe(false);
+    expect(hasTriple(triples, 'old memory fact', 'SUPERSEDES', 'new memory fact')).toBe(false);
   });
 
   it('extracts dependency language used in architecture notes', () => {
@@ -148,6 +194,25 @@ describe('kg-extractor relation quality', () => {
     });
     expect(hasTriple(extraction.triples, 'memory router', 'DEPENDS_ON', 'context budget')).toBe(true);
     expect(extraction.triples.some((triple) => triple.relation === 'IMAGINES')).toBe(false);
+  });
+
+  it('does not emit SUPERSEDES triples from LLM triple input', () => {
+    const extraction = extractKnowledgeTriples({
+      content: 'Auth service depends on Redis cache.',
+      provenance: 'test://kg-extractor',
+      llmFallback: { enabled: true, minContentChars: 10 },
+      llmTriples: [
+        {
+          subject: 'Old Memory Fact',
+          relation: 'SUPERSEDES',
+          object: 'New Memory Fact',
+          confidence: 0.93,
+        },
+      ],
+    });
+
+    expect(extraction.triples.some((triple) => triple.relation === 'SUPERSEDES')).toBe(false);
+    expect(hasTriple(extraction.triples, 'old memory fact', 'SUPERSEDES', 'new memory fact')).toBe(false);
   });
 
   it('preserves structured section content beyond 500 characters', () => {

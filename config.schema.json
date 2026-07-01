@@ -183,6 +183,25 @@
           "type": "integer",
           "minimum": 0
         },
+        "kgSupersedeEnabled": {
+          "type": "boolean",
+          "description": "Enables KG supersession detection, marking, deprioritization, and current-state graph views."
+        },
+        "kgSupersedeContentPatterns": {
+          "type": "boolean",
+          "description": "Enables optional lower-confidence content-pattern supersession hints."
+        },
+        "kgSupersedeConfidenceThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence for optional content-pattern supersession hints."
+        },
+        "kgSupersedeDeprioritizeWeight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Score multiplier applied to superseded KG evidence during retrieval."
+        },
         "kgRelationAllowList": {
           "type": "array",
           "uniqueItems": true,
@@ -214,7 +233,8 @@
               "HAS_WHAT",
               "HAS_WHY",
               "HAS_WHERE",
-              "HAS_LEARNED"
+              "HAS_LEARNED",
+              "SUPERSEDES"
             ]
           }
         }

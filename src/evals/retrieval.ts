@@ -81,6 +81,8 @@ export interface RetrievalEvalSummary {
     surgical_compression: number;
     hyde_lift_rate: number;
     hybrid_rank_source_rate: number;
+    supersession_no_regression_rate: number;
+    supersession_flag_off_rate: number;
   };
 }
 
@@ -92,6 +94,7 @@ export interface RetrievalEvalReport {
 
 const TOP_K = 5;
 const DEFAULT_NOISE_OBSERVATION_COUNT = 96;
+const SUPERSESSION_SIGNAL_OBSERVATIONS = 1;
 const EVAL_STOP_WORDS = new Set([
   'a',
   'an',
@@ -529,6 +532,12 @@ const CASES: EvalCase[] = [
     expectedKey: 'kg-multi-hop',
   },
   {
+    name: 'supersession current fact wins',
+    query: 'cache',
+    project: 'supersession-project',
+    expectedKey: 'kg-supersession',
+  },
+  {
     name: 'non-synthetic README filter recall',
     query: 'precision filters session scope topic key time range',
     kind: 'non-synthetic',
@@ -565,6 +574,22 @@ function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
     const result = store.saveObservation(fixture.observation);
     idsByKey.set(fixture.key, result.observation.id);
   }
+
+  store.saveObservation({
+    title: 'Supersession cache decision',
+    type: 'decision',
+    project: 'supersession-project',
+    topic_key: 'eval/supersession-cache',
+    content: '**What**: Redis cache',
+  });
+  const current = store.saveObservation({
+    title: 'Supersession cache decision',
+    type: 'decision',
+    project: 'supersession-project',
+    topic_key: 'eval/supersession-cache',
+    content: '**What**: Valkey cache',
+  });
+  idsByKey.set('kg-supersession', current.observation.id);
 
   return idsByKey;
 }
@@ -650,6 +675,8 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Surgical Compression | ${formatPercent(summary.hybrid.surgical_compression)} |`,
     `| HyDE Lift Rate | ${formatPercent(summary.hybrid.hyde_lift_rate)} |`,
     `| Hybrid Rank Source Rate | ${formatPercent(summary.hybrid.hybrid_rank_source_rate)} |`,
+    `| Supersession OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.supersession_no_regression_rate)} |`,
+    `| Supersession Flag-Off Behavior Rate | ${formatPercent(summary.hybrid.supersession_flag_off_rate)} |`,
     '',
     '## Corpus',
     '',
@@ -682,6 +709,74 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
   ].join('\n');
 }
 
+async function validateSupersessionFlagOffBehavior(): Promise<boolean> {
+  const controlStore = new Store(':memory:');
+  try {
+    if (controlStore.config.knowledgeGraph) {
+      controlStore.config.knowledgeGraph.kgSupersedeEnabled = false;
+    }
+    controlStore.saveObservation({
+      title: 'Supersession flag-off control',
+      type: 'decision',
+      project: 'supersession-off-project',
+      topic_key: 'eval/supersession-flag-off-control',
+      content: '**What**: Redis cache',
+    });
+    const current = controlStore.saveObservation({
+      title: 'Supersession flag-off control',
+      type: 'decision',
+      project: 'supersession-off-project',
+      topic_key: 'eval/supersession-flag-off-control',
+      content: '**What**: Valkey cache',
+    });
+    const runtime = controlStore as Store & {
+      processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+      hybridRetrieve: (input: {
+        query: string;
+        limit?: number;
+        project?: string;
+        embeddingProvider?: EmbeddingProviderAdapter | null;
+        hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+      }) => Promise<{
+        results: Array<{
+          observation: { id: number };
+          evidence: {
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; text?: string; kg?: { superseded?: boolean } }>>>;
+          };
+        }>;
+      }>;
+    };
+    const embeddingProvider = makeDeterministicEmbeddingProvider(controlStore);
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    const kgRows = controlStore.getDb().prepare(
+      `SELECT
+         oe.canonical_name AS object,
+         t.superseded_by_triple_id AS supersededByTripleId,
+         t.superseded_at AS supersededAt
+       FROM kg_triples t
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       WHERE t.source_type = 'observation' AND t.source_id = ?`
+    ).all(current.observation.id) as Array<{ object: string; supersededByTripleId: number | null; supersededAt: string | null }>;
+    const retrieval = await runtime.hybridRetrieve({
+      query: 'cache',
+      project: 'supersession-off-project',
+      limit: TOP_K,
+      embeddingProvider,
+      hyde: { enabled: true, mode: 'success', answer: 'Valkey cache is the current cache decision.' },
+    });
+    const kgCandidates = retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
+    return (
+      retrieval.results.some((hit) => hit.observation.id === current.observation.id)
+      && kgRows.some((row) => row.object === 'Valkey cache')
+      && !kgRows.some((row) => row.object === 'Redis cache')
+      && kgRows.every((row) => row.supersededByTripleId === null && row.supersededAt === null)
+      && kgCandidates.every((candidate) => !candidate.kg?.superseded && !String(candidate.text ?? '').includes('Redis cache'))
+    );
+  } finally {
+    controlStore.close();
+  }
+}
+
 export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Promise<RetrievalEvalReport> {
   const store = new Store(':memory:');
 
@@ -711,16 +806,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         results: Array<{
           observation: { id: number; content: string };
           evidence: {
-            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; text: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
+            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; text: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string; superseded?: boolean } };
             promotedParent?: { chunkKey: string; text?: string };
-            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; kg?: { provenance?: string } }>>>;
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; text?: string; kg?: { provenance?: string; superseded?: boolean } }>>>;
           };
         }>;
         pending: boolean;
         semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
       }>;
     };
-    const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + noiseCount;
+    const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + SUPERSESSION_SIGNAL_OBSERVATIONS + noiseCount;
     await runtime.processSemanticJobs({ limit: seededObservationCount * 4 + 20, embeddingProvider });
 
     const staleSeed = store.saveObservation({
@@ -829,6 +924,8 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const factsSourceChecks: boolean[] = [];
     const hybridRankSourceChecks: boolean[] = [];
     const hydeLiftChecks: boolean[] = [];
+    const supersessionNoRegressionChecks: boolean[] = [];
+    const supersessionFlagOffChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
@@ -837,9 +934,15 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         store.config.knowledgeGraph.kgMultiHopEnabled = enabled;
       }
     };
+    const setKgSupersedeEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgSupersedeEnabled = enabled;
+      }
+    };
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
       const expected = [...FIXTURES, ...NON_SYNTHETIC_FIXTURES].find((fixture) => fixture.key === evalCase.expectedKey);
+      setKgSupersedeEnabled(true);
       setKgMultiHopEnabled(false);
       const rawBaseline = await runtime.hybridRetrieve({
         query: evalCase.query,
@@ -854,6 +957,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         embeddingProvider,
         hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
       });
+      setKgSupersedeEnabled(false);
+      setKgMultiHopEnabled(true);
+      const supersedeOffHyde = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setKgSupersedeEnabled(true);
       setKgMultiHopEnabled(true);
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
@@ -871,6 +984,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       const rawRankIndex = raw.results.findIndex((hit) => hit.observation.id === expectedId);
       const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
       const baselineHydeRankIndex = hydeBaseline.results.findIndex((hit) => hit.observation.id === expectedId);
+      const supersedeOffHydeRankIndex = supersedeOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      if (evalCase.expectedKey !== 'kg-supersession') {
+        if (supersedeOffHydeRankIndex === -1) {
+          throw new Error(`kg supersession OFF eval failed in case "${evalCase.name}"`);
+        }
+        if (hydeRankIndex === -1 || hydeRankIndex > supersedeOffHydeRankIndex) {
+          throw new Error(`kg supersession ON regression in eval case "${evalCase.name}"`);
+        }
+        supersessionNoRegressionChecks.push(true);
+      }
       if (evalCase.expectedKey !== 'kg-multi-hop' && baselineHydeRankIndex >= 0) {
         if (hydeRankIndex === -1 || hydeRankIndex > baselineHydeRankIndex) {
           throw new Error(`kg multi-hop regression in eval case "${evalCase.name}"`);
@@ -884,6 +1007,19 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         const hasMultiHopEvidence = onHit?.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop') ?? false;
         if (baselineMultiHop || !hasMultiHopEvidence) {
           throw new Error('kg multi-hop eval did not isolate ON-only multi-hop evidence');
+        }
+      }
+      if (evalCase.expectedKey === 'kg-supersession') {
+        const supersessionHit = hydeRankIndex >= 0 ? hyde.results[hydeRankIndex] : undefined;
+        const kgCandidates = supersessionHit?.evidence.byLane.kg ?? [];
+        const currentCandidate = kgCandidates.find((candidate) =>
+          candidate.source === 'kg_triples' && 'text' in candidate && String(candidate.text).includes('Valkey cache')
+        );
+        const supersededCandidate = kgCandidates.find((candidate) =>
+          candidate.source === 'kg_triples' && 'text' in candidate && String(candidate.text).includes('Redis cache')
+        );
+        if (!currentCandidate || !supersededCandidate || !supersededCandidate.kg?.superseded) {
+          throw new Error('supersession eval did not retain and flag the superseded KG fact');
         }
       }
       const rankIndex = hydeRankIndex;
@@ -961,6 +1097,11 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         promoted_context_chars: promotedContextChars,
       });
     }
+    const flagOffBehaviorOk = await validateSupersessionFlagOffBehavior();
+    if (!flagOffBehaviorOk) {
+      throw new Error('kg supersession flag-off eval retained or flagged stale superseded history');
+    }
+    supersessionFlagOffChecks.push(flagOffBehaviorOk);
 
     const found = cases.filter((result) => result.found);
     const reciprocalRankSum = cases.reduce((sum, result) => sum + (result.rank ? 1 / result.rank : 0), 0);
@@ -978,7 +1119,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       context_compression: fullChars === 0 ? 0 : Number((1 - contextChars / fullChars).toFixed(3)),
       corpus: {
         total_observations: corpusTotal,
-        signal_observations: FIXTURES.length,
+        signal_observations: FIXTURES.length + SUPERSESSION_SIGNAL_OBSERVATIONS,
         noise_observations: noiseCount,
         non_synthetic_observations: NON_SYNTHETIC_FIXTURES.length,
       },
@@ -1013,6 +1154,8 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         surgical_compression: fullChars === 0 ? 0 : Number((1 - primaryEvidenceChars / fullChars).toFixed(3)),
         hyde_lift_rate: ratio(countTrue(hydeLiftChecks), totalHybridCases),
         hybrid_rank_source_rate: ratio(countTrue(hybridRankSourceChecks), totalHybridCases),
+        supersession_no_regression_rate: ratio(countTrue(supersessionNoRegressionChecks), supersessionNoRegressionChecks.length),
+        supersession_flag_off_rate: ratio(countTrue(supersessionFlagOffChecks), supersessionFlagOffChecks.length),
       },
     };
 

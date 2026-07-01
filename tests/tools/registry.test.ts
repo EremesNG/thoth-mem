@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ALL_TOOLS, registerTools } from '../../src/tools/index.js';
 import { Store } from '../../src/store/index.js';
+import { MEM_PROJECT_INPUT_SCHEMA } from '../../src/tools/mem-project.js';
 
 describe('MCP tool registration', () => {
   it('registers exactly 6 compact MCP tools', () => {
@@ -30,6 +31,43 @@ describe('MCP tool registration', () => {
     expect(names).not.toContain('mem_migrate_project');
     expect(names).not.toContain('mem_sync_export');
     expect(names).not.toContain('mem_sync_import');
+  });
+
+  it('does not expose supersession-specific MCP tools', () => {
+    const names = ALL_TOOLS.map((tool) => tool.name);
+
+    expect(names).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
+    expect(names.some((name) => /supersed|kg_supersed|mem_supersed/i.test(name))).toBe(false);
+  });
+
+  it('keeps graph max_chars bounded without restoring a zero sentinel', () => {
+    expect(MEM_PROJECT_INPUT_SCHEMA.safeParse({
+      action: 'graph',
+      project: 'registry-project',
+      max_chars: 199,
+    }).success).toBe(false);
+    expect(MEM_PROJECT_INPUT_SCHEMA.safeParse({
+      action: 'graph',
+      project: 'registry-project',
+      max_chars: 0,
+    }).success).toBe(false);
+    expect(MEM_PROJECT_INPUT_SCHEMA.safeParse({
+      action: 'graph',
+      project: 'registry-project',
+      max_chars: 200,
+    }).success).toBe(true);
+    expect(MEM_PROJECT_INPUT_SCHEMA.safeParse({
+      action: 'summary',
+      project: 'registry-project',
+      max_chars: 0,
+    }).success).toBe(true);
   });
 
   it('registration does not require profile arguments', () => {

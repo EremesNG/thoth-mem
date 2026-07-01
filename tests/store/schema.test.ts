@@ -80,6 +80,28 @@ describe('Database Schema', () => {
     expect(indexNames).not.toContain('idx_observation_facts_topic');
     expect(indexNames).toContain('idx_prompts_session');
     expect(indexNames).toContain('idx_prompts_project');
+    expect(indexNames).toContain('idx_kg_triples_superseded');
+    db.close();
+  });
+
+  it('creates nullable supersession columns on kg_triples for fresh databases', () => {
+    const db = setupDb();
+    const columns = db.prepare('PRAGMA table_info(kg_triples)').all() as Array<{
+      name: string;
+      notnull: number;
+      type: string;
+    }>;
+    const byName = new Map(columns.map((column) => [column.name, column]));
+
+    expect(byName.get('superseded_by_triple_id')).toMatchObject({
+      type: 'INTEGER',
+      notnull: 0,
+    });
+    expect(byName.get('superseded_at')).toMatchObject({
+      type: 'TEXT',
+      notnull: 0,
+    });
+
     db.close();
   });
 

@@ -194,6 +194,50 @@ describe('Store KG multi-hop traversal', () => {
     expect(filtered.map((candidate) => candidate.observationId)).not.toContain(otherTopic);
   });
 
+  it('deprioritizes superseded bridge edges while keeping flag-off SQL baseline free of CASE logic', () => {
+    store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeDeprioritizeWeight: 0.25,
+      },
+    } as any);
+    const seed = addObservation(store, 'Seed hub', 'kg-multi-hop', 'topic/seed');
+    const current = addObservation(store, 'Current bridge neighbor', 'kg-multi-hop', 'topic/current');
+    const superseded = addObservation(store, 'Superseded bridge neighbor', 'kg-multi-hop', 'topic/superseded');
+    clearGeneratedTriples(store);
+    const hub = insertEntity(store, 'entity:sup-hub', 'Sup Hub');
+    const currentTarget = insertEntity(store, 'entity:current-target', 'Current Target');
+    const oldTarget = insertEntity(store, 'entity:old-target', 'Old Target');
+    insertTriple(store, { subjectId: hub, relation: 'USES', objectId: hub, observationId: seed, project: 'kg-multi-hop', confidence: 0.9, hash: 'sup-seed' });
+    insertTriple(store, { subjectId: hub, relation: 'USES', objectId: currentTarget, observationId: current, project: 'kg-multi-hop', confidence: 0.6, hash: 'current-bridge' });
+    insertTriple(store, { subjectId: hub, relation: 'USES', objectId: oldTarget, observationId: superseded, project: 'kg-multi-hop', confidence: 0.95, hash: 'superseded-bridge' });
+    store.getDb().prepare(
+      "UPDATE kg_triples SET superseded_at = datetime('now') WHERE triple_hash = 'superseded-bridge'"
+    ).run();
+
+    const candidates = query(store, [seed], {
+      relationAllowList: ['USES'],
+      multiHopWeight: DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgMultiHopWeight,
+      depthDecay: 1,
+    });
+
+    expect(candidates.map((candidate) => candidate.observationId).slice(0, 2)).toEqual([current, superseded]);
+    expect(candidates.find((candidate) => candidate.observationId === current)?.score).toBeCloseTo(0.6 * (0.7 / 0.9), 8);
+    expect(candidates.find((candidate) => candidate.observationId === superseded)?.score).toBeCloseTo(0.95 * 0.25 * (0.7 / 0.9), 8);
+
+    store.config.knowledgeGraph.kgSupersedeEnabled = false;
+    const built = runtimeFor(store).buildKnowledgeMultiHopTraversalSql({
+      seedEntityIds: [hub],
+      seedObservationIds: [seed],
+      relationAllowList: ['USES'],
+      maxDepth: 2,
+      neighborhoodLimit: 50,
+      filters: { project: 'kg-multi-hop' },
+    });
+    expect(built.sql).not.toContain('superseded_at');
+    expect(built.sql).not.toContain('superseded_by_triple_id');
+    expect(built.sql).not.toContain('CASE WHEN');
+  });
+
   it('returns no candidates for an empty allow-list', () => {
     store = new Store(':memory:');
     const seed = addObservation(store, 'Seed');

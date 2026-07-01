@@ -6,6 +6,7 @@ interface ProjectGraphOptions {
   relation?: string;
   limit?: number;
   maxChars?: number;
+  includeSuperseded?: boolean;
 }
 
 export function formatProjectSummary(
@@ -32,7 +33,7 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   const limit = options.limit ?? 100;
   const maxChars = options.maxChars ?? 6000;
   const facts = store
-    .getObservationFacts({ project, topic_key: options.topicKey })
+    .getObservationFacts({ project, topic_key: options.topicKey, include_superseded: options.includeSuperseded })
     .filter((fact) => !options.relation || fact.relation === options.relation);
   const limitedFacts = facts.slice(0, limit);
   const factLines = limitedFacts.map((fact) => `- ${fact.subject} -- ${fact.relation} --> ${fact.object}`);

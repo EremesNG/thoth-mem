@@ -1146,6 +1146,17 @@ export class Store {
   }
 
   private deleteKnowledgeArtifactsForObservation(observationId: number): void {
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    if (knowledgeGraph.kgSupersedeEnabled) {
+      this.db.prepare(
+        `UPDATE kg_triples
+         SET superseded_by_triple_id = NULL,
+             superseded_at = NULL
+         WHERE superseded_by_triple_id IN (
+           SELECT id FROM kg_triples WHERE source_type = 'observation' AND source_id = ?
+         )`
+      ).run(observationId);
+    }
     this.db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
     if (this.config.graphFactsSource === 'legacy' && this.observationFactsTableExists()) {
       this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
@@ -2091,9 +2102,14 @@ export class Store {
     };
 
     const kgParams: Array<string | number | Buffer> = [];
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const supersedeEnabled = knowledgeGraph.kgSupersedeEnabled;
+    const kgSupersededSelect = supersedeEnabled
+      ? ', t.superseded_by_triple_id, t.superseded_at'
+      : '';
     const kgSql = [
       'SELECT t.source_id as observation_id, t.provenance, t.confidence, t.source_type, se.canonical_name as subject_name,',
-      '       oe.canonical_name as object_name, t.relation',
+      `       oe.canonical_name as object_name, t.relation${kgSupersededSelect}`,
       'FROM kg_triples t',
       'JOIN kg_entities se ON se.id = t.subject_entity_id',
       'JOIN kg_entities oe ON oe.id = t.object_entity_id',
@@ -2108,6 +2124,7 @@ export class Store {
     const rows = this.db.prepare(kgSql.join(' ')).all(...kgParams) as Array<{
       observation_id: number; provenance: string; confidence: number; source_type: string;
       subject_name: string; object_name: string; relation: string;
+      superseded_by_triple_id?: number | null; superseded_at?: string | null;
     }>;
     const tripleCandidates = rows.flatMap((row) => {
       const subjectMatches = entityMatches(row.subject_name);
@@ -2116,16 +2133,23 @@ export class Store {
       const relationMatches = relationTerms.filter((term) => terms.includes(term)).length;
       const matches = subjectMatches + objectMatches + relationMatches;
       if (matches === 0 && !input.includeUnmatched) return [];
-      const score = matches > 0
+      const baseScore = matches > 0
         ? Math.min(1, row.confidence + Math.min(matches / Math.max(terms.length, 1), 1) * 0.5)
         : row.confidence * 0.2;
+      const superseded = supersedeEnabled && (row.superseded_by_triple_id !== null && row.superseded_by_triple_id !== undefined || row.superseded_at !== null && row.superseded_at !== undefined);
+      const score = superseded ? baseScore * knowledgeGraph.kgSupersedeDeprioritizeWeight : baseScore;
       return [{
         lane: 'kg' as const,
         observationId: row.observation_id,
         score,
         source: 'kg_triples' as const,
         text: `${row.subject_name} ${row.relation} ${row.object_name}`,
-        kg: { provenance: row.provenance, confidence: row.confidence, sourceType: row.source_type },
+        kg: {
+          provenance: row.provenance,
+          confidence: row.confidence,
+          sourceType: row.source_type,
+          ...(superseded ? { superseded: true } : {}),
+        },
       }];
     });
 
@@ -2199,6 +2223,8 @@ export class Store {
       maxDepth: Math.floor(input.maxDepth),
       neighborhoodLimit: Math.floor(input.neighborhoodLimit),
       filters: input.filters,
+      supersedeEnabled: (this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG).kgSupersedeEnabled,
+      supersedeDeprioritizeWeight: (this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG).kgSupersedeDeprioritizeWeight,
     });
     const rows = this.db.prepare(built.sql).all(...built.params) as Array<{
       observation_id: number;
@@ -2241,6 +2267,8 @@ export class Store {
     maxDepth: number;
     neighborhoodLimit: number;
     filters?: RetrievalCandidateFilters;
+    supersedeEnabled?: boolean;
+    supersedeDeprioritizeWeight?: number;
   }): { sql: string; params: Array<string | number> } {
     const seedEntitySelects = input.seedEntityIds
       .map(() => 'SELECT ? AS entity_id, ? AS seed_entity_id, 0 AS depth, ? AS path')
@@ -2248,6 +2276,9 @@ export class Store {
     const relationPlaceholders = input.relationAllowList.map(() => '?').join(',');
     const seedObservationPlaceholders = input.seedObservationIds.map(() => '?').join(',');
     const expandedLimit = Math.max(input.neighborhoodLimit * 4, input.neighborhoodLimit);
+    const edgeConfidenceExpr = input.supersedeEnabled
+      ? 'CASE WHEN t.superseded_by_triple_id IS NOT NULL OR t.superseded_at IS NOT NULL THEN t.confidence * ? ELSE t.confidence END'
+      : 't.confidence';
     const params: Array<string | number> = [];
     for (const id of input.seedEntityIds) {
       params.push(id, id, `,${id},`);
@@ -2260,6 +2291,9 @@ export class Store {
     addTraversalParams();
 
     const addCandidateParams = () => {
+      if (input.supersedeEnabled) {
+        params.push(input.supersedeDeprioritizeWeight ?? 1);
+      }
       params.push(input.maxDepth, ...input.relationAllowList, ...input.seedObservationIds);
     };
     addCandidateParams();
@@ -2286,7 +2320,7 @@ export class Store {
       'AND instr(f.path, \',\' || t.subject_entity_id || \',\') = 0',
       '),',
       'candidate_edges AS (',
-      'SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, t.confidence, t.source_type,',
+      `SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, ${edgeConfidenceExpr} AS confidence, t.source_type,`,
       '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
       'FROM frontier f',
       'JOIN kg_triples t INDEXED BY idx_kg_triples_subject ON t.subject_entity_id = f.entity_id',
@@ -2299,7 +2333,7 @@ export class Store {
       `AND t.relation IN (${relationPlaceholders})`,
       `AND t.source_id NOT IN (${seedObservationPlaceholders})`,
       'UNION ALL',
-      'SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, t.confidence, t.source_type,',
+      `SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, ${edgeConfidenceExpr} AS confidence, t.source_type,`,
       '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
       'FROM frontier f',
       'JOIN kg_triples t INDEXED BY idx_kg_triples_object ON t.object_entity_id = f.entity_id',
@@ -3320,8 +3354,17 @@ export class Store {
     if (observations.length === 0) return [];
 
     const observationIds = observations.map((observation) => observation.id);
+    const includeSuperseded = input.include_superseded === true;
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const filterSuperseded = knowledgeGraph.kgSupersedeEnabled && !includeSuperseded;
+    const supersededSelect = knowledgeGraph.kgSupersedeEnabled
+      ? ', t.superseded_by_triple_id, t.superseded_at'
+      : '';
+    const supersededFilter = filterSuperseded
+      ? 'AND t.superseded_by_triple_id IS NULL AND t.superseded_at IS NULL'
+      : '';
     const contentRows = this.db.prepare(
-      `SELECT t.id, t.source_id as observation_id, t.relation, oe.canonical_name as object, t.created_at
+      `SELECT t.id, t.source_id as observation_id, t.relation, oe.canonical_name as object, t.created_at${supersededSelect}
        FROM kg_triples t
        JOIN kg_entities oe ON oe.id = t.object_entity_id
        JOIN observations o ON o.id = t.source_id
@@ -3329,6 +3372,7 @@ export class Store {
        AND o.deleted_at IS NULL
        AND t.relation IN (${KG_OBSERVATION_FACT_CONTENT_RELATIONS.map(() => '?').join(',')})
        AND t.source_id IN (${observationIds.map(() => '?').join(',')})
+       ${supersededFilter}
        ORDER BY t.source_id ASC, t.id ASC`
     ).all(...KG_OBSERVATION_FACT_CONTENT_RELATIONS, ...observationIds) as Array<{
       id: number;
@@ -3336,6 +3380,8 @@ export class Store {
       relation: string;
       object: string;
       created_at: string;
+      superseded_by_triple_id?: number | null;
+      superseded_at?: string | null;
     }>;
     const contentRowsByObservation = new Map<number, typeof contentRows>();
     for (const row of contentRows) {
@@ -3375,6 +3421,10 @@ export class Store {
           topic_key: observation.topic_key,
           type: observation.type,
           created_at: row.created_at,
+          ...(knowledgeGraph.kgSupersedeEnabled
+            && (row.superseded_by_triple_id !== null && row.superseded_by_triple_id !== undefined || row.superseded_at !== null && row.superseded_at !== undefined)
+            ? { superseded: true }
+            : {}),
         });
       }
     }
@@ -3413,12 +3463,32 @@ export class Store {
       const existingTriples = this.db.prepare(
         "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
       ).get(observation.id) as { count: number };
+      const existingSuperseded = this.db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM kg_triples
+         WHERE source_type = 'observation'
+           AND source_id = ?
+           AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+      ).get(observation.id) as { count: number };
       writeDeterministicKgFacts(this, observation.id);
       const createdTriples = this.db.prepare(
         "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
       ).get(observation.id) as { count: number };
-      factsDeleted += existingTriples.count;
-      factsCreated += createdTriples.count;
+      const createdSuperseded = this.db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM kg_triples
+         WHERE source_type = 'observation'
+           AND source_id = ?
+           AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+      ).get(observation.id) as { count: number };
+      const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+      if (knowledgeGraph.kgSupersedeEnabled) {
+        factsDeleted += Math.max(0, createdSuperseded.count - existingSuperseded.count);
+        factsCreated += Math.max(0, createdTriples.count - existingTriples.count);
+      } else {
+        factsDeleted += existingTriples.count;
+        factsCreated += createdTriples.count;
+      }
     }
 
     return {

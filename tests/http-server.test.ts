@@ -451,7 +451,8 @@ describe('createHttpBridge', () => {
       project: 'ops-project',
       observations_scanned: 1,
     });
-    expect(graphRebuild.body.facts_created).toBeGreaterThan(0);
+    expect(graphRebuild.body.facts_created).toBe(0);
+    expect(graphRebuild.body.facts_deleted).toBe(0);
   });
 
   it('supports observation CRUD, search, and paginated retrieval', async () => {

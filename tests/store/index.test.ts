@@ -285,16 +285,25 @@ describe('Store', () => {
       await runtime.processSemanticJobs({ limit: 20 });
 
       const triples = db.prepare(
-        `SELECT s.canonical_name AS subject, t.relation, o.canonical_name AS object, t.provenance
+        `SELECT s.canonical_name AS subject, t.relation, o.canonical_name AS object, t.provenance,
+                t.superseded_at, t.superseded_by_triple_id
          FROM kg_triples t
          JOIN kg_entities s ON s.id = t.subject_entity_id
          JOIN kg_entities o ON o.id = t.object_entity_id
          WHERE t.source_type = 'observation' AND t.source_id = ?
          ORDER BY t.id`
-      ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; provenance: string | null }>;
+      ).all(saved.observation.id) as Array<{
+        subject: string;
+        relation: string;
+        object: string;
+        provenance: string | null;
+        superseded_at: string | null;
+        superseded_by_triple_id: number | null;
+      }>;
+      const staleTriple = triples.find((triple) => `${triple.subject} ${triple.relation} ${triple.object}`.includes('payments-service'));
 
       expect(triples.length).toBeGreaterThan(0);
-      expect(triples.some((triple) => `${triple.subject} ${triple.relation} ${triple.object}`.includes('payments-service'))).toBe(false);
+      expect(staleTriple?.superseded_at).toEqual(expect.any(String));
       expect(triples.every((triple) => typeof triple.provenance === 'string' && triple.provenance.length > 0)).toBe(true);
     });
 
@@ -1046,6 +1055,45 @@ describe('Store', () => {
       expect(response.results[0].score).toBeGreaterThan(response.results[1].score);
     });
 
+    it('graph discovery: deprioritizes and flags superseded KG candidates without dropping them', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+      const runtime = store as any;
+      const db = store.getDb();
+
+      const saved = store.saveObservation({
+        title: 'Superseded graph fact',
+        content: '**What**: Redis cache',
+        project: 'hybrid-test',
+        topic_key: 'graph/superseded',
+      });
+      store.saveObservation({
+        title: 'Superseded graph fact',
+        content: '**What**: Valkey cache',
+        project: 'hybrid-test',
+        topic_key: 'graph/superseded',
+      });
+
+      const rows = db.prepare(
+        `SELECT kt.id, oe.canonical_name AS object
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'HAS_WHAT'`
+      ).all(saved.observation.id) as Array<{ id: number; object: string }>;
+      expect(rows.map((row) => row.object)).toEqual(expect.arrayContaining(['Redis cache', 'Valkey cache']));
+
+      const response = await runtime.hybridRetrieve({ query: 'cache', project: 'hybrid-test', limit: 5 });
+      const hit = response.results.find((result: any) => result.observation.id === saved.observation.id);
+      const kgCandidates = hit.evidence.byLane.kg.filter((candidate: any) => candidate.source === 'kg_triples');
+      const oldCandidate = kgCandidates.find((candidate: any) => candidate.text.includes('Redis cache'));
+      const newCandidate = kgCandidates.find((candidate: any) => candidate.text.includes('Valkey cache'));
+
+      expect(oldCandidate).toBeDefined();
+      expect(newCandidate).toBeDefined();
+      expect(oldCandidate.kg?.superseded).toBe(true);
+      expect(newCandidate.kg?.superseded).toBeUndefined();
+      expect(newCandidate.score).toBeGreaterThan(oldCandidate.score);
+    });
+
     it('graph discovery: unrelated KG facts do not flood retrieval', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
@@ -1540,6 +1588,66 @@ describe('Store', () => {
         object: 'context budget',
         confidence: 0.94,
       });
+    });
+
+    it('background indexing: LLM enrichment keeps deterministic triples current when the model omits them', async () => {
+      store = new Store(':memory:', {
+        kgLlm: {
+          enabled: true,
+          provider: 'ollama',
+          model: 'qwen2.5:7b-instruct',
+          baseUrl: 'http://127.0.0.1:11434',
+          timeoutMs: 8000,
+          minContentChars: 100,
+        },
+      } as any);
+      const saved = store.saveObservation({
+        title: 'Long KG union source',
+        content: [
+          'Auth service depends on Redis cache.',
+          ...Array.from({ length: 10 }, (_, index) => (
+            `Turn ${index}: long conversation context keeps the LLM enrichment gate enabled.`
+          )),
+        ].join('\n'),
+        project: 'hybrid-test',
+      });
+
+      const runtime = store as any;
+      await runtime.processSemanticJobs({
+        limit: 20,
+        kgLlmExtractor: {
+          extract: async () => [
+            {
+              subject: 'LLM Router',
+              relation: 'DEPENDS_ON',
+              object: 'Context Budget',
+              confidence: 0.94,
+            },
+          ],
+        },
+      });
+
+      const rows = store.getDb().prepare(
+        `SELECT se.canonical_name AS subject, kt.relation, oe.canonical_name AS object, kt.superseded_at
+         FROM kg_triples kt
+         JOIN kg_entities se ON se.id = kt.subject_entity_id
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'DEPENDS_ON'
+         ORDER BY kt.id`
+      ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; superseded_at: string | null }>;
+
+      expect(rows).toContainEqual(expect.objectContaining({
+        subject: 'auth service',
+        relation: 'DEPENDS_ON',
+        object: 'redis cache',
+        superseded_at: null,
+      }));
+      expect(rows).toContainEqual(expect.objectContaining({
+        subject: 'llm router',
+        relation: 'DEPENDS_ON',
+        object: 'context budget',
+        superseded_at: null,
+      }));
     });
 
     it('background indexing: records optional KG LLM failures as job telemetry while completing deterministic KG', async () => {

@@ -29,6 +29,7 @@ export interface LaneCandidate {
     confidence: number;
     depth?: number;
     sourceType?: string;
+    superseded?: boolean;
   };
 }
 

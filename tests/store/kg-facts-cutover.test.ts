@@ -51,7 +51,7 @@ function insertKgTriple(store: Store, input: {
   object: string;
   project: string | null;
   tripleHash: string;
-}) {
+}): number {
   const db = store.getDb();
   const upsertEntity = db.prepare(
     `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
@@ -62,7 +62,7 @@ function insertKgTriple(store: Store, input: {
   const subject = upsertEntity.get(`test:${input.tripleHash}:subject`, input.subject) as { id: number };
   const object = upsertEntity.get(`test:${input.tripleHash}:object`, input.object) as { id: number };
 
-  db.prepare(
+  const result = db.prepare(
     `INSERT INTO kg_triples (
       subject_entity_id, relation, object_entity_id, source_type, source_id,
       project, provenance, confidence, triple_hash, extractor_version
@@ -76,6 +76,7 @@ function insertKgTriple(store: Store, input: {
     `observation:${input.observationId}`,
     input.tripleHash
   );
+  return Number(result.lastInsertRowid);
 }
 
 function dropLegacyObservationFactsTable(store: Store) {
@@ -404,6 +405,61 @@ describe('Store KG-backed observation facts cutover', () => {
     }
   });
 
+  it('hard delete nulls supersession pointers that target the deleted observation triples', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const oldOwner = store.saveObservation({
+        title: 'Old owner',
+        content: '**What**: Redis cache',
+        project: 'delete-supersession',
+      }).observation;
+      const newOwner = store.saveObservation({
+        title: 'New owner',
+        content: '**What**: Valkey cache',
+        project: 'delete-supersession',
+      }).observation;
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const oldTripleId = insertKgTriple(store, {
+        observationId: oldOwner.id,
+        subject: 'cache decision',
+        relation: 'HAS_WHAT',
+        object: 'Redis cache',
+        project: 'delete-supersession',
+        tripleHash: 'delete-supersession:old',
+      });
+      const newTripleId = insertKgTriple(store, {
+        observationId: newOwner.id,
+        subject: 'cache decision',
+        relation: 'HAS_WHAT',
+        object: 'Valkey cache',
+        project: 'delete-supersession',
+        tripleHash: 'delete-supersession:new',
+      });
+      store.getDb().prepare(
+        'UPDATE kg_triples SET superseded_by_triple_id = ?, superseded_at = datetime(\'now\') WHERE id = ?'
+      ).run(newTripleId, oldTripleId);
+
+      expect(() => store.deleteObservation(newOwner.id, true)).not.toThrow();
+
+      const oldRow = store.getDb().prepare(
+        'SELECT source_id, superseded_by_triple_id, superseded_at FROM kg_triples WHERE id = ?'
+      ).get(oldTripleId) as { source_id: number; superseded_by_triple_id: number | null; superseded_at: string | null };
+      const newRows = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(newOwner.id) as { count: number };
+
+      expect(oldRow).toEqual({
+        source_id: oldOwner.id,
+        superseded_by_triple_id: null,
+        superseded_at: null,
+      });
+      expect(newRows.count).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
   it('rebuilds deterministic KG facts without observation_facts and converges on repeat', () => {
     const store = new Store(':memory:');
 
@@ -442,11 +498,65 @@ describe('Store KG-backed observation facts cutover', () => {
         facts_deleted: 0,
       });
       expect(first.facts_created).toBeGreaterThan(0);
-      expect(second.facts_created).toBe(inScopeTriples.count);
+      expect(second.facts_created).toBe(0);
+      expect(second.facts_deleted).toBe(0);
+      expect((
+        store.getDb().prepare(
+          `SELECT COUNT(*) AS count
+           FROM kg_triples
+           WHERE source_type = 'observation'
+             AND source_id = ?
+             AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+        ).get(saved.id) as { count: number }
+      ).count).toBe(0);
       expect(inScopeTriples.count).toBeGreaterThan(0);
       expect(outOfScopeTriples.count).toBe(0);
       expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation))
         .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHERE']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rebuild supersedes stale stored KG rows when current extraction has the genuine replacement', () => {
+    const store = new Store(':memory:');
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Rebuild stale memory',
+        type: 'decision',
+        project: 'rebuild-stale',
+        topic_key: 'rebuild/stale',
+        content: '**What**: Current graph content',
+      }).observation;
+      const staleTripleId = insertKgTriple(store, {
+        observationId: saved.id,
+        subject: 'rebuild/stale',
+        relation: 'HAS_WHAT',
+        object: 'Stale graph content',
+        project: 'rebuild-stale',
+        tripleHash: 'rebuild-stale:stale-what',
+      });
+
+      const result = store.rebuildObservationFacts({ project: 'rebuild-stale' });
+      const stale = store.getDb().prepare(
+        `SELECT superseded_by_triple_id, superseded_at
+         FROM kg_triples
+         WHERE id = ?`
+      ).get(staleTripleId) as { superseded_by_triple_id: number | null; superseded_at: string | null };
+      const replacement = store.getDb().prepare(
+        `SELECT kt.id
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ?
+           AND kt.relation = 'HAS_WHAT'
+           AND oe.canonical_name = 'Current graph content'
+           AND kt.superseded_at IS NULL`
+      ).get(saved.id) as { id: number } | undefined;
+
+      expect(result.facts_deleted).toBe(1);
+      expect(stale.superseded_at).toEqual(expect.any(String));
+      expect(stale.superseded_by_triple_id).toBe(replacement?.id);
     } finally {
       store.close();
     }

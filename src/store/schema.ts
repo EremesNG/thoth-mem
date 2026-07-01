@@ -206,6 +206,8 @@ CREATE TABLE IF NOT EXISTS kg_triples (
   confidence       REAL NOT NULL DEFAULT 0.0,
   triple_hash      TEXT NOT NULL UNIQUE,
   extractor_version TEXT,
+  superseded_by_triple_id INTEGER,
+  superseded_at    TEXT,
   created_at       TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (subject_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
@@ -226,6 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_object ON kg_triples(object_entity_id)
 CREATE INDEX IF NOT EXISTS idx_kg_triples_relation ON kg_triples(relation);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_project ON kg_triples(project);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_topic ON kg_triples(topic_key);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by_triple_id);
 `;
 
 /**

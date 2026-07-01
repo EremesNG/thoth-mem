@@ -215,6 +215,8 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
       addColumnIfMissing(db, migration.tableName, migration.columnName, migration.columnDef);
     }
+    addColumnIfMissing(db, 'kg_triples', 'superseded_by_triple_id', 'INTEGER');
+    addColumnIfMissing(db, 'kg_triples', 'superseded_at', 'TEXT');
 
     db.exec(SYNC_CHUNKS_SQL);
     db.exec(SYNC_MUTATIONS_SQL);

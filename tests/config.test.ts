@@ -6,6 +6,7 @@ import {
   DEFAULT_KG_RELATION_ALLOW_LIST,
   DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
   getConfig,
+  resolveKnowledgeGraphConfig,
   resolveDataDir,
 } from '../src/config.js';
 import { getVersion } from '../src/version.js';
@@ -135,6 +136,10 @@ describe('getConfig', () => {
       kgDepthDecay: 0.4,
       kgTraversalTimeoutMs: 25,
       kgRelationAllowList: ['USES', 'MENTIONS'],
+      kgSupersedeEnabled: true,
+      kgSupersedeContentPatterns: false,
+      kgSupersedeConfidenceThreshold: 0.8,
+      kgSupersedeDeprioritizeWeight: 0.5,
     });
   });
 
@@ -168,6 +173,10 @@ describe('getConfig', () => {
       kgDepthDecay: 0.25,
       kgTraversalTimeoutMs: 0,
       kgRelationAllowList: ['DEPENDS_ON', 'AFFECTS'],
+      kgSupersedeEnabled: true,
+      kgSupersedeContentPatterns: false,
+      kgSupersedeConfidenceThreshold: 0.8,
+      kgSupersedeDeprioritizeWeight: 0.5,
     });
   });
 
@@ -179,6 +188,49 @@ describe('getConfig', () => {
     process.env.THOTH_KG_RELATION_ALLOW_LIST = '   ';
     const empty = getConfig();
     expect(empty.knowledgeGraph?.kgRelationAllowList).toEqual(DEFAULT_KG_RELATION_ALLOW_LIST);
+  });
+
+  it('resolves KG supersession knobs from env, persisted config, then defaults', () => {
+    expect(resolveKnowledgeGraphConfig({})).toMatchObject({
+      kgSupersedeEnabled: true,
+      kgSupersedeContentPatterns: false,
+      kgSupersedeConfidenceThreshold: 0.8,
+      kgSupersedeDeprioritizeWeight: 0.5,
+    });
+
+    const persisted = resolveKnowledgeGraphConfig({
+      knowledgeGraph: {
+        kgSupersedeEnabled: false,
+        kgSupersedeContentPatterns: true,
+        kgSupersedeConfidenceThreshold: 0.7,
+        kgSupersedeDeprioritizeWeight: 0.25,
+      },
+    });
+    expect(persisted).toMatchObject({
+      kgSupersedeEnabled: false,
+      kgSupersedeContentPatterns: true,
+      kgSupersedeConfidenceThreshold: 0.7,
+      kgSupersedeDeprioritizeWeight: 0.25,
+    });
+
+    process.env.THOTH_KG_SUPERSEDE_ENABLED = 'true';
+    process.env.THOTH_KG_SUPERSEDE_CONTENT_PATTERNS = 'false';
+    process.env.THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD = '0.9';
+    process.env.THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT = '0.4';
+
+    expect(resolveKnowledgeGraphConfig({
+      knowledgeGraph: {
+        kgSupersedeEnabled: false,
+        kgSupersedeContentPatterns: true,
+        kgSupersedeConfidenceThreshold: 0.7,
+        kgSupersedeDeprioritizeWeight: 0.25,
+      },
+    })).toMatchObject({
+      kgSupersedeEnabled: true,
+      kgSupersedeContentPatterns: false,
+      kgSupersedeConfidenceThreshold: 0.9,
+      kgSupersedeDeprioritizeWeight: 0.4,
+    });
   });
 });
 
@@ -365,9 +417,13 @@ describe('embedding config (hybrid retrieval baseline)', () => {
           properties: {
             kgRelationAllowList: {
               items: {
-                enum: expect.arrayContaining(['USES', 'DEPENDS_ON', 'HAS_TOPIC', 'MENTIONS']),
+                enum: expect.arrayContaining(['USES', 'DEPENDS_ON', 'HAS_TOPIC', 'MENTIONS', 'SUPERSEDES']),
               },
             },
+            kgSupersedeEnabled: { type: 'boolean' },
+            kgSupersedeContentPatterns: { type: 'boolean' },
+            kgSupersedeConfidenceThreshold: { type: 'number', minimum: 0, maximum: 1 },
+            kgSupersedeDeprioritizeWeight: { type: 'number', minimum: 0 },
           },
         },
       },

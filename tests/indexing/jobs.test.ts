@@ -167,6 +167,30 @@ describe('writeDeterministicKgFacts', () => {
     }
   });
 
+  function kgRows(observationId: number): Array<{
+    id: number;
+    relation: string;
+    object: string;
+    superseded_by_triple_id: number | null;
+    superseded_at: string | null;
+  }> {
+    return store.getDb().prepare(
+      `SELECT kt.id, kt.relation, oe.canonical_name AS object,
+              kt.superseded_by_triple_id, kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+       ORDER BY kt.id`
+    ).all(observationId) as Array<{
+      id: number;
+      relation: string;
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>;
+  }
+
   it('loads an observation internally and persists deterministic KG triples without running jobs', () => {
     store = new Store(':memory:');
     const saved = store.saveObservation({
@@ -222,5 +246,368 @@ describe('writeDeterministicKgFacts', () => {
     ).get(saved.observation.id) as { object: string } | undefined;
 
     expect(row?.object).toBe(longSection);
+  });
+
+  it('keeps first and unchanged deterministic extracts current without duplicates', () => {
+    store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Stable KG helper',
+      content: [
+        '**What**: Redis cache',
+        '**Why**: Stable graph content',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/stable-helper',
+    });
+
+    const firstRows = kgRows(saved.observation.id);
+    store.saveObservation({
+      title: 'Stable KG helper',
+      content: [
+        '**What**: Redis cache',
+        '**Why**: Stable graph content',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/stable-helper',
+    });
+    const secondRows = kgRows(saved.observation.id);
+
+    expect(firstRows.length).toBeGreaterThan(0);
+    expect(firstRows.every((row) => row.superseded_at === null && row.superseded_by_triple_id === null)).toBe(true);
+    expect(secondRows).toHaveLength(firstRows.length);
+    expect(secondRows.every((row) => row.superseded_at === null && row.superseded_by_triple_id === null)).toBe(true);
+    expect(new Set(secondRows.map((row) => `${row.relation}:${row.object}`)).size).toBe(secondRows.length);
+  });
+
+  it('marks pure removals superseded without a replacement pointer', () => {
+    store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Pure removal KG helper',
+      content: [
+        '**What**: Redis cache',
+        '**Where**: src/cache.ts',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/pure-removal',
+    });
+
+    store.saveObservation({
+      title: 'Pure removal KG helper',
+      content: '**Where**: src/cache.ts',
+      project: 'indexing-test',
+      topic_key: 'kg/pure-removal',
+    });
+
+    const removed = kgRows(saved.observation.id).find((row) => row.relation === 'HAS_WHAT' && row.object === 'Redis cache');
+    expect(removed?.superseded_at).toEqual(expect.any(String));
+    expect(removed?.superseded_by_triple_id).toBeNull();
+  });
+
+  it('marks removed same-source KG triples superseded and points replacements at the new triple', () => {
+    store = new Store(':memory:');
+    const first = store.saveObservation({
+      title: 'Superseded KG helper',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/supersede-helper',
+    });
+    const db = store.getDb();
+
+    const updated = store.saveObservation({
+      title: 'Superseded KG helper',
+      content: '**What**: Valkey cache',
+      project: 'indexing-test',
+      topic_key: 'kg/supersede-helper',
+    });
+
+    expect(updated.observation.id).toBe(first.observation.id);
+    const rows = db.prepare(
+      `SELECT kt.id, kt.relation, oe.canonical_name AS object, kt.superseded_by_triple_id, kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+       ORDER BY kt.id`
+    ).all(first.observation.id) as Array<{
+      id: number;
+      relation: string;
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>;
+
+    const oldRow = rows.find((row) => row.object === 'Redis cache');
+    const newRow = rows.find((row) => row.object === 'Valkey cache');
+
+    expect(oldRow).toBeDefined();
+    expect(newRow).toBeDefined();
+    expect(oldRow?.superseded_at).toEqual(expect.any(String));
+    expect(oldRow?.superseded_by_triple_id).toBe(newRow?.id);
+    expect(newRow?.superseded_at).toBeNull();
+    expect(newRow?.superseded_by_triple_id).toBeNull();
+  });
+
+  it('does not supersede another observation while deterministic update needs no model services', () => {
+    store = new Store(':memory:', {
+      kgLlm: {
+        enabled: true,
+        provider: 'ollama',
+        model: 'unused-test-model',
+        baseUrl: 'http://127.0.0.1:11434',
+        timeoutMs: 10,
+        minContentChars: 1,
+      },
+    } as any);
+    const a = store.saveObservation({
+      title: 'Observation A',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/no-cross-a',
+    });
+    const b = store.saveObservation({
+      title: 'Observation B',
+      content: '**What**: Postgres database',
+      project: 'indexing-test',
+      topic_key: 'kg/no-cross-b',
+    });
+
+    store.saveObservation({
+      title: 'Observation A',
+      content: '**What**: Valkey cache',
+      project: 'indexing-test',
+      topic_key: 'kg/no-cross-a',
+    });
+
+    const bRows = kgRows(b.observation.id);
+    expect(a.observation.id).not.toBe(b.observation.id);
+    expect(bRows.some((row) => row.object === 'Postgres database')).toBe(true);
+    expect(bRows.every((row) => row.superseded_at === null && row.superseded_by_triple_id === null)).toBe(true);
+  });
+
+  it('uses legacy delete-and-reinsert behavior when supersession is disabled', () => {
+    store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeEnabled: false,
+      },
+    } as any);
+    const first = store.saveObservation({
+      title: 'Flag off KG helper',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/flag-off-helper',
+    });
+    const db = store.getDb();
+
+    store.saveObservation({
+      title: 'Flag off KG helper',
+      content: '**What**: Valkey cache',
+      project: 'indexing-test',
+      topic_key: 'kg/flag-off-helper',
+    });
+
+    const rows = db.prepare(
+      `SELECT oe.canonical_name AS object, kt.superseded_by_triple_id, kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+       ORDER BY kt.id`
+    ).all(first.observation.id) as Array<{
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>;
+
+    expect(rows).toEqual([
+      {
+        object: 'Valkey cache',
+        superseded_by_triple_id: null,
+        superseded_at: null,
+      },
+    ]);
+  });
+
+  it('revives a previously superseded KG triple when the same fact is reasserted', () => {
+    store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Revived KG helper',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/revive-helper',
+    });
+    const db = store.getDb();
+
+    store.saveObservation({
+      title: 'Revived KG helper',
+      content: '**What**: Valkey cache',
+      project: 'indexing-test',
+      topic_key: 'kg/revive-helper',
+    });
+    store.saveObservation({
+      title: 'Revived KG helper',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/revive-helper',
+    });
+
+    const rows = db.prepare(
+      `SELECT kt.id, oe.canonical_name AS object, kt.superseded_by_triple_id, kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+         AND oe.canonical_name = 'Redis cache'`
+    ).all(saved.observation.id) as Array<{
+      id: number;
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].superseded_at).toBeNull();
+    expect(rows[0].superseded_by_triple_id).toBeNull();
+  });
+
+  it('applies gated content-pattern hints only to concrete same-source prior facts', () => {
+    store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeContentPatterns: true,
+        kgSupersedeConfidenceThreshold: 0.7,
+      },
+    } as any);
+    const saved = store.saveObservation({
+      title: 'Content pattern helper',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/content-pattern',
+    });
+    store.saveObservation({
+      title: 'Content pattern helper',
+      content: [
+        '**What**: Redis cache',
+        'Redis cache is deprecated.',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/content-pattern',
+    });
+
+    const row = store.getDb().prepare(
+      `SELECT kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+         AND oe.canonical_name = 'Redis cache'`
+    ).get(saved.observation.id) as { superseded_at: string | null } | undefined;
+
+    expect(row?.superseded_at).toEqual(expect.any(String));
+  });
+
+  it('does not apply content-pattern supersession when disabled or below threshold', () => {
+    const disabled = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeContentPatterns: false,
+        kgSupersedeConfidenceThreshold: 0.7,
+      },
+    } as any);
+    const below = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeContentPatterns: true,
+        kgSupersedeConfidenceThreshold: 0.8,
+      },
+    } as any);
+
+    try {
+      const disabledSaved = disabled.saveObservation({
+        title: 'Disabled content pattern',
+        content: 'cache decision -- HAS_WHAT --> Redis cache',
+        project: 'indexing-test',
+        topic_key: 'kg/pattern-disabled',
+      });
+      disabled.saveObservation({
+        title: 'Disabled content pattern',
+        content: [
+          'cache decision -- HAS_WHAT --> Redis cache',
+          'Redis cache is deprecated.',
+        ].join('\n'),
+        project: 'indexing-test',
+        topic_key: 'kg/pattern-disabled',
+      });
+
+      const belowSaved = below.saveObservation({
+        title: 'Below threshold content pattern',
+        content: 'cache decision -- HAS_WHAT --> Redis cache',
+        project: 'indexing-test',
+        topic_key: 'kg/pattern-below',
+      });
+      below.saveObservation({
+        title: 'Below threshold content pattern',
+        content: [
+          'cache decision -- HAS_WHAT --> Redis cache',
+          'Redis cache is superseded by Valkey.',
+        ].join('\n'),
+        project: 'indexing-test',
+        topic_key: 'kg/pattern-below',
+      });
+
+      const disabledRow = disabled.getDb().prepare(
+        `SELECT kt.superseded_at
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'HAS_WHAT' AND oe.canonical_name = 'redis cache'`
+      ).get(disabledSaved.observation.id) as { superseded_at: string | null };
+      const belowRow = below.getDb().prepare(
+        `SELECT kt.superseded_at
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'HAS_WHAT' AND oe.canonical_name = 'redis cache'`
+      ).get(belowSaved.observation.id) as { superseded_at: string | null };
+
+      expect(disabledRow.superseded_at).toBeNull();
+      expect(belowRow.superseded_at).toBeNull();
+    } finally {
+      disabled.close();
+      below.close();
+    }
+  });
+
+  it('does not let content-pattern hints mark facts from another observation', () => {
+    store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeContentPatterns: true,
+        kgSupersedeConfidenceThreshold: 0.7,
+      },
+    } as any);
+    const a = store.saveObservation({
+      title: 'Pattern source A',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/pattern-source-a',
+    });
+    const b = store.saveObservation({
+      title: 'Pattern source B',
+      content: '**What**: Postgres database',
+      project: 'indexing-test',
+      topic_key: 'kg/pattern-source-b',
+    });
+
+    store.saveObservation({
+      title: 'Pattern source A',
+      content: [
+        '**What**: Redis cache',
+        'Postgres database is deprecated.',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/pattern-source-a',
+    });
+
+    const bRows = kgRows(b.observation.id);
+    expect(a.observation.id).not.toBe(b.observation.id);
+    expect(bRows.every((row) => row.superseded_at === null && row.superseded_by_triple_id === null)).toBe(true);
   });
 });

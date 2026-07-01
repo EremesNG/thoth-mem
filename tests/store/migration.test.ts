@@ -165,6 +165,104 @@ describe('Store — Migration behaviors', () => {
     expect(table).toBeUndefined();
   });
 
+  it('adds nullable kg_triples supersession columns idempotently to legacy databases', () => {
+    const db = new Database(':memory:');
+
+    try {
+      for (const pragma of PRAGMAS) {
+        db.exec(pragma);
+      }
+
+      db.exec(`
+        CREATE TABLE observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id TEXT,
+          session_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          tool_name TEXT,
+          project TEXT,
+          topic_key TEXT
+        );
+
+        CREATE TABLE user_prompts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id TEXT,
+          session_id TEXT NOT NULL,
+          content TEXT NOT NULL
+        );
+
+        CREATE TABLE kg_entities (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_key     TEXT NOT NULL UNIQUE,
+          entity_type    TEXT NOT NULL,
+          canonical_name TEXT NOT NULL,
+          aliases_json   TEXT,
+          metadata_json  TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE kg_triples (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_entity_id INTEGER NOT NULL,
+          relation         TEXT NOT NULL,
+          object_entity_id INTEGER NOT NULL,
+          source_type      TEXT NOT NULL CHECK(source_type IN ('observation','prompt','session_summary','unknown')),
+          source_id        INTEGER,
+          source_sync_id   TEXT,
+          project          TEXT,
+          topic_key        TEXT,
+          provenance       TEXT NOT NULL,
+          confidence       REAL NOT NULL DEFAULT 0.0,
+          triple_hash      TEXT NOT NULL UNIQUE,
+          extractor_version TEXT,
+          created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO kg_entities(entity_key, entity_type, canonical_name)
+        VALUES ('entity:a', 'system', 'a'), ('entity:b', 'system', 'b');
+        INSERT INTO kg_triples(
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          provenance, confidence, triple_hash
+        )
+        VALUES (1, 'USES', 2, 'observation', 42, 'legacy', 0.9, 'legacy-hash');
+      `);
+
+      expect(db.prepare('PRAGMA table_info(kg_triples)').all()).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'superseded_by_triple_id' }),
+          expect.objectContaining({ name: 'superseded_at' }),
+        ])
+      );
+
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+
+      const columns = db.prepare('PRAGMA table_info(kg_triples)').all() as Array<{
+        name: string;
+        notnull: number;
+        type: string;
+      }>;
+      const byName = new Map(columns.map((column) => [column.name, column]));
+      const row = db.prepare(
+        'SELECT superseded_by_triple_id, superseded_at FROM kg_triples WHERE triple_hash = ?'
+      ).get('legacy-hash') as { superseded_by_triple_id: number | null; superseded_at: string | null };
+      const index = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_kg_triples_superseded'"
+      ).get() as { name?: string } | undefined;
+
+      expect(byName.get('superseded_by_triple_id')).toMatchObject({ type: 'INTEGER', notnull: 0 });
+      expect(byName.get('superseded_at')).toMatchObject({ type: 'TEXT', notnull: 0 });
+      expect(row).toEqual({ superseded_by_triple_id: null, superseded_at: null });
+      expect(index?.name).toBe('idx_kg_triples_superseded');
+    } finally {
+      db.close();
+    }
+  });
+
   it('legacy graphFactsSource can rebuild a recreated legacy table for rollback fixtures', () => {
     const legacyStore = new Store(':memory:', { graphFactsSource: 'legacy' });
 

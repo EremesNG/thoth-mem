@@ -93,6 +93,44 @@ describe('Store — exportData/importData', () => {
     expect(exported).not.toHaveProperty('observation_facts');
   });
 
+  it('exportData stays portable after KG supersession and import ignores KG-only state', () => {
+    store.saveObservation({
+      title: 'Portable supersession',
+      content: '**What**: Redis cache',
+      type: 'decision',
+      project: 'project-a',
+      topic_key: 'kg/portable-supersession',
+    });
+    store.saveObservation({
+      title: 'Portable supersession',
+      content: '**What**: Valkey cache',
+      type: 'decision',
+      project: 'project-a',
+      topic_key: 'kg/portable-supersession',
+    });
+
+    const exported = store.exportData();
+    const portableJson = JSON.stringify(exported);
+
+    expect(exported.version).toBe(1);
+    expect(exported).not.toHaveProperty('kg_triples');
+    expect(portableJson).not.toContain('kg_triples');
+    expect(portableJson).not.toContain('superseded_by_triple_id');
+    expect(portableJson).not.toContain('superseded_at');
+
+    const targetStore = new Store(':memory:');
+    try {
+      const result = targetStore.importData(exported);
+      expect(result).toMatchObject({
+        observations_imported: 1,
+        skipped: 0,
+      });
+      expect(targetStore.exportData().observations).toHaveLength(1);
+    } finally {
+      targetStore.close();
+    }
+  });
+
   it('exportData with a project filter only returns data from that project', () => {
     seedStore(store);
 

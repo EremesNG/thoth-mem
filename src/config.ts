@@ -44,6 +44,10 @@ export interface KnowledgeGraphConfig {
   kgDepthDecay: number;
   kgTraversalTimeoutMs: number;
   kgRelationAllowList: string[];
+  kgSupersedeEnabled: boolean;
+  kgSupersedeContentPatterns: boolean;
+  kgSupersedeConfidenceThreshold: number;
+  kgSupersedeDeprioritizeWeight: number;
 }
 
 export interface EmbeddingConfig {
@@ -162,6 +166,10 @@ export const DEFAULT_KNOWLEDGE_GRAPH_CONFIG: KnowledgeGraphConfig = {
   kgDepthDecay: 0.5,
   kgTraversalTimeoutMs: 50,
   kgRelationAllowList: [...DEFAULT_KG_RELATION_ALLOW_LIST],
+  kgSupersedeEnabled: true,
+  kgSupersedeContentPatterns: false,
+  kgSupersedeConfidenceThreshold: 0.8,
+  kgSupersedeDeprioritizeWeight: 0.5,
 };
 
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
@@ -452,6 +460,10 @@ export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): Knowled
   const multiHopWeightFromEnv = parseNumber(process.env.THOTH_KG_MULTI_HOP_WEIGHT);
   const depthDecayFromEnv = parseNumber(process.env.THOTH_KG_DEPTH_DECAY);
   const traversalTimeoutFromEnv = parseNumber(process.env.THOTH_KG_TRAVERSAL_TIMEOUT_MS);
+  const supersedeEnabledFromEnv = parseBoolean(process.env.THOTH_KG_SUPERSEDE_ENABLED);
+  const supersedeContentPatternsFromEnv = parseBoolean(process.env.THOTH_KG_SUPERSEDE_CONTENT_PATTERNS);
+  const supersedeConfidenceThresholdFromEnv = parseNumber(process.env.THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD);
+  const supersedeDeprioritizeWeightFromEnv = parseNumber(process.env.THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT);
   const relationAllowList = parseRelationAllowList(process.env.THOTH_KG_RELATION_ALLOW_LIST)
     ?? normalizeRelationAllowList(persistedKg.kgRelationAllowList)
     ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgRelationAllowList;
@@ -470,6 +482,18 @@ export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): Knowled
       ?? persistedKg.kgTraversalTimeoutMs
       ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgTraversalTimeoutMs,
     kgRelationAllowList: [...relationAllowList],
+    kgSupersedeEnabled: supersedeEnabledFromEnv
+      ?? persistedKg.kgSupersedeEnabled
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeEnabled,
+    kgSupersedeContentPatterns: supersedeContentPatternsFromEnv
+      ?? persistedKg.kgSupersedeContentPatterns
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeContentPatterns,
+    kgSupersedeConfidenceThreshold: supersedeConfidenceThresholdFromEnv
+      ?? persistedKg.kgSupersedeConfidenceThreshold
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeConfidenceThreshold,
+    kgSupersedeDeprioritizeWeight: supersedeDeprioritizeWeightFromEnv
+      ?? persistedKg.kgSupersedeDeprioritizeWeight
+      ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG.kgSupersedeDeprioritizeWeight,
   };
 }
 
