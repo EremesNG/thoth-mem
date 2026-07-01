@@ -90,6 +90,34 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Supersession Flag-Off Behavior Rate |');
   });
 
+  it('reports maintenance duplicate suppression with source reachability', async () => {
+    expect(report.summary.hybrid.maintenance_duplicate_suppression_rate).toBe(1);
+    expect(report.summary.hybrid.maintenance_source_reachability_rate).toBe(1);
+    expect(report.markdown).toContain('| Maintenance Duplicate Suppression Rate |');
+    expect(report.markdown).toContain('| Maintenance Source Reachability Rate |');
+  });
+
+  it('reports maintenance reflection quality and idempotency evidence', async () => {
+    expect(report.summary.hybrid.maintenance_reflection_quality_rate).toBe(1);
+    expect(report.summary.hybrid.maintenance_reflection_idempotency_rate).toBe(1);
+    expect(report.markdown).toContain('| Maintenance Reflection Quality Rate |');
+    expect(report.markdown).toContain('| Maintenance Reflection Idempotency Rate |');
+  });
+
+  it('reports maintenance decay down-weighting without hiding current facts', async () => {
+    expect(report.summary.hybrid.maintenance_decay_current_fact_rate).toBe(1);
+    expect(report.summary.hybrid.maintenance_decay_reachability_rate).toBe(1);
+    expect(report.markdown).toContain('| Maintenance Decay Current Fact Rate |');
+    expect(report.markdown).toContain('| Maintenance Decay Reachability Rate |');
+  });
+
+  it('reports maintenance default no-regression and export/import regeneration evidence', async () => {
+    expect(report.summary.hybrid.maintenance_no_regression_rate).toBe(1);
+    expect(report.summary.hybrid.maintenance_export_import_regeneration_rate).toBe(1);
+    expect(report.markdown).toContain('| Maintenance OFF/ON No-Regression Rate |');
+    expect(report.markdown).toContain('| Maintenance Export/Import Regeneration Rate |');
+  });
+
   it('reports KG pruning keep-N and OFF/ON no-regression evidence', async () => {
     expect(report.summary.hybrid.kg_prune_retention_rate).toBe(1);
     expect(report.summary.hybrid.kg_prune_no_regression_rate).toBe(1);
@@ -131,7 +159,7 @@ describe('retrieval eval baseline', () => {
     const scaledReport = await runRetrievalEval({ noiseCount: 120 });
 
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
-    expect(scaledReport.summary.corpus.total_observations).toBe(135);
+    expect(scaledReport.summary.corpus.total_observations).toBe(143);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
     expect(scaledReport.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
     expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);

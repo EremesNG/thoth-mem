@@ -21,6 +21,7 @@ const CLI_SUBCOMMANDS = new Set([
   'rebuild-graph',
   'prune-graph',
   'rebuild-index',
+  'maintain-memory',
   'version',
   'help',
 ]);

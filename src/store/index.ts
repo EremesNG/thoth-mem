@@ -2,13 +2,16 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG, type ThothConfig } from '../config.js';
+import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   ContextInput,
   DeleteProjectResult,
   ExportData,
   ImportResult,
+  MaintenanceInput,
+  MaintenanceRunPreview,
+  MaintenanceRunResult,
   MigrateProjectResult,
   Observation,
   ObservationFact,
@@ -59,6 +62,7 @@ import type {
   VizSliceResponse,
   ListOperationTracesInput,
 } from './types.js';
+import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
@@ -74,6 +78,7 @@ import {
   type FusionOptions,
   type HybridHit,
   type LaneCandidate,
+  type MaintenanceRankingMetadata,
   type RetrievalLane,
 } from '../retrieval/ranking.js';
 import {
@@ -105,6 +110,25 @@ type RetrievalCandidateFilters = {
   time_from?: string;
   time_to?: string;
 };
+
+export interface ObservationMaintenanceEvidence {
+  observationId: number;
+  consolidation?: {
+    clusterKey: string;
+    canonicalId: number;
+    memberIds: number[];
+    reasonClass: string;
+  };
+  reflection?: {
+    sourceIds: number[];
+    reasonClass: string;
+  };
+  decay?: {
+    scoreMultiplier: number;
+    state: 'active' | 'attenuated' | 'suppressed';
+    reasonClass: string;
+  };
+}
 
 type PruneSlotPair = {
   subjectEntityId: number;
@@ -238,6 +262,7 @@ const DEFAULT_CONFIG: ThothConfig = {
     minContentChars: 12_000,
   },
   knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
+  maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
 };
 
 const RETRIEVAL_QUERY_STOPWORDS = new Set([
@@ -528,6 +553,30 @@ export class Store {
       knowledgeGraph: {
         ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
         ...(config?.knowledgeGraph ?? {}),
+      },
+      maintenance: {
+        ...DEFAULT_MAINTENANCE_CONFIG,
+        ...(config?.maintenance ?? {}),
+        automatic: {
+          ...DEFAULT_MAINTENANCE_CONFIG.automatic,
+          ...(config?.maintenance?.automatic ?? {}),
+        },
+        readPath: {
+          ...DEFAULT_MAINTENANCE_CONFIG.readPath,
+          ...(config?.maintenance?.readPath ?? {}),
+        },
+        consolidation: {
+          ...DEFAULT_MAINTENANCE_CONFIG.consolidation,
+          ...(config?.maintenance?.consolidation ?? {}),
+        },
+        reflection: {
+          ...DEFAULT_MAINTENANCE_CONFIG.reflection,
+          ...(config?.maintenance?.reflection ?? {}),
+        },
+        decay: {
+          ...DEFAULT_MAINTENANCE_CONFIG.decay,
+          ...(config?.maintenance?.decay ?? {}),
+        },
       },
     };
     this.db = new Database(dbPath);
@@ -1703,6 +1752,429 @@ export class Store {
     };
   }
 
+  private selectMaintenanceRecords(input: MaintenanceInput = {}, limit?: number): MaintenancePlanningRecord[] {
+    const scope = input.scope ?? { all: true };
+    const sql = [
+      `SELECT id, type, title, content, project, scope, topic_key, normalized_hash,
+              duplicate_count, created_at, updated_at, tool_name
+       FROM observations
+       WHERE deleted_at IS NULL`,
+    ];
+    const params: string[] = [];
+
+    if ('project' in scope) {
+      sql.push('AND project = ?');
+      params.push(scope.project);
+    } else if ('topic_key' in scope) {
+      sql.push('AND topic_key = ?');
+      params.push(scope.topic_key);
+    } else if ('topic_prefix' in scope) {
+      sql.push('AND topic_key LIKE ?');
+      params.push(`${scope.topic_prefix}%`);
+    }
+
+    sql.push('ORDER BY id');
+    if (limit !== undefined) {
+      sql.push('LIMIT ?');
+      params.push(String(limit));
+    }
+
+    return this.db.prepare(sql.join(' ')).all(...params) as MaintenancePlanningRecord[];
+  }
+
+  evaluateMaintenance(input: MaintenanceInput = {}): MaintenanceRunPreview {
+    const plan = planMaintenance({
+      records: this.selectMaintenanceRecords(input),
+      config: this.config.maintenance,
+      input,
+    });
+
+    return {
+      dry_run: true,
+      scope: plan.scope,
+      counts: plan.counts,
+      consolidations: plan.consolidations,
+      reflections: plan.reflections,
+      decays: plan.decays,
+      degraded: plan.degraded,
+    };
+  }
+
+  private upsertMaintenanceReflection(
+    runId: number,
+    reflection: MaintenanceRunPreview['reflections'][number],
+  ): number {
+    const existing = this.db.prepare(
+      'SELECT id FROM observations WHERE topic_key = ? AND deleted_at IS NULL LIMIT 1'
+    ).get(reflection.topic_key) as { id: number } | undefined;
+    const sourceProject = this.db.prepare(
+      'SELECT project, session_id FROM observations WHERE id = ? LIMIT 1'
+    ).get(reflection.sources[0]?.id ?? 0) as { project: string | null; session_id: string } | undefined;
+    const sessionId = sourceProject?.session_id ?? 'maintenance-reflection';
+    const project = sourceProject?.project ?? 'unknown';
+    const normalizedHash = computeHash(reflection.content);
+
+    this.ensureSession(sessionId, project);
+
+    if (existing) {
+      this.db.prepare(
+        `UPDATE observations
+         SET title = ?, content = ?, type = 'learning', tool_name = 'maintenance-reflection',
+             project = ?, scope = 'project', normalized_hash = ?,
+             revision_count = revision_count + 1, updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(reflection.title, reflection.content, project, normalizedHash, existing.id);
+      this.recordMutation('update', 'observation', existing.id, null, project);
+
+      const observation = this.getObservation(existing.id);
+      if (observation) {
+        this.refreshGraphFacts(observation);
+        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      }
+
+      return existing.id;
+    }
+
+    const syncId = randomUUID();
+    const result = this.db.prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id
+       ) VALUES (?, 'learning', ?, ?, 'maintenance-reflection', ?, 'project', ?, ?, ?)`
+    ).run(sessionId, reflection.title, reflection.content, project, reflection.topic_key, normalizedHash, syncId);
+    const observationId = Number(result.lastInsertRowid);
+    this.recordMutation('create', 'observation', observationId, syncId, project);
+
+    const observation = this.getObservation(observationId);
+    if (observation) {
+      this.refreshGraphFacts(observation);
+      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+    }
+
+    return observationId;
+  }
+
+  private applyMaintenancePlan(plan: MaintenancePlan): MaintenanceRunResult {
+    const applyMaintenance = this.db.transaction((): MaintenanceRunResult => {
+      const run = this.db.prepare(
+        `INSERT INTO maintenance_runs (
+           run_key, mode, scope_json, config_json, status, counts_json, degraded_json, completed_at
+         ) VALUES (?, 'apply', ?, ?, 'applied', ?, ?, datetime('now'))
+         ON CONFLICT(run_key) DO UPDATE SET
+           mode = excluded.mode,
+           scope_json = excluded.scope_json,
+           config_json = excluded.config_json,
+           status = excluded.status,
+           counts_json = excluded.counts_json,
+           degraded_json = excluded.degraded_json,
+           completed_at = datetime('now')`
+      ).run(
+        plan.run_key,
+        JSON.stringify(plan.scope),
+        JSON.stringify(this.config.maintenance),
+        JSON.stringify(plan.counts),
+        JSON.stringify(plan.degraded)
+      );
+      const runRow = this.db.prepare('SELECT id FROM maintenance_runs WHERE run_key = ?').get(plan.run_key) as { id: number };
+      const runId = Number(runRow.id);
+      void run;
+
+      for (const consolidation of plan.consolidations) {
+        this.db.prepare(
+          `INSERT INTO maintenance_consolidations (
+             run_id, cluster_key, canonical_kind, canonical_id, reason_class, signal_json, review_required
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cluster_key) DO UPDATE SET
+             run_id = excluded.run_id,
+             canonical_kind = excluded.canonical_kind,
+             canonical_id = excluded.canonical_id,
+             reason_class = excluded.reason_class,
+             signal_json = excluded.signal_json,
+             review_required = excluded.review_required`
+        ).run(
+          runId,
+          consolidation.cluster_key,
+          consolidation.canonical.kind,
+          consolidation.canonical.id,
+          consolidation.reason_class,
+          JSON.stringify(consolidation.signal),
+          consolidation.review_required ? 1 : 0
+        );
+        const consolidationRow = this.db.prepare(
+          'SELECT id FROM maintenance_consolidations WHERE cluster_key = ?'
+        ).get(consolidation.cluster_key) as { id: number };
+        this.db.prepare('DELETE FROM maintenance_consolidation_members WHERE consolidation_id = ?').run(consolidationRow.id);
+        const insertMember = this.db.prepare(
+          `INSERT INTO maintenance_consolidation_members (
+             consolidation_id, source_kind, source_id, role, signal_json
+           ) VALUES (?, ?, ?, ?, ?)`
+        );
+
+        for (const member of consolidation.members) {
+          const role = member.kind === consolidation.canonical.kind && member.id === consolidation.canonical.id
+            ? 'canonical'
+            : 'member';
+          insertMember.run(consolidationRow.id, member.kind, member.id, role, JSON.stringify(consolidation.signal));
+        }
+      }
+
+      const appliedReflections = plan.reflections.map((reflection) => {
+        const observationId = this.upsertMaintenanceReflection(runId, reflection);
+        this.db.prepare(
+          `INSERT INTO maintenance_reflections (
+             run_id, reflection_observation_id, source_set_hash, reason_class, metadata_json
+           ) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(source_set_hash) DO UPDATE SET
+             run_id = excluded.run_id,
+             reflection_observation_id = excluded.reflection_observation_id,
+             reason_class = excluded.reason_class,
+             metadata_json = excluded.metadata_json`
+        ).run(
+          runId,
+          observationId,
+          reflection.source_set_hash,
+          reflection.reason_class,
+          JSON.stringify({ topic_key: reflection.topic_key, title: reflection.title })
+        );
+        const reflectionRow = this.db.prepare(
+          'SELECT id FROM maintenance_reflections WHERE source_set_hash = ?'
+        ).get(reflection.source_set_hash) as { id: number };
+        this.db.prepare('DELETE FROM maintenance_reflection_sources WHERE reflection_id = ?').run(reflectionRow.id);
+        const insertSource = this.db.prepare(
+          `INSERT INTO maintenance_reflection_sources (reflection_id, source_kind, source_id)
+           VALUES (?, ?, ?)`
+        );
+        for (const source of reflection.sources) {
+          insertSource.run(reflectionRow.id, source.kind, source.id);
+        }
+
+        return { ...reflection, planned_observation_id: observationId };
+      });
+
+      for (const decay of plan.decays) {
+        this.db.prepare(
+          `INSERT INTO maintenance_decay (
+             source_kind, source_id, score, state, reason_class, policy_json, run_id, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(source_kind, source_id) DO UPDATE SET
+             score = excluded.score,
+             state = excluded.state,
+             reason_class = excluded.reason_class,
+             policy_json = excluded.policy_json,
+             run_id = excluded.run_id,
+             updated_at = datetime('now')`
+        ).run(
+          decay.source.kind,
+          decay.source.id,
+          decay.score,
+          decay.state,
+          decay.reason_class,
+          JSON.stringify(decay.policy),
+          runId
+        );
+      }
+
+      return {
+        dry_run: false,
+        run_id: runId,
+        scope: plan.scope,
+        counts: plan.counts,
+        consolidations: plan.consolidations,
+        reflections: appliedReflections,
+        decays: plan.decays,
+        degraded: plan.degraded,
+      };
+    });
+
+    return applyMaintenance();
+  }
+
+  runMaintenance(input: MaintenanceInput = {}): MaintenanceRunResult {
+    const plan = planMaintenance({
+      records: this.selectMaintenanceRecords(input),
+      config: this.config.maintenance,
+      input: { ...input, mode: 'apply' },
+    });
+
+    return this.applyMaintenancePlan(plan);
+  }
+
+  runAutomaticMaintenance(input: MaintenanceInput = {}): MaintenanceRunPreview | MaintenanceRunResult {
+    const maxRecords = Math.max(1, this.config.maintenance.automatic.maxRecordsPerRun);
+    const records = this.selectMaintenanceRecords(input, maxRecords)
+      .filter((record) => record.tool_name !== 'maintenance-reflection');
+    const plan = planMaintenance({
+      records,
+      config: this.config.maintenance,
+      input: { ...input, mode: this.config.maintenance.automatic.enabled ? 'apply' : 'dry-run' },
+    });
+
+    if (!this.config.maintenance.automatic.enabled) {
+      return {
+        dry_run: true,
+        scope: plan.scope,
+        counts: plan.counts,
+        consolidations: plan.consolidations,
+        reflections: plan.reflections,
+        decays: plan.decays,
+        degraded: [
+          ...plan.degraded,
+          'automatic-maintenance-disabled-manual-preview-only',
+          'automatic-scheduler-unavailable-explicit-admin-apply-required',
+        ],
+      };
+    }
+
+    return this.applyMaintenancePlan(plan);
+  }
+
+  getMaintenanceEvidenceForObservations(observationIds: number[]): ObservationMaintenanceEvidence[] {
+    const ids = Array.from(new Set(observationIds)).sort((a, b) => a - b);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const byObservation = new Map<number, ObservationMaintenanceEvidence>();
+    const ensureEvidence = (observationId: number): ObservationMaintenanceEvidence => {
+      const existing = byObservation.get(observationId);
+      if (existing) {
+        return existing;
+      }
+      const evidence: ObservationMaintenanceEvidence = { observationId };
+      byObservation.set(observationId, evidence);
+      return evidence;
+    };
+
+    const placeholders = ids.map(() => '?').join(',');
+    const consolidationRows = this.db.prepare(
+      `SELECT c.cluster_key, c.canonical_id, c.reason_class, m.source_id
+       FROM maintenance_consolidations c
+       JOIN maintenance_consolidation_members m ON m.consolidation_id = c.id
+       WHERE c.canonical_kind = 'observation'
+         AND m.source_kind = 'observation'
+         AND c.id IN (
+           SELECT consolidation_id
+           FROM maintenance_consolidation_members
+           WHERE source_kind = 'observation'
+             AND source_id IN (${placeholders})
+         )
+       ORDER BY c.cluster_key ASC, m.source_id ASC`
+    ).all(...ids) as Array<{
+      cluster_key: string;
+      canonical_id: number;
+      reason_class: string;
+      source_id: number;
+    }>;
+    const consolidations = new Map<string, {
+      clusterKey: string;
+      canonicalId: number;
+      reasonClass: string;
+      memberIds: number[];
+    }>();
+    for (const row of consolidationRows) {
+      const existing = consolidations.get(row.cluster_key) ?? {
+        clusterKey: row.cluster_key,
+        canonicalId: row.canonical_id,
+        reasonClass: row.reason_class,
+        memberIds: [],
+      };
+      existing.memberIds.push(row.source_id);
+      consolidations.set(row.cluster_key, existing);
+    }
+    for (const consolidation of consolidations.values()) {
+      consolidation.memberIds = Array.from(new Set(consolidation.memberIds)).sort((a, b) => a - b);
+      for (const memberId of consolidation.memberIds) {
+        ensureEvidence(memberId).consolidation = consolidation;
+      }
+      ensureEvidence(consolidation.canonicalId).consolidation = consolidation;
+    }
+
+    const reflectionRows = this.db.prepare(
+      `SELECT r.reflection_observation_id, r.reason_class, s.source_id
+       FROM maintenance_reflections r
+       JOIN maintenance_reflection_sources s ON s.reflection_id = r.id
+       WHERE s.source_kind = 'observation'
+         AND (
+           r.reflection_observation_id IN (${placeholders})
+           OR s.source_id IN (${placeholders})
+         )
+       ORDER BY r.reflection_observation_id ASC, s.source_id ASC`
+    ).all(...ids, ...ids) as Array<{
+      reflection_observation_id: number;
+      reason_class: string;
+      source_id: number;
+    }>;
+    const reflections = new Map<number, { sourceIds: number[]; reasonClass: string }>();
+    for (const row of reflectionRows) {
+      const existing = reflections.get(row.reflection_observation_id) ?? {
+        sourceIds: [],
+        reasonClass: row.reason_class,
+      };
+      existing.sourceIds.push(row.source_id);
+      reflections.set(row.reflection_observation_id, existing);
+    }
+    for (const [reflectionObservationId, reflection] of reflections.entries()) {
+      reflection.sourceIds = Array.from(new Set(reflection.sourceIds)).sort((a, b) => a - b);
+      ensureEvidence(reflectionObservationId).reflection = reflection;
+    }
+
+    const decayRows = this.db.prepare(
+      `SELECT source_id, score, state, reason_class
+       FROM maintenance_decay
+       WHERE source_kind = 'observation'
+         AND source_id IN (${placeholders})
+       ORDER BY source_id ASC`
+    ).all(...ids) as Array<{
+      source_id: number;
+      score: number;
+      state: 'active' | 'attenuated' | 'suppressed';
+      reason_class: string;
+    }>;
+    for (const row of decayRows) {
+      ensureEvidence(row.source_id).decay = {
+        scoreMultiplier: row.score,
+        state: row.state,
+        reasonClass: row.reason_class,
+      };
+    }
+
+    return [...byObservation.values()].sort((a, b) => a.observationId - b.observationId);
+  }
+
+  private getMaintenanceRankingMetadata(observationIds: number[]): MaintenanceRankingMetadata | undefined {
+    if (!this.config.maintenance.readPath.enabled) {
+      return undefined;
+    }
+
+    const evidence = this.getMaintenanceEvidenceForObservations(observationIds);
+    if (evidence.length === 0) {
+      return {
+        enabled: true,
+        consolidations: new Map(),
+        reflections: new Map(),
+        decays: new Map(),
+      };
+    }
+
+    return {
+      enabled: true,
+      consolidations: new Map(evidence.flatMap((entry) => (
+        entry.consolidation
+          ? [[entry.observationId, entry.consolidation]]
+          : []
+      ))),
+      reflections: new Map(evidence.flatMap((entry) => (
+        entry.reflection
+          ? [[entry.observationId, { ...entry.reflection, boost: 1.35 }]]
+          : []
+      ))),
+      decays: new Map(evidence.flatMap((entry) => (
+        entry.decay
+          ? [[entry.observationId, entry.decay]]
+          : []
+      ))),
+    };
+  }
+
   saveObservation(input: SaveObservationInput): SaveResult {
     const strippedTitle = stripPrivateTags(input.title);
     const strippedContent = stripPrivateTags(input.content);
@@ -2057,7 +2529,12 @@ export class Store {
       includeUnmatched: false,
     });
     const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...lexicalCandidates];
-    const observationIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
+    const coreCandidateIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
+    const coreMaintenance = this.getMaintenanceRankingMetadata(coreCandidateIds);
+    const observationIds = Array.from(new Set([
+      ...coreCandidateIds,
+      ...[...(coreMaintenance?.consolidations.values() ?? [])].map((entry) => entry.canonicalId),
+    ]));
     const observationRows = observationIds.length > 0
       ? this.db.prepare(
           `SELECT * FROM observations
@@ -2069,6 +2546,7 @@ export class Store {
     const fusionOptions: FusionOptions = {
       laneOrder: input.laneOrder,
       laneWeights: input.laneWeights,
+      maintenance: coreMaintenance,
     };
     const fusedLimit = input.limit ?? defaults.lexicalLimit;
     const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, fusedLimit);
@@ -2092,10 +2570,15 @@ export class Store {
         if (exceededTimeout) {
           degradedFallback.push('kg_multi_hop');
         } else if (multiHopCandidates.length > 0) {
+          const allCandidateIds = Array.from(new Set(
+            [...coreCandidates, ...multiHopCandidates].map((candidate) => candidate.observationId)
+          ));
+          const multiHopMaintenance = this.getMaintenanceRankingMetadata(allCandidateIds);
           const newIds = Array.from(new Set(
-            multiHopCandidates
-              .map((candidate) => candidate.observationId)
-              .filter((id) => !observations.has(id))
+            [
+              ...allCandidateIds,
+              ...[...(multiHopMaintenance?.consolidations.values() ?? [])].map((entry) => entry.canonicalId),
+            ].filter((id) => !observations.has(id))
           ));
           if (newIds.length > 0) {
             const extraRows = this.db.prepare(
@@ -2107,7 +2590,10 @@ export class Store {
               observations.set(row.id, row);
             }
           }
-          refused = fuseCandidates(observations, [...coreCandidates, ...multiHopCandidates], fusionOptions).slice(0, fusedLimit);
+          refused = fuseCandidates(observations, [...coreCandidates, ...multiHopCandidates], {
+            ...fusionOptions,
+            maintenance: multiHopMaintenance,
+          }).slice(0, fusedLimit);
         }
       } catch {
         degradedFallback.push('kg_multi_hop');

@@ -2,6 +2,7 @@ import { getOpenApiSpec } from './http-openapi.js';
 import type {
   ExportData,
   ListOperationTracesInput,
+  MaintenanceScope,
   ObservationFact,
   Observation,
   ObservationScope,
@@ -60,6 +61,8 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'index-status', origin: 'http', label: 'Index status', kind: 'indexing', method: 'GET', path: '/index/status', description: 'Inspect semantic lane readiness, queue counts, coverage, and recent failures.' },
   { id: 'rebuild-graph', origin: 'http', label: 'Rebuild graph', kind: 'indexing', method: 'POST', path: '/graph/rebuild', description: 'Rebuild deterministic graph-lite facts from saved observations.' },
   { id: 'prune-graph', origin: 'http', label: 'Prune graph', kind: 'indexing', method: 'POST', path: '/graph/prune', description: 'Bound superseded KG history using the configured keep-N policy.' },
+  { id: 'maintenance-preview', origin: 'http', label: 'Maintenance preview', kind: 'admin', method: 'POST', path: '/maintenance/preview', description: 'Preview scoped consolidation, reflection, and decay maintenance without writes.' },
+  { id: 'maintenance-apply', origin: 'http', label: 'Maintenance apply', kind: 'admin', method: 'POST', path: '/maintenance/apply', description: 'Apply scoped consolidation, reflection, and decay maintenance transactionally.' },
   { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
   { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
   { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
@@ -594,6 +597,24 @@ export async function handleRebuildGraph(store: Store, request: HttpRouteRequest
   };
 }
 
+function parseMaintenanceScopeBody(body: Record<string, unknown> | undefined): MaintenanceScope {
+  const all = optionalBoolean(body?.all, 'all') === true;
+  const project = optionalString(body?.project, 'project');
+  const topicKey = optionalString(body?.topic_key, 'topic_key');
+  const topicPrefix = optionalString(body?.topic_prefix, 'topic_prefix');
+  const scopes = [all, project !== undefined, topicKey !== undefined, topicPrefix !== undefined]
+    .filter(Boolean).length;
+
+  if (scopes !== 1) {
+    throw new HttpRouteError(400, 'Provide exactly one maintenance scope: all, project, topic_key, or topic_prefix');
+  }
+
+  if (all) return { all: true };
+  if (project) return { project };
+  if (topicKey) return { topic_key: topicKey };
+  return { topic_prefix: topicPrefix! };
+}
+
 export async function handlePruneGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   return {
@@ -601,6 +622,28 @@ export async function handlePruneGraph(store: Store, request: HttpRouteRequest):
     body: store.pruneSupersededTriples({
       project: optionalString(body?.project, 'project'),
       dryRun: optionalBoolean(body?.dryRun, 'dryRun') ?? false,
+    }),
+  };
+}
+
+export async function handleMaintenancePreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.evaluateMaintenance({
+      scope: parseMaintenanceScopeBody(body),
+      mode: 'dry-run',
+    }),
+  };
+}
+
+export async function handleMaintenanceApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.runMaintenance({
+      scope: parseMaintenanceScopeBody(body),
+      mode: 'apply',
     }),
   };
 }

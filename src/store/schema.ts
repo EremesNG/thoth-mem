@@ -232,6 +232,91 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by
 CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at);
 `;
 
+export const MAINTENANCE_METADATA_SQL = `
+CREATE TABLE IF NOT EXISTS maintenance_runs (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_key            TEXT NOT NULL UNIQUE,
+  mode               TEXT NOT NULL CHECK(mode IN ('dry-run','apply')),
+  scope_json         TEXT NOT NULL,
+  config_json        TEXT NOT NULL,
+  status             TEXT NOT NULL CHECK(status IN ('planned','applied','failed')) DEFAULT 'planned',
+  counts_json        TEXT NOT NULL,
+  degraded_json      TEXT NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_consolidations (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id             INTEGER NOT NULL,
+  cluster_key        TEXT NOT NULL UNIQUE,
+  canonical_kind     TEXT NOT NULL CHECK(canonical_kind IN ('observation','prompt','session_summary')),
+  canonical_id       INTEGER NOT NULL,
+  reason_class       TEXT NOT NULL,
+  signal_json        TEXT NOT NULL,
+  review_required    INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (run_id) REFERENCES maintenance_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_consolidation_members (
+  consolidation_id   INTEGER NOT NULL,
+  source_kind        TEXT NOT NULL CHECK(source_kind IN ('observation','prompt','session_summary')),
+  source_id          INTEGER NOT NULL,
+  role               TEXT NOT NULL CHECK(role IN ('canonical','member')),
+  signal_json        TEXT NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (consolidation_id, source_kind, source_id),
+  FOREIGN KEY (consolidation_id) REFERENCES maintenance_consolidations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_reflections (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                     INTEGER NOT NULL,
+  reflection_observation_id  INTEGER NOT NULL,
+  source_set_hash            TEXT NOT NULL UNIQUE,
+  reason_class               TEXT NOT NULL,
+  metadata_json              TEXT NOT NULL,
+  created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (run_id) REFERENCES maintenance_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (reflection_observation_id) REFERENCES observations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_reflection_sources (
+  reflection_id      INTEGER NOT NULL,
+  source_kind        TEXT NOT NULL CHECK(source_kind IN ('observation','prompt','session_summary')),
+  source_id          INTEGER NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (reflection_id, source_kind, source_id),
+  FOREIGN KEY (reflection_id) REFERENCES maintenance_reflections(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_decay (
+  source_kind        TEXT NOT NULL CHECK(source_kind IN ('observation','prompt','session_summary')),
+  source_id          INTEGER NOT NULL,
+  score              REAL NOT NULL,
+  state              TEXT NOT NULL CHECK(state IN ('active','attenuated','suppressed')),
+  reason_class       TEXT NOT NULL,
+  policy_json        TEXT NOT NULL,
+  run_id             INTEGER NOT NULL,
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (source_kind, source_id),
+  FOREIGN KEY (run_id) REFERENCES maintenance_runs(id) ON DELETE CASCADE
+);
+`;
+
+export const MAINTENANCE_METADATA_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_maintenance_runs_created ON maintenance_runs(created_at, id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_consolidations_run ON maintenance_consolidations(run_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_consolidations_canonical ON maintenance_consolidations(canonical_kind, canonical_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_consolidation_members_source ON maintenance_consolidation_members(source_kind, source_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_reflections_run ON maintenance_reflections(run_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_reflections_observation ON maintenance_reflections(reflection_observation_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_reflection_sources_source ON maintenance_reflection_sources(source_kind, source_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_decay_run ON maintenance_decay(run_id);
+CREATE INDEX IF NOT EXISTS idx_maintenance_decay_state ON maintenance_decay(state, source_kind, source_id);
+`;
+
 /**
  * Complete database schema — uses CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS
  * for idempotent setup. Safe to run on every startup.
@@ -346,6 +431,8 @@ ${SYNC_MUTATIONS_INDEXES_SQL}
 ${OPERATION_TRACES_INDEXES_SQL}
 ${SEMANTIC_METADATA_SQL}
 ${SEMANTIC_METADATA_INDEXES_SQL}
+${MAINTENANCE_METADATA_SQL}
+${MAINTENANCE_METADATA_INDEXES_SQL}
 `;
 
 /**

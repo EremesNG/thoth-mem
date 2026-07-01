@@ -110,6 +110,32 @@ describe('Store — Migration behaviors', () => {
     }).not.toThrow();
   });
 
+  it('creates maintenance metadata tables idempotently during migrations', () => {
+    const db = store.getDb();
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+    }).not.toThrow();
+
+    const tableNames = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'maintenance_%' ORDER BY name"
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+    const indexes = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_maintenance_%' ORDER BY name"
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+
+    expect(tableNames).toEqual([
+      'maintenance_consolidation_members',
+      'maintenance_consolidations',
+      'maintenance_decay',
+      'maintenance_reflection_sources',
+      'maintenance_reflections',
+      'maintenance_runs',
+    ]);
+    expect(indexes).toContain('idx_maintenance_decay_state');
+  });
+
   it('drops legacy observation_facts table and indexes idempotently in semantic migrations', () => {
     const db = store.getDb();
 

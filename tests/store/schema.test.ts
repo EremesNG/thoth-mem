@@ -40,6 +40,12 @@ describe('Database Schema', () => {
     expect(tableNames).toContain('prompts_fts');
     expect(tableNames).toContain('sync_chunks');
     expect(tableNames).toContain('sync_mutations');
+    expect(tableNames).toContain('maintenance_runs');
+    expect(tableNames).toContain('maintenance_consolidations');
+    expect(tableNames).toContain('maintenance_consolidation_members');
+    expect(tableNames).toContain('maintenance_reflections');
+    expect(tableNames).toContain('maintenance_reflection_sources');
+    expect(tableNames).toContain('maintenance_decay');
     expect(tableNames).not.toContain('observation_facts');
     db.close();
   });
@@ -82,6 +88,9 @@ describe('Database Schema', () => {
     expect(indexNames).toContain('idx_prompts_project');
     expect(indexNames).toContain('idx_kg_triples_superseded');
     expect(indexNames).toContain('idx_kg_triples_slot_superseded');
+    expect(indexNames).toContain('idx_maintenance_consolidation_members_source');
+    expect(indexNames).toContain('idx_maintenance_decay_state');
+    expect(indexNames).toContain('idx_maintenance_reflection_sources_source');
     db.close();
   });
 

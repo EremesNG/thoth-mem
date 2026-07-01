@@ -510,6 +510,61 @@ describe('runCli', () => {
     expect((missingScopeError as Error).message).toContain('prune-graph requires --project <name> or --all');
   });
 
+  it('previews and applies memory maintenance from the CLI without adding MCP tools', async () => {
+    const dataDir = join(tempDir, 'data');
+    ensureDir(dataDir);
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      maintenance: {
+        defaultMode: 'dry-run',
+        reflection: { minSourceCount: 2 },
+      },
+    }));
+    const store = new Store(join(dataDir, 'thoth.db'));
+    try {
+      store.saveObservation({
+        title: 'CLI maintenance source A',
+        content: 'cli maintenance duplicate marker',
+        project: 'cli-maint-project',
+        type: 'decision',
+      });
+      store.saveObservation({
+        title: 'CLI maintenance source B',
+        content: 'cli maintenance duplicate marker',
+        project: 'cli-maint-project',
+        type: 'decision',
+      });
+    } finally {
+      store.close();
+    }
+
+    const preview = await captureCli(['maintain-memory', '--project', 'cli-maint-project', '--data-dir', dataDir]);
+    expect(preview.stderr).toBe('');
+    expect(preview.stdout).toContain('## Memory Maintenance Preview');
+    expect(preview.stdout).toContain('- **Mode:** dry-run');
+    expect(preview.stdout).toContain('- **Scope:** project cli-maint-project');
+    expect(preview.stdout).toContain('- **Consolidation candidates:** 1');
+
+    const afterPreview = new Store(join(dataDir, 'thoth.db'));
+    try {
+      expect(afterPreview.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_runs').get()).toEqual({ count: 0 });
+    } finally {
+      afterPreview.close();
+    }
+
+    const applied = await captureCli(['maintain-memory', '--project', 'cli-maint-project', '--apply', '--data-dir', dataDir]);
+    expect(applied.stdout).toContain('## Memory Maintenance Applied');
+    expect(applied.stdout).toContain('- **Mode:** apply');
+    expect(applied.stdout).toContain('- **Run ID:**');
+    expect(ALL_TOOLS.map((tool) => tool.name)).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
+  });
+
   it('queues and reports semantic rebuild-index for a project', async () => {
     const dataDir = join(tempDir, 'data');
     seedStore(dataDir);
@@ -657,6 +712,7 @@ describe('runCli', () => {
     expect(shouldRunCli(['delete-project', 'project-name'])).toBe(true);
     expect(shouldRunCli(['rebuild-graph', '--all'])).toBe(true);
     expect(shouldRunCli(['prune-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['maintain-memory', '--all'])).toBe(true);
     expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
     expect(shouldRunCli(['mcp'])).toBe(false);
   });

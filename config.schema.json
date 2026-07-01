@@ -252,6 +252,154 @@
           }
         }
       }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Store-owned memory maintenance settings. Environment variables named THOTH_MAINTENANCE_* override these persisted values; unknown keys are rejected for safe rollback.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enables manual maintenance evaluation/apply paths. Turning this off prevents new maintenance outcomes without deleting existing records or metadata."
+        },
+        "defaultMode": {
+          "type": "string",
+          "enum": ["dry-run", "apply"],
+          "default": "dry-run",
+          "description": "Default operator mode for maintenance entry points; dry-run is the conservative rollback default."
+        },
+        "automatic": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Automatic maintenance job controls. Automatic mutating work is disabled by default.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "maxRecordsPerRun": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 500
+            }
+          }
+        },
+        "readPath": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Read-path consumption controls for maintenance ranking/suppression metadata.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "When false, retrieval/context consumers ignore consolidation and decay metadata while stored records remain intact."
+            }
+          }
+        },
+        "consolidation": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Deterministic duplicate consolidation thresholds and review boundaries.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "exactHashThreshold": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "description": "Minimum existing matching source count before an exact-hash group becomes a consolidation candidate."
+            },
+            "lexicalSimilarityThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.92
+            },
+            "reviewSimilarityThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.82
+            }
+          }
+        },
+        "reflection": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Source-linked durable learning generation settings.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "minSourceCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 2
+            },
+            "maxSourceCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 8
+            },
+            "contentBudgetChars": {
+              "type": "integer",
+              "minimum": 200,
+              "default": 1200
+            },
+            "modelAssisted": {
+              "type": "boolean",
+              "default": false,
+              "description": "Optional model-assisted wording switch; deterministic reflection remains the baseline fallback."
+            }
+          }
+        },
+        "decay": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Reversible ranking metadata policy. The default policy never archives, soft-deletes, hard-deletes, or prunes records.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "defaultState": {
+              "type": "string",
+              "enum": ["active", "attenuated", "suppressed"],
+              "default": "attenuated"
+            },
+            "staleAfterDays": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 180
+            },
+            "redundantDuplicateCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 2
+            },
+            "lowValueTypes": {
+              "type": "array",
+              "uniqueItems": true,
+              "default": ["discovery", "manual"],
+              "items": {
+                "type": "string",
+                "enum": ["decision", "architecture", "bugfix", "pattern", "config", "discovery", "learning", "session_summary", "manual"]
+              }
+            },
+            "scoreMultiplier": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.6,
+              "description": "Ranking multiplier to apply when decay metadata is consumed by read paths."
+            }
+          }
+        }
+      }
     }
   }
 }

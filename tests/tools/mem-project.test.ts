@@ -64,6 +64,48 @@ describe('mem_project tool', () => {
     expect(topic?.content[0].text).toContain('## Topic Key: architecture/topic-a');
   });
 
+  it('annotates project graph with maintenance provenance without replacing KG facts', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      maintenance: {
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_project') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer;
+    registerMemProject(server, store);
+    const first = store.saveObservation({
+      title: 'Graph maintenance source A',
+      content: '**What**: graph maintenance evidence',
+      project: 'project-a',
+      type: 'manual',
+    }).observation;
+    const second = store.saveObservation({
+      title: 'Graph maintenance source B',
+      content: '**What**: graph maintenance evidence',
+      project: 'project-a',
+      type: 'manual',
+    }).observation;
+    store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id IN (?, ?)")
+      .run(first.id, second.id);
+    store.runMaintenance({ scope: { project: 'project-a' } });
+
+    const result = await toolHandler?.({ action: 'graph', project: 'project-a', max_chars: 4000 });
+    const text = result?.content[0].text ?? '';
+
+    expect(text).toContain('Graph maintenance source');
+    expect(text).toContain('Maintenance evidence:');
+    expect(text).toContain('consolidation');
+    expect(text).toContain('decay state=attenuated');
+    expect(text).not.toContain('maintenance_runs');
+  });
+
   it('bounds summary output by default and with per-call max_chars', async () => {
     seedLargeProject();
 

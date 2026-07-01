@@ -31,6 +31,10 @@ describe('MCP tool registration', () => {
     expect(names).not.toContain('mem_migrate_project');
     expect(names).not.toContain('mem_sync_export');
     expect(names).not.toContain('mem_sync_import');
+    expect(names).not.toContain('mem_maintenance');
+    expect(names).not.toContain('mem_maintain');
+    expect(names).not.toContain('maintain_memory');
+    expect(names).not.toContain('maintain-memory');
   });
 
   it('does not expose supersession-specific MCP tools', () => {

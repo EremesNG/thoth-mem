@@ -12,6 +12,7 @@ export const DEFAULT_LANE_WEIGHTS: Record<RetrievalLane, number> = {
 export interface FusionOptions {
   laneOrder?: RetrievalLane[];
   laneWeights?: Partial<Record<RetrievalLane, number>>;
+  maintenance?: MaintenanceRankingMetadata;
 }
 
 export interface LaneCandidate {
@@ -33,6 +34,38 @@ export interface LaneCandidate {
   };
 }
 
+export interface MaintenanceConsolidationRanking {
+  clusterKey: string;
+  canonicalId: number;
+  memberIds: number[];
+  reasonClass: string;
+}
+
+export interface MaintenanceReflectionRanking {
+  sourceIds: number[];
+  reasonClass: string;
+  boost: number;
+}
+
+export interface MaintenanceDecayRanking {
+  scoreMultiplier: number;
+  state: 'active' | 'attenuated' | 'suppressed';
+  reasonClass: string;
+}
+
+export interface MaintenanceRankingMetadata {
+  enabled: boolean;
+  consolidations: Map<number, MaintenanceConsolidationRanking>;
+  reflections: Map<number, MaintenanceReflectionRanking>;
+  decays: Map<number, MaintenanceDecayRanking>;
+}
+
+export interface MaintenanceEvidence {
+  consolidation?: MaintenanceConsolidationRanking & { suppressedSourceIds: number[] };
+  reflection?: MaintenanceReflectionRanking;
+  decay?: MaintenanceDecayRanking;
+}
+
 export interface HybridHit {
   observation: Observation;
   score: number;
@@ -41,6 +74,7 @@ export interface HybridHit {
     primary: LaneCandidate;
     promotedParent?: { chunkKey: string; text: string };
     byLane: Partial<Record<RetrievalLane, LaneCandidate[]>>;
+    maintenance?: MaintenanceEvidence;
   };
 }
 
@@ -51,15 +85,25 @@ export function fuseCandidates(
 ): HybridHit[] {
   const laneOrder = resolveLaneOrder(options.laneOrder);
   const laneWeights = resolveLaneWeights(options.laneWeights);
+  const maintenance = options.maintenance?.enabled === true ? options.maintenance : null;
   const laneOrderRank = laneOrder.reduce((acc, lane, index) => {
     acc[lane] = index;
     return acc;
   }, {} as Record<RetrievalLane, number>);
   const byObservation = new Map<number, LaneCandidate[]>();
+  const originalCandidateIds = new Map<number, Set<number>>();
   for (const candidate of candidates) {
-    const list = byObservation.get(candidate.observationId) ?? [];
-    list.push(candidate);
-    byObservation.set(candidate.observationId, list);
+    const consolidation = maintenance?.consolidations.get(candidate.observationId);
+    const targetObservationId = consolidation?.canonicalId ?? candidate.observationId;
+    const routedCandidate = targetObservationId === candidate.observationId
+      ? candidate
+      : { ...candidate, observationId: targetObservationId };
+    const list = byObservation.get(targetObservationId) ?? [];
+    list.push(routedCandidate);
+    byObservation.set(targetObservationId, list);
+    const sourceIds = originalCandidateIds.get(targetObservationId) ?? new Set<number>();
+    sourceIds.add(candidate.observationId);
+    originalCandidateIds.set(targetObservationId, sourceIds);
   }
 
   const hits: HybridHit[] = [];
@@ -84,12 +128,14 @@ export function fuseCandidates(
       compareCandidates(entry.candidate, currentBest.candidate, laneOrderRank, laneWeights) < 0 ? entry : currentBest
     )).candidate;
     const lanes = Array.from(new Set(laneCandidates.map((c) => c.lane)));
-    const score = laneBestCandidates.reduce((total, entry) => total + (entry.candidate.score * laneWeights[entry.lane]), 0);
+    const rawScore = laneBestCandidates.reduce((total, entry) => total + (entry.candidate.score * laneWeights[entry.lane]), 0);
+    const maintenanceEvidence = buildMaintenanceEvidence(observationId, originalCandidateIds, maintenance);
+    const score = applyMaintenanceScore(rawScore, maintenanceEvidence);
     hits.push({
       observation,
       score,
       lanes,
-      evidence: { primary, byLane },
+      evidence: { primary, byLane, ...(maintenanceEvidence ? { maintenance: maintenanceEvidence } : {}) },
     });
   }
 
@@ -121,6 +167,43 @@ function compareHits(a: HybridHit, b: HybridHit, laneOrderRank: Record<Retrieval
     return rankA - rankB;
   }
   return a.observation.id - b.observation.id;
+}
+
+function buildMaintenanceEvidence(
+  observationId: number,
+  originalCandidateIds: Map<number, Set<number>>,
+  maintenance: MaintenanceRankingMetadata | null,
+): MaintenanceEvidence | undefined {
+  if (!maintenance) return undefined;
+  const evidence: MaintenanceEvidence = {};
+  const consolidation = maintenance.consolidations.get(observationId);
+  if (consolidation) {
+    const sourceIds = originalCandidateIds.get(observationId) ?? new Set<number>();
+    const suppressedSourceIds = [...sourceIds]
+      .filter((id) => id !== consolidation.canonicalId && consolidation.memberIds.includes(id))
+      .sort((a, b) => a - b);
+    evidence.consolidation = { ...consolidation, suppressedSourceIds };
+  }
+  const reflection = maintenance.reflections.get(observationId);
+  if (reflection) {
+    evidence.reflection = reflection;
+  }
+  const decay = maintenance.decays.get(observationId);
+  if (decay) {
+    evidence.decay = decay;
+  }
+  return Object.keys(evidence).length > 0 ? evidence : undefined;
+}
+
+function applyMaintenanceScore(score: number, evidence: MaintenanceEvidence | undefined): number {
+  let adjusted = score;
+  if (evidence?.reflection) {
+    adjusted *= evidence.reflection.boost;
+  }
+  if (evidence?.decay) {
+    adjusted *= evidence.decay.scoreMultiplier;
+  }
+  return adjusted;
 }
 
 function resolveLaneOrder(laneOrder?: RetrievalLane[]): RetrievalLane[] {

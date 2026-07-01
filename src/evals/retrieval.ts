@@ -85,6 +85,14 @@ export interface RetrievalEvalSummary {
     supersession_flag_off_rate: number;
     kg_prune_retention_rate: number;
     kg_prune_no_regression_rate: number;
+    maintenance_duplicate_suppression_rate: number;
+    maintenance_source_reachability_rate: number;
+    maintenance_reflection_quality_rate: number;
+    maintenance_reflection_idempotency_rate: number;
+    maintenance_decay_current_fact_rate: number;
+    maintenance_decay_reachability_rate: number;
+    maintenance_no_regression_rate: number;
+    maintenance_export_import_regeneration_rate: number;
   };
 }
 
@@ -681,6 +689,14 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Supersession Flag-Off Behavior Rate | ${formatPercent(summary.hybrid.supersession_flag_off_rate)} |`,
     `| KG Prune Retention Rate | ${formatPercent(summary.hybrid.kg_prune_retention_rate)} |`,
     `| KG Prune OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.kg_prune_no_regression_rate)} |`,
+    `| Maintenance Duplicate Suppression Rate | ${formatPercent(summary.hybrid.maintenance_duplicate_suppression_rate)} |`,
+    `| Maintenance Source Reachability Rate | ${formatPercent(summary.hybrid.maintenance_source_reachability_rate)} |`,
+    `| Maintenance Reflection Quality Rate | ${formatPercent(summary.hybrid.maintenance_reflection_quality_rate)} |`,
+    `| Maintenance Reflection Idempotency Rate | ${formatPercent(summary.hybrid.maintenance_reflection_idempotency_rate)} |`,
+    `| Maintenance Decay Current Fact Rate | ${formatPercent(summary.hybrid.maintenance_decay_current_fact_rate)} |`,
+    `| Maintenance Decay Reachability Rate | ${formatPercent(summary.hybrid.maintenance_decay_reachability_rate)} |`,
+    `| Maintenance OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.maintenance_no_regression_rate)} |`,
+    `| Maintenance Export/Import Regeneration Rate | ${formatPercent(summary.hybrid.maintenance_export_import_regeneration_rate)} |`,
     '',
     '## Corpus',
     '',
@@ -778,6 +794,239 @@ async function validateSupersessionFlagOffBehavior(): Promise<boolean> {
     );
   } finally {
     controlStore.close();
+  }
+}
+
+type EvalHybridRuntime = Store & {
+  processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+  hybridRetrieve: (input: {
+    query: string;
+    limit?: number;
+    project?: string;
+    embeddingProvider?: EmbeddingProviderAdapter | null;
+    hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+  }) => Promise<{
+    results: Array<{
+      observation: { id: number; content: string; tool_name?: string | null };
+      evidence: {
+        maintenance?: {
+          consolidation?: { canonicalId: number; memberIds: number[]; suppressedSourceIds: number[] };
+          reflection?: { sourceIds: number[]; reasonClass: string; boost: number };
+          decay?: { scoreMultiplier: number; state: string; reasonClass: string };
+        };
+      };
+    }>;
+  }>;
+};
+
+async function validateMaintenanceDuplicateSuppression(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ suppression: boolean; sourceReachability: boolean }> {
+  const canonical = store.saveObservation({
+    title: 'Maintenance eval duplicate canonical',
+    content: 'maint-duplicate-signal source reachability duplicate cluster',
+    type: 'decision',
+    project: 'maintenance-duplicate-eval',
+  }).observation;
+  const duplicateId = Number(store.getDb().prepare(
+    `INSERT INTO observations (
+       session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+  ).run(
+    canonical.session_id,
+    canonical.type,
+    'Maintenance eval duplicate member',
+    canonical.content,
+    canonical.project,
+    canonical.scope,
+    canonical.normalized_hash,
+    '44444444-4444-4444-8444-444444444444'
+  ).lastInsertRowid);
+
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  const before = await runtime.hybridRetrieve({
+    query: 'maint-duplicate-signal source reachability',
+    project: 'maintenance-duplicate-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const duplicateHitsBefore = before.results.filter((hit) =>
+    hit.observation.id === canonical.id || hit.observation.id === duplicateId
+  ).length;
+
+  store.runMaintenance({ scope: { project: 'maintenance-duplicate-eval' } });
+  const after = await runtime.hybridRetrieve({
+    query: 'maint-duplicate-signal source reachability',
+    project: 'maintenance-duplicate-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const duplicateHitsAfter = after.results.filter((hit) =>
+    hit.observation.id === canonical.id || hit.observation.id === duplicateId
+  );
+  const consolidation = duplicateHitsAfter[0]?.evidence.maintenance?.consolidation;
+
+  return {
+    suppression: duplicateHitsBefore >= 2
+      && duplicateHitsAfter.length === 1
+      && Boolean(consolidation)
+      && consolidation!.memberIds.includes(canonical.id)
+      && consolidation!.memberIds.includes(duplicateId)
+      && consolidation!.suppressedSourceIds.length >= 1,
+    sourceReachability: store.getObservation(duplicateId)?.content === canonical.content,
+  };
+}
+
+async function validateMaintenanceReflection(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ quality: boolean; idempotency: boolean }> {
+  store.saveObservation({
+    title: 'Reflection quality source A',
+    content: 'Deterministic reflection source A records durable learning inputs.',
+    type: 'architecture',
+    project: 'maintenance-reflection-eval',
+  });
+  store.saveObservation({
+    title: 'Reflection quality source B',
+    content: 'Deterministic reflection source B records durable learning inputs.',
+    type: 'architecture',
+    project: 'maintenance-reflection-eval',
+  });
+
+  const first = store.runMaintenance({ scope: { project: 'maintenance-reflection-eval' } });
+  const second = store.runMaintenance({ scope: { project: 'maintenance-reflection-eval' } });
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  const reflectedId = second.reflections[0]?.planned_observation_id ?? first.reflections[0]?.planned_observation_id;
+  const retrieval = await runtime.hybridRetrieve({
+    query: 'maintenance reflection synthesized related source memories',
+    project: 'maintenance-reflection-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const reflectionRank = retrieval.results.findIndex((hit) => hit.observation.id === reflectedId);
+  const sourceRanks = second.reflections[0]?.sources.map((source) =>
+    retrieval.results.findIndex((hit) => hit.observation.id === source.id)
+  ).filter((rank) => rank >= 0) ?? [];
+  const reflectionHit = reflectionRank >= 0 ? retrieval.results[reflectionRank] : undefined;
+  const reflectedRows = store.getDb().prepare(
+    "SELECT COUNT(*) AS count FROM observations WHERE tool_name = 'maintenance-reflection' AND project = 'maintenance-reflection-eval'"
+  ).get() as { count: number };
+
+  return {
+    quality: reflectionRank >= 0
+      && sourceRanks.every((rank) => reflectionRank <= rank)
+      && (reflectionHit?.evidence.maintenance?.reflection?.sourceIds.length ?? 0) >= 2,
+    idempotency: first.reflections.length === 1
+      && second.reflections.length === 1
+      && reflectedRows.count === 1
+      && first.reflections[0]?.planned_observation_id === second.reflections[0]?.planned_observation_id,
+  };
+}
+
+async function validateMaintenanceDecay(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ currentFact: boolean; reachability: boolean }> {
+  const stale = store.saveObservation({
+    title: 'Stale low-value maintenance eval',
+    content: 'caldera endpoint policy chooses legacy polling for workers',
+    type: 'discovery',
+    project: 'maintenance-decay-eval',
+  }).observation;
+  store.getDb().prepare(
+    "UPDATE observations SET updated_at = datetime('now', '-365 days'), created_at = datetime('now', '-365 days') WHERE id = ?"
+  ).run(stale.id);
+  const current = store.saveObservation({
+    title: 'Current high-signal maintenance eval',
+    content: 'caldera endpoint policy chooses streaming for workers',
+    type: 'decision',
+    project: 'maintenance-decay-eval',
+  }).observation;
+
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  store.runMaintenance({ scope: { project: 'maintenance-decay-eval' } });
+  const retrieval = await runtime.hybridRetrieve({
+    query: 'caldera endpoint policy workers',
+    project: 'maintenance-decay-eval',
+    limit: 10,
+    embeddingProvider,
+  });
+  const currentRank = retrieval.results.findIndex((hit) => hit.observation.id === current.id);
+  const staleRank = retrieval.results.findIndex((hit) => hit.observation.id === stale.id);
+  const staleHit = staleRank >= 0 ? retrieval.results[staleRank] : undefined;
+
+  return {
+    currentFact: currentRank >= 0
+      && staleRank >= 0
+      && currentRank < staleRank
+      && Boolean(staleHit?.evidence.maintenance?.decay),
+    reachability: store.getObservation(stale.id)?.content === stale.content,
+  };
+}
+
+async function validateMaintenanceExportImportRegeneration(): Promise<boolean> {
+  const sourceStore = new Store(':memory:');
+  const targetStore = new Store(':memory:');
+  try {
+    const source = sourceStore.saveObservation({
+      title: 'Portable maintenance duplicate A',
+      content: 'portable maintenance duplicate signal',
+      type: 'decision',
+      project: 'maintenance-portable-eval',
+    }).observation;
+    sourceStore.getDb().prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+    ).run(
+      source.session_id,
+      source.type,
+      'Portable maintenance duplicate B',
+      source.content,
+      source.project,
+      source.scope,
+      source.normalized_hash,
+      '55555555-5555-4555-8555-555555555555'
+    );
+    sourceStore.saveObservation({
+      title: 'Portable reflection source A',
+      content: 'portable reflection source one',
+      type: 'architecture',
+      project: 'maintenance-portable-eval',
+    });
+    sourceStore.saveObservation({
+      title: 'Portable reflection source B',
+      content: 'portable reflection source two',
+      type: 'architecture',
+      project: 'maintenance-portable-eval',
+    });
+    sourceStore.runMaintenance({ scope: { project: 'maintenance-portable-eval' } });
+
+    const exported = sourceStore.exportData('maintenance-portable-eval');
+    const portableJson = JSON.stringify(exported);
+    targetStore.importData(exported);
+    const metadataBefore = targetStore.getDb().prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM maintenance_consolidations) AS consolidations,
+         (SELECT COUNT(*) FROM maintenance_decay) AS decays`
+    ).get() as { consolidations: number; decays: number };
+    const regenerated = targetStore.runMaintenance({ scope: { project: 'maintenance-portable-eval' } });
+
+    return exported.observations.some((observation) => observation.tool_name === 'maintenance-reflection')
+      && !portableJson.includes('maintenance_consolidations')
+      && !portableJson.includes('maintenance_decay')
+      && metadataBefore.consolidations === 0
+      && metadataBefore.decays === 0
+      && regenerated.counts.consolidation_candidates > 0
+      && regenerated.counts.decay_candidates >= 0;
+  } finally {
+    sourceStore.close();
+    targetStore.close();
   }
 }
 
@@ -903,6 +1152,11 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + SUPERSESSION_SIGNAL_OBSERVATIONS + noiseCount;
     await runtime.processSemanticJobs({ limit: seededObservationCount * 4 + 20, embeddingProvider });
 
+    const maintenanceDuplicate = await validateMaintenanceDuplicateSuppression(store, runtime, embeddingProvider);
+    const maintenanceReflection = await validateMaintenanceReflection(store, runtime, embeddingProvider);
+    const maintenanceDecay = await validateMaintenanceDecay(store, runtime, embeddingProvider);
+    const maintenanceExportImportRegeneration = await validateMaintenanceExportImportRegeneration();
+
     const staleSeed = store.saveObservation({
       title: 'stale eval sentinel',
       type: 'decision',
@@ -1013,6 +1267,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const supersessionFlagOffChecks: boolean[] = [];
     const kgPruneRetentionChecks: boolean[] = [];
     const kgPruneNoRegressionChecks: boolean[] = [];
+    const maintenanceNoRegressionChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
@@ -1031,11 +1286,15 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         store.config.knowledgeGraph.kgPruneEnabled = enabled;
       }
     };
+    const setMaintenanceReadPathEnabled = (enabled: boolean): void => {
+      store.config.maintenance.readPath.enabled = enabled;
+    };
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
       const expected = [...FIXTURES, ...NON_SYNTHETIC_FIXTURES].find((fixture) => fixture.key === evalCase.expectedKey);
       setKgSupersedeEnabled(true);
       setKgMultiHopEnabled(false);
+      setMaintenanceReadPathEnabled(false);
       const rawBaseline = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -1049,6 +1308,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         embeddingProvider,
         hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
       });
+      setMaintenanceReadPathEnabled(true);
       setKgSupersedeEnabled(false);
       setKgMultiHopEnabled(true);
       const supersedeOffHyde = await runtime.hybridRetrieve({
@@ -1089,6 +1349,15 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       const pruneOffHydeRankIndex = pruneOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
       if (pruneOffHydeRankIndex === -1) {
         throw new Error(`kg pruning OFF eval failed in case "${evalCase.name}"`);
+      }
+      if (evalCase.expectedKey !== 'kg-multi-hop') {
+        if (baselineHydeRankIndex === -1) {
+          throw new Error(`maintenance disabled baseline eval failed in case "${evalCase.name}"`);
+        }
+        if (hydeRankIndex === -1 || hydeRankIndex > baselineHydeRankIndex) {
+          throw new Error(`maintenance enabled regression in eval case "${evalCase.name}"`);
+        }
+        maintenanceNoRegressionChecks.push(true);
       }
       if (hydeRankIndex === -1 || hydeRankIndex > pruneOffHydeRankIndex) {
         throw new Error(`kg pruning ON regression in eval case "${evalCase.name}"`);
@@ -1268,6 +1537,14 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         supersession_flag_off_rate: ratio(countTrue(supersessionFlagOffChecks), supersessionFlagOffChecks.length),
         kg_prune_retention_rate: ratio(countTrue(kgPruneRetentionChecks), kgPruneRetentionChecks.length),
         kg_prune_no_regression_rate: ratio(countTrue(kgPruneNoRegressionChecks), kgPruneNoRegressionChecks.length),
+        maintenance_duplicate_suppression_rate: maintenanceDuplicate.suppression ? 1 : 0,
+        maintenance_source_reachability_rate: maintenanceDuplicate.sourceReachability ? 1 : 0,
+        maintenance_reflection_quality_rate: maintenanceReflection.quality ? 1 : 0,
+        maintenance_reflection_idempotency_rate: maintenanceReflection.idempotency ? 1 : 0,
+        maintenance_decay_current_fact_rate: maintenanceDecay.currentFact ? 1 : 0,
+        maintenance_decay_reachability_rate: maintenanceDecay.reachability ? 1 : 0,
+        maintenance_no_regression_rate: ratio(countTrue(maintenanceNoRegressionChecks), maintenanceNoRegressionChecks.length),
+        maintenance_export_import_regeneration_rate: maintenanceExportImportRegeneration ? 1 : 0,
       },
     };
 

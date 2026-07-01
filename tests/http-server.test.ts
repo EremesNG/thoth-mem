@@ -428,6 +428,11 @@ describe('createHttpBridge', () => {
       expect.objectContaining({ id: 'rebuild-index', origin: 'http', method: 'POST', path: '/index/rebuild' }),
       expect.objectContaining({ id: 'rebuild-graph', origin: 'http', method: 'POST', path: '/graph/rebuild' }),
       expect.objectContaining({ id: 'prune-graph', origin: 'http', method: 'POST', path: '/graph/prune' }),
+      expect.objectContaining({ id: 'maintenance-preview', origin: 'http', method: 'POST', path: '/maintenance/preview' }),
+      expect.objectContaining({ id: 'maintenance-apply', origin: 'http', method: 'POST', path: '/maintenance/apply' }),
+    ]));
+    expect(operations.body.operations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ origin: 'mcp', target: expect.stringMatching(/maint/i) }),
     ]));
 
     const version = await fetchJson('/version', undefined, bridge.port);
@@ -444,6 +449,8 @@ describe('createHttpBridge', () => {
     expect(openapi.body.paths['/index/rebuild']).toBeDefined();
     expect(openapi.body.paths['/graph/rebuild']).toBeDefined();
     expect(openapi.body.paths['/graph/prune']).toBeDefined();
+    expect(openapi.body.paths['/maintenance/preview']).toBeDefined();
+    expect(openapi.body.paths['/maintenance/apply']).toBeDefined();
     expect(openapi.body.components.schemas.OperationTrace).toBeDefined();
 
     const indexRebuild = await fetchJson(
@@ -523,6 +530,66 @@ describe('createHttpBridge', () => {
     expect(bridge.store.getDb().prepare(
       "SELECT COUNT(*) AS count FROM kg_entities WHERE entity_key = 'http-prune:ops-project:unrelated-orphan'"
     ).get()).toEqual({ count: 1 });
+
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP maintenance source A',
+          content: 'http maintenance duplicate marker',
+          session_id: 'maint-session',
+          project: 'ops-maint-project',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP maintenance source B',
+          content: 'http maintenance duplicate marker',
+          session_id: 'maint-session',
+          project: 'ops-maint-project',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    const maintenancePreview = await fetchJson(
+      '/maintenance/preview',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-maint-project' }),
+      },
+      bridge.port,
+    );
+    expect(maintenancePreview.response.status).toBe(200);
+    expect(maintenancePreview.body).toMatchObject({
+      dry_run: true,
+      scope: { project: 'ops-maint-project' },
+      counts: { consolidation_candidates: 1 },
+    });
+    expect(bridge.store.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_runs').get()).toEqual({ count: 0 });
+
+    const maintenanceApply = await fetchJson(
+      '/maintenance/apply',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic_prefix: 'maintenance/reflection/' }),
+      },
+      bridge.port,
+    );
+    expect(maintenanceApply.response.status).toBe(200);
+    expect(maintenanceApply.body.dry_run).toBe(false);
+    expect(maintenanceApply.body.scope).toEqual({ topic_prefix: 'maintenance/reflection/' });
   });
 
   it('supports observation CRUD, search, and paginated retrieval', async () => {

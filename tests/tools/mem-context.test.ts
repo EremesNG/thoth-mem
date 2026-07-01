@@ -172,6 +172,49 @@ describe('mem_context tool (handler)', () => {
     expect(text).toContain('fused recall marker');
   });
 
+  it('shows maintenance lineage in optional fused recall evidence', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      maintenance: {
+        consolidation: { enabled: false },
+        decay: { enabled: false },
+        reflection: { enabled: true, minSourceCount: 2 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    registerMemContext({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_context') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    store.saveObservation({
+      title: 'Reflection context source A',
+      content: 'reflection context marker source A',
+      project: 'ctx-maint-project',
+      type: 'decision',
+    });
+    store.saveObservation({
+      title: 'Reflection context source B',
+      content: 'reflection context marker source B',
+      project: 'ctx-maint-project',
+      type: 'decision',
+    });
+    store.runMaintenance({ scope: { project: 'ctx-maint-project' } });
+
+    const result = await toolHandler?.({
+      project: 'ctx-maint-project',
+      recall_query: 'Reflection context source',
+      max_chars: 3000,
+    });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('maintenance: reflection');
+    expect(text).toContain('sources=');
+  });
+
   it('treats max_chars 0 as an unbounded full-content override', async () => {
     const fullMarker = seedLargeStore();
 

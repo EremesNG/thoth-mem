@@ -6,6 +6,7 @@ import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
 import { OBSERVATION_TYPES } from "../store/types.js";
 import { sanitizeRetrievedContext } from "../utils/context-safety.js";
+import { formatMaintenanceEvidence } from "./maintenance-format.js";
 
 const MAX_CONTEXT_CHARS = 6000;
 
@@ -18,7 +19,8 @@ function recallHeader(hit: RecallHit, index: number): string {
 }
 
 function formatRecallHit(hit: RecallHit, index: number): string {
-  return recallHeader(hit, index);
+  const maintenance = formatMaintenanceEvidence(hit.evidence.maintenance);
+  return maintenance ? `${recallHeader(hit, index)} | ${maintenance}` : recallHeader(hit, index);
 }
 
 function trimToBudget(text: string, maxChars: number): string {
@@ -62,6 +64,7 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
       `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
       `retrieval_contract=${retrievalContract} compression_ratio=${compressionRatio} evidence_chars=${primaryContent.length} full_chars=${fullContent.length}`,
       graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
+      formatMaintenanceEvidence(hit.evidence.maintenance),
     ];
     const graphLines = graphEvidence.slice(0, 3).map((candidate) => `graph: ${sanitizeRetrievedContext(candidate.text)}`);
     const metadataCost = metadata.filter((line): line is string => line !== null).join('\n').length

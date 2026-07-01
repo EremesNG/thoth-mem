@@ -185,4 +185,50 @@ describe('mem_recall tool', () => {
     expect(text).toContain('evidence:\nnone');
     expect(text).not.toContain('Temporal recall target');
   });
+
+  it('surfaces maintenance effects in compact and context output', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      maintenance: {
+        consolidation: { enabled: true },
+        reflection: { enabled: true, minSourceCount: 2 },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    registerMemRecall({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    const first = store.saveObservation({
+      title: 'Recall maintenance source A',
+      content: 'maintenance recall duplicate marker',
+      project: 'recall-maint-project',
+      type: 'manual',
+    }).observation;
+    const second = store.saveObservation({
+      title: 'Recall maintenance source B',
+      content: 'maintenance recall duplicate marker',
+      project: 'recall-maint-project',
+      type: 'manual',
+    }).observation;
+    store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id IN (?, ?)")
+      .run(first.id, second.id);
+    store.runMaintenance({ scope: { project: 'recall-maint-project' } });
+
+    const compact = await toolHandler?.({ query: 'maintenance recall duplicate marker', project: 'recall-maint-project', limit: 5 });
+    const context = await toolHandler?.({ query: 'maintenance recall duplicate marker', project: 'recall-maint-project', mode: 'context', limit: 5 });
+    const compactText = compact?.content[0].text ?? '';
+    const contextText = context?.content[0].text ?? '';
+
+    expect(compact?.isError).not.toBe(true);
+    expect(compactText).toContain('maintenance:');
+    expect(compactText).toContain('consolidation');
+    expect(compactText).toContain('decay state=attenuated');
+    expect(contextText).toContain('maintenance:');
+    expect(contextText).toContain('sources=obs:');
+  });
 });

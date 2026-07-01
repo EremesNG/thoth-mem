@@ -5,6 +5,7 @@ import { registerTracedTool } from "./tracing.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
 import type { HydeGenerator } from "../retrieval/hyde.js";
 import { trimToBudget } from "../utils/content.js";
+import { formatMaintenanceEvidence } from "./maintenance-format.js";
 
 export function registerMemContext(
   server: McpServer,
@@ -50,7 +51,8 @@ Observation bodies are previewed by default; use mem_get(id=...) for full conten
           });
           const evidence = retrieval.results.slice(0, 3).map((hit, index) => {
             const source = hit.evidence.primary.source ?? 'unknown';
-            return `${index + 1}. [${hit.evidence.primary.lane}] ${hit.observation.title} (source: ${source})`;
+            const maintenance = formatMaintenanceEvidence(hit.evidence.maintenance);
+            return `${index + 1}. [${hit.evidence.primary.lane}] ${hit.observation.title} (source: ${source})${maintenance ? ` | ${maintenance}` : ''}`;
           });
           recallSection = [
             '',

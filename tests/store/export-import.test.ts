@@ -131,6 +131,81 @@ describe('Store — exportData/importData', () => {
     }
   });
 
+  it('exportData includes reflected observations but omits internal maintenance metadata', () => {
+    const duplicateSource = store.saveObservation({
+      title: 'Portable maintenance duplicate A',
+      content: 'portable maintenance duplicate marker',
+      type: 'decision',
+      project: 'portable-maintenance',
+    }).observation;
+    store.getDb().prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+    ).run(
+      duplicateSource.session_id,
+      duplicateSource.type,
+      'Portable maintenance duplicate B',
+      duplicateSource.content,
+      duplicateSource.project,
+      duplicateSource.scope,
+      duplicateSource.normalized_hash,
+      '66666666-6666-4666-8666-666666666666'
+    );
+    const stale = store.saveObservation({
+      title: 'Portable stale maintenance note',
+      content: 'portable stale maintenance marker',
+      type: 'discovery',
+      project: 'portable-maintenance',
+    }).observation;
+    store.getDb().prepare(
+      "UPDATE observations SET updated_at = datetime('now', '-365 days'), created_at = datetime('now', '-365 days') WHERE id = ?"
+    ).run(stale.id);
+    store.saveObservation({
+      title: 'Portable reflection A',
+      content: 'First portable reflection source',
+      type: 'architecture',
+      project: 'portable-maintenance',
+    });
+    store.saveObservation({
+      title: 'Portable reflection B',
+      content: 'Second portable reflection source',
+      type: 'architecture',
+      project: 'portable-maintenance',
+    });
+    const maintenance = store.runMaintenance({ scope: { project: 'portable-maintenance' } });
+
+    expect(maintenance.reflections.length).toBeGreaterThan(0);
+
+    const exported = store.exportData('portable-maintenance');
+    const portableJson = JSON.stringify(exported);
+
+    expect(exported.observations.some((observation) => observation.tool_name === 'maintenance-reflection')).toBe(true);
+    expect(portableJson).not.toContain('maintenance_runs');
+    expect(portableJson).not.toContain('maintenance_decay');
+    expect(portableJson).not.toContain('maintenance_consolidations');
+
+    const targetStore = new Store(':memory:');
+    try {
+      const result = targetStore.importData(exported);
+      expect(result.observations_imported).toBe(exported.observations.length);
+      expect(targetStore.exportData('portable-maintenance').observations.some((observation) =>
+        observation.tool_name === 'maintenance-reflection'
+      )).toBe(true);
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_consolidations').get()).toEqual({ count: 0 });
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_decay').get()).toEqual({ count: 0 });
+
+      const regenerated = targetStore.runMaintenance({ scope: { project: 'portable-maintenance' } });
+      expect(regenerated.counts.records_scanned).toBeGreaterThan(0);
+      expect(regenerated.counts.consolidation_candidates).toBeGreaterThan(0);
+      expect(regenerated.counts.decay_candidates).toBeGreaterThan(0);
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_consolidations').get()).toEqual({ count: 1 });
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_decay').get()).toEqual({ count: 1 });
+    } finally {
+      targetStore.close();
+    }
+  });
+
   it('exportData with a project filter only returns data from that project', () => {
     seedStore(store);
 

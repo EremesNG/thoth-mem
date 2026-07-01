@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getVersion } from './version.js';
 import { KG_RELATION_TYPES } from './indexing/kg-extractor.js';
+import { OBSERVATION_TYPES } from './store/types.js';
 
 export interface RetrievalDefaults {
   sentenceTopK: number;
@@ -53,6 +54,42 @@ export interface KnowledgeGraphConfig {
   kgPruneOrphanEntities: boolean;
 }
 
+export type MaintenanceDefaultMode = 'dry-run' | 'apply';
+export type MaintenanceDecayState = 'active' | 'attenuated' | 'suppressed';
+
+export interface MaintenanceConfig {
+  enabled: boolean;
+  defaultMode: MaintenanceDefaultMode;
+  automatic: {
+    enabled: boolean;
+    maxRecordsPerRun: number;
+  };
+  readPath: {
+    enabled: boolean;
+  };
+  consolidation: {
+    enabled: boolean;
+    exactHashThreshold: number;
+    lexicalSimilarityThreshold: number;
+    reviewSimilarityThreshold: number;
+  };
+  reflection: {
+    enabled: boolean;
+    minSourceCount: number;
+    maxSourceCount: number;
+    contentBudgetChars: number;
+    modelAssisted: boolean;
+  };
+  decay: {
+    enabled: boolean;
+    defaultState: MaintenanceDecayState;
+    staleAfterDays: number;
+    redundantDuplicateCount: number;
+    lowValueTypes: string[];
+    scoreMultiplier: number;
+  };
+}
+
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
   model: string;
@@ -80,10 +117,21 @@ export interface ThothConfig {
   hyde?: HydeConfig;
   kgLlm?: KgLlmConfig;
   knowledgeGraph?: KnowledgeGraphConfig;
+  maintenance: MaintenanceConfig;
 }
 
 interface PersistedEmbeddingConfig extends Partial<EmbeddingConfig> {
   hyde?: Partial<HydeConfig>;
+}
+
+interface PersistedMaintenanceConfig {
+  enabled?: boolean;
+  defaultMode?: MaintenanceDefaultMode;
+  automatic?: Partial<MaintenanceConfig['automatic']>;
+  readPath?: Partial<MaintenanceConfig['readPath']>;
+  consolidation?: Partial<MaintenanceConfig['consolidation']>;
+  reflection?: Partial<MaintenanceConfig['reflection']>;
+  decay?: Partial<MaintenanceConfig['decay']>;
 }
 
 interface PersistedConfig {
@@ -103,6 +151,7 @@ interface PersistedConfig {
   hyde?: Partial<HydeConfig>;
   kgLlm?: Partial<KgLlmConfig>;
   knowledgeGraph?: Partial<KnowledgeGraphConfig>;
+  maintenance?: PersistedMaintenanceConfig;
   graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: Partial<RetrievalDefaults>;
 }
@@ -178,6 +227,39 @@ export const DEFAULT_KNOWLEDGE_GRAPH_CONFIG: KnowledgeGraphConfig = {
   kgPruneOrphanEntities: true,
 };
 
+export const DEFAULT_MAINTENANCE_CONFIG: MaintenanceConfig = {
+  enabled: true,
+  defaultMode: 'dry-run',
+  automatic: {
+    enabled: false,
+    maxRecordsPerRun: 500,
+  },
+  readPath: {
+    enabled: true,
+  },
+  consolidation: {
+    enabled: true,
+    exactHashThreshold: 1,
+    lexicalSimilarityThreshold: 0.92,
+    reviewSimilarityThreshold: 0.82,
+  },
+  reflection: {
+    enabled: true,
+    minSourceCount: 2,
+    maxSourceCount: 8,
+    contentBudgetChars: 1200,
+    modelAssisted: false,
+  },
+  decay: {
+    enabled: true,
+    defaultState: 'attenuated',
+    staleAfterDays: 180,
+    redundantDuplicateCount: 2,
+    lowValueTypes: ['discovery', 'manual'],
+    scoreMultiplier: 0.6,
+  },
+};
+
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
 const KNOWN_EMBEDDING_DIMENSIONS: Record<string, number> = {
   'nomic-ai/nomic-embed-text-v1.5': 768,
@@ -229,6 +311,22 @@ function parseNumber(value: string | undefined): number | null {
   return n;
 }
 
+function numberInRange(value: number | null | undefined, min: number, max: number, fallback: number): number {
+  if (value === null || value === undefined || value < min || value > max) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function integerAtLeast(value: number | null | undefined, min: number, fallback: number): number {
+  if (value === null || value === undefined || value < min) {
+    return fallback;
+  }
+
+  return Math.floor(value);
+}
+
 function parseBoolean(value: string | undefined): boolean | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
@@ -262,6 +360,40 @@ function parseGraphFactsSource(value: string | null | undefined): GraphFactsSour
   }
 
   return null;
+}
+
+function parseMaintenanceDefaultMode(value: string | null | undefined): MaintenanceDefaultMode | null {
+  const normalized = value?.trim();
+  if (normalized === 'dry-run' || normalized === 'apply') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function parseMaintenanceDecayState(value: string | null | undefined): MaintenanceDecayState | null {
+  const normalized = value?.trim();
+  if (normalized === 'active' || normalized === 'attenuated' || normalized === 'suppressed') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function parseStringList(value: string | undefined): string[] | null {
+  if (value === undefined) return null;
+  const normalized = value
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeMaintenanceLowValueTypes(value: readonly string[] | undefined): string[] | null {
+  if (!value) return null;
+  const validTypes = new Set<string>(OBSERVATION_TYPES);
+  const normalized = Array.from(new Set(value.filter((entry) => validTypes.has(entry))));
+  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizeRelationAllowList(value: readonly string[] | undefined): string[] | null {
@@ -302,6 +434,7 @@ function defaultPersistedConfig(): PersistedConfig {
     hyde: { ...DEFAULT_HYDE_CONFIG },
     kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
     knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
+    maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
     graphFactsSource: 'kg',
   };
 }
@@ -352,6 +485,30 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
     knowledgeGraph: {
       ...defaults.knowledgeGraph,
       ...(existing.knowledgeGraph ?? {}),
+    },
+    maintenance: {
+      ...defaults.maintenance,
+      ...(existing.maintenance ?? {}),
+      automatic: {
+        ...defaults.maintenance?.automatic,
+        ...(existing.maintenance?.automatic ?? {}),
+      },
+      readPath: {
+        ...defaults.maintenance?.readPath,
+        ...(existing.maintenance?.readPath ?? {}),
+      },
+      consolidation: {
+        ...defaults.maintenance?.consolidation,
+        ...(existing.maintenance?.consolidation ?? {}),
+      },
+      reflection: {
+        ...defaults.maintenance?.reflection,
+        ...(existing.maintenance?.reflection ?? {}),
+      },
+      decay: {
+        ...defaults.maintenance?.decay,
+        ...(existing.maintenance?.decay ?? {}),
+      },
     },
   };
 }
@@ -515,6 +672,140 @@ export function resolveKnowledgeGraphConfig(persisted: PersistedConfig): Knowled
   };
 }
 
+export function resolveMaintenanceConfig(persisted: PersistedConfig): MaintenanceConfig {
+  const persistedMaintenance = persisted.maintenance ?? {};
+  const persistedAutomatic = persistedMaintenance.automatic ?? {};
+  const persistedReadPath = persistedMaintenance.readPath ?? {};
+  const persistedConsolidation = persistedMaintenance.consolidation ?? {};
+  const persistedReflection = persistedMaintenance.reflection ?? {};
+  const persistedDecay = persistedMaintenance.decay ?? {};
+
+  const enabled = parseBoolean(process.env.THOTH_MAINTENANCE_ENABLED)
+    ?? persistedMaintenance.enabled
+    ?? DEFAULT_MAINTENANCE_CONFIG.enabled;
+  const automaticEnabled = enabled && (
+    parseBoolean(process.env.THOTH_MAINTENANCE_AUTOMATIC_ENABLED)
+      ?? persistedAutomatic.enabled
+      ?? DEFAULT_MAINTENANCE_CONFIG.automatic.enabled
+  );
+  const readPathEnabled = parseBoolean(process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED)
+    ?? persistedReadPath.enabled
+    ?? DEFAULT_MAINTENANCE_CONFIG.readPath.enabled;
+  const consolidationEnabled = enabled && (
+    parseBoolean(process.env.THOTH_MAINTENANCE_CONSOLIDATION_ENABLED)
+      ?? persistedConsolidation.enabled
+      ?? DEFAULT_MAINTENANCE_CONFIG.consolidation.enabled
+  );
+  const reflectionEnabled = enabled && (
+    parseBoolean(process.env.THOTH_MAINTENANCE_REFLECTION_ENABLED)
+      ?? persistedReflection.enabled
+      ?? DEFAULT_MAINTENANCE_CONFIG.reflection.enabled
+  );
+  const decayEnabled = enabled && (
+    parseBoolean(process.env.THOTH_MAINTENANCE_DECAY_ENABLED)
+      ?? persistedDecay.enabled
+      ?? DEFAULT_MAINTENANCE_CONFIG.decay.enabled
+  );
+
+  const exactHashThreshold = integerAtLeast(
+    parseNumber(process.env.THOTH_MAINTENANCE_CONSOLIDATION_EXACT_HASH_THRESHOLD)
+      ?? persistedConsolidation.exactHashThreshold,
+    1,
+    DEFAULT_MAINTENANCE_CONFIG.consolidation.exactHashThreshold,
+  );
+  const reflectionMinSourceCount = integerAtLeast(
+    parseNumber(process.env.THOTH_MAINTENANCE_REFLECTION_MIN_SOURCE_COUNT)
+      ?? persistedReflection.minSourceCount,
+    2,
+    DEFAULT_MAINTENANCE_CONFIG.reflection.minSourceCount,
+  );
+  const reflectionMaxSourceCount = integerAtLeast(
+    parseNumber(process.env.THOTH_MAINTENANCE_REFLECTION_MAX_SOURCE_COUNT)
+      ?? persistedReflection.maxSourceCount,
+    reflectionMinSourceCount,
+    DEFAULT_MAINTENANCE_CONFIG.reflection.maxSourceCount,
+  );
+
+  return {
+    enabled,
+    defaultMode: parseMaintenanceDefaultMode(process.env.THOTH_MAINTENANCE_DEFAULT_MODE)
+      ?? persistedMaintenance.defaultMode
+      ?? DEFAULT_MAINTENANCE_CONFIG.defaultMode,
+    automatic: {
+      enabled: automaticEnabled,
+      maxRecordsPerRun: integerAtLeast(
+        parseNumber(process.env.THOTH_MAINTENANCE_AUTOMATIC_MAX_RECORDS_PER_RUN)
+          ?? persistedAutomatic.maxRecordsPerRun,
+        1,
+        DEFAULT_MAINTENANCE_CONFIG.automatic.maxRecordsPerRun,
+      ),
+    },
+    readPath: {
+      enabled: readPathEnabled,
+    },
+    consolidation: {
+      enabled: consolidationEnabled,
+      exactHashThreshold,
+      lexicalSimilarityThreshold: numberInRange(
+        parseNumber(process.env.THOTH_MAINTENANCE_CONSOLIDATION_LEXICAL_SIMILARITY_THRESHOLD)
+          ?? persistedConsolidation.lexicalSimilarityThreshold,
+        0,
+        1,
+        DEFAULT_MAINTENANCE_CONFIG.consolidation.lexicalSimilarityThreshold,
+      ),
+      reviewSimilarityThreshold: numberInRange(
+        parseNumber(process.env.THOTH_MAINTENANCE_CONSOLIDATION_REVIEW_SIMILARITY_THRESHOLD)
+          ?? persistedConsolidation.reviewSimilarityThreshold,
+        0,
+        1,
+        DEFAULT_MAINTENANCE_CONFIG.consolidation.reviewSimilarityThreshold,
+      ),
+    },
+    reflection: {
+      enabled: reflectionEnabled,
+      minSourceCount: reflectionMinSourceCount,
+      maxSourceCount: reflectionMaxSourceCount,
+      contentBudgetChars: integerAtLeast(
+        parseNumber(process.env.THOTH_MAINTENANCE_REFLECTION_CONTENT_BUDGET_CHARS)
+          ?? persistedReflection.contentBudgetChars,
+        200,
+        DEFAULT_MAINTENANCE_CONFIG.reflection.contentBudgetChars,
+      ),
+      modelAssisted: parseBoolean(process.env.THOTH_MAINTENANCE_REFLECTION_MODEL_ASSISTED)
+        ?? persistedReflection.modelAssisted
+        ?? DEFAULT_MAINTENANCE_CONFIG.reflection.modelAssisted,
+    },
+    decay: {
+      enabled: decayEnabled,
+      defaultState: parseMaintenanceDecayState(process.env.THOTH_MAINTENANCE_DECAY_DEFAULT_STATE)
+        ?? persistedDecay.defaultState
+        ?? DEFAULT_MAINTENANCE_CONFIG.decay.defaultState,
+      staleAfterDays: integerAtLeast(
+        parseNumber(process.env.THOTH_MAINTENANCE_DECAY_STALE_AFTER_DAYS)
+          ?? persistedDecay.staleAfterDays,
+        1,
+        DEFAULT_MAINTENANCE_CONFIG.decay.staleAfterDays,
+      ),
+      redundantDuplicateCount: integerAtLeast(
+        parseNumber(process.env.THOTH_MAINTENANCE_DECAY_REDUNDANT_DUPLICATE_COUNT)
+          ?? persistedDecay.redundantDuplicateCount,
+        2,
+        DEFAULT_MAINTENANCE_CONFIG.decay.redundantDuplicateCount,
+      ),
+      lowValueTypes: normalizeMaintenanceLowValueTypes(parseStringList(process.env.THOTH_MAINTENANCE_DECAY_LOW_VALUE_TYPES)
+        ?? persistedDecay.lowValueTypes)
+        ?? DEFAULT_MAINTENANCE_CONFIG.decay.lowValueTypes,
+      scoreMultiplier: numberInRange(
+        parseNumber(process.env.THOTH_MAINTENANCE_DECAY_SCORE_MULTIPLIER)
+          ?? persistedDecay.scoreMultiplier,
+        0,
+        1,
+        DEFAULT_MAINTENANCE_CONFIG.decay.scoreMultiplier,
+      ),
+    },
+  };
+}
+
 function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   const persistedEmbedding = persisted.embedding ?? {};
   const provider = parseProvider(process.env.THOTH_EMBEDDING_PROVIDER ?? persistedEmbedding.provider, 'transformers_local');
@@ -564,6 +855,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
   const hyde = resolveHydeConfig(persisted);
   const kgLlm = resolveKgLlmConfig(persisted);
   const knowledgeGraph = resolveKnowledgeGraphConfig(persisted);
+  const maintenance = resolveMaintenanceConfig(persisted);
   const httpPortFromPersisted = persisted.http?.port;
   const httpDisabledFromPersisted = persisted.http?.disabled;
 
@@ -587,6 +879,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     hyde,
     kgLlm,
     knowledgeGraph,
+    maintenance,
   };
 }
 

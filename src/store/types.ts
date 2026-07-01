@@ -352,6 +352,83 @@ export interface PruneSupersededTriplesResult {
   superseded_after: number;
 }
 
+export type MaintenanceMode = 'dry-run' | 'apply';
+export type MaintenanceSourceKind = 'observation' | 'prompt' | 'session_summary';
+export type MaintenanceDecayState = 'active' | 'attenuated' | 'suppressed';
+
+export type MaintenanceScope =
+  | { all: true }
+  | { project: string }
+  | { topic_key: string }
+  | { topic_prefix: string };
+
+export interface MaintenanceInput {
+  scope?: MaintenanceScope;
+  mode?: MaintenanceMode;
+}
+
+export interface MaintenanceSourceRef {
+  kind: MaintenanceSourceKind;
+  id: number;
+}
+
+export interface MaintenanceConsolidationCandidate {
+  cluster_key: string;
+  canonical: MaintenanceSourceRef;
+  members: MaintenanceSourceRef[];
+  reason_class: string;
+  review_required: boolean;
+  signal: Record<string, unknown>;
+}
+
+export interface MaintenanceReflectionCandidate {
+  source_set_hash: string;
+  topic_key: string;
+  title: string;
+  content: string;
+  sources: MaintenanceSourceRef[];
+  reason_class: string;
+  existing_observation_id: number | null;
+  planned_observation_id?: number;
+}
+
+export interface MaintenanceDecayCandidate {
+  source: MaintenanceSourceRef;
+  score: number;
+  state: MaintenanceDecayState;
+  reason_class: string;
+  policy: Record<string, unknown>;
+}
+
+export interface MaintenanceCounts {
+  records_scanned: number;
+  consolidation_candidates: number;
+  reflection_candidates: number;
+  decay_candidates: number;
+  review_required: number;
+}
+
+export interface MaintenanceRunPreview {
+  dry_run: true;
+  scope: MaintenanceScope;
+  counts: MaintenanceCounts;
+  consolidations: MaintenanceConsolidationCandidate[];
+  reflections: MaintenanceReflectionCandidate[];
+  decays: MaintenanceDecayCandidate[];
+  degraded: string[];
+}
+
+export interface MaintenanceRunResult {
+  dry_run: false;
+  run_id: number;
+  scope: MaintenanceScope;
+  counts: MaintenanceCounts;
+  consolidations: MaintenanceConsolidationCandidate[];
+  reflections: MaintenanceReflectionCandidate[];
+  decays: MaintenanceDecayCandidate[];
+  degraded: string[];
+}
+
 export interface VizSliceRequest {
   project?: string;
   session_id?: string;

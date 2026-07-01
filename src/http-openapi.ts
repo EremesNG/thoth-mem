@@ -238,6 +238,54 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/maintenance/preview': {
+        post: {
+          summary: 'Preview memory maintenance',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/MaintenanceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Maintenance preview result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/MaintenanceRunPreview' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/maintenance/apply': {
+        post: {
+          summary: 'Apply memory maintenance',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/MaintenanceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Maintenance apply result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/MaintenanceRunResult' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -1196,6 +1244,54 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             'superseded_before',
             'superseded_after',
           ],
+        },
+        MaintenanceRequest: {
+          type: 'object',
+          properties: {
+            all: { type: 'boolean' },
+            project: { type: 'string' },
+            topic_key: { type: 'string' },
+            topic_prefix: { type: 'string' },
+          },
+          description: 'Provide exactly one scope field.',
+        },
+        MaintenanceCounts: {
+          type: 'object',
+          properties: {
+            records_scanned: { type: 'integer' },
+            consolidation_candidates: { type: 'integer' },
+            reflection_candidates: { type: 'integer' },
+            decay_candidates: { type: 'integer' },
+            review_required: { type: 'integer' },
+          },
+          required: ['records_scanned', 'consolidation_candidates', 'reflection_candidates', 'decay_candidates', 'review_required'],
+        },
+        MaintenanceRunPreview: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean', enum: [true] },
+            scope: { type: 'object' },
+            counts: { $ref: '#/components/schemas/MaintenanceCounts' },
+            consolidations: { type: 'array', items: { type: 'object' } },
+            reflections: { type: 'array', items: { type: 'object' } },
+            decays: { type: 'array', items: { type: 'object' } },
+            degraded: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['dry_run', 'scope', 'counts', 'consolidations', 'reflections', 'decays', 'degraded'],
+        },
+        MaintenanceRunResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean', enum: [false] },
+            run_id: { type: 'integer' },
+            scope: { type: 'object' },
+            counts: { $ref: '#/components/schemas/MaintenanceCounts' },
+            consolidations: { type: 'array', items: { type: 'object' } },
+            reflections: { type: 'array', items: { type: 'object' } },
+            decays: { type: 'array', items: { type: 'object' } },
+            degraded: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['dry_run', 'run_id', 'scope', 'counts', 'consolidations', 'reflections', 'decays', 'degraded'],
         },
         DeleteProjectRequest: {
           type: 'object',

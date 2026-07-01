@@ -37,6 +37,9 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
     .filter((fact) => !options.relation || fact.relation === options.relation);
   const limitedFacts = facts.slice(0, limit);
   const factLines = limitedFacts.map((fact) => `- ${fact.subject} -- ${fact.relation} --> ${fact.object}`);
+  const maintenanceLines = store.config.maintenance.readPath.enabled
+    ? formatMaintenanceEvidenceLines(store, Array.from(new Set(limitedFacts.map((fact) => fact.observation_id))))
+    : [];
   const filterParts = [
     options.topicKey ? `topic_key=${options.topicKey}` : null,
     options.relation ? `relation=${options.relation}` : null,
@@ -61,6 +64,7 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   const fullLines = [
     ...headerLines,
     ...factLines,
+    ...(maintenanceLines.length > 0 ? ['', 'Maintenance evidence:', ...maintenanceLines] : []),
     omittedLine,
   ].filter((line): line is string => line !== null);
   const fullText = fullLines.join('\n');
@@ -89,6 +93,36 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   }
 
   return truncatedText;
+}
+
+function formatMaintenanceEvidenceLines(store: Store, observationIds: number[]): string[] {
+  return store.getMaintenanceEvidenceForObservations(observationIds).flatMap((entry) => {
+    const lines: string[] = [];
+    if (entry.consolidation) {
+      lines.push([
+        `- obs:${entry.observationId} consolidation`,
+        `cluster=${entry.consolidation.clusterKey}`,
+        `canonical=obs:${entry.consolidation.canonicalId}`,
+        `sources=${entry.consolidation.memberIds.map((id) => `obs:${id}`).join(',')}`,
+        `reason=${entry.consolidation.reasonClass}`,
+      ].join(' | '));
+    }
+    if (entry.reflection) {
+      lines.push([
+        `- obs:${entry.observationId} reflection`,
+        `sources=${entry.reflection.sourceIds.map((id) => `obs:${id}`).join(',')}`,
+        `reason=${entry.reflection.reasonClass}`,
+      ].join(' | '));
+    }
+    if (entry.decay) {
+      lines.push([
+        `- obs:${entry.observationId} decay state=${entry.decay.state}`,
+        `score=${entry.decay.scoreMultiplier}`,
+        `reason=${entry.decay.reasonClass}`,
+      ].join(' | '));
+    }
+    return lines;
+  });
 }
 
 export function formatTopicKeyList(store: Store, project?: string): string {

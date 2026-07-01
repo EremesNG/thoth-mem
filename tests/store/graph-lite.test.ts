@@ -223,4 +223,47 @@ describe('Store graph-lite facts', () => {
       store.close();
     }
   });
+
+  it('keeps maintenance metadata outside graph fact storage and does not prune KG triples for decay', () => {
+    const store = new Store(':memory:', {
+      maintenance: {
+        reflection: { enabled: false },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+    });
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Maintenance graph source',
+        content: '**What**: maintenance graph facts stay in kg triples',
+        project: 'graph-maint-project',
+        type: 'manual',
+      }).observation;
+      store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id = ?")
+        .run(saved.id);
+      const triplesBefore = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+
+      store.runMaintenance({ scope: { project: 'graph-maint-project' } });
+
+      const legacyFactTable = store.getDb().prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+      ).get();
+      const triplesAfter = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+      const facts = store.getObservationFacts({ observation_id: saved.id });
+
+      expect(legacyFactTable).toBeUndefined();
+      expect(triplesAfter.count).toBe(triplesBefore.count);
+      expect(facts.some((fact) => fact.object === 'maintenance graph facts stay in kg triples')).toBe(true);
+      expect(store.getMaintenanceEvidenceForObservations([saved.id])[0].decay).toMatchObject({
+        state: 'attenuated',
+        scoreMultiplier: 0.5,
+      });
+    } finally {
+      store.close();
+    }
+  });
 });

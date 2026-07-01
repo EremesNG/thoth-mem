@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import {
   DEFAULT_KG_RELATION_ALLOW_LIST,
   DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+  DEFAULT_MAINTENANCE_CONFIG,
   getConfig,
+  resolveMaintenanceConfig,
   resolveKnowledgeGraphConfig,
   resolveDataDir,
 } from '../src/config.js';
@@ -41,6 +43,7 @@ describe('getConfig', () => {
     expect(config.httpDisabled).toBe(false);
     expect(config.graphFactsSource).toBe('kg');
     expect(config.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
+    expect(config.maintenance).toEqual(DEFAULT_MAINTENANCE_CONFIG);
     expect(config.dataDir).toBe(tmpDataDir);
     expect(config.dbPath).toBe(join(tmpDataDir!, 'thoth.db'));
   });
@@ -275,6 +278,85 @@ describe('getConfig', () => {
       kgPruneOrphanEntities: true,
     });
   });
+
+  it('resolves maintenance config from env, persisted config, then conservative defaults', () => {
+    expect(resolveMaintenanceConfig({})).toMatchObject({
+      enabled: true,
+      defaultMode: 'dry-run',
+      automatic: { enabled: false },
+      readPath: { enabled: true },
+      decay: { enabled: true, defaultState: 'attenuated', scoreMultiplier: 0.6 },
+    });
+
+    const persisted = resolveMaintenanceConfig({
+      maintenance: {
+        automatic: { enabled: true, maxRecordsPerRun: 25 },
+        readPath: { enabled: false },
+        decay: { staleAfterDays: 30, scoreMultiplier: 0.4 },
+      },
+    });
+    expect(persisted).toMatchObject({
+      automatic: { enabled: true, maxRecordsPerRun: 25 },
+      readPath: { enabled: false },
+      decay: { staleAfterDays: 30, scoreMultiplier: 0.4 },
+    });
+
+    process.env.THOTH_MAINTENANCE_AUTOMATIC_ENABLED = 'false';
+    process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED = 'true';
+    process.env.THOTH_MAINTENANCE_DECAY_STALE_AFTER_DAYS = '90';
+    process.env.THOTH_MAINTENANCE_DECAY_SCORE_MULTIPLIER = '0.2';
+
+    expect(resolveMaintenanceConfig({
+      maintenance: {
+        automatic: { enabled: true },
+        readPath: { enabled: false },
+        decay: { staleAfterDays: 30, scoreMultiplier: 0.4 },
+      },
+    })).toMatchObject({
+      automatic: { enabled: false },
+      readPath: { enabled: true },
+      decay: { staleAfterDays: 90, scoreMultiplier: 0.2 },
+    });
+  });
+
+  it('falls back to conservative maintenance defaults for out-of-range policy values', () => {
+    process.env.THOTH_MAINTENANCE_CONSOLIDATION_LEXICAL_SIMILARITY_THRESHOLD = '1.5';
+    process.env.THOTH_MAINTENANCE_CONSOLIDATION_REVIEW_SIMILARITY_THRESHOLD = '-0.1';
+    process.env.THOTH_MAINTENANCE_DECAY_SCORE_MULTIPLIER = '2';
+    process.env.THOTH_MAINTENANCE_DECAY_LOW_VALUE_TYPES = 'discovery,unknown,learning';
+
+    const config = resolveMaintenanceConfig({
+      maintenance: {
+        automatic: { maxRecordsPerRun: 0 },
+        reflection: { contentBudgetChars: 10 },
+        decay: { scoreMultiplier: -1, lowValueTypes: ['not-real', 'manual'] },
+      },
+    });
+
+    expect(config.automatic.maxRecordsPerRun).toBe(DEFAULT_MAINTENANCE_CONFIG.automatic.maxRecordsPerRun);
+    expect(config.consolidation.lexicalSimilarityThreshold)
+      .toBe(DEFAULT_MAINTENANCE_CONFIG.consolidation.lexicalSimilarityThreshold);
+    expect(config.consolidation.reviewSimilarityThreshold)
+      .toBe(DEFAULT_MAINTENANCE_CONFIG.consolidation.reviewSimilarityThreshold);
+    expect(config.reflection.contentBudgetChars).toBe(DEFAULT_MAINTENANCE_CONFIG.reflection.contentBudgetChars);
+    expect(config.decay.scoreMultiplier).toBe(DEFAULT_MAINTENANCE_CONFIG.decay.scoreMultiplier);
+    expect(config.decay.lowValueTypes).toEqual(['discovery', 'learning']);
+  });
+
+  it('maintenance disablement switches stop optional outcomes independently', () => {
+    process.env.THOTH_MAINTENANCE_ENABLED = 'false';
+    process.env.THOTH_MAINTENANCE_AUTOMATIC_ENABLED = 'true';
+    process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED = 'false';
+
+    const config = getConfig();
+
+    expect(config.maintenance.enabled).toBe(false);
+    expect(config.maintenance.automatic.enabled).toBe(false);
+    expect(config.maintenance.consolidation.enabled).toBe(false);
+    expect(config.maintenance.reflection.enabled).toBe(false);
+    expect(config.maintenance.decay.enabled).toBe(false);
+    expect(config.maintenance.readPath.enabled).toBe(false);
+  });
 });
 
 describe('resolveDataDir', () => {
@@ -436,6 +518,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.kgLlm).toEqual(config.kgLlm);
     expect(saved.graphFactsSource).toBe('kg');
     expect(saved.knowledgeGraph).toEqual(config.knowledgeGraph);
+    expect(saved.maintenance).toEqual(config.maintenance);
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
     expect(schema).toMatchObject({
@@ -470,6 +553,21 @@ describe('embedding config (hybrid retrieval baseline)', () => {
             kgPruneEnabled: { type: 'boolean' },
             kgSupersededKeepN: { type: 'integer', minimum: 0 },
             kgPruneOrphanEntities: { type: 'boolean' },
+          },
+        },
+        maintenance: {
+          additionalProperties: false,
+          properties: {
+            defaultMode: { enum: ['dry-run', 'apply'] },
+            automatic: { additionalProperties: false },
+            readPath: { additionalProperties: false },
+            decay: {
+              additionalProperties: false,
+              properties: {
+                defaultState: { enum: ['active', 'attenuated', 'suppressed'] },
+                scoreMultiplier: { type: 'number', minimum: 0, maximum: 1 },
+              },
+            },
           },
         },
       },
@@ -509,6 +607,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.maxContentLength).toBe(100_000);
     expect(saved.maxContextChars).toBe(8000);
     expect(saved.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
+    expect(saved.maintenance).toEqual(DEFAULT_MAINTENANCE_CONFIG);
   });
 
   it('config file: environment overrides do not rewrite the editable config file', () => {

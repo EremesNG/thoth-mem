@@ -4,7 +4,7 @@ import type { ThothConfig } from './config.js';
 import { getConfig, resolveDataDir } from './config.js';
 import { Store } from './store/index.js';
 import { OBSERVATION_TYPES } from './store/types.js';
-import type { DeleteProjectResult, ExportData, Observation, ObservationScope, ObservationType } from './store/types.js';
+import type { DeleteProjectResult, ExportData, MaintenanceRunPreview, MaintenanceRunResult, MaintenanceScope, Observation, ObservationScope, ObservationType } from './store/types.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
 import { VERSION } from './version.js';
@@ -35,6 +35,7 @@ Commands:
    prune-graph            Bound superseded graph history (keep-N)
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
+   maintain-memory        Preview/apply memory maintenance metadata
    version                Show version
    help                   Show this help
 
@@ -213,6 +214,37 @@ function parseRequiredProjectName(value: string | undefined, command: string): s
   }
 
   return project;
+}
+
+function parseMaintenanceScope(positionals: string[], globals: GlobalOptions): { rest: string[]; scope: MaintenanceScope; label: string } {
+  const parsedTopicKey = parseOptionValue(positionals, ['--topic-key']);
+  const parsedTopicPrefix = parseOptionValue(parsedTopicKey.rest, ['--topic-prefix']);
+  const all = parsedTopicPrefix.rest.includes('--all');
+  const rest = parsedTopicPrefix.rest.filter((arg) => arg !== '--all');
+  const scopes = [
+    all ? 'all' : null,
+    globals.project ? 'project' : null,
+    parsedTopicKey.value ? 'topic-key' : null,
+    parsedTopicPrefix.value ? 'topic-prefix' : null,
+  ].filter((value): value is string => value !== null);
+
+  if (scopes.length !== 1) {
+    fail('maintain-memory requires exactly one scope: --all, --project <name>, --topic-key <key>, or --topic-prefix <prefix>');
+  }
+
+  if (all) {
+    return { rest, scope: { all: true }, label: 'all memories' };
+  }
+  if (globals.project) {
+    const project = parseRequiredProjectName(globals.project, 'maintain-memory --project');
+    return { rest, scope: { project }, label: `project ${project}` };
+  }
+  if (parsedTopicKey.value) {
+    return { rest, scope: { topic_key: parsedTopicKey.value }, label: `topic_key ${parsedTopicKey.value}` };
+  }
+
+  const topicPrefix = parsedTopicPrefix.value!;
+  return { rest, scope: { topic_prefix: topicPrefix }, label: `topic_prefix ${topicPrefix}` };
 }
 
 function createStoreContext(dataDir?: string): StoreContext {
@@ -589,6 +621,22 @@ async function handleRebuildGraph(positionals: string[], globals: GlobalOptions)
   });
 }
 
+function formatMaintenanceResult(result: MaintenanceRunPreview | MaintenanceRunResult, scopeLabel: string): string {
+  const applied = result.dry_run === false;
+  return [
+    applied ? '## Memory Maintenance Applied' : '## Memory Maintenance Preview',
+    `- **Mode:** ${applied ? 'apply' : 'dry-run'}`,
+    `- **Scope:** ${scopeLabel}`,
+    applied ? `- **Run ID:** ${result.run_id}` : null,
+    `- **Records scanned:** ${result.counts.records_scanned}`,
+    `- **Consolidation candidates:** ${result.counts.consolidation_candidates}`,
+    `- **Reflection candidates:** ${result.counts.reflection_candidates}`,
+    `- **Decay candidates:** ${result.counts.decay_candidates}`,
+    `- **Review required:** ${result.counts.review_required}`,
+    `- **Degraded signals:** ${result.degraded.length > 0 ? result.degraded.join(', ') : 'none'}`,
+  ].filter((line): line is string => line !== null).join('\n');
+}
+
 async function handlePruneGraph(positionals: string[], globals: GlobalOptions): Promise<void> {
   const dryRun = positionals.includes('--dry-run');
   const all = positionals.includes('--all');
@@ -685,6 +733,28 @@ async function handleRebuildIndex(positionals: string[], globals: GlobalOptions)
   });
 }
 
+async function handleMaintainMemory(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const dryRun = positionals.includes('--dry-run');
+  const apply = positionals.includes('--apply');
+
+  if (dryRun && apply) {
+    fail('Use either --dry-run or --apply, not both');
+  }
+
+  const modeArgsRemoved = positionals.filter((arg) => arg !== '--dry-run' && arg !== '--apply');
+  const parsed = parseMaintenanceScope(modeArgsRemoved, globals);
+  ensureNoExtraArgs(parsed.rest, 'maintain-memory');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    const effectiveMode = apply ? 'apply' : dryRun ? 'dry-run' : store.config.maintenance.defaultMode;
+    const result = effectiveMode === 'apply'
+      ? store.runMaintenance({ scope: parsed.scope, mode: 'apply' })
+      : store.evaluateMaintenance({ scope: parsed.scope, mode: 'dry-run' });
+
+    printStdout(formatMaintenanceResult(result, parsed.label));
+  });
+}
+
 async function handleVersion(positionals: string[]): Promise<void> {
   ensureNoExtraArgs(positionals, 'version');
   printStdout(VERSION);
@@ -741,6 +811,9 @@ export async function runCli(args: string[]): Promise<void> {
          return;
        case 'rebuild-index':
          await handleRebuildIndex(parsed.positionals, parsed.globals);
+         return;
+       case 'maintain-memory':
+         await handleMaintainMemory(parsed.positionals, parsed.globals);
          return;
        case 'version':
          await handleVersion(parsed.positionals);

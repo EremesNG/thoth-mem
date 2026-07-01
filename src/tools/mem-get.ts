@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
 import { formatObservationMarkdown } from "../utils/content.js";
+import { formatObservationMaintenanceEvidence } from "./maintenance-format.js";
 
 function formatPromptMarkdown(prompt: { id: number; project: string | null; session_id: string; content: string; created_at: string }): string {
   return [
@@ -27,9 +28,11 @@ function formatPaginatedObservation(
 
   const fullContent = observation.content;
   const totalLength = fullContent.length;
+  const maintenance = formatObservationMaintenanceEvidence(store.getMaintenanceEvidenceForObservations([id])[0]);
 
   if (totalLength <= maxLength && offset === 0) {
-    return { text: formatObservationMarkdown(observation) };
+    const base = formatObservationMarkdown(observation);
+    return { text: maintenance ? `${base}\n\n**Maintenance:** ${maintenance}` : base };
   }
 
   const slice = fullContent.substring(offset, offset + maxLength);
@@ -40,6 +43,7 @@ function formatPaginatedObservation(
     `**Project:** ${observation.project || 'none'} | **Scope:** ${observation.scope} | **Created:** ${observation.created_at}`,
     observation.topic_key ? `**Topic:** ${observation.topic_key}` : null,
     `**Revisions:** ${observation.revision_count} | **Duplicates:** ${observation.duplicate_count}`,
+    maintenance ? `**Maintenance:** ${maintenance}` : null,
     '',
     `**Content pagination:** Showing characters ${offset}-${returnedTo} of ${totalLength}`,
     hasMore ? `Call mem_get with id=${id} and offset=${returnedTo} to get more.` : null,
