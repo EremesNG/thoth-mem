@@ -429,6 +429,68 @@ describe('writeDeterministicKgFacts', () => {
     ]);
   });
 
+  // ── Task 4.1: flag-off (kgSupersedeEnabled=false) parity after the tx wrap ──
+  // Proves the transaction wrap changed ONLY atomicity, not which statements
+  // execute under the flag: with supersession disabled, the write path DELETEs
+  // prior observation triples then re-inserts, leaving NO supersession markers —
+  // byte-identical to pre-wrap behavior.
+  it('preserves flag-off delete-then-insert KG behavior with no supersession markers after the tx wrap', () => {
+    store = new Store(':memory:', {
+      knowledgeGraph: {
+        kgSupersedeEnabled: false,
+      },
+    } as any);
+    const first = store.saveObservation({
+      title: 'Flag off parity',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/flag-off-parity',
+    });
+    const db = store.getDb();
+
+    // Re-save through the topic_key-upsert write path (now inside the outer tx).
+    store.saveObservation({
+      title: 'Flag off parity',
+      content: '**What**: Valkey cache',
+      project: 'indexing-test',
+      topic_key: 'kg/flag-off-parity',
+    });
+    // Update path too — also wrapped by this change.
+    store.updateObservation({ id: first.observation.id, content: '**What**: Dragonfly cache' });
+
+    const rows = db.prepare(
+      `SELECT oe.canonical_name AS object, kt.superseded_by_triple_id, kt.superseded_at
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+       ORDER BY kt.id`
+    ).all(first.observation.id) as Array<{
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>;
+
+    // Only the final fact survives (prior rows DELETED, not superseded).
+    expect(rows).toEqual([
+      {
+        object: 'Dragonfly cache',
+        superseded_by_triple_id: null,
+        superseded_at: null,
+      },
+    ]);
+    // No supersession markers anywhere for this observation under flag-off.
+    const supersededCount = (db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_type = 'observation'
+         AND source_id = ?
+         AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+    ).get(first.observation.id) as { count: number }).count;
+    expect(supersededCount).toBe(0);
+  });
+
   it('revives a previously superseded KG triple when the same fact is reasserted', () => {
     store = new Store(':memory:');
     const saved = store.saveObservation({

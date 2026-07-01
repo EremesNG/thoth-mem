@@ -659,4 +659,56 @@ describe('Store KG-backed observation facts cutover', () => {
       store.close();
     }
   });
+
+  // ── Task 3.2: legacy-mode savepoint smoke check ──
+  // In legacy mode, refreshGraphFacts -> refreshObservationFacts ->
+  // replaceObservationFacts opens its OWN this.db.transaction() (:1088), which
+  // now NESTS inside the outer save/update transaction added by this change.
+  // better-sqlite3 ^12.10.0 converts the inner transaction() to a SAVEPOINT, so
+  // no "transaction within a transaction" error should surface, and
+  // observation_facts must still be fully replaced on update.
+  it('completes legacy-mode save/update with nested facts transaction as a savepoint', () => {
+    const store = new Store(':memory:', { graphFactsSource: 'legacy' });
+    createLegacyObservationFactsTable(store);
+
+    try {
+      let saved!: ReturnType<Store['saveObservation']>['observation'];
+      expect(() => {
+        saved = store.saveObservation({
+          title: 'Legacy nested tx',
+          type: 'decision',
+          project: 'legacy-nested',
+          content: '**What**: Initial legacy content',
+        }).observation;
+      }).not.toThrow();
+
+      // Facts written via the nested (now savepoint) transaction on save.
+      expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => [fact.relation, fact.object]))
+        .toEqual([
+          ['HAS_TYPE', 'decision'],
+          ['IN_PROJECT', 'legacy-nested'],
+          ['HAS_WHAT', 'Initial legacy content'],
+        ]);
+
+      // Update path also nests the facts transaction inside the outer wrap.
+      let updated: ReturnType<Store['updateObservation']> = null;
+      expect(() => {
+        updated = store.updateObservation({ id: saved.id, content: '**What**: Updated legacy content' });
+      }).not.toThrow();
+      expect(updated).not.toBeNull();
+
+      // observation_facts fully replaced: old HAS_WHAT gone, new one present,
+      // exactly one row per relation (no duplicate accumulation).
+      const factRows = store.getDb().prepare(
+        'SELECT relation, object FROM observation_facts WHERE observation_id = ? ORDER BY id'
+      ).all(saved.id) as Array<{ relation: string; object: string }>;
+      expect(factRows).toEqual([
+        { relation: 'HAS_TYPE', object: 'decision' },
+        { relation: 'IN_PROJECT', object: 'legacy-nested' },
+        { relation: 'HAS_WHAT', object: 'Updated legacy content' },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
 });

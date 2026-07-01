@@ -1508,55 +1508,59 @@ export class Store {
       const existing = this.mapObservationRow(existingRow);
 
       if (existing) {
-        this.db.prepare(
-          'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
-        ).run(existing.id, existing.title, existing.content, existing.type, existing.revision_count);
+        return this.db.transaction((): SaveResult => {
+          this.db.prepare(
+            'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
+          ).run(existing.id, existing.title, existing.content, existing.type, existing.revision_count);
 
-        this.db.prepare(
-          "UPDATE observations SET title = ?, content = ?, type = ?, normalized_hash = ?, revision_count = revision_count + 1, updated_at = datetime('now') WHERE id = ?"
-        ).run(strippedTitle, strippedContent, type, hash, existing.id);
+          this.db.prepare(
+            "UPDATE observations SET title = ?, content = ?, type = ?, normalized_hash = ?, revision_count = revision_count + 1, updated_at = datetime('now') WHERE id = ?"
+          ).run(strippedTitle, strippedContent, type, hash, existing.id);
 
-        const observation = this.getObservation(existing.id);
+          const observation = this.getObservation(existing.id);
 
-        if (!observation) {
-          throw new Error(`Failed to load upserted observation ${existing.id}`);
-        }
+          if (!observation) {
+            throw new Error(`Failed to load upserted observation ${existing.id}`);
+          }
 
-        this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-        this.refreshGraphFacts(observation);
-        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+          this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
+          this.refreshGraphFacts(observation);
+          this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
-        return { observation, action: 'upserted' };
+          return { observation, action: 'upserted' };
+        })();
       }
     }
 
     const syncId = randomUUID();
-    const result = this.db.prepare(
-      `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash, sync_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      sessionId,
-      type,
-      strippedTitle,
-      strippedContent,
-      input.project ?? null,
-      scope,
-      input.topic_key ?? null,
-      hash,
-      syncId
-    );
+    return this.db.transaction((): SaveResult => {
+      const result = this.db.prepare(
+        `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        sessionId,
+        type,
+        strippedTitle,
+        strippedContent,
+        input.project ?? null,
+        scope,
+        input.topic_key ?? null,
+        hash,
+        syncId
+      );
 
-    const observation = this.getObservation(Number(result.lastInsertRowid));
+      const observation = this.getObservation(Number(result.lastInsertRowid));
 
-    if (!observation) {
-      throw new Error('Failed to load created observation');
-    }
+      if (!observation) {
+        throw new Error('Failed to load created observation');
+      }
 
-    this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
-    this.refreshGraphFacts(observation);
-    this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
+      this.refreshGraphFacts(observation);
+      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
-    return { observation, action: 'created' };
+      return { observation, action: 'created' };
+    })();
   }
 
   async saveObservationWithIndex(
@@ -1625,58 +1629,60 @@ export class Store {
       return null;
     }
 
-    this.db.prepare(
-      'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
-    ).run(current.id, current.title, current.content, current.type, current.revision_count);
+    return this.db.transaction((): Observation | null => {
+      this.db.prepare(
+        'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
+      ).run(current.id, current.title, current.content, current.type, current.revision_count);
 
-    const setClauses = ['revision_count = revision_count + 1', "updated_at = datetime('now')"];
-    const params: Array<string | number | null> = [];
+      const setClauses = ['revision_count = revision_count + 1', "updated_at = datetime('now')"];
+      const params: Array<string | number | null> = [];
 
-    if (input.title !== undefined) {
-      setClauses.push('title = ?');
-      params.push(input.title);
-    }
+      if (input.title !== undefined) {
+        setClauses.push('title = ?');
+        params.push(input.title);
+      }
 
-    if (input.content !== undefined) {
-      setClauses.push('content = ?');
-      params.push(input.content);
-      setClauses.push('normalized_hash = ?');
-      params.push(computeHash(input.content));
-    }
+      if (input.content !== undefined) {
+        setClauses.push('content = ?');
+        params.push(input.content);
+        setClauses.push('normalized_hash = ?');
+        params.push(computeHash(input.content));
+      }
 
-    if (input.type !== undefined) {
-      setClauses.push('type = ?');
-      params.push(input.type);
-    }
+      if (input.type !== undefined) {
+        setClauses.push('type = ?');
+        params.push(input.type);
+      }
 
-    if (input.project !== undefined) {
-      setClauses.push('project = ?');
-      params.push(input.project);
-    }
+      if (input.project !== undefined) {
+        setClauses.push('project = ?');
+        params.push(input.project);
+      }
 
-    if (input.scope !== undefined) {
-      setClauses.push('scope = ?');
-      params.push(input.scope);
-    }
+      if (input.scope !== undefined) {
+        setClauses.push('scope = ?');
+        params.push(input.scope);
+      }
 
-    if (input.topic_key !== undefined) {
-      setClauses.push('topic_key = ?');
-      params.push(input.topic_key);
-    }
+      if (input.topic_key !== undefined) {
+        setClauses.push('topic_key = ?');
+        params.push(input.topic_key);
+      }
 
-    params.push(input.id);
+      params.push(input.id);
 
-    this.db.prepare(`UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+      this.db.prepare(`UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
-    const updated = this.getObservation(input.id);
+      const updated = this.getObservation(input.id);
 
-    if (updated) {
-      this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
-      this.refreshGraphFacts(updated);
-      this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
-    }
+      if (updated) {
+        this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
+        this.refreshGraphFacts(updated);
+        this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
+      }
 
-    return updated;
+      return updated;
+    })();
   }
 
   private appendObservationFilters(
