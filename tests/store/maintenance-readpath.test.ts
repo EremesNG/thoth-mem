@@ -47,6 +47,84 @@ describe('Store maintenance read-path consumption', () => {
       expect(store.getObservation(first.id)?.content).toContain('source reachable');
       expect(store.getObservation(second.id)?.content).toContain('source reachable');
     });
+
+    it('does not consolidate exact-hash records across different topic keys', async () => {
+      store.saveObservation({
+        title: 'Topic A duplicate',
+        content: 'topic isolated duplicate marker',
+        project: 'topic-isolation',
+        type: 'learning',
+        topic_key: 'topic/a',
+      });
+      const topicB = store.saveObservation({
+        title: 'Topic B duplicate',
+        content: 'topic isolated duplicate marker',
+        project: 'topic-isolation',
+        type: 'learning',
+        topic_key: 'topic/b',
+      }).observation;
+
+      store.runMaintenance({ scope: { project: 'topic-isolation' } });
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'topic isolated duplicate marker',
+        project: 'topic-isolation',
+        topic_key: 'topic/b',
+        limit: 10,
+      });
+
+      expect(retrieval.results.map((hit) => hit.observation.id)).toEqual([topicB.id]);
+      expect(retrieval.results[0].observation.topic_key).toBe('topic/b');
+      expect(retrieval.results[0].evidence.maintenance?.consolidation).toBeUndefined();
+    });
+
+    it('ignores legacy consolidation metadata whose canonical is outside the active topic filter', async () => {
+      const topicA = store.saveObservation({
+        title: 'Legacy topic A canonical',
+        content: 'legacy bad consolidation topic filter marker',
+        project: 'legacy-topic-filter',
+        type: 'learning',
+        topic_key: 'topic/a',
+      }).observation;
+      const topicB = store.saveObservation({
+        title: 'Legacy topic B member',
+        content: 'legacy bad consolidation topic filter marker',
+        project: 'legacy-topic-filter',
+        type: 'learning',
+        topic_key: 'topic/b',
+      }).observation;
+
+      const db = store.getDb();
+      const run = db.prepare(
+        `INSERT INTO maintenance_runs (
+           run_key, mode, scope_json, config_json, status, counts_json, degraded_json, completed_at
+         ) VALUES (?, 'apply', ?, '{}', 'applied', '{}', '[]', datetime('now'))`
+      ).run('legacy-cross-topic-consolidation', '{"project":"legacy-topic-filter"}');
+      const consolidation = db.prepare(
+        `INSERT INTO maintenance_consolidations (
+           run_id, cluster_key, canonical_kind, canonical_id, reason_class, signal_json, review_required
+         ) VALUES (?, ?, 'observation', ?, 'legacy-cross-topic', '{}', 0)`
+      ).run(Number(run.lastInsertRowid), 'legacy-cross-topic-cluster', topicA.id);
+      const insertMember = db.prepare(
+        `INSERT INTO maintenance_consolidation_members (
+           consolidation_id, source_kind, source_id, role, signal_json
+         ) VALUES (?, 'observation', ?, ?, '{}')`
+      );
+      insertMember.run(Number(consolidation.lastInsertRowid), topicA.id, 'canonical');
+      insertMember.run(Number(consolidation.lastInsertRowid), topicB.id, 'member');
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'legacy bad consolidation topic filter marker',
+        project: 'legacy-topic-filter',
+        topic_key: 'topic/b',
+        limit: 10,
+      });
+
+      expect(retrieval.results.map((hit) => hit.observation.id)).toEqual([topicB.id]);
+      expect(retrieval.results[0].observation.topic_key).toBe('topic/b');
+      expect(retrieval.results[0].evidence.maintenance?.consolidation).toBeUndefined();
+      expect(store.getObservation(topicA.id)?.topic_key).toBe('topic/a');
+    });
   });
 
   it('promotes reflected learnings and preserves source lineage', async () => {
@@ -125,6 +203,145 @@ describe('Store maintenance read-path consumption', () => {
       state: 'attenuated',
     });
     expect(store.getObservation(stale.id)?.content).toContain('stay recoverable');
+  });
+
+  it('clears stale decay metadata when a record no longer matches decay policy', async () => {
+    store = new Store(':memory:', {
+      maintenance: {
+        consolidation: { enabled: false },
+        reflection: { enabled: false },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.4 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    const stale = store.saveObservation({
+      title: 'Recovering implementation note',
+      content: 'reversible decay marker',
+      project: 'decay-rollback',
+      type: 'manual',
+    }).observation;
+    const current = store.saveObservation({
+      title: 'Current implementation decision',
+      content: 'reversible decay marker',
+      project: 'decay-rollback',
+      type: 'decision',
+    }).observation;
+    store.getDb().prepare(
+      "UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id = ?"
+    ).run(stale.id);
+    store.runMaintenance({ scope: { project: 'decay-rollback' } });
+
+    store.updateObservation({
+      id: stale.id,
+      title: 'Recovered implementation decision',
+      content: 'reversible decay marker',
+      type: 'decision',
+    });
+    store.runMaintenance({ scope: { project: 'decay-rollback' } });
+
+    const decayRow = store.getDb().prepare(
+      'SELECT source_id FROM maintenance_decay WHERE source_kind = ? AND source_id = ?'
+    ).get('observation', stale.id);
+    const retrieval = await store.hybridRetrieve({
+      query: 'reversible decay marker',
+      project: 'decay-rollback',
+      limit: 10,
+    });
+
+    expect(decayRow).toBeUndefined();
+    expect(retrieval.results.map((hit) => hit.observation.id)).toEqual([stale.id, current.id]);
+    expect(retrieval.results[0].evidence.maintenance?.decay).toBeUndefined();
+  });
+
+  it('ignores persisted maintenance metadata when maintenance is disabled', async () => {
+    store = new Store(':memory:', {
+      maintenance: {
+        enabled: false,
+        consolidation: { enabled: false },
+        reflection: { enabled: false },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.2 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    const stale = store.saveObservation({
+      title: 'Disabled maintenance stale note',
+      content: 'master disable marker',
+      project: 'master-disable',
+      type: 'manual',
+    }).observation;
+    const current = store.saveObservation({
+      title: 'Disabled maintenance current decision',
+      content: 'master disable marker',
+      project: 'master-disable',
+      type: 'decision',
+    }).observation;
+    store.getDb().prepare(
+      "UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id = ?"
+    ).run(stale.id);
+    const run = store.getDb().prepare(
+      `INSERT INTO maintenance_runs (
+         run_key, mode, scope_json, config_json, status, counts_json, degraded_json, completed_at
+       ) VALUES (?, 'apply', ?, '{}', 'applied', '{}', '[]', datetime('now'))`
+    ).run('disabled-master-decay-metadata', '{"project":"master-disable"}');
+    store.getDb().prepare(
+      `INSERT INTO maintenance_decay (
+         source_kind, source_id, score, state, reason_class, policy_json, run_id
+       ) VALUES ('observation', ?, 0.2, 'attenuated', 'age-low-value', '{}', ?)`
+    ).run(stale.id, Number(run.lastInsertRowid));
+
+    const retrieval = await store.hybridRetrieve({
+      query: 'master disable marker',
+      project: 'master-disable',
+      limit: 10,
+    });
+
+    expect(store.config.maintenance.readPath.enabled).toBe(false);
+    expect(new Set(retrieval.results.map((hit) => hit.observation.id))).toEqual(new Set([stale.id, current.id]));
+    expect(retrieval.results.map((hit) => hit.evidence.maintenance)).toEqual([undefined, undefined]);
+  });
+
+  it('consumes persisted maintenance metadata when maintenance is disabled and read-path is explicitly enabled', async () => {
+    store = new Store(':memory:', {
+      maintenance: {
+        enabled: true,
+        readPath: { enabled: true },
+        consolidation: { enabled: false },
+        reflection: { enabled: false },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.2 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    const stale = store.saveObservation({
+      title: 'Disabled maintenance stale note',
+      content: 'explicit read-path override marker',
+      project: 'master-disable-override',
+      type: 'manual',
+    }).observation;
+    const current = store.saveObservation({
+      title: 'Disabled maintenance current decision',
+      content: 'explicit read-path override marker',
+      project: 'master-disable-override',
+      type: 'decision',
+    }).observation;
+    store.getDb().prepare(
+      "UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id = ?"
+    ).run(stale.id);
+    store.runMaintenance({ scope: { project: 'master-disable-override' } });
+    store.config.maintenance.enabled = false;
+
+    const retrieval = await store.hybridRetrieve({
+      query: 'explicit read-path override marker',
+      project: 'master-disable-override',
+      limit: 10,
+    });
+
+    const resultIds = retrieval.results.map((hit) => hit.observation.id);
+    expect(new Set(resultIds)).toEqual(new Set([stale.id, current.id]));
+    expect(retrieval.results.find((hit) => hit.observation.id === current.id)?.evidence.maintenance).toBeUndefined();
+    expect(retrieval.results.find((hit) => hit.observation.id === stale.id)?.evidence.maintenance?.decay).toMatchObject({
+      scoreMultiplier: 0.2,
+      state: 'attenuated',
+    });
   });
 
   it('matches baseline retrieval when maintenance read-path consumption is disabled', async () => {

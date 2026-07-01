@@ -346,7 +346,6 @@ describe('getConfig', () => {
   it('maintenance disablement switches stop optional outcomes independently', () => {
     process.env.THOTH_MAINTENANCE_ENABLED = 'false';
     process.env.THOTH_MAINTENANCE_AUTOMATIC_ENABLED = 'true';
-    process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED = 'false';
 
     const config = getConfig();
 
@@ -356,6 +355,13 @@ describe('getConfig', () => {
     expect(config.maintenance.reflection.enabled).toBe(false);
     expect(config.maintenance.decay.enabled).toBe(false);
     expect(config.maintenance.readPath.enabled).toBe(false);
+  });
+
+  it('allows explicit read-path override when maintenance is disabled', () => {
+    process.env.THOTH_MAINTENANCE_ENABLED = 'false';
+    process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED = 'true';
+
+    expect(resolveMaintenanceConfig({}).readPath.enabled).toBe(true);
   });
 });
 

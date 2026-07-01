@@ -21,6 +21,7 @@ export interface MaintenancePlanningRecord {
   scope: Observation['scope'];
   topic_key: string | null;
   normalized_hash: string | null;
+  sync_id: string | null;
   duplicate_count: number;
   created_at: string;
   updated_at: string;
@@ -36,6 +37,7 @@ export interface MaintenancePlanInput {
 
 export interface MaintenancePlan extends MaintenanceRunPreview {
   run_key: string;
+  evaluated_observation_ids: number[];
 }
 
 export function normalizeMaintenanceScope(scope: MaintenanceScope | undefined): MaintenanceScope {
@@ -95,6 +97,7 @@ function buildConsolidations(
       record.project ?? '',
       record.scope,
       record.type,
+      record.topic_key ?? '',
     ].join(':');
   });
 
@@ -146,6 +149,17 @@ function buildReflectionContent(records: MaintenancePlanningRecord[], budget: nu
   return content.length <= budget ? content : `${content.slice(0, Math.max(0, budget - 15)).trimEnd()}\n[truncated]`;
 }
 
+function stableSourceIdentity(record: MaintenancePlanningRecord): string {
+  return `observation:${hashJson({
+    content: record.content,
+    project: record.project,
+    scope: record.scope,
+    type: record.type,
+    topic_key: record.topic_key,
+    normalized_hash: record.normalized_hash,
+  })}`;
+}
+
 function buildReflections(
   records: MaintenancePlanningRecord[],
   config: MaintenanceConfig,
@@ -166,8 +180,8 @@ function buildReflections(
     const sources = [...group]
       .sort((a, b) => a.id - b.id)
       .slice(0, config.reflection.maxSourceCount);
-    const sourceIds = sources.map((record) => record.id);
-    const sourceSetHash = hashJson({ groupKey, sourceIds });
+    const sourceIdentities = sources.map(stableSourceIdentity).sort();
+    const sourceSetHash = hashJson({ groupKey, sourceIdentities });
     const first = sources[0];
 
     reflections.push({
@@ -281,6 +295,7 @@ export function planMaintenance(input: MaintenancePlanInput): MaintenancePlan {
 
   return {
     run_key,
+    evaluated_observation_ids: sortedRecords.map((record) => record.id),
     dry_run: true,
     scope,
     counts,

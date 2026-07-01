@@ -680,7 +680,8 @@ export function resolveMaintenanceConfig(persisted: PersistedConfig): Maintenanc
   const persistedReflection = persistedMaintenance.reflection ?? {};
   const persistedDecay = persistedMaintenance.decay ?? {};
 
-  const enabled = parseBoolean(process.env.THOTH_MAINTENANCE_ENABLED)
+  const enabledFromEnv = parseBoolean(process.env.THOTH_MAINTENANCE_ENABLED);
+  const enabled = enabledFromEnv
     ?? persistedMaintenance.enabled
     ?? DEFAULT_MAINTENANCE_CONFIG.enabled;
   const automaticEnabled = enabled && (
@@ -688,9 +689,11 @@ export function resolveMaintenanceConfig(persisted: PersistedConfig): Maintenanc
       ?? persistedAutomatic.enabled
       ?? DEFAULT_MAINTENANCE_CONFIG.automatic.enabled
   );
-  const readPathEnabled = parseBoolean(process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED)
-    ?? persistedReadPath.enabled
-    ?? DEFAULT_MAINTENANCE_CONFIG.readPath.enabled;
+  const readPathEnabledFromEnv = parseBoolean(process.env.THOTH_MAINTENANCE_READ_PATH_ENABLED);
+  const explicitReadPathEnabled = readPathEnabledFromEnv
+    ?? (enabledFromEnv === false ? undefined : persistedReadPath.enabled);
+  const readPathEnabled = explicitReadPathEnabled
+    ?? (enabled ? DEFAULT_MAINTENANCE_CONFIG.readPath.enabled : false);
   const consolidationEnabled = enabled && (
     parseBoolean(process.env.THOTH_MAINTENANCE_CONSOLIDATION_ENABLED)
       ?? persistedConsolidation.enabled

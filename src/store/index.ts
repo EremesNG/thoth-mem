@@ -546,6 +546,10 @@ export class Store {
   };
 
   constructor(dbPath: string, config?: Partial<ThothConfig>) {
+    const maintenanceConfig = config?.maintenance;
+    const readPathEnabled = maintenanceConfig?.readPath?.enabled
+      ?? (maintenanceConfig?.enabled === false ? false : DEFAULT_MAINTENANCE_CONFIG.readPath.enabled);
+
     this.config = {
       ...DEFAULT_CONFIG,
       ...config,
@@ -556,26 +560,27 @@ export class Store {
       },
       maintenance: {
         ...DEFAULT_MAINTENANCE_CONFIG,
-        ...(config?.maintenance ?? {}),
+        ...(maintenanceConfig ?? {}),
         automatic: {
           ...DEFAULT_MAINTENANCE_CONFIG.automatic,
-          ...(config?.maintenance?.automatic ?? {}),
+          ...(maintenanceConfig?.automatic ?? {}),
         },
         readPath: {
           ...DEFAULT_MAINTENANCE_CONFIG.readPath,
-          ...(config?.maintenance?.readPath ?? {}),
+          ...(maintenanceConfig?.readPath ?? {}),
+          enabled: readPathEnabled,
         },
         consolidation: {
           ...DEFAULT_MAINTENANCE_CONFIG.consolidation,
-          ...(config?.maintenance?.consolidation ?? {}),
+          ...(maintenanceConfig?.consolidation ?? {}),
         },
         reflection: {
           ...DEFAULT_MAINTENANCE_CONFIG.reflection,
-          ...(config?.maintenance?.reflection ?? {}),
+          ...(maintenanceConfig?.reflection ?? {}),
         },
         decay: {
           ...DEFAULT_MAINTENANCE_CONFIG.decay,
-          ...(config?.maintenance?.decay ?? {}),
+          ...(maintenanceConfig?.decay ?? {}),
         },
       },
     };
@@ -1755,7 +1760,7 @@ export class Store {
   private selectMaintenanceRecords(input: MaintenanceInput = {}, limit?: number): MaintenancePlanningRecord[] {
     const scope = input.scope ?? { all: true };
     const sql = [
-      `SELECT id, type, title, content, project, scope, topic_key, normalized_hash,
+      `SELECT id, type, title, content, project, scope, topic_key, normalized_hash, sync_id,
               duplicate_count, created_at, updated_at, tool_name
        FROM observations
        WHERE deleted_at IS NULL`,
@@ -1803,44 +1808,62 @@ export class Store {
   private upsertMaintenanceReflection(
     runId: number,
     reflection: MaintenanceRunPreview['reflections'][number],
-  ): number {
-    const existing = this.db.prepare(
-      'SELECT id FROM observations WHERE topic_key = ? AND deleted_at IS NULL LIMIT 1'
-    ).get(reflection.topic_key) as { id: number } | undefined;
+  ): { observationId: number; topicKey: string } {
+    const existingByHash = this.db.prepare(
+      `SELECT mr.reflection_observation_id AS id, o.topic_key
+       FROM maintenance_reflections AS mr
+       JOIN observations AS o ON o.id = mr.reflection_observation_id
+       WHERE mr.source_set_hash = ? AND o.deleted_at IS NULL
+       LIMIT 1`
+    ).get(reflection.source_set_hash) as
+      | { id: number; topic_key: string | null }
+      | undefined;
+    if (existingByHash) {
+      return { observationId: existingByHash.id, topicKey: existingByHash.topic_key ?? reflection.topic_key };
+    }
+
     const sourceProject = this.db.prepare(
       'SELECT project, session_id FROM observations WHERE id = ? LIMIT 1'
     ).get(reflection.sources[0]?.id ?? 0) as { project: string | null; session_id: string } | undefined;
-    const sessionId = sourceProject?.session_id ?? 'maintenance-reflection';
     const project = sourceProject?.project ?? 'unknown';
+    const existingByScope = this.db.prepare(
+      `SELECT id, topic_key FROM observations
+       WHERE project = ? AND tool_name = 'maintenance-reflection' AND deleted_at IS NULL
+         AND (topic_key = ? OR topic_key LIKE ?)
+       ORDER BY id
+       LIMIT 1`
+    ).get(project, reflection.topic_key, `${reflection.topic_key}/%`) as { id: number; topic_key: string } | undefined;
+    const sessionId = sourceProject?.session_id ?? 'maintenance-reflection';
     const normalizedHash = computeHash(reflection.content);
 
     this.ensureSession(sessionId, project);
 
-    if (existing) {
+    if (existingByScope) {
       this.db.prepare(
         `UPDATE observations
          SET title = ?, content = ?, type = 'learning', tool_name = 'maintenance-reflection',
              project = ?, scope = 'project', normalized_hash = ?,
              revision_count = revision_count + 1, updated_at = datetime('now')
          WHERE id = ?`
-      ).run(reflection.title, reflection.content, project, normalizedHash, existing.id);
-      this.recordMutation('update', 'observation', existing.id, null, project);
+      ).run(reflection.title, reflection.content, project, normalizedHash, existingByScope.id);
+      this.recordMutation('update', 'observation', existingByScope.id, null, project);
 
-      const observation = this.getObservation(existing.id);
+      const observation = this.getObservation(existingByScope.id);
       if (observation) {
         this.refreshGraphFacts(observation);
         this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
       }
 
-      return existing.id;
+      return { observationId: existingByScope.id, topicKey: existingByScope.topic_key };
     }
 
+    const topicKey = this.resolveMaintenanceReflectionTopicKey(reflection.topic_key, project);
     const syncId = randomUUID();
     const result = this.db.prepare(
       `INSERT INTO observations (
          session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id
        ) VALUES (?, 'learning', ?, ?, 'maintenance-reflection', ?, 'project', ?, ?, ?)`
-    ).run(sessionId, reflection.title, reflection.content, project, reflection.topic_key, normalizedHash, syncId);
+    ).run(sessionId, reflection.title, reflection.content, project, topicKey, normalizedHash, syncId);
     const observationId = Number(result.lastInsertRowid);
     this.recordMutation('create', 'observation', observationId, syncId, project);
 
@@ -1850,7 +1873,28 @@ export class Store {
       this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
     }
 
-    return observationId;
+    return { observationId, topicKey };
+  }
+
+  private resolveMaintenanceReflectionTopicKey(baseTopicKey: string, project: string): string {
+    const existing = this.db.prepare(
+      'SELECT tool_name FROM observations WHERE project = ? AND topic_key = ? AND deleted_at IS NULL LIMIT 1'
+    ).get(project, baseTopicKey) as { tool_name: string | null } | undefined;
+    if (!existing || existing.tool_name === 'maintenance-reflection') {
+      return baseTopicKey;
+    }
+
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = `${baseTopicKey}/${suffix}`;
+      const collision = this.db.prepare(
+        'SELECT 1 FROM observations WHERE project = ? AND topic_key = ? AND deleted_at IS NULL LIMIT 1'
+      ).get(project, candidate);
+      if (!collision) {
+        return candidate;
+      }
+    }
+
+    throw new Error(`Unable to allocate maintenance reflection topic key for ${baseTopicKey}`);
   }
 
   private applyMaintenancePlan(plan: MaintenancePlan): MaintenanceRunResult {
@@ -1918,7 +1962,7 @@ export class Store {
       }
 
       const appliedReflections = plan.reflections.map((reflection) => {
-        const observationId = this.upsertMaintenanceReflection(runId, reflection);
+        const upserted = this.upsertMaintenanceReflection(runId, reflection);
         this.db.prepare(
           `INSERT INTO maintenance_reflections (
              run_id, reflection_observation_id, source_set_hash, reason_class, metadata_json
@@ -1930,10 +1974,10 @@ export class Store {
              metadata_json = excluded.metadata_json`
         ).run(
           runId,
-          observationId,
+          upserted.observationId,
           reflection.source_set_hash,
           reflection.reason_class,
-          JSON.stringify({ topic_key: reflection.topic_key, title: reflection.title })
+          JSON.stringify({ topic_key: upserted.topicKey, title: reflection.title })
         );
         const reflectionRow = this.db.prepare(
           'SELECT id FROM maintenance_reflections WHERE source_set_hash = ?'
@@ -1947,8 +1991,10 @@ export class Store {
           insertSource.run(reflectionRow.id, source.kind, source.id);
         }
 
-        return { ...reflection, planned_observation_id: observationId };
+        return { ...reflection, topic_key: upserted.topicKey, planned_observation_id: upserted.observationId };
       });
+
+      this.clearStaleMaintenanceDecay(plan, runId);
 
       for (const decay of plan.decays) {
         this.db.prepare(
@@ -1996,6 +2042,28 @@ export class Store {
     });
 
     return this.applyMaintenancePlan(plan);
+  }
+
+  private clearStaleMaintenanceDecay(plan: MaintenancePlan, runId: number): void {
+    const currentObservationIds = new Set(
+      plan.decays
+        .filter((decay) => decay.source.kind === 'observation')
+        .map((decay) => decay.source.id)
+    );
+    const staleIds = plan.evaluated_observation_ids.filter((id) => !currentObservationIds.has(id));
+
+    if (staleIds.length === 0) {
+      return;
+    }
+
+    for (const chunk of chunkIds(staleIds)) {
+      this.db.prepare(
+        `DELETE FROM maintenance_decay
+         WHERE source_kind = 'observation'
+           AND run_id != ?
+           AND source_id IN (${placeholders(chunk.length)})`
+      ).run(runId, ...chunk);
+    }
   }
 
   runAutomaticMaintenance(input: MaintenanceInput = {}): MaintenanceRunPreview | MaintenanceRunResult {
@@ -2172,6 +2240,79 @@ export class Store {
           ? [[entry.observationId, entry.decay]]
           : []
       ))),
+    };
+  }
+
+  private observationMatchesRetrievalFilters(
+    observation: Observation,
+    filters: RetrievalCandidateFilters,
+  ): boolean {
+    if (filters.project && observation.project !== filters.project) {
+      return false;
+    }
+    if (filters.session_id && observation.session_id !== filters.session_id) {
+      return false;
+    }
+    if (filters.scope && observation.scope !== filters.scope) {
+      return false;
+    }
+    if (filters.topic_key && observation.topic_key !== filters.topic_key) {
+      return false;
+    }
+    if (filters.type && observation.type !== filters.type) {
+      return false;
+    }
+    if (filters.time_from && observation.created_at < filters.time_from) {
+      return false;
+    }
+    if (filters.time_to && observation.created_at > filters.time_to) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private filterMaintenanceRankingMetadata(
+    metadata: MaintenanceRankingMetadata | undefined,
+    filters: RetrievalCandidateFilters,
+  ): MaintenanceRankingMetadata | undefined {
+    if (!metadata || metadata.consolidations.size === 0) {
+      return metadata;
+    }
+
+    const canonicalIds = Array.from(new Set(
+      [...metadata.consolidations.values()].map((consolidation) => consolidation.canonicalId)
+    ));
+    const canonicalRows = canonicalIds.length > 0
+      ? this.db.prepare(
+          `SELECT * FROM observations
+           WHERE deleted_at IS NULL
+             AND id IN (${canonicalIds.map(() => '?').join(',')})`
+        ).all(...canonicalIds) as ObservationRow[]
+      : [];
+    const canonicalById = new Map(canonicalRows.map((row) => [row.id, row]));
+    const allowedClusterKeys = new Set<string>();
+
+    for (const consolidation of metadata.consolidations.values()) {
+      if (allowedClusterKeys.has(consolidation.clusterKey)) {
+        continue;
+      }
+
+      const canonical = canonicalById.get(consolidation.canonicalId);
+      if (canonical && this.observationMatchesRetrievalFilters(canonical, filters)) {
+        allowedClusterKeys.add(consolidation.clusterKey);
+      }
+    }
+
+    const consolidations = new Map(
+      [...metadata.consolidations.entries()].filter(([, consolidation]) => (
+        allowedClusterKeys.has(consolidation.clusterKey)
+      ))
+    );
+
+    return {
+      ...metadata,
+      consolidations,
     };
   }
 
@@ -2530,7 +2671,10 @@ export class Store {
     });
     const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...lexicalCandidates];
     const coreCandidateIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
-    const coreMaintenance = this.getMaintenanceRankingMetadata(coreCandidateIds);
+    const coreMaintenance = this.filterMaintenanceRankingMetadata(
+      this.getMaintenanceRankingMetadata(coreCandidateIds),
+      filters,
+    );
     const observationIds = Array.from(new Set([
       ...coreCandidateIds,
       ...[...(coreMaintenance?.consolidations.values() ?? [])].map((entry) => entry.canonicalId),
@@ -2573,7 +2717,10 @@ export class Store {
           const allCandidateIds = Array.from(new Set(
             [...coreCandidates, ...multiHopCandidates].map((candidate) => candidate.observationId)
           ));
-          const multiHopMaintenance = this.getMaintenanceRankingMetadata(allCandidateIds);
+          const multiHopMaintenance = this.filterMaintenanceRankingMetadata(
+            this.getMaintenanceRankingMetadata(allCandidateIds),
+            filters,
+          );
           const newIds = Array.from(new Set(
             [
               ...allCandidateIds,
