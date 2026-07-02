@@ -2,11 +2,19 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
+import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   ContextInput,
+  CommunityPreviewResult,
+  CommunityRebuildResult,
+  CommunityRetrievalResult,
+  CommunityState,
+  CommunityStateResult,
+  CommunitySummarySnapshot,
   DeleteProjectResult,
+  DropCommunitySummariesInput,
+  DropCommunitySummariesResult,
   ExportData,
   ImportResult,
   MaintenanceInput,
@@ -21,13 +29,17 @@ import type {
   ObservationVersion,
   PruneSupersededTriplesInput,
   PruneSupersededTriplesResult,
+  PreviewCommunitySummariesInput,
   RebuildObservationFactsInput,
+  RebuildCommunitySummariesInput,
   RebuildObservationFactsResult,
   SaveOperationTraceInput,
   SaveObservationInput,
   SaveResult,
   SearchInput,
   SearchResult,
+  CommunityRetrievalInput,
+  CommunityStateInput,
   Session,
   SyncChunkV2,
   SyncChunkRecord,
@@ -100,6 +112,20 @@ type OperationTraceRow = Omit<OperationTrace, 'request_truncated' | 'response_tr
 };
 
 type SearchRow = ObservationRow & { rank: number };
+type CommunitySummarySnapshotRow = {
+  community_id: string;
+  level: number;
+  summary_text: string;
+  entity_count: number;
+  triple_count: number;
+  source_observation_count: number;
+  top_entities_json: string;
+  top_relations_json: string;
+  source_observation_ids_json: string;
+  confidence: number;
+  degraded: number;
+  degraded_reasons_json: string;
+};
 type SemanticLaneName = 'chunk' | 'sentence';
 type RetrievalCandidateFilters = {
   project?: string;
@@ -169,6 +195,49 @@ type VizEdgeRow = {
   content: string;
   relation: string;
   object: string;
+};
+
+type CommunityGraphTriple = {
+  id: number;
+  subject_entity_id: number;
+  subject_key: string;
+  subject_name: string;
+  relation: string;
+  object_entity_id: number;
+  object_key: string;
+  object_name: string;
+  source_observation_id: number | null;
+  source_title: string | null;
+  confidence: number;
+  triple_hash: string;
+  superseded: number;
+  updated_at: string;
+};
+
+type CommunityBuildPlan = {
+  project: string;
+  graphSignature: string;
+  snapshots: CommunitySummarySnapshot[];
+  memberRows: Array<{
+    community_id: string;
+    entity_id: number;
+    role: 'member' | 'top_entity';
+    entity_rank: number;
+    evidence_count: number;
+  }>;
+  evidenceRows: Array<{
+    community_id: string;
+    triple_id: number;
+    source_observation_id: number | null;
+    relation: string;
+    superseded: number;
+    evidence_rank: number;
+    evidence_text: string;
+  }>;
+  entitiesScanned: number;
+  triplesScanned: number;
+  sourceObservationsScanned: number;
+  degradedReasons: string[];
 };
 
 export interface SemanticIndexProgress {
@@ -262,6 +331,7 @@ const DEFAULT_CONFIG: ThothConfig = {
     minContentChars: 12_000,
   },
   knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
+  communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
   maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
 };
 
@@ -557,6 +627,18 @@ export class Store {
       knowledgeGraph: {
         ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
         ...(config?.knowledgeGraph ?? {}),
+      },
+      communitySummaries: {
+        ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+        ...(config?.communitySummaries ?? {}),
+        readPath: {
+          ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.readPath,
+          ...(config?.communitySummaries?.readPath ?? {}),
+        },
+        enrichment: {
+          ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment,
+          ...(config?.communitySummaries?.enrichment ?? {}),
+        },
       },
       maintenance: {
         ...DEFAULT_MAINTENANCE_CONFIG,
@@ -1757,6 +1839,770 @@ export class Store {
     };
   }
 
+  private parseJsonArray<T>(value: string | null | undefined): T[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private communityConfigHash(): string {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    return computeHash(JSON.stringify({
+      algorithm: community.algorithm,
+      summaryMaxChars: community.summaryMaxChars,
+      maxCommunitiesPerProject: community.maxCommunitiesPerProject,
+      maxEvidencePerCommunity: community.maxEvidencePerCommunity,
+      sourceObservationLimit: community.sourceObservationLimit,
+      rebuildMaxTriples: community.rebuildMaxTriples,
+      enrichment: {
+        enabled: community.enrichment.enabled,
+        timeoutMs: community.enrichment.timeoutMs,
+        maxCostUsd: community.enrichment.maxCostUsd,
+        maxChars: community.enrichment.maxChars,
+      },
+    }));
+  }
+
+  private selectCommunityGraph(project: string): CommunityGraphTriple[] {
+    return this.db.prepare(
+      `SELECT
+         t.id,
+         t.subject_entity_id,
+         se.entity_key AS subject_key,
+         se.canonical_name AS subject_name,
+         t.relation,
+         t.object_entity_id,
+         oe.entity_key AS object_key,
+         oe.canonical_name AS object_name,
+         t.source_id AS source_observation_id,
+         o.title AS source_title,
+         t.confidence,
+         t.triple_hash,
+         CASE WHEN t.superseded_by_triple_id IS NOT NULL OR t.superseded_at IS NOT NULL THEN 1 ELSE 0 END AS superseded,
+         t.updated_at
+       FROM kg_triples t
+       JOIN kg_entities se ON se.id = t.subject_entity_id
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       LEFT JOIN observations o ON o.id = t.source_id AND o.deleted_at IS NULL
+       WHERE t.project = ?
+         AND (t.source_type != 'observation' OR o.id IS NOT NULL)
+       ORDER BY se.entity_key, t.relation, oe.entity_key, t.triple_hash, t.id`
+    ).all(project) as CommunityGraphTriple[];
+  }
+
+  private computeCommunityGraphSignature(project: string, triples?: CommunityGraphTriple[]): string {
+    const rows = triples ?? this.selectCommunityGraph(project);
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    return computeHash(JSON.stringify({
+      project,
+      config_hash: this.communityConfigHash(),
+      algorithm: community.algorithm,
+      triples: rows.map((row) => [
+        row.id,
+        row.triple_hash,
+        row.subject_entity_id,
+        row.relation,
+        row.object_entity_id,
+        row.source_observation_id,
+        row.superseded,
+        row.updated_at,
+      ]),
+    }));
+  }
+
+  private buildCommunityPlan(project: string): CommunityBuildPlan {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    const triples = this.selectCommunityGraph(project);
+    const graphSignature = this.computeCommunityGraphSignature(project, triples);
+    const degradedReasons: string[] = [];
+
+    if (community.algorithm !== 'connected_components') {
+      degradedReasons.push(`algorithm_fallback:${community.algorithm}`);
+    }
+    if (community.enrichment.enabled) {
+      degradedReasons.push('enrichment_unavailable');
+    }
+
+    if (triples.length > community.rebuildMaxTriples) {
+      throw new Error(`Community rebuild for ${project} exceeds rebuildMaxTriples (${triples.length} > ${community.rebuildMaxTriples})`);
+    }
+
+    const entityById = new Map<number, { id: number; key: string; name: string }>();
+    const adjacency = new Map<number, Set<number>>();
+    for (const triple of triples) {
+      entityById.set(triple.subject_entity_id, {
+        id: triple.subject_entity_id,
+        key: triple.subject_key,
+        name: triple.subject_name,
+      });
+      entityById.set(triple.object_entity_id, {
+        id: triple.object_entity_id,
+        key: triple.object_key,
+        name: triple.object_name,
+      });
+      if (!adjacency.has(triple.subject_entity_id)) adjacency.set(triple.subject_entity_id, new Set());
+      if (!adjacency.has(triple.object_entity_id)) adjacency.set(triple.object_entity_id, new Set());
+      adjacency.get(triple.subject_entity_id)!.add(triple.object_entity_id);
+      adjacency.get(triple.object_entity_id)!.add(triple.subject_entity_id);
+    }
+
+    const entitySortKey = (id: number): string => {
+      const entity = entityById.get(id);
+      return `${entity?.name ?? ''}\u0000${entity?.key ?? ''}\u0000${id}`;
+    };
+    const unvisited = new Set(Array.from(entityById.keys()));
+    const components: number[][] = [];
+
+    while (unvisited.size > 0) {
+      const start = Array.from(unvisited).sort((a, b) => entitySortKey(a).localeCompare(entitySortKey(b)))[0]!;
+      const stack = [start];
+      const component: number[] = [];
+      unvisited.delete(start);
+
+      while (stack.length > 0) {
+        const id = stack.pop()!;
+        component.push(id);
+        const neighbors = Array.from(adjacency.get(id) ?? [])
+          .filter((neighbor) => unvisited.has(neighbor))
+          .sort((a, b) => entitySortKey(b).localeCompare(entitySortKey(a)));
+        for (const neighbor of neighbors) {
+          unvisited.delete(neighbor);
+          stack.push(neighbor);
+        }
+      }
+
+      components.push(component.sort((a, b) => entitySortKey(a).localeCompare(entitySortKey(b))));
+    }
+
+    components.sort((a, b) => entitySortKey(a[0] ?? 0).localeCompare(entitySortKey(b[0] ?? 0)));
+
+    if (components.length === 0) {
+      degradedReasons.push('empty_kg');
+    }
+    if (components.length > community.maxCommunitiesPerProject) {
+      degradedReasons.push('community_limit_truncated');
+    }
+
+    const limitedComponents = components.slice(0, community.maxCommunitiesPerProject);
+    const snapshots: CommunitySummarySnapshot[] = [];
+    const memberRows: CommunityBuildPlan['memberRows'] = [];
+    const evidenceRows: CommunityBuildPlan['evidenceRows'] = [];
+    const sourceObservationIds = new Set(
+      triples
+        .map((triple) => triple.source_observation_id)
+        .filter((id): id is number => id !== null)
+    );
+
+    for (const component of limitedComponents) {
+      const componentSet = new Set(component);
+      const componentTriples = triples
+        .filter((triple) => componentSet.has(triple.subject_entity_id) && componentSet.has(triple.object_entity_id))
+        .sort((a, b) => (
+          a.superseded - b.superseded
+          || b.confidence - a.confidence
+          || a.relation.localeCompare(b.relation)
+          || a.id - b.id
+        ));
+      const evidence = componentTriples.slice(0, community.maxEvidencePerCommunity);
+      const relationNames = Array.from(new Set(componentTriples.map((triple) => triple.relation))).sort();
+      const evidenceCountByEntity = new Map<number, number>();
+      for (const triple of componentTriples) {
+        evidenceCountByEntity.set(triple.subject_entity_id, (evidenceCountByEntity.get(triple.subject_entity_id) ?? 0) + 1);
+        evidenceCountByEntity.set(triple.object_entity_id, (evidenceCountByEntity.get(triple.object_entity_id) ?? 0) + 1);
+      }
+      const rankedEntities = component
+        .map((id) => ({ ...entityById.get(id)!, evidenceCount: evidenceCountByEntity.get(id) ?? 0 }))
+        .sort((a, b) => b.evidenceCount - a.evidenceCount || a.name.localeCompare(b.name) || a.id - b.id);
+      const topEntities = rankedEntities.slice(0, 8).map((entity) => entity.name);
+      const componentSourceIds = Array.from(new Set(
+        componentTriples
+          .map((triple) => triple.source_observation_id)
+          .filter((id): id is number => id !== null)
+      )).sort((a, b) => a - b);
+      const boundedSourceIds = componentSourceIds.slice(0, community.sourceObservationLimit);
+      const communityKey = [
+        project,
+        'connected_components_v1',
+        ...component.map((id) => entityById.get(id)?.key ?? String(id)),
+        ...componentTriples.map((triple) => triple.triple_hash),
+      ].join('|');
+      const communityId = `c_${computeHash(communityKey).slice(0, 16)}`;
+      const evidenceText = evidence.map((triple) => {
+        const historical = triple.superseded ? ' (historical)' : '';
+        return `${triple.subject_name} ${triple.relation} ${triple.object_name}${historical}`;
+      });
+      let summaryText = [
+        `Community ${communityId} connects ${topEntities.join(', ') || 'no entities'}.`,
+        relationNames.length > 0 ? `Relations: ${relationNames.slice(0, 8).join(', ')}.` : '',
+        evidenceText.length > 0 ? `Evidence: ${evidenceText.join('; ')}.` : '',
+      ].filter(Boolean).join(' ');
+      const snapshotReasons: string[] = [...degradedReasons];
+      if (componentTriples.length > evidence.length) {
+        snapshotReasons.push('evidence_limit_truncated');
+      }
+      if (componentSourceIds.length > boundedSourceIds.length) {
+        snapshotReasons.push('source_observation_limit_truncated');
+      }
+      if (summaryText.length > community.summaryMaxChars) {
+        summaryText = trimToBudget(summaryText, community.summaryMaxChars);
+        snapshotReasons.push('summary_truncated');
+      }
+      const confidence = componentTriples.length === 0
+        ? 0
+        : componentTriples.reduce((total, triple) => total + triple.confidence, 0) / componentTriples.length;
+
+      snapshots.push({
+        community_id: communityId,
+        level: 0,
+        summary_text: summaryText,
+        entity_count: component.length,
+        triple_count: componentTriples.length,
+        source_observation_count: componentSourceIds.length,
+        top_entities: topEntities,
+        top_relations: relationNames.slice(0, 8),
+        source_observation_ids: boundedSourceIds,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        degraded: snapshotReasons.length > 0,
+        degraded_reasons: snapshotReasons,
+      });
+
+      rankedEntities.forEach((entity, index) => {
+        memberRows.push({
+          community_id: communityId,
+          entity_id: entity.id,
+          role: index < topEntities.length ? 'top_entity' : 'member',
+          entity_rank: index + 1,
+          evidence_count: entity.evidenceCount,
+        });
+      });
+      evidence.forEach((triple, index) => {
+        evidenceRows.push({
+          community_id: communityId,
+          triple_id: triple.id,
+          source_observation_id: triple.source_observation_id,
+          relation: triple.relation,
+          superseded: triple.superseded,
+          evidence_rank: index + 1,
+          evidence_text: `${triple.subject_name} ${triple.relation} ${triple.object_name}`,
+        });
+      });
+    }
+
+    return {
+      project,
+      graphSignature,
+      snapshots,
+      memberRows,
+      evidenceRows,
+      entitiesScanned: entityById.size,
+      triplesScanned: triples.length,
+      sourceObservationsScanned: sourceObservationIds.size,
+      degradedReasons: Array.from(new Set(degradedReasons)),
+    };
+  }
+
+  private latestCommunityRun(project: string): {
+    id: number;
+    status: 'running' | 'committed' | 'failed';
+    freshness: CommunityState;
+    graph_signature: string | null;
+    communities_count: number;
+    entities_count: number;
+    triples_count: number;
+    source_observations_count: number;
+    degraded: number;
+    degraded_reasons_json: string;
+    error: string | null;
+    updated_at: string;
+  } | null {
+    return this.db.prepare(
+      `SELECT id, status, freshness, graph_signature, communities_count, entities_count,
+              triples_count, source_observations_count, degraded, degraded_reasons_json, error, updated_at
+       FROM kg_community_runs
+       WHERE project = ?
+       ORDER BY id DESC
+       LIMIT 1`
+    ).get(project) as {
+      id: number;
+      status: 'running' | 'committed' | 'failed';
+      freshness: CommunityState;
+      graph_signature: string | null;
+      communities_count: number;
+      entities_count: number;
+      triples_count: number;
+      source_observations_count: number;
+      degraded: number;
+      degraded_reasons_json: string;
+      error: string | null;
+      updated_at: string;
+    } | undefined ?? null;
+  }
+
+  private latestCommittedCommunityRun(project: string): { id: number; graph_signature: string | null } | null {
+    return this.db.prepare(
+      `SELECT id, graph_signature
+       FROM kg_community_runs
+       WHERE project = ? AND status = 'committed'
+       ORDER BY id DESC
+       LIMIT 1`
+    ).get(project) as { id: number; graph_signature: string | null } | undefined ?? null;
+  }
+
+  markCommunitySummariesStale(project: string | null | undefined, reason: string): void {
+    if (!project || this.config.communitySummaries.enabled === false) {
+      return;
+    }
+
+    const rows = this.db.prepare(
+      `SELECT id, degraded_reasons_json
+       FROM kg_community_runs
+       WHERE project = ? AND status = 'committed' AND freshness IN ('fresh','empty','degraded')`
+    ).all(project) as Array<{ id: number; degraded_reasons_json: string }>;
+
+    for (const row of rows) {
+      const reasons = Array.from(new Set([...this.parseJsonArray<string>(row.degraded_reasons_json), reason]));
+      this.db.prepare(
+        `UPDATE kg_community_runs
+         SET freshness = 'stale', degraded = 1, degraded_reasons_json = ?, updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(JSON.stringify(reasons), row.id);
+    }
+
+    if (rows.length > 0) {
+      this.db.prepare(
+        `UPDATE kg_communities
+         SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+         WHERE project = ? AND run_id IN (${rows.map(() => '?').join(',')})`
+      ).run(project, ...rows.map((row) => row.id));
+    }
+  }
+
+  private markAllCommunitySummariesStale(reason: string): void {
+    const projects = this.db.prepare(
+      "SELECT DISTINCT project FROM kg_community_runs WHERE project IS NOT NULL AND status = 'committed'"
+    ).all() as Array<{ project: string }>;
+    for (const row of projects) {
+      this.markCommunitySummariesStale(row.project, reason);
+    }
+  }
+
+  getCommunitySummaryState(input: CommunityStateInput): CommunityStateResult {
+    const project = input.project;
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project,
+        state: 'disabled',
+        run_id: null,
+        latest_committed_run_id: null,
+        graph_signature: null,
+        current_graph_signature: null,
+        communities_count: 0,
+        entities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+        degraded: true,
+        degraded_reasons: ['disabled'],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    const latest = this.latestCommunityRun(project);
+    const committed = this.latestCommittedCommunityRun(project);
+    const currentGraphSignature = this.computeCommunityGraphSignature(project);
+    if (!latest) {
+      return {
+        project,
+        state: 'missing',
+        run_id: null,
+        latest_committed_run_id: null,
+        graph_signature: null,
+        current_graph_signature: currentGraphSignature,
+        communities_count: 0,
+        entities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+        degraded: false,
+        degraded_reasons: [],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    let state: CommunityState = latest.freshness;
+    let degradedReasons = this.parseJsonArray<string>(latest.degraded_reasons_json);
+    if (latest.status === 'running') {
+      state = 'rebuilding';
+    } else if (latest.status === 'failed') {
+      state = 'failed';
+    } else if (latest.graph_signature !== currentGraphSignature && latest.freshness !== 'stale') {
+      this.markCommunitySummariesStale(project, 'graph_signature_changed');
+      state = 'stale';
+      degradedReasons = Array.from(new Set([...degradedReasons, 'graph_signature_changed']));
+    }
+
+    return {
+      project,
+      state,
+      run_id: latest.id,
+      latest_committed_run_id: committed?.id ?? null,
+      graph_signature: latest.graph_signature,
+      current_graph_signature: currentGraphSignature,
+      communities_count: latest.communities_count,
+      entities_count: latest.entities_count,
+      triples_count: latest.triples_count,
+      source_observations_count: latest.source_observations_count,
+      degraded: latest.degraded === 1 || state === 'failed' || state === 'stale',
+      degraded_reasons: degradedReasons,
+      error: latest.error,
+      updated_at: latest.updated_at,
+    };
+  }
+
+  rebuildCommunitySummaries(input: RebuildCommunitySummariesInput): CommunityRebuildResult {
+    const project = input.project;
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project,
+        run_id: 0,
+        status: 'failed',
+        freshness: 'disabled',
+        algorithm: 'connected_components',
+        graph_signature: null,
+        communities_created: 0,
+        entities_scanned: 0,
+        triples_scanned: 0,
+        source_observations_scanned: 0,
+        degraded_reasons: ['disabled'],
+        error: 'Community summaries are disabled',
+      };
+    }
+
+    let plan: CommunityBuildPlan | null = null;
+    try {
+      plan = this.buildCommunityPlan(project);
+      const previous = this.latestCommittedCommunityRun(project);
+      const commit = this.db.transaction((): CommunityRebuildResult => {
+        const run = this.db.prepare(
+          `INSERT INTO kg_community_runs (
+             run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+             status, freshness, degraded, degraded_reasons_json, coverage_json, communities_count,
+             entities_count, triples_count, source_observations_count, replaced_run_id
+           ) VALUES (?, ?, 'connected_components_v1', '1', 'extractive_v1', ?, ?, 'running', 'rebuilding', ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          `community-${project}-${Date.now()}-${randomUUID()}`,
+          project,
+          this.communityConfigHash(),
+          plan!.graphSignature,
+          plan!.degradedReasons.length > 0 ? 1 : 0,
+          JSON.stringify(plan!.degradedReasons),
+          JSON.stringify({ graph_signature: plan!.graphSignature }),
+          plan!.snapshots.length,
+          plan!.entitiesScanned,
+          plan!.triplesScanned,
+          plan!.sourceObservationsScanned,
+          previous?.id ?? null,
+        );
+        const runId = Number(run.lastInsertRowid);
+
+        this.db.prepare(
+          `UPDATE kg_community_runs
+           SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+           WHERE project = ? AND status = 'committed' AND id != ?`
+        ).run(project, runId);
+        this.db.prepare(
+          `UPDATE kg_communities
+           SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+           WHERE project = ? AND run_id != ?`
+        ).run(project, runId);
+
+        const communityRowIds = new Map<string, number>();
+        for (const snapshot of plan!.snapshots) {
+          const communityRow = this.db.prepare(
+            `INSERT INTO kg_communities (
+               run_id, project, community_id, level, community_key, summary_generator, summary_text,
+               summary_max_chars, freshness, entity_count, triple_count, source_observation_count,
+               top_entities_json, top_relations_json, source_observation_ids_json, coverage_json,
+               provenance_json, confidence, degraded, degraded_reasons_json
+             ) VALUES (?, ?, ?, ?, ?, 'extractive_v1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            runId,
+            project,
+            snapshot.community_id,
+            snapshot.level,
+            `${project}|${snapshot.community_id}`,
+            snapshot.summary_text,
+            this.config.communitySummaries.summaryMaxChars,
+            snapshot.degraded ? 'degraded' : 'fresh',
+            snapshot.entity_count,
+            snapshot.triple_count,
+            snapshot.source_observation_count,
+            JSON.stringify(snapshot.top_entities),
+            JSON.stringify(snapshot.top_relations),
+            JSON.stringify(snapshot.source_observation_ids),
+            JSON.stringify({ entity_count: snapshot.entity_count, triple_count: snapshot.triple_count }),
+            JSON.stringify({ algorithm: 'connected_components_v1', generator: 'extractive_v1' }),
+            snapshot.confidence,
+            snapshot.degraded ? 1 : 0,
+            JSON.stringify(snapshot.degraded_reasons),
+          );
+          communityRowIds.set(snapshot.community_id, Number(communityRow.lastInsertRowid));
+        }
+
+        for (const member of plan!.memberRows) {
+          this.db.prepare(
+            `INSERT INTO kg_community_members (
+               community_row_id, entity_id, project, run_id, community_id, role, entity_rank, evidence_count, provenance_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`
+          ).run(
+            communityRowIds.get(member.community_id),
+            member.entity_id,
+            project,
+            runId,
+            member.community_id,
+            member.role,
+            member.entity_rank,
+            member.evidence_count,
+          );
+        }
+
+        for (const evidence of plan!.evidenceRows) {
+          this.db.prepare(
+            `INSERT INTO kg_community_evidence (
+               community_row_id, triple_id, project, run_id, community_id, source_observation_id,
+               relation, superseded, evidence_rank, evidence_text, provenance_json, coverage_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}')`
+          ).run(
+            communityRowIds.get(evidence.community_id),
+            evidence.triple_id,
+            project,
+            runId,
+            evidence.community_id,
+            evidence.source_observation_id,
+            evidence.relation,
+            evidence.superseded,
+            evidence.evidence_rank,
+            evidence.evidence_text,
+          );
+        }
+
+        const freshness: CommunityState = plan!.snapshots.length === 0
+          ? 'empty'
+          : plan!.snapshots.some((snapshot) => snapshot.degraded) || plan!.degradedReasons.length > 0
+            ? 'degraded'
+            : 'fresh';
+        this.db.prepare(
+          `UPDATE kg_community_runs
+           SET status = 'committed', freshness = ?, degraded = ?, committed_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`
+        ).run(freshness, freshness === 'fresh' ? 0 : 1, runId);
+
+        return {
+          project,
+          run_id: runId,
+          status: 'committed',
+          freshness,
+          algorithm: 'connected_components',
+          graph_signature: plan!.graphSignature,
+          communities_created: plan!.snapshots.length,
+          entities_scanned: plan!.entitiesScanned,
+          triples_scanned: plan!.triplesScanned,
+          source_observations_scanned: plan!.sourceObservationsScanned,
+          degraded_reasons: plan!.degradedReasons,
+        };
+      });
+
+      return commit();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedRun = this.db.prepare(
+        `INSERT INTO kg_community_runs (
+           run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+           status, freshness, degraded, degraded_reasons_json, coverage_json, communities_count,
+           entities_count, triples_count, source_observations_count, error, failed_at
+         ) VALUES (?, ?, 'connected_components_v1', '1', 'extractive_v1', ?, ?, 'failed', 'failed', 1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).run(
+        `community-failed-${project}-${Date.now()}-${randomUUID()}`,
+        project,
+        this.communityConfigHash(),
+        plan?.graphSignature ?? null,
+        JSON.stringify(['rebuild_failed']),
+        JSON.stringify({ error: message }),
+        plan?.snapshots.length ?? 0,
+        plan?.entitiesScanned ?? 0,
+        plan?.triplesScanned ?? 0,
+        plan?.sourceObservationsScanned ?? 0,
+        message,
+      );
+      return {
+        project,
+        run_id: Number(failedRun.lastInsertRowid),
+        status: 'failed',
+        freshness: 'failed',
+        algorithm: 'connected_components',
+        graph_signature: plan?.graphSignature ?? null,
+        communities_created: 0,
+        entities_scanned: plan?.entitiesScanned ?? 0,
+        triples_scanned: plan?.triplesScanned ?? 0,
+        source_observations_scanned: plan?.sourceObservationsScanned ?? 0,
+        degraded_reasons: ['rebuild_failed'],
+        error: message,
+      };
+    }
+  }
+
+  private mapCommunitySnapshotRow(row: CommunitySummarySnapshotRow, maxChars: number): CommunitySummarySnapshot {
+    return {
+      community_id: row.community_id,
+      level: row.level,
+      summary_text: trimToBudget(row.summary_text, maxChars),
+      entity_count: row.entity_count,
+      triple_count: row.triple_count,
+      source_observation_count: row.source_observation_count,
+      top_entities: this.parseJsonArray<string>(row.top_entities_json),
+      top_relations: this.parseJsonArray<string>(row.top_relations_json),
+      source_observation_ids: this.parseJsonArray<number>(row.source_observation_ids_json),
+      confidence: row.confidence,
+      degraded: row.degraded === 1,
+      degraded_reasons: this.parseJsonArray<string>(row.degraded_reasons_json),
+    };
+  }
+
+  private readCommunitySnapshots(runId: number, limit: number, maxChars: number): CommunitySummarySnapshot[] {
+    const rows = this.db.prepare(
+      `SELECT community_id, level, summary_text, entity_count, triple_count, source_observation_count,
+              top_entities_json, top_relations_json, source_observation_ids_json, confidence,
+              degraded, degraded_reasons_json
+       FROM kg_communities
+       WHERE run_id = ?
+       ORDER BY community_id
+       LIMIT ?`
+    ).all(runId, limit) as CommunitySummarySnapshotRow[];
+
+    return rows.map((row) => this.mapCommunitySnapshotRow(row, maxChars));
+  }
+
+  private readMatchingCommunitySnapshots(
+    runId: number,
+    terms: string[],
+    limit: number,
+    maxChars: number,
+  ): CommunitySummarySnapshot[] {
+    if (limit <= 0 || terms.length === 0) {
+      return [];
+    }
+
+    const rows = this.db.prepare(
+      `SELECT community_id, level, summary_text, entity_count, triple_count, source_observation_count,
+              top_entities_json, top_relations_json, source_observation_ids_json, confidence,
+              degraded, degraded_reasons_json
+       FROM kg_communities
+       WHERE run_id = ?
+       ORDER BY community_id`
+    ).all(runId) as CommunitySummarySnapshotRow[];
+
+    const matches = rows
+      .map((row) => {
+        const searchable = [
+          row.summary_text,
+          ...this.parseJsonArray<string>(row.top_entities_json),
+          ...this.parseJsonArray<string>(row.top_relations_json),
+        ].join(' ').toLowerCase();
+        const matchCount = terms.filter((term) => searchable.includes(term)).length;
+        return { row, matchCount };
+      })
+      .filter((entry) => entry.matchCount > 0)
+      .sort((a, b) => b.matchCount - a.matchCount || a.row.community_id.localeCompare(b.row.community_id))
+      .slice(0, limit);
+
+    return matches.map((entry) => this.mapCommunitySnapshotRow(entry.row, maxChars));
+  }
+
+  previewCommunitySummaries(input: PreviewCommunitySummariesInput): CommunityPreviewResult {
+    const plan = this.buildCommunityPlan(input.project);
+    const limit = Math.max(0, Math.min(input.limit ?? this.config.communitySummaries.maxCommunitiesPerProject, this.config.communitySummaries.maxCommunitiesPerProject));
+    const maxChars = Math.max(1, input.maxChars ?? this.config.communitySummaries.summaryMaxChars);
+    return {
+      project: input.project,
+      state: plan.snapshots.length === 0 ? 'empty' : plan.degradedReasons.length > 0 ? 'degraded' : 'fresh',
+      would_commit: false,
+      graph_signature: plan.graphSignature,
+      communities: plan.snapshots.slice(0, limit).map((snapshot) => ({
+        ...snapshot,
+        summary_text: trimToBudget(snapshot.summary_text, maxChars),
+      })),
+      entities_scanned: plan.entitiesScanned,
+      triples_scanned: plan.triplesScanned,
+      source_observations_scanned: plan.sourceObservationsScanned,
+      truncated: plan.snapshots.length > limit,
+      degraded_reasons: plan.degradedReasons,
+    };
+  }
+
+  getCommunitySummariesForRetrieval(input: CommunityRetrievalInput): CommunityRetrievalResult {
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project: input.project,
+        state: 'disabled',
+        run_id: null,
+        graph_signature: null,
+        candidates: [],
+        degraded_reasons: ['disabled'],
+      };
+    }
+
+    const latest = this.latestCommunityRun(input.project);
+    const committed = this.latestCommittedCommunityRun(input.project);
+    let state: CommunityState = latest?.freshness ?? 'missing';
+    if (latest?.status === 'running') {
+      state = 'rebuilding';
+    } else if (latest?.status === 'failed') {
+      state = 'failed';
+    }
+    const shouldReadCommitted = committed !== null && (state === 'fresh' || state === 'degraded' || state === 'failed');
+    const limit = Math.max(0, Math.min(input.limit ?? this.config.communitySummaries.maxRetrievalCommunities, this.config.communitySummaries.maxRetrievalCommunities));
+    const maxChars = Math.max(1, input.maxChars ?? this.config.communitySummaries.summaryMaxChars);
+
+    return {
+      project: input.project,
+      state,
+      run_id: shouldReadCommitted ? committed.id : null,
+      graph_signature: shouldReadCommitted ? committed.graph_signature : null,
+      candidates: shouldReadCommitted ? this.readCommunitySnapshots(committed.id, limit, maxChars) : [],
+      degraded_reasons: latest ? this.parseJsonArray<string>(latest.degraded_reasons_json) : [],
+    };
+  }
+
+  dropCommunitySummaries(input: DropCommunitySummariesInput = {}): DropCommunitySummariesResult {
+    const project = input.project ?? null;
+    const where = project ? 'WHERE project = ?' : '';
+    const params = project ? [project] : [];
+    const evidence = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_evidence ${where}`).get(...params) as { count: number };
+    const members = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_members ${where}`).get(...params) as { count: number };
+    const communities = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_communities ${where}`).get(...params) as { count: number };
+    const runs = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_runs ${where}`).get(...params) as { count: number };
+
+    const drop = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM kg_community_evidence ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_community_members ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_communities ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_community_runs ${where}`).run(...params);
+    });
+    drop();
+
+    return {
+      project,
+      runs_deleted: runs.count,
+      communities_deleted: communities.count,
+      members_deleted: members.count,
+      evidence_deleted: evidence.count,
+    };
+  }
+
   private selectMaintenanceRecords(input: MaintenanceInput = {}, limit?: number): MaintenancePlanningRecord[] {
     const scope = input.scope ?? { all: true };
     const sql = [
@@ -1851,6 +2697,7 @@ export class Store {
       const observation = this.getObservation(existingByScope.id);
       if (observation) {
         this.refreshGraphFacts(observation);
+        this.markCommunitySummariesStale(observation.project, 'saveObservation');
         this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
       }
 
@@ -1870,6 +2717,7 @@ export class Store {
     const observation = this.getObservation(observationId);
     if (observation) {
       this.refreshGraphFacts(observation);
+      this.markCommunitySummariesStale(observation.project, 'saveObservation');
       this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
     }
 
@@ -2433,6 +3281,7 @@ export class Store {
 
           this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
           this.refreshGraphFacts(observation);
+          this.markCommunitySummariesStale(observation.project, 'saveObservation');
           this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
           return { observation, action: 'upserted' };
@@ -2465,6 +3314,7 @@ export class Store {
 
       this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
       this.refreshGraphFacts(observation);
+      this.markCommunitySummariesStale(observation.project, 'saveObservation');
       this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
       return { observation, action: 'created' };
@@ -2512,6 +3362,7 @@ export class Store {
 
       if (result.changes > 0) {
         this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
+        this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
       }
 
       return result.changes > 0;
@@ -2525,6 +3376,7 @@ export class Store {
 
     if (result.changes > 0) {
       this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
+      this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
     }
 
     return result.changes > 0;
@@ -2586,6 +3438,10 @@ export class Store {
       if (updated) {
         this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
         this.refreshGraphFacts(updated);
+        this.markCommunitySummariesStale(current.project, 'updateObservation');
+        if (updated.project !== current.project) {
+          this.markCommunitySummariesStale(updated.project, 'updateObservation');
+        }
         this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
       }
 
@@ -2714,7 +3570,12 @@ export class Store {
       filters,
       includeUnmatched: false,
     });
-    const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...lexicalCandidates];
+    const communityCandidates = this.queryCommunitySummaryLane({
+      query: input.query,
+      filters,
+      degradedFallback,
+    });
+    const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...communityCandidates, ...lexicalCandidates];
     const coreCandidateIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
     const coreMaintenance = this.filterMaintenanceRankingMetadata(
       this.getMaintenanceRankingMetadata(coreCandidateIds),
@@ -3119,6 +3980,81 @@ export class Store {
       }];
     });
     return [...tripleCandidates, ...factCandidates];
+  }
+
+  private queryCommunitySummaryLane(input: {
+    query: string;
+    filters?: RetrievalCandidateFilters;
+    degradedFallback: string[];
+  }): LaneCandidate[] {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    if (!community.readPath.enabled || !input.filters?.project) {
+      return [];
+    }
+
+    const terms = this.getQueryTerms(sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase());
+    if (terms.length === 0) return [];
+
+    const retrieval = this.getCommunitySummariesForRetrieval({
+      project: input.filters.project,
+      limit: 0,
+      maxChars: community.summaryMaxChars,
+    });
+    if (retrieval.state !== 'fresh') {
+      const marker = `kg_communities_${retrieval.state}`;
+      if (!input.degradedFallback.includes(marker)) {
+        input.degradedFallback.push(marker);
+      }
+      return [];
+    }
+
+    const runId = retrieval.run_id;
+    if (runId === null) {
+      if (!input.degradedFallback.includes('kg_communities_missing')) {
+        input.degradedFallback.push('kg_communities_missing');
+      }
+      return [];
+    }
+
+    const scoreScale = community.kgCommunityWeight / DEFAULT_LANE_WEIGHTS.kg;
+    const candidates = this.readMatchingCommunitySnapshots(
+      runId,
+      terms,
+      community.maxRetrievalCommunities,
+      community.summaryMaxChars,
+    );
+
+    return candidates.flatMap((candidate) => {
+      const searchable = [
+        candidate.summary_text,
+        ...candidate.top_entities,
+        ...candidate.top_relations,
+      ].join(' ').toLowerCase();
+      const matches = terms.filter((term) => searchable.includes(term)).length;
+      if (matches === 0) return [];
+      const observationId = candidate.source_observation_ids.find((id) => Number.isInteger(id) && id > 0);
+      if (!observationId) return [];
+      const score = Math.min(
+        1,
+        candidate.confidence + Math.min(matches / Math.max(terms.length, 1), 1) * 0.25,
+      ) * scoreScale;
+      return [{
+        lane: 'kg' as const,
+        observationId,
+        score,
+        source: 'kg_community_summary' as const,
+        text: candidate.summary_text,
+        community: {
+          communityId: candidate.community_id,
+          runId,
+          freshness: 'fresh' as const,
+          degraded: candidate.degraded,
+          sourceObservationIds: candidate.source_observation_ids,
+          entityCount: candidate.entity_count,
+          tripleCount: candidate.triple_count,
+        },
+      }];
+    });
   }
 
   private queryKnowledgeMultiHopLane(input: {
@@ -4425,6 +5361,14 @@ export class Store {
       }
     }
 
+    if (input.project) {
+      this.markCommunitySummariesStale(input.project, 'rebuildObservationFacts');
+    } else {
+      for (const project of Array.from(new Set(observations.map((observation) => observation.project).filter((project): project is string => project !== null)))) {
+        this.markCommunitySummariesStale(project, 'rebuildObservationFacts');
+      }
+    }
+
     return {
       project: input.project ?? null,
       observations_scanned: observations.length,
@@ -4442,7 +5386,15 @@ export class Store {
       orphanCleanup: knowledgeGraph.kgPruneOrphanEntities,
     }));
 
-    return prune();
+    const result = prune();
+    if (!input.dryRun && (result.triples_pruned > 0 || result.entities_pruned > 0 || result.dangling_refs_nulled > 0)) {
+      if (input.project) {
+        this.markCommunitySummariesStale(input.project, 'pruneSupersededTriples');
+      } else {
+        this.markAllCommunitySummariesStale('pruneSupersededTriples');
+      }
+    }
+    return result;
   }
 
   getObservationVersions(observationId: number): ObservationVersion[] {
@@ -4467,6 +5419,10 @@ export class Store {
         'UPDATE user_prompts SET project = ? WHERE project = ?'
       ).run(newProject, oldProject);
 
+      this.db.prepare(
+        "UPDATE kg_triples SET project = ?, updated_at = datetime('now') WHERE project = ?"
+      ).run(newProject, oldProject);
+
       return {
         old_project: oldProject,
         new_project: newProject,
@@ -4476,7 +5432,12 @@ export class Store {
       };
     });
 
-    return migrate();
+    const result = migrate();
+    if (result.sessions_updated > 0 || result.observations_updated > 0 || result.prompts_updated > 0) {
+      this.markCommunitySummariesStale(oldProject, 'migrateProject');
+      this.markCommunitySummariesStale(newProject, 'migrateProject');
+    }
+    return result;
   }
 
   deleteProject(project: string): DeleteProjectResult {
@@ -4544,6 +5505,11 @@ export class Store {
       for (const session of sessions) {
         this.recordMutation('delete', 'session', 0, session.id, targetProject);
       }
+
+      this.db.prepare('DELETE FROM kg_community_evidence WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_community_members WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_communities WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_community_runs WHERE project = ?').run(targetProject);
 
       const deletedObservations = this.db.prepare(
         'DELETE FROM observations WHERE project = ?'

@@ -352,6 +352,111 @@ export interface PruneSupersededTriplesResult {
   superseded_after: number;
 }
 
+export type CommunityState = 'disabled' | 'missing' | 'fresh' | 'stale' | 'rebuilding' | 'failed' | 'empty' | 'degraded';
+export type CommunityRunStatus = 'running' | 'committed' | 'failed';
+export type CommunityAlgorithmName = 'connected_components';
+
+export interface RebuildCommunitySummariesInput {
+  project: string;
+}
+
+export interface PreviewCommunitySummariesInput {
+  project: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface CommunityStateInput {
+  project: string;
+}
+
+export interface CommunityRetrievalInput {
+  project: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface DropCommunitySummariesInput {
+  project?: string;
+}
+
+export interface CommunitySummarySnapshot {
+  community_id: string;
+  level: number;
+  summary_text: string;
+  entity_count: number;
+  triple_count: number;
+  source_observation_count: number;
+  top_entities: string[];
+  top_relations: string[];
+  source_observation_ids: number[];
+  confidence: number;
+  degraded: boolean;
+  degraded_reasons: string[];
+}
+
+export interface CommunityRebuildResult {
+  project: string | null;
+  run_id: number;
+  status: CommunityRunStatus;
+  freshness: CommunityState;
+  algorithm: CommunityAlgorithmName;
+  graph_signature: string | null;
+  communities_created: number;
+  entities_scanned: number;
+  triples_scanned: number;
+  source_observations_scanned: number;
+  degraded_reasons: string[];
+  error?: string;
+}
+
+export interface CommunityPreviewResult {
+  project: string | null;
+  state: CommunityState;
+  would_commit: false;
+  graph_signature: string | null;
+  communities: CommunitySummarySnapshot[];
+  entities_scanned: number;
+  triples_scanned: number;
+  source_observations_scanned: number;
+  truncated: boolean;
+  degraded_reasons: string[];
+}
+
+export interface CommunityStateResult {
+  project: string | null;
+  state: CommunityState;
+  run_id: number | null;
+  latest_committed_run_id: number | null;
+  graph_signature: string | null;
+  current_graph_signature: string | null;
+  communities_count: number;
+  entities_count: number;
+  triples_count: number;
+  source_observations_count: number;
+  degraded: boolean;
+  degraded_reasons: string[];
+  error: string | null;
+  updated_at: string | null;
+}
+
+export interface CommunityRetrievalResult {
+  project: string | null;
+  state: CommunityState;
+  run_id: number | null;
+  graph_signature: string | null;
+  candidates: CommunitySummarySnapshot[];
+  degraded_reasons: string[];
+}
+
+export interface DropCommunitySummariesResult {
+  project: string | null;
+  runs_deleted: number;
+  communities_deleted: number;
+  members_deleted: number;
+  evidence_deleted: number;
+}
+
 export type MaintenanceMode = 'dry-run' | 'apply';
 export type MaintenanceSourceKind = 'observation' | 'prompt' | 'session_summary';
 export type MaintenanceDecayState = 'active' | 'attenuated' | 'suppressed';

@@ -56,6 +56,8 @@ export interface KnowledgeGraphConfig {
 
 export type MaintenanceDefaultMode = 'dry-run' | 'apply';
 export type MaintenanceDecayState = 'active' | 'attenuated' | 'suppressed';
+export type CommunityAlgorithm = 'connected_components' | 'louvain' | 'leiden';
+export type CommunityStaleBehavior = 'skip' | 'include-degraded';
 
 export interface MaintenanceConfig {
   enabled: boolean;
@@ -90,6 +92,29 @@ export interface MaintenanceConfig {
   };
 }
 
+export interface CommunitySummariesConfig {
+  enabled: boolean;
+  readPath: {
+    enabled: boolean;
+  };
+  algorithm: CommunityAlgorithm;
+  advancedAlgorithmFallback: CommunityAlgorithm;
+  summaryMaxChars: number;
+  maxCommunitiesPerProject: number;
+  maxRetrievalCommunities: number;
+  maxEvidencePerCommunity: number;
+  sourceObservationLimit: number;
+  rebuildMaxTriples: number;
+  staleBehavior: CommunityStaleBehavior;
+  kgCommunityWeight: number;
+  enrichment: {
+    enabled: boolean;
+    timeoutMs: number;
+    maxCostUsd: number;
+    maxChars: number;
+  };
+}
+
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
   model: string;
@@ -117,6 +142,7 @@ export interface ThothConfig {
   hyde?: HydeConfig;
   kgLlm?: KgLlmConfig;
   knowledgeGraph?: KnowledgeGraphConfig;
+  communitySummaries: CommunitySummariesConfig;
   maintenance: MaintenanceConfig;
 }
 
@@ -132,6 +158,22 @@ interface PersistedMaintenanceConfig {
   consolidation?: Partial<MaintenanceConfig['consolidation']>;
   reflection?: Partial<MaintenanceConfig['reflection']>;
   decay?: Partial<MaintenanceConfig['decay']>;
+}
+
+interface PersistedCommunitySummariesConfig {
+  enabled?: boolean;
+  readPath?: Partial<CommunitySummariesConfig['readPath']>;
+  algorithm?: CommunityAlgorithm;
+  advancedAlgorithmFallback?: CommunityAlgorithm;
+  summaryMaxChars?: number;
+  maxCommunitiesPerProject?: number;
+  maxRetrievalCommunities?: number;
+  maxEvidencePerCommunity?: number;
+  sourceObservationLimit?: number;
+  rebuildMaxTriples?: number;
+  staleBehavior?: CommunityStaleBehavior;
+  kgCommunityWeight?: number;
+  enrichment?: Partial<CommunitySummariesConfig['enrichment']>;
 }
 
 interface PersistedConfig {
@@ -151,6 +193,7 @@ interface PersistedConfig {
   hyde?: Partial<HydeConfig>;
   kgLlm?: Partial<KgLlmConfig>;
   knowledgeGraph?: Partial<KnowledgeGraphConfig>;
+  communitySummaries?: PersistedCommunitySummariesConfig;
   maintenance?: PersistedMaintenanceConfig;
   graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: Partial<RetrievalDefaults>;
@@ -260,6 +303,39 @@ export const DEFAULT_MAINTENANCE_CONFIG: MaintenanceConfig = {
   },
 };
 
+export const DEFAULT_COMMUNITY_SUMMARIES_CONFIG: CommunitySummariesConfig = {
+  enabled: true,
+  readPath: {
+    enabled: false,
+  },
+  algorithm: 'connected_components',
+  advancedAlgorithmFallback: 'connected_components',
+  summaryMaxChars: 1200,
+  maxCommunitiesPerProject: 200,
+  maxRetrievalCommunities: 3,
+  maxEvidencePerCommunity: 8,
+  sourceObservationLimit: 12,
+  rebuildMaxTriples: 5000,
+  staleBehavior: 'skip',
+  kgCommunityWeight: 0.45,
+  enrichment: {
+    enabled: false,
+    timeoutMs: 8000,
+    maxCostUsd: 0,
+    maxChars: 1200,
+  },
+};
+
+const COMMUNITY_SUMMARIES_LIMITS = {
+  summaryMaxChars: { min: 200, max: 8000 },
+  maxCommunitiesPerProject: { min: 1, max: 1000 },
+  maxRetrievalCommunities: { min: 1, max: 20 },
+  maxEvidencePerCommunity: { min: 1, max: 100 },
+  sourceObservationLimit: { min: 1, max: 100 },
+  rebuildMaxTriples: { min: 1, max: 100000 },
+  enrichmentMaxChars: { min: 200, max: 8000 },
+};
+
 const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
 const KNOWN_EMBEDDING_DIMENSIONS: Record<string, number> = {
   'nomic-ai/nomic-embed-text-v1.5': 768,
@@ -327,6 +403,19 @@ function integerAtLeast(value: number | null | undefined, min: number, fallback:
   return Math.floor(value);
 }
 
+function integerInRangeClamped(
+  value: number | null | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (value === null || value === undefined || value < min) {
+    return fallback;
+  }
+
+  return Math.min(Math.floor(value), max);
+}
+
 function parseBoolean(value: string | undefined): boolean | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
@@ -374,6 +463,24 @@ function parseMaintenanceDefaultMode(value: string | null | undefined): Maintena
 function parseMaintenanceDecayState(value: string | null | undefined): MaintenanceDecayState | null {
   const normalized = value?.trim();
   if (normalized === 'active' || normalized === 'attenuated' || normalized === 'suppressed') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function parseCommunityAlgorithm(value: string | null | undefined): CommunityAlgorithm | null {
+  const normalized = value?.trim();
+  if (normalized === 'connected_components' || normalized === 'louvain' || normalized === 'leiden') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function parseCommunityStaleBehavior(value: string | null | undefined): CommunityStaleBehavior | null {
+  const normalized = value?.trim();
+  if (normalized === 'skip' || normalized === 'include-degraded') {
     return normalized;
   }
 
@@ -434,6 +541,7 @@ function defaultPersistedConfig(): PersistedConfig {
     hyde: { ...DEFAULT_HYDE_CONFIG },
     kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
     knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
+    communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
     maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
     graphFactsSource: 'kg',
   };
@@ -485,6 +593,18 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
     knowledgeGraph: {
       ...defaults.knowledgeGraph,
       ...(existing.knowledgeGraph ?? {}),
+    },
+    communitySummaries: {
+      ...defaults.communitySummaries,
+      ...(existing.communitySummaries ?? {}),
+      readPath: {
+        ...defaults.communitySummaries?.readPath,
+        ...(existing.communitySummaries?.readPath ?? {}),
+      },
+      enrichment: {
+        ...defaults.communitySummaries?.enrichment,
+        ...(existing.communitySummaries?.enrichment ?? {}),
+      },
     },
     maintenance: {
       ...defaults.maintenance,
@@ -809,6 +929,119 @@ export function resolveMaintenanceConfig(persisted: PersistedConfig): Maintenanc
   };
 }
 
+export function resolveCommunitySummariesConfig(persisted: PersistedConfig): CommunitySummariesConfig {
+  const persistedCommunity = persisted.communitySummaries ?? {};
+  const persistedReadPath = persistedCommunity.readPath ?? {};
+  const persistedEnrichment = persistedCommunity.enrichment ?? {};
+  const enabledFromEnv = parseBoolean(process.env.THOTH_COMMUNITY_ENABLED);
+  const algorithmFromEnv = process.env.THOTH_COMMUNITY_ALGORITHM === undefined
+    ? null
+    : parseCommunityAlgorithm(process.env.THOTH_COMMUNITY_ALGORITHM) ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.algorithm;
+  const fallbackAlgorithmFromEnv = process.env.THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK === undefined
+    ? null
+    : parseCommunityAlgorithm(process.env.THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK)
+      ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.advancedAlgorithmFallback;
+  const enabled = enabledFromEnv
+    ?? persistedCommunity.enabled
+    ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enabled;
+
+  return {
+    enabled,
+    readPath: {
+      enabled: enabled && (
+        parseBoolean(process.env.THOTH_COMMUNITY_READ_PATH_ENABLED)
+          ?? persistedReadPath.enabled
+          ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.readPath.enabled
+      ),
+    },
+    algorithm: algorithmFromEnv
+      ?? parseCommunityAlgorithm(persistedCommunity.algorithm)
+      ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.algorithm,
+    advancedAlgorithmFallback: fallbackAlgorithmFromEnv
+      ?? parseCommunityAlgorithm(persistedCommunity.advancedAlgorithmFallback)
+      ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.advancedAlgorithmFallback,
+    summaryMaxChars: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_SUMMARY_MAX_CHARS)
+        ?? persistedCommunity.summaryMaxChars,
+      COMMUNITY_SUMMARIES_LIMITS.summaryMaxChars.min,
+      COMMUNITY_SUMMARIES_LIMITS.summaryMaxChars.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.summaryMaxChars,
+    ),
+    maxCommunitiesPerProject: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_MAX_COMMUNITIES_PER_PROJECT)
+        ?? persistedCommunity.maxCommunitiesPerProject,
+      COMMUNITY_SUMMARIES_LIMITS.maxCommunitiesPerProject.min,
+      COMMUNITY_SUMMARIES_LIMITS.maxCommunitiesPerProject.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.maxCommunitiesPerProject,
+    ),
+    maxRetrievalCommunities: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_MAX_RETRIEVAL_COMMUNITIES)
+        ?? persistedCommunity.maxRetrievalCommunities,
+      COMMUNITY_SUMMARIES_LIMITS.maxRetrievalCommunities.min,
+      COMMUNITY_SUMMARIES_LIMITS.maxRetrievalCommunities.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.maxRetrievalCommunities,
+    ),
+    maxEvidencePerCommunity: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_MAX_EVIDENCE_PER_COMMUNITY)
+        ?? persistedCommunity.maxEvidencePerCommunity,
+      COMMUNITY_SUMMARIES_LIMITS.maxEvidencePerCommunity.min,
+      COMMUNITY_SUMMARIES_LIMITS.maxEvidencePerCommunity.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.maxEvidencePerCommunity,
+    ),
+    sourceObservationLimit: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_SOURCE_OBSERVATION_LIMIT)
+        ?? persistedCommunity.sourceObservationLimit,
+      COMMUNITY_SUMMARIES_LIMITS.sourceObservationLimit.min,
+      COMMUNITY_SUMMARIES_LIMITS.sourceObservationLimit.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.sourceObservationLimit,
+    ),
+    rebuildMaxTriples: integerInRangeClamped(
+      parseNumber(process.env.THOTH_COMMUNITY_REBUILD_MAX_TRIPLES)
+        ?? persistedCommunity.rebuildMaxTriples,
+      COMMUNITY_SUMMARIES_LIMITS.rebuildMaxTriples.min,
+      COMMUNITY_SUMMARIES_LIMITS.rebuildMaxTriples.max,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.rebuildMaxTriples,
+    ),
+    staleBehavior: parseCommunityStaleBehavior(process.env.THOTH_COMMUNITY_STALE_BEHAVIOR)
+      ?? parseCommunityStaleBehavior(persistedCommunity.staleBehavior)
+      ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.staleBehavior,
+    kgCommunityWeight: numberInRange(
+      parseNumber(process.env.THOTH_COMMUNITY_KG_WEIGHT)
+        ?? persistedCommunity.kgCommunityWeight,
+      0,
+      1,
+      DEFAULT_COMMUNITY_SUMMARIES_CONFIG.kgCommunityWeight,
+    ),
+    enrichment: {
+      enabled: enabled && (
+        parseBoolean(process.env.THOTH_COMMUNITY_ENRICHMENT_ENABLED)
+          ?? persistedEnrichment.enabled
+          ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment.enabled
+      ),
+      timeoutMs: integerAtLeast(
+        parseNumber(process.env.THOTH_COMMUNITY_ENRICHMENT_TIMEOUT_MS)
+          ?? persistedEnrichment.timeoutMs,
+        1,
+        DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment.timeoutMs,
+      ),
+      maxCostUsd: numberInRange(
+        parseNumber(process.env.THOTH_COMMUNITY_ENRICHMENT_MAX_COST_USD)
+          ?? persistedEnrichment.maxCostUsd,
+        0,
+        100,
+        DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment.maxCostUsd,
+      ),
+      maxChars: integerInRangeClamped(
+        parseNumber(process.env.THOTH_COMMUNITY_ENRICHMENT_MAX_CHARS)
+          ?? persistedEnrichment.maxChars,
+        COMMUNITY_SUMMARIES_LIMITS.enrichmentMaxChars.min,
+        COMMUNITY_SUMMARIES_LIMITS.enrichmentMaxChars.max,
+        DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment.maxChars,
+      ),
+    },
+  };
+}
+
 function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   const persistedEmbedding = persisted.embedding ?? {};
   const provider = parseProvider(process.env.THOTH_EMBEDDING_PROVIDER ?? persistedEmbedding.provider, 'transformers_local');
@@ -858,6 +1091,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
   const hyde = resolveHydeConfig(persisted);
   const kgLlm = resolveKgLlmConfig(persisted);
   const knowledgeGraph = resolveKnowledgeGraphConfig(persisted);
+  const communitySummaries = resolveCommunitySummariesConfig(persisted);
   const maintenance = resolveMaintenanceConfig(persisted);
   const httpPortFromPersisted = persisted.http?.port;
   const httpDisabledFromPersisted = persisted.http?.disabled;
@@ -882,6 +1116,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     hyde,
     kgLlm,
     knowledgeGraph,
+    communitySummaries,
     maintenance,
   };
 }

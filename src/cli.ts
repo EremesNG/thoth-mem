@@ -33,6 +33,10 @@ Commands:
    delete-project <project>     Delete a project safely
    rebuild-graph          Rebuild derived graph facts
    prune-graph            Bound superseded graph history (keep-N)
+   rebuild-communities    Rebuild derived KG community summaries
+   preview-communities    Preview derived KG community summaries
+   communities-status     Inspect derived KG community state
+   drop-communities       Drop derived KG community summaries
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    maintain-memory        Preview/apply memory maintenance metadata
@@ -245,6 +249,31 @@ function parseMaintenanceScope(positionals: string[], globals: GlobalOptions): {
 
   const topicPrefix = parsedTopicPrefix.value!;
   return { rest, scope: { topic_prefix: topicPrefix }, label: `topic_prefix ${topicPrefix}` };
+}
+
+function parseProjectOrAllScope(positionals: string[], globals: GlobalOptions, command: string): { rest: string[]; all: boolean; project?: string; label: string } {
+  const all = positionals.includes('--all');
+  const rest = positionals.filter((arg) => arg !== '--all');
+  const hasProject = globals.project !== undefined;
+
+  if (all && hasProject) {
+    fail('Use either --project or --all, not both');
+  }
+
+  if (!all && !hasProject) {
+    fail(`${command} requires --project <name> or --all`);
+  }
+
+  const project = hasProject
+    ? parseRequiredProjectName(globals.project, `${command} --project`)
+    : undefined;
+
+  return {
+    rest,
+    all,
+    project,
+    label: project ? `project ${project}` : 'all projects',
+  };
 }
 
 function createStoreContext(dataDir?: string): StoreContext {
@@ -672,6 +701,137 @@ async function handlePruneGraph(positionals: string[], globals: GlobalOptions): 
   });
 }
 
+async function handleRebuildCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const parsed = parseProjectOrAllScope(positionals, globals, 'rebuild-communities');
+  ensureNoExtraArgs(parsed.rest, 'rebuild-communities');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    if (parsed.project) {
+      const result = store.rebuildCommunitySummaries({ project: parsed.project });
+      printStdout([
+        '## Community Summary Rebuild Complete',
+        `- **Scope:** ${parsed.label}`,
+        `- **Status:** ${result.status}`,
+        `- **Freshness:** ${result.freshness}`,
+        `- **Run ID:** ${result.run_id}`,
+        `- **Communities created:** ${result.communities_created}`,
+        `- **Entities scanned:** ${result.entities_scanned}`,
+        `- **Triples scanned:** ${result.triples_scanned}`,
+        `- **Source observations scanned:** ${result.source_observations_scanned}`,
+        `- **Degraded reasons:** ${result.degraded_reasons.length > 0 ? result.degraded_reasons.join(', ') : 'none'}`,
+        result.error ? `- **Error:** ${result.error}` : null,
+      ].filter((line): line is string => line !== null).join('\n'));
+      return;
+    }
+
+    const projects = store.getStats().projects;
+    const results = projects.map((project) => store.rebuildCommunitySummaries({ project }));
+    const lines = results.length > 0
+      ? results.map((result) => `- ${result.project}: status=${result.status} communities=${result.communities_created} freshness=${result.freshness}`)
+      : ['- none'];
+    printStdout([
+      '## Community Summary Rebuild Complete',
+      `- **Scope:** ${parsed.label}`,
+      `- **Projects scanned:** ${projects.length}`,
+      '',
+      ...lines,
+    ].join('\n'));
+  });
+}
+
+async function handlePreviewCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
+  ensureNoExtraArgs(positionals, 'preview-communities');
+  const project = parseRequiredProjectName(globals.project, 'preview-communities --project');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    const result = store.previewCommunitySummaries({
+      project,
+      limit: Math.min(5, store.config.communitySummaries.maxCommunitiesPerProject),
+      maxChars: Math.min(600, store.config.communitySummaries.summaryMaxChars),
+    });
+    const communityLines = result.communities.length > 0
+      ? result.communities.map((community) => [
+        `- ${community.community_id}`,
+        `entities=${community.entity_count}`,
+        `triples=${community.triple_count}`,
+        `sources=${community.source_observation_count}`,
+        `degraded=${community.degraded ? 'yes' : 'no'}`,
+      ].join(' | '))
+      : ['- none'];
+
+    printStdout([
+      '## Community Summary Preview',
+      `- **Scope:** project ${project}`,
+      '- **Would commit:** no',
+      `- **State:** ${result.state}`,
+      `- **Communities shown:** ${result.communities.length}`,
+      `- **Triples scanned:** ${result.triples_scanned}`,
+      `- **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
+      `- **Degraded reasons:** ${result.degraded_reasons.length > 0 ? result.degraded_reasons.join(', ') : 'none'}`,
+      '',
+      ...communityLines,
+    ].join('\n'));
+  });
+}
+
+async function handleCommunitiesStatus(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const parsed = parseProjectOrAllScope(positionals, globals, 'communities-status');
+  ensureNoExtraArgs(parsed.rest, 'communities-status');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    if (parsed.project) {
+      const state = store.getCommunitySummaryState({ project: parsed.project });
+      printStdout([
+        '## Community Summary Status',
+        `- **Project:** ${parsed.project}`,
+        `- **State:** ${state.state}`,
+        `- **Run ID:** ${state.run_id ?? 'none'}`,
+        `- **Latest committed run ID:** ${state.latest_committed_run_id ?? 'none'}`,
+        `- **Communities:** ${state.communities_count}`,
+        `- **Entities:** ${state.entities_count}`,
+        `- **Triples:** ${state.triples_count}`,
+        `- **Source observations:** ${state.source_observations_count}`,
+        `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,
+        `- **Degraded reasons:** ${state.degraded_reasons.length > 0 ? state.degraded_reasons.join(', ') : 'none'}`,
+        state.error ? `- **Error:** ${state.error}` : null,
+      ].filter((line): line is string => line !== null).join('\n'));
+      return;
+    }
+
+    const projects = store.getStats().projects;
+    const lines = projects.length > 0
+      ? projects.map((project) => {
+        const state = store.getCommunitySummaryState({ project });
+        return `- ${project}: state=${state.state} communities=${state.communities_count} run=${state.run_id ?? 'none'}`;
+      })
+      : ['- none'];
+    printStdout([
+      '## Community Summary Status',
+      `- **Scope:** ${parsed.label}`,
+      `- **Projects scanned:** ${projects.length}`,
+      '',
+      ...lines,
+    ].join('\n'));
+  });
+}
+
+async function handleDropCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const parsed = parseProjectOrAllScope(positionals, globals, 'drop-communities');
+  ensureNoExtraArgs(parsed.rest, 'drop-communities');
+
+  await withStore(globals.dataDir, ({ store }) => {
+    const result = store.dropCommunitySummaries({ project: parsed.project });
+    printStdout([
+      '## Community Summaries Dropped',
+      `- **Scope:** ${parsed.label}`,
+      `- **Runs deleted:** ${result.runs_deleted}`,
+      `- **Communities deleted:** ${result.communities_deleted}`,
+      `- **Members deleted:** ${result.members_deleted}`,
+      `- **Evidence deleted:** ${result.evidence_deleted}`,
+    ].join('\n'));
+  });
+}
+
 async function handleRebuildIndex(positionals: string[], globals: GlobalOptions): Promise<void> {
   const parsedReason = parseOptionValue(positionals, ['--reason']);
   const parsedProcess = parseOptionValue(parsedReason.rest, ['--process']);
@@ -808,6 +968,18 @@ export async function runCli(args: string[]): Promise<void> {
          return;
        case 'prune-graph':
          await handlePruneGraph(parsed.positionals, parsed.globals);
+         return;
+       case 'rebuild-communities':
+         await handleRebuildCommunities(parsed.positionals, parsed.globals);
+         return;
+       case 'preview-communities':
+         await handlePreviewCommunities(parsed.positionals, parsed.globals);
+         return;
+       case 'communities-status':
+         await handleCommunitiesStatus(parsed.positionals, parsed.globals);
+         return;
+       case 'drop-communities':
+         await handleDropCommunities(parsed.positionals, parsed.globals);
          return;
        case 'rebuild-index':
          await handleRebuildIndex(parsed.positionals, parsed.globals);

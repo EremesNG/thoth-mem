@@ -2,6 +2,234 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runRetrievalEval, type RetrievalEvalReport } from '../../src/evals/retrieval.js';
+import { fuseCandidates, type LaneCandidate } from '../../src/retrieval/ranking.js';
+import { Store } from '../../src/store/index.js';
+import type { Observation } from '../../src/store/types.js';
+
+function rankingObservation(id: number, title: string): Observation {
+  return {
+    id,
+    sync_id: null,
+    session_id: 'ranking-session',
+    type: 'decision',
+    title,
+    content: `${title} body`,
+    tool_name: null,
+    project: 'community-ranking',
+    scope: 'project',
+    topic_key: null,
+    normalized_hash: null,
+    revision_count: 1,
+    duplicate_count: 1,
+    last_seen_at: null,
+    created_at: '2026-01-01 00:00:00',
+    updated_at: '2026-01-01 00:00:00',
+    deleted_at: null,
+  };
+}
+
+function seedCommunityGraph(store: Store, project: string): number {
+  const source = store.saveObservation({
+    title: `${project} community source`,
+    content: 'Apollo orchestration depends on Orbit cache for retrieval evidence.',
+    type: 'decision',
+    project,
+    topic_key: `eval/${project}/community-source`,
+  }).observation.id;
+  const db = store.getDb();
+  const subject = db.prepare(
+    'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+  ).run(`${project}:apollo`, 'concept', 'Apollo orchestration').lastInsertRowid as number;
+  const object = db.prepare(
+    'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+  ).run(`${project}:orbit`, 'concept', 'Orbit cache').lastInsertRowid as number;
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, topic_key, provenance, confidence, triple_hash
+    ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, ?, ?, 'eval-community', 0.9, ?)`
+  ).run(subject, object, source, project, `eval/${project}/community-source`, `${project}:apollo-orbit`);
+
+  return source;
+}
+
+describe('community retrieval integration', () => {
+  it('community evidence is in kg lane', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+        maxRetrievalCommunities: 1,
+      },
+    });
+    try {
+      const sourceId = seedCommunityGraph(store, 'community-lane-eval');
+      store.rebuildCommunitySummaries({ project: 'community-lane-eval' });
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'Apollo Orbit retrieval evidence',
+        project: 'community-lane-eval',
+        limit: 5,
+      });
+      const laneSet = new Set(retrieval.results.flatMap((hit) => hit.lanes));
+      const communityCandidates = retrieval.results.flatMap((hit) =>
+        hit.evidence.byLane.kg?.filter((candidate) => candidate.source === 'kg_community_summary') ?? []
+      );
+
+      expect([...laneSet].sort()).toEqual(expect.arrayContaining(['kg']));
+      expect([...laneSet].sort()).toEqual(expect.not.arrayContaining(['community']));
+      expect(communityCandidates).toHaveLength(1);
+      expect(communityCandidates[0]).toMatchObject({
+        lane: 'kg',
+        observationId: sourceId,
+        community: {
+          freshness: 'fresh',
+          degraded: false,
+          sourceObservationIds: [sourceId],
+          entityCount: 2,
+          tripleCount: 1,
+        },
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('direct kg outranks community summary', () => {
+    const observations = new Map([
+      [10, rankingObservation(10, 'Community summary')],
+      [20, rankingObservation(20, 'Direct KG triple')],
+    ]);
+    const candidates: LaneCandidate[] = [
+      {
+        lane: 'kg',
+        observationId: 10,
+        score: 1,
+        source: 'kg_community_summary',
+        text: 'Community-level Apollo evidence',
+        community: {
+          communityId: 'c_tie',
+          runId: 1,
+          freshness: 'fresh',
+          degraded: false,
+          sourceObservationIds: [10],
+          entityCount: 2,
+          tripleCount: 1,
+        },
+      },
+      {
+        lane: 'kg',
+        observationId: 20,
+        score: 1,
+        source: 'kg_triples',
+        text: 'Apollo DEPENDS_ON Orbit',
+        kg: {
+          provenance: 'eval-direct',
+          confidence: 1,
+          sourceType: 'observation',
+        },
+      },
+    ];
+
+    const hits = fuseCandidates(observations, candidates);
+
+    expect(hits.map((hit) => hit.evidence.primary.source)).toEqual(['kg_triples', 'kg_community_summary']);
+  });
+
+  it('degraded summaries fall back to baseline', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+      },
+    });
+    try {
+      const sourceId = seedCommunityGraph(store, 'community-missing-eval');
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'Apollo Orbit retrieval evidence',
+        project: 'community-missing-eval',
+        limit: 5,
+      });
+
+      expect(retrieval.results.some((hit) => hit.observation.id === sourceId)).toBe(true);
+      expect(retrieval.degradedFallback).toContain('kg_communities_missing');
+      expect(retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []))
+        .not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'kg_community_summary' }),
+        ]));
+    } finally {
+      store.close();
+    }
+  });
+
+  it('read path defaults off even when summaries are rebuilt', async () => {
+    const store = new Store(':memory:');
+    try {
+      const sourceId = seedCommunityGraph(store, 'community-default-off-eval');
+      store.rebuildCommunitySummaries({ project: 'community-default-off-eval' });
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'Apollo Orbit retrieval evidence',
+        project: 'community-default-off-eval',
+        limit: 5,
+      });
+
+      expect(store.config.communitySummaries.readPath.enabled).toBe(false);
+      expect(retrieval.results.some((hit) => hit.observation.id === sourceId)).toBe(true);
+      expect(retrieval.degradedFallback).not.toEqual(expect.arrayContaining([
+        expect.stringMatching(/^kg_communities_/),
+      ]));
+      expect(retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []))
+        .not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'kg_community_summary' }),
+        ]));
+    } finally {
+      store.close();
+    }
+  });
+
+  it('bounds community retrieval output and coverage metadata', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+        summaryMaxChars: 1200,
+        maxRetrievalCommunities: 1,
+      },
+    });
+    try {
+      seedCommunityGraph(store, 'community-bounds-eval');
+      store.rebuildCommunitySummaries({ project: 'community-bounds-eval' });
+
+      const direct = store.getCommunitySummariesForRetrieval({
+        project: 'community-bounds-eval',
+        limit: 10,
+        maxChars: 40,
+      });
+      const retrieval = await store.hybridRetrieve({
+        query: 'Apollo Orbit retrieval evidence',
+        project: 'community-bounds-eval',
+        limit: 5,
+      });
+      const communityCandidates = retrieval.results.flatMap((hit) =>
+        hit.evidence.byLane.kg?.filter((candidate) => candidate.source === 'kg_community_summary') ?? []
+      );
+
+      expect(direct.candidates).toHaveLength(1);
+      expect(direct.candidates[0].summary_text.length).toBeLessThanOrEqual(40);
+      expect(direct.candidates[0].source_observation_ids.length).toBeLessThanOrEqual(1);
+      expect(communityCandidates).toHaveLength(1);
+      expect(communityCandidates[0].text.length).toBeLessThanOrEqual(1200);
+      expect(communityCandidates[0].community?.sourceObservationIds.length).toBeLessThanOrEqual(12);
+      expect(communityCandidates[0].community?.entityCount).toBeGreaterThan(0);
+      expect(communityCandidates[0].community?.tripleCount).toBeGreaterThan(0);
+    } finally {
+      store.close();
+    }
+  });
+});
 
 describe('retrieval eval baseline', () => {
   let report: RetrievalEvalReport;
@@ -123,6 +351,23 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.kg_prune_no_regression_rate).toBe(1);
     expect(report.markdown).toContain('| KG Prune Retention Rate |');
     expect(report.markdown).toContain('| KG Prune OFF/ON No-Regression Rate |');
+  });
+
+  it('reports community read-path no-regression, fallback, and bounds evidence', async () => {
+    expect(report.summary.hybrid.community_read_path_default_off_rate).toBe(1);
+    expect(report.summary.hybrid.community_disabled_no_regression_rate).toBe(1);
+    expect(report.summary.hybrid.community_enabled_no_regression_rate).toBe(1);
+    expect(report.summary.hybrid.community_fallback_rate).toBe(1);
+    expect(report.summary.hybrid.community_no_fifth_lane_rate).toBe(1);
+    expect(report.summary.hybrid.community_direct_kg_no_regression_rate).toBe(1);
+    expect(report.summary.hybrid.community_multi_hop_no_regression_rate).toBe(1);
+    expect(report.summary.hybrid.community_summary_bounds_rate).toBe(1);
+    expect(report.summary.hybrid.community_coverage_bounds_rate).toBe(1);
+    expect(report.summary.hybrid.community_enrichment_unavailable_fallback_rate).toBe(1);
+    expect(report.markdown).toContain('| Community Read Path Default-Off Rate |');
+    expect(report.markdown).toContain('| Community Enabled No-Regression Rate |');
+    expect(report.markdown).toContain('| Community Summary Bounds Rate |');
+    expect(report.markdown).toContain('| Community Enrichment Unavailable Fallback Rate |');
   });
 
   it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {

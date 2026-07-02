@@ -20,7 +20,7 @@ export interface LaneCandidate {
   observationId: number;
   score: number;
   /** `observation_facts` is legacy-only and must not be emitted on the default KG path. */
-  source: 'raw_query' | 'hyde_answer' | 'lexical_prefix' | 'kg_triples' | 'kg_multi_hop' | 'observation_facts';
+  source: 'raw_query' | 'hyde_answer' | 'lexical_prefix' | 'kg_triples' | 'kg_multi_hop' | 'kg_community_summary' | 'observation_facts';
   text: string;
   chunkKey?: string | null;
   sentenceKey?: string | null;
@@ -31,6 +31,15 @@ export interface LaneCandidate {
     depth?: number;
     sourceType?: string;
     superseded?: boolean;
+  };
+  community?: {
+    communityId: string;
+    runId: number;
+    freshness: 'fresh';
+    degraded: boolean;
+    sourceObservationIds: number[];
+    entityCount: number;
+    tripleCount: number;
   };
 }
 
@@ -142,6 +151,25 @@ export function fuseCandidates(
   return hits.sort((a, b) => compareHits(a, b, laneOrderRank));
 }
 
+function sourcePriority(source: LaneCandidate['source']): number {
+  switch (source) {
+    case 'kg_triples':
+      return 0;
+    case 'kg_multi_hop':
+      return 1;
+    case 'kg_community_summary':
+      return 2;
+    case 'observation_facts':
+      return 3;
+    case 'raw_query':
+      return 4;
+    case 'hyde_answer':
+      return 5;
+    case 'lexical_prefix':
+      return 6;
+  }
+}
+
 function compareCandidates(
   a: LaneCandidate,
   b: LaneCandidate,
@@ -156,6 +184,9 @@ function compareCandidates(
   if (rankA !== rankB) {
     return rankA - rankB;
   }
+  const sourceRankA = sourcePriority(a.source);
+  const sourceRankB = sourcePriority(b.source);
+  if (sourceRankA !== sourceRankB) return sourceRankA - sourceRankB;
   return a.observationId - b.observationId;
 }
 
@@ -166,6 +197,9 @@ function compareHits(a: HybridHit, b: HybridHit, laneOrderRank: Record<Retrieval
     const rankB = laneOrderRank[b.evidence.primary.lane] ?? Number.MAX_SAFE_INTEGER;
     return rankA - rankB;
   }
+  const sourceRankA = sourcePriority(a.evidence.primary.source);
+  const sourceRankB = sourcePriority(b.evidence.primary.source);
+  if (sourceRankA !== sourceRankB) return sourceRankA - sourceRankB;
   return a.observation.id - b.observation.id;
 }
 

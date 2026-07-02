@@ -1,4 +1,8 @@
 import { pathToFileURL } from 'node:url';
+import {
+  DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+  DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+} from '../config.js';
 import { Store } from '../store/index.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import type { SaveObservationInput } from '../store/types.js';
@@ -93,6 +97,16 @@ export interface RetrievalEvalSummary {
     maintenance_decay_reachability_rate: number;
     maintenance_no_regression_rate: number;
     maintenance_export_import_regeneration_rate: number;
+    community_read_path_default_off_rate: number;
+    community_disabled_no_regression_rate: number;
+    community_enabled_no_regression_rate: number;
+    community_fallback_rate: number;
+    community_no_fifth_lane_rate: number;
+    community_direct_kg_no_regression_rate: number;
+    community_multi_hop_no_regression_rate: number;
+    community_summary_bounds_rate: number;
+    community_coverage_bounds_rate: number;
+    community_enrichment_unavailable_fallback_rate: number;
   };
 }
 
@@ -697,6 +711,16 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Maintenance Decay Reachability Rate | ${formatPercent(summary.hybrid.maintenance_decay_reachability_rate)} |`,
     `| Maintenance OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.maintenance_no_regression_rate)} |`,
     `| Maintenance Export/Import Regeneration Rate | ${formatPercent(summary.hybrid.maintenance_export_import_regeneration_rate)} |`,
+    `| Community Read Path Default-Off Rate | ${formatPercent(summary.hybrid.community_read_path_default_off_rate)} |`,
+    `| Community Disabled No-Regression Rate | ${formatPercent(summary.hybrid.community_disabled_no_regression_rate)} |`,
+    `| Community Enabled No-Regression Rate | ${formatPercent(summary.hybrid.community_enabled_no_regression_rate)} |`,
+    `| Community Fallback Rate | ${formatPercent(summary.hybrid.community_fallback_rate)} |`,
+    `| Community No Fifth Lane Rate | ${formatPercent(summary.hybrid.community_no_fifth_lane_rate)} |`,
+    `| Community Direct KG No-Regression Rate | ${formatPercent(summary.hybrid.community_direct_kg_no_regression_rate)} |`,
+    `| Community Multi-Hop No-Regression Rate | ${formatPercent(summary.hybrid.community_multi_hop_no_regression_rate)} |`,
+    `| Community Summary Bounds Rate | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
+    `| Community Coverage Bounds Rate | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
+    `| Community Enrichment Unavailable Fallback Rate | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
     '',
     '## Corpus',
     '',
@@ -1111,6 +1135,248 @@ async function validateKgPruneRetentionCase(
   }
 }
 
+async function validateCommunityReadPathEval(): Promise<{
+  defaultOff: boolean;
+  disabledNoRegression: boolean;
+  enabledNoRegression: boolean;
+  fallback: boolean;
+  noFifthLane: boolean;
+  directKgNoRegression: boolean;
+  multiHopNoRegression: boolean;
+  summaryBounds: boolean;
+  coverageBounds: boolean;
+  enrichmentUnavailableFallback: boolean;
+}> {
+  const store = new Store(':memory:', {
+    communitySummaries: {
+      ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+      enabled: true,
+      readPath: {
+        ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.readPath,
+        enabled: false,
+      },
+      summaryMaxChars: 1200,
+      maxRetrievalCommunities: 1,
+    },
+    knowledgeGraph: {
+      ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+      kgMultiHopEnabled: true,
+    },
+  });
+
+  try {
+    const runtime = store as Store & {
+      processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+      hybridRetrieve: (input: {
+        query: string;
+        limit?: number;
+        project?: string;
+        embeddingProvider?: EmbeddingProviderAdapter | null;
+      }) => Promise<{
+        laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+        degradedFallback: string[];
+        results: Array<{
+          observation: { id: number };
+          lanes: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+          evidence: {
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{
+              source: string;
+              text?: string;
+              community?: { sourceObservationIds: number[]; entityCount: number; tripleCount: number };
+            }>>>;
+          };
+        }>;
+      }>;
+    };
+    const embeddingProvider = makeDeterministicEmbeddingProvider(store);
+    const direct = store.saveObservation({
+      title: 'Community eval direct KG source',
+      type: 'decision',
+      project: 'community-eval',
+      topic_key: 'eval/community/direct',
+      content: 'Sparse source for community read-path no-regression.',
+    });
+    const downstream = store.saveObservation({
+      title: 'Community eval multi-hop downstream',
+      type: 'discovery',
+      project: 'community-eval',
+      topic_key: 'eval/community/multi-hop',
+      content: 'Downstream source intentionally relies on structural reachability.',
+    });
+    const db = store.getDb();
+    const orion = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:orion-service', 'concept', 'orion-service').lastInsertRowid as number;
+    const nebula = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:nebula-cache', 'concept', 'nebula-cache').lastInsertRowid as number;
+    const archive = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:archive-vault', 'concept', 'archive-vault').lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-eval', 'eval/community/direct', 'eval-community:direct', 0.9, ?)`
+    ).run(orion, nebula, direct.observation.id, `community-direct:${direct.observation.id}`);
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-eval', 'eval/community/multi-hop', 'eval-community:multi-hop', 0.9, ?)`
+    ).run(nebula, archive, downstream.observation.id, `community-multi-hop:${downstream.observation.id}`);
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+
+    const disabled = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const defaultOff = store.config.communitySummaries.readPath.enabled === false
+      && disabled.results.some((hit) => hit.observation.id === direct.observation.id)
+      && disabled.degradedFallback.every((marker) => !marker.startsWith('kg_communities_'))
+      && disabled.results.every((hit) =>
+        !(hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_community_summary')
+      );
+
+    store.config.communitySummaries.readPath.enabled = true;
+    const enabled = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const directDisabledRank = disabled.results.findIndex((hit) => hit.observation.id === direct.observation.id);
+    const directEnabledRank = enabled.results.findIndex((hit) => hit.observation.id === direct.observation.id);
+    const enabledKgCandidates = enabled.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
+    const communityCandidates = enabledKgCandidates.filter((candidate) => candidate.source === 'kg_community_summary');
+    const directKgNoRegression = enabledKgCandidates.some((candidate) => candidate.source === 'kg_triples');
+    const enabledNoRegression = directEnabledRank >= 0 && directDisabledRank >= 0 && directEnabledRank <= directDisabledRank;
+    const disabledNoRegression = directDisabledRank >= 0;
+    const noFifthLane = enabled.laneOrder.join('|') === 'sentence|kg|chunk|lexical'
+      && enabled.results.every((hit) => !hit.lanes.map(String).includes('community'));
+
+    store.config.communitySummaries.readPath.enabled = false;
+    const multiHopBaseline = await runtime.hybridRetrieve({
+      query: 'orion-service',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.config.communitySummaries.readPath.enabled = true;
+    const multiHopEnabled = await runtime.hybridRetrieve({
+      query: 'orion-service',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const baselineMultiHop = multiHopBaseline.results.some((hit) => hit.observation.id === downstream.observation.id)
+      && multiHopBaseline.results.some((hit) =>
+        (hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_multi_hop')
+      );
+    const enabledMultiHop = multiHopEnabled.results.some((hit) => hit.observation.id === downstream.observation.id)
+      && multiHopEnabled.results.some((hit) =>
+        (hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_multi_hop')
+      );
+    const multiHopNoRegression = baselineMultiHop && enabledMultiHop;
+
+    const bounded = store.getCommunitySummariesForRetrieval({
+      project: 'community-eval',
+      limit: 99,
+      maxChars: 80,
+    });
+    const summaryBounds = bounded.candidates.length <= 1
+      && bounded.candidates.every((candidate) => candidate.summary_text.length <= 80)
+      && communityCandidates.every((candidate) => (candidate.text?.length ?? 0) <= 1200);
+    const coverageBounds = bounded.candidates.every((candidate) => candidate.source_observation_ids.length <= 12)
+      && communityCandidates.every((candidate) => (candidate.community?.sourceObservationIds.length ?? 0) <= 12)
+      && communityCandidates.every((candidate) =>
+        (candidate.community?.entityCount ?? 0) > 0 && (candidate.community?.tripleCount ?? 0) > 0
+      );
+
+    const missing = await runtime.hybridRetrieve({
+      query: 'orion-service',
+      project: 'community-missing-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.markCommunitySummariesStale('community-eval', 'eval_stale');
+    const stale = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.config.communitySummaries.algorithm = 'louvain';
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const degraded = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.config.communitySummaries.algorithm = 'connected_components';
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.getDb().exec(`
+      CREATE TRIGGER community_eval_fail
+      BEFORE INSERT ON kg_communities
+      BEGIN
+        SELECT RAISE(FAIL, 'forced community eval failure');
+      END;
+    `);
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const failed = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const fallback = missing.degradedFallback.includes('kg_communities_missing')
+      && stale.degradedFallback.includes('kg_communities_stale')
+      && degraded.degradedFallback.includes('kg_communities_degraded')
+      && failed.degradedFallback.includes('kg_communities_failed')
+      && [missing, stale, degraded, failed].every((result) => result.results.length >= 0);
+
+    store.getDb().exec('DROP TRIGGER community_eval_fail');
+    store.config.communitySummaries.enrichment.enabled = true;
+    const enrichedUnavailableRebuild = store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const enrichmentUnavailableRetrieval = store.getCommunitySummariesForRetrieval({
+      project: 'community-eval',
+      limit: 1,
+      maxChars: 1200,
+    });
+    const enrichmentUnavailableFallback = enrichedUnavailableRebuild.status === 'committed'
+      && enrichedUnavailableRebuild.freshness === 'degraded'
+      && enrichedUnavailableRebuild.degraded_reasons.includes('enrichment_unavailable')
+      && enrichmentUnavailableRetrieval.state === 'degraded'
+      && enrichmentUnavailableRetrieval.degraded_reasons.includes('enrichment_unavailable')
+      && enrichmentUnavailableRetrieval.candidates.length > 0
+      && enrichmentUnavailableRetrieval.candidates.every((candidate) =>
+        candidate.summary_text.length > 0
+        && candidate.degraded
+        && candidate.degraded_reasons.includes('enrichment_unavailable')
+      );
+
+    return {
+      defaultOff,
+      disabledNoRegression,
+      enabledNoRegression,
+      fallback,
+      noFifthLane,
+      directKgNoRegression,
+      multiHopNoRegression,
+      summaryBounds,
+      coverageBounds,
+      enrichmentUnavailableFallback,
+    };
+  } finally {
+    store.close();
+  }
+}
+
 export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Promise<RetrievalEvalReport> {
   const store = new Store(':memory:');
 
@@ -1156,6 +1422,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const maintenanceReflection = await validateMaintenanceReflection(store, runtime, embeddingProvider);
     const maintenanceDecay = await validateMaintenanceDecay(store, runtime, embeddingProvider);
     const maintenanceExportImportRegeneration = await validateMaintenanceExportImportRegeneration();
+    const communityReadPath = await validateCommunityReadPathEval();
 
     const staleSeed = store.saveObservation({
       title: 'stale eval sentinel',
@@ -1268,6 +1535,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const kgPruneRetentionChecks: boolean[] = [];
     const kgPruneNoRegressionChecks: boolean[] = [];
     const maintenanceNoRegressionChecks: boolean[] = [];
+    const communityMultiHopNoRegressionChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
@@ -1342,6 +1610,19 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         embeddingProvider,
         hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
       });
+      let communityEnabledHyde: Awaited<ReturnType<typeof runtime.hybridRetrieve>> | null = null;
+      if (evalCase.expectedKey === 'kg-multi-hop') {
+        const previousCommunityReadPath = store.config.communitySummaries.readPath.enabled;
+        store.config.communitySummaries.readPath.enabled = true;
+        communityEnabledHyde = await runtime.hybridRetrieve({
+          query: evalCase.query,
+          project: evalCase.project,
+          limit: evalCase.limit ?? TOP_K,
+          embeddingProvider,
+          hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+        });
+        store.config.communitySummaries.readPath.enabled = previousCommunityReadPath;
+      }
       const rawRankIndex = raw.results.findIndex((hit) => hit.observation.id === expectedId);
       const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
       const baselineHydeRankIndex = hydeBaseline.results.findIndex((hit) => hit.observation.id === expectedId);
@@ -1386,6 +1667,15 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         if (baselineMultiHop || !hasMultiHopEvidence) {
           throw new Error('kg multi-hop eval did not isolate ON-only multi-hop evidence');
         }
+        const communityEnabledRankIndex = communityEnabledHyde?.results.findIndex((hit) => hit.observation.id === expectedId) ?? -1;
+        const communityEnabledHit = communityEnabledRankIndex >= 0
+          ? communityEnabledHyde?.results[communityEnabledRankIndex]
+          : undefined;
+        communityMultiHopNoRegressionChecks.push(
+          communityEnabledRankIndex >= 0
+          && communityEnabledRankIndex <= hydeRankIndex
+          && (communityEnabledHit?.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop') ?? false)
+        );
       }
       if (evalCase.expectedKey === 'kg-supersession') {
         const supersessionHit = hydeRankIndex >= 0 ? hyde.results[hydeRankIndex] : undefined;
@@ -1545,6 +1835,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         maintenance_decay_reachability_rate: maintenanceDecay.reachability ? 1 : 0,
         maintenance_no_regression_rate: ratio(countTrue(maintenanceNoRegressionChecks), maintenanceNoRegressionChecks.length),
         maintenance_export_import_regeneration_rate: maintenanceExportImportRegeneration ? 1 : 0,
+        community_read_path_default_off_rate: communityReadPath.defaultOff ? 1 : 0,
+        community_disabled_no_regression_rate: communityReadPath.disabledNoRegression ? 1 : 0,
+        community_enabled_no_regression_rate: communityReadPath.enabledNoRegression ? 1 : 0,
+        community_fallback_rate: communityReadPath.fallback ? 1 : 0,
+        community_no_fifth_lane_rate: communityReadPath.noFifthLane ? 1 : 0,
+        community_direct_kg_no_regression_rate: communityReadPath.directKgNoRegression ? 1 : 0,
+        community_multi_hop_no_regression_rate: ratio(countTrue(communityMultiHopNoRegressionChecks), communityMultiHopNoRegressionChecks.length),
+        community_summary_bounds_rate: communityReadPath.summaryBounds ? 1 : 0,
+        community_coverage_bounds_rate: communityReadPath.coverageBounds ? 1 : 0,
+        community_enrichment_unavailable_fallback_rate: communityReadPath.enrichmentUnavailableFallback ? 1 : 0,
       },
     };
 

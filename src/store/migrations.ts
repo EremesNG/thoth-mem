@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import {
+  COMMUNITY_SUMMARIES_INDEXES_SQL,
+  COMMUNITY_SUMMARIES_SQL,
   OBSERVATIONS_FTS_SQL,
   OBSERVATIONS_FTS_TRIGGERS_SQL,
   MAINTENANCE_METADATA_INDEXES_SQL,
@@ -229,6 +231,8 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     db.exec(SEMANTIC_METADATA_INDEXES_SQL);
     db.exec(MAINTENANCE_METADATA_SQL);
     db.exec(MAINTENANCE_METADATA_INDEXES_SQL);
+    db.exec(COMMUNITY_SUMMARIES_SQL);
+    db.exec(COMMUNITY_SUMMARIES_INDEXES_SQL);
     db.exec('CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at)');
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);

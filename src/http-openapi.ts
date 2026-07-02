@@ -238,6 +238,95 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/communities/rebuild': {
+        post: {
+          summary: 'Rebuild project community summaries',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CommunityProjectRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Community rebuild result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityRebuildResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities/preview': {
+        post: {
+          summary: 'Preview project community summaries',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CommunityPreviewRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Community preview result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityPreviewResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities/status': {
+        get: {
+          summary: 'Get project community summary status',
+          parameters: [{ name: 'project', in: 'query', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': {
+              description: 'Community state result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityStateResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities': {
+        delete: {
+          summary: 'Drop derived community summary artifacts',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DropCommunitiesRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Drop community summaries result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DropCommunitiesResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
       '/maintenance/preview': {
         post: {
           summary: 'Preview memory maintenance',
@@ -714,6 +803,27 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/ProjectGraphResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/projects/{project}/communities': {
+        get: {
+          summary: 'Get bounded committed project community summaries',
+          parameters: [
+            { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 0, maximum: 200 } },
+            { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 20000 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Project community summaries',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ProjectCommunitiesResponse' },
                 },
               },
             },
@@ -1244,6 +1354,138 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             'superseded_before',
             'superseded_after',
           ],
+        },
+        CommunityProjectRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+          },
+          required: ['project'],
+        },
+        CommunityPreviewRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            limit: { type: 'integer', minimum: 0, maximum: 200 },
+            max_chars: { type: 'integer', minimum: 1, maximum: 20000 },
+          },
+          required: ['project'],
+        },
+        DropCommunitiesRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            all: { type: 'boolean' },
+          },
+          description: 'Provide either project or all.',
+        },
+        CommunitySummarySnapshot: {
+          type: 'object',
+          properties: {
+            community_id: { type: 'string' },
+            level: { type: 'integer' },
+            summary_text: { type: 'string' },
+            entity_count: { type: 'integer' },
+            triple_count: { type: 'integer' },
+            source_observation_count: { type: 'integer' },
+            top_entities: { type: 'array', items: { type: 'string' } },
+            top_relations: { type: 'array', items: { type: 'string' } },
+            source_observation_ids: { type: 'array', items: { type: 'integer' } },
+            confidence: { type: 'number' },
+            degraded: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+          },
+          required: [
+            'community_id',
+            'level',
+            'summary_text',
+            'entity_count',
+            'triple_count',
+            'source_observation_count',
+            'top_entities',
+            'top_relations',
+            'source_observation_ids',
+            'confidence',
+            'degraded',
+            'degraded_reasons',
+          ],
+        },
+        CommunityRebuildResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            run_id: { type: 'integer' },
+            status: { type: 'string', enum: ['running', 'committed', 'failed'] },
+            freshness: { type: 'string', enum: ['disabled', 'missing', 'fresh', 'stale', 'rebuilding', 'failed', 'empty', 'degraded'] },
+            algorithm: { type: 'string', enum: ['connected_components'] },
+            graph_signature: { type: 'string', nullable: true },
+            communities_created: { type: 'integer' },
+            entities_scanned: { type: 'integer' },
+            triples_scanned: { type: 'integer' },
+            source_observations_scanned: { type: 'integer' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            error: { type: 'string' },
+          },
+          required: ['project', 'run_id', 'status', 'freshness', 'algorithm', 'graph_signature', 'communities_created', 'entities_scanned', 'triples_scanned', 'source_observations_scanned', 'degraded_reasons'],
+        },
+        CommunityPreviewResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            state: { type: 'string' },
+            would_commit: { type: 'boolean' },
+            graph_signature: { type: 'string', nullable: true },
+            communities: { type: 'array', items: { $ref: '#/components/schemas/CommunitySummarySnapshot' } },
+            entities_scanned: { type: 'integer' },
+            triples_scanned: { type: 'integer' },
+            source_observations_scanned: { type: 'integer' },
+            truncated: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['project', 'state', 'would_commit', 'graph_signature', 'communities', 'entities_scanned', 'triples_scanned', 'source_observations_scanned', 'truncated', 'degraded_reasons'],
+        },
+        CommunityStateResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            state: { type: 'string' },
+            run_id: { type: 'integer', nullable: true },
+            latest_committed_run_id: { type: 'integer', nullable: true },
+            graph_signature: { type: 'string', nullable: true },
+            current_graph_signature: { type: 'string', nullable: true },
+            communities_count: { type: 'integer' },
+            entities_count: { type: 'integer' },
+            triples_count: { type: 'integer' },
+            source_observations_count: { type: 'integer' },
+            degraded: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            error: { type: 'string', nullable: true },
+            updated_at: { type: 'string', nullable: true },
+          },
+          required: ['project', 'state', 'run_id', 'latest_committed_run_id', 'graph_signature', 'current_graph_signature', 'communities_count', 'entities_count', 'triples_count', 'source_observations_count', 'degraded', 'degraded_reasons', 'error', 'updated_at'],
+        },
+        ProjectCommunitiesResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            state: { type: 'string' },
+            run_id: { type: 'integer', nullable: true },
+            graph_signature: { type: 'string', nullable: true },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            communities: { type: 'array', items: { $ref: '#/components/schemas/CommunitySummarySnapshot' } },
+          },
+          required: ['project', 'state', 'run_id', 'graph_signature', 'degraded_reasons', 'communities'],
+        },
+        DropCommunitiesResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            runs_deleted: { type: 'integer' },
+            communities_deleted: { type: 'integer' },
+            members_deleted: { type: 'integer' },
+            evidence_deleted: { type: 'integer' },
+          },
+          required: ['project', 'runs_deleted', 'communities_deleted', 'members_deleted', 'evidence_deleted'],
         },
         MaintenanceRequest: {
           type: 'object',

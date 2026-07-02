@@ -3,10 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
   DEFAULT_KG_RELATION_ALLOW_LIST,
   DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
   DEFAULT_MAINTENANCE_CONFIG,
   getConfig,
+  resolveCommunitySummariesConfig,
   resolveMaintenanceConfig,
   resolveKnowledgeGraphConfig,
   resolveDataDir,
@@ -43,6 +45,7 @@ describe('getConfig', () => {
     expect(config.httpDisabled).toBe(false);
     expect(config.graphFactsSource).toBe('kg');
     expect(config.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
+    expect(config.communitySummaries).toEqual(DEFAULT_COMMUNITY_SUMMARIES_CONFIG);
     expect(config.maintenance).toEqual(DEFAULT_MAINTENANCE_CONFIG);
     expect(config.dataDir).toBe(tmpDataDir);
     expect(config.dbPath).toBe(join(tmpDataDir!, 'thoth.db'));
@@ -363,6 +366,161 @@ describe('getConfig', () => {
 
     expect(resolveMaintenanceConfig({}).readPath.enabled).toBe(true);
   });
+
+  it('communitySummaries has deterministic offline defaults', () => {
+    const config = getConfig();
+
+    expect(config.communitySummaries).toEqual({
+      enabled: true,
+      readPath: { enabled: false },
+      algorithm: 'connected_components',
+      advancedAlgorithmFallback: 'connected_components',
+      summaryMaxChars: 1200,
+      maxCommunitiesPerProject: 200,
+      maxRetrievalCommunities: 3,
+      maxEvidencePerCommunity: 8,
+      sourceObservationLimit: 12,
+      rebuildMaxTriples: 5000,
+      staleBehavior: 'skip',
+      kgCommunityWeight: 0.45,
+      enrichment: {
+        enabled: false,
+        timeoutMs: 8000,
+        maxCostUsd: 0,
+        maxChars: 1200,
+      },
+    });
+  });
+
+  it('communitySummaries env overrides persisted config', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      communitySummaries: {
+        enabled: false,
+        readPath: { enabled: true },
+        algorithm: 'louvain',
+        advancedAlgorithmFallback: 'louvain',
+        summaryMaxChars: 2400,
+        maxCommunitiesPerProject: 50,
+        maxRetrievalCommunities: 2,
+        maxEvidencePerCommunity: 4,
+        sourceObservationLimit: 6,
+        rebuildMaxTriples: 1000,
+        staleBehavior: 'include-degraded',
+        kgCommunityWeight: 0.8,
+        enrichment: {
+          enabled: true,
+          timeoutMs: 12000,
+          maxCostUsd: 1,
+          maxChars: 2000,
+        },
+      },
+    }, null, 2));
+    process.env.THOTH_COMMUNITY_ENABLED = 'true';
+    process.env.THOTH_COMMUNITY_READ_PATH_ENABLED = 'false';
+    process.env.THOTH_COMMUNITY_ALGORITHM = 'not-real';
+    process.env.THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK = 'connected_components';
+    process.env.THOTH_COMMUNITY_SUMMARY_MAX_CHARS = '900';
+    process.env.THOTH_COMMUNITY_MAX_COMMUNITIES_PER_PROJECT = '25';
+    process.env.THOTH_COMMUNITY_MAX_RETRIEVAL_COMMUNITIES = '1';
+    process.env.THOTH_COMMUNITY_MAX_EVIDENCE_PER_COMMUNITY = '5';
+    process.env.THOTH_COMMUNITY_SOURCE_OBSERVATION_LIMIT = '7';
+    process.env.THOTH_COMMUNITY_REBUILD_MAX_TRIPLES = '300';
+    process.env.THOTH_COMMUNITY_STALE_BEHAVIOR = 'skip';
+    process.env.THOTH_COMMUNITY_KG_WEIGHT = '0.35';
+    process.env.THOTH_COMMUNITY_ENRICHMENT_ENABLED = 'false';
+    process.env.THOTH_COMMUNITY_ENRICHMENT_TIMEOUT_MS = '5000';
+    process.env.THOTH_COMMUNITY_ENRICHMENT_MAX_COST_USD = '0';
+    process.env.THOTH_COMMUNITY_ENRICHMENT_MAX_CHARS = '800';
+
+    const config = getConfig();
+
+    expect(config.communitySummaries).toEqual({
+      enabled: true,
+      readPath: { enabled: false },
+      algorithm: 'connected_components',
+      advancedAlgorithmFallback: 'connected_components',
+      summaryMaxChars: 900,
+      maxCommunitiesPerProject: 25,
+      maxRetrievalCommunities: 1,
+      maxEvidencePerCommunity: 5,
+      sourceObservationLimit: 7,
+      rebuildMaxTriples: 300,
+      staleBehavior: 'skip',
+      kgCommunityWeight: 0.35,
+      enrichment: {
+        enabled: false,
+        timeoutMs: 5000,
+        maxCostUsd: 0,
+        maxChars: 800,
+      },
+    });
+
+    const invalidCommunitySummariesConfig = { communitySummaries: { algorithm: 'not-real' } } as unknown as Parameters<
+      typeof resolveCommunitySummariesConfig
+    >[0];
+
+    expect(resolveCommunitySummariesConfig(invalidCommunitySummariesConfig).algorithm)
+      .toBe('connected_components');
+  });
+
+  it('communitySummaries clamps over-max persisted and env budgets to schema maximums', () => {
+    const persisted = resolveCommunitySummariesConfig({
+      communitySummaries: {
+        summaryMaxChars: 80_001,
+        maxCommunitiesPerProject: 10_001,
+        maxRetrievalCommunities: 201,
+        maxEvidencePerCommunity: 1_001,
+        sourceObservationLimit: 1_001,
+        rebuildMaxTriples: 1_000_001,
+        enrichment: {
+          maxChars: 80_001,
+        },
+      },
+    });
+
+    expect(persisted.summaryMaxChars).toBe(8000);
+    expect(persisted.maxCommunitiesPerProject).toBe(1000);
+    expect(persisted.maxRetrievalCommunities).toBe(20);
+    expect(persisted.maxEvidencePerCommunity).toBe(100);
+    expect(persisted.sourceObservationLimit).toBe(100);
+    expect(persisted.rebuildMaxTriples).toBe(100000);
+    expect(persisted.enrichment.maxChars).toBe(8000);
+
+    process.env.THOTH_COMMUNITY_SUMMARY_MAX_CHARS = '90000';
+    process.env.THOTH_COMMUNITY_MAX_COMMUNITIES_PER_PROJECT = '9000';
+    process.env.THOTH_COMMUNITY_MAX_RETRIEVAL_COMMUNITIES = '90';
+    process.env.THOTH_COMMUNITY_MAX_EVIDENCE_PER_COMMUNITY = '900';
+    process.env.THOTH_COMMUNITY_SOURCE_OBSERVATION_LIMIT = '900';
+    process.env.THOTH_COMMUNITY_REBUILD_MAX_TRIPLES = '900000';
+    process.env.THOTH_COMMUNITY_ENRICHMENT_MAX_CHARS = '90000';
+
+    const env = resolveCommunitySummariesConfig({});
+
+    expect(env.summaryMaxChars).toBe(8000);
+    expect(env.maxCommunitiesPerProject).toBe(1000);
+    expect(env.maxRetrievalCommunities).toBe(20);
+    expect(env.maxEvidencePerCommunity).toBe(100);
+    expect(env.sourceObservationLimit).toBe(100);
+    expect(env.rebuildMaxTriples).toBe(100000);
+    expect(env.enrichment.maxChars).toBe(8000);
+  });
+
+  it('community config schema rejects invalid budgets', () => {
+    const schema = JSON.parse(readFileSync(join(process.cwd(), 'config.schema.json'), 'utf8'));
+    const community = schema.properties.communitySummaries;
+
+    expect(community.additionalProperties).toBe(false);
+    expect(community.properties.algorithm.enum).toEqual(['connected_components', 'louvain', 'leiden']);
+    expect(community.properties.summaryMaxChars).toMatchObject({ type: 'integer', minimum: 200, maximum: 8000 });
+    expect(community.properties.maxCommunitiesPerProject).toMatchObject({ type: 'integer', minimum: 1, maximum: 1000 });
+    expect(community.properties.maxRetrievalCommunities).toMatchObject({ type: 'integer', minimum: 1, maximum: 20 });
+    expect(community.properties.maxEvidencePerCommunity).toMatchObject({ type: 'integer', minimum: 1, maximum: 100 });
+    expect(community.properties.sourceObservationLimit).toMatchObject({ type: 'integer', minimum: 1, maximum: 100 });
+    expect(community.properties.rebuildMaxTriples).toMatchObject({ type: 'integer', minimum: 1, maximum: 100000 });
+    expect(community.properties.kgCommunityWeight).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+    expect(community.properties.enrichment.required).toBeUndefined();
+    expect(community.properties.enrichment.properties.maxCostUsd).toMatchObject({ type: 'number', minimum: 0, maximum: 100 });
+  });
 });
 
 describe('resolveDataDir', () => {
@@ -524,6 +682,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.kgLlm).toEqual(config.kgLlm);
     expect(saved.graphFactsSource).toBe('kg');
     expect(saved.knowledgeGraph).toEqual(config.knowledgeGraph);
+    expect(saved.communitySummaries).toEqual(config.communitySummaries);
     expect(saved.maintenance).toEqual(config.maintenance);
     expect(saved.retrievalDefaults).toEqual(config.retrievalDefaults);
     expect(saved.http).toEqual({ port: 7438, disabled: false });
@@ -576,6 +735,21 @@ describe('embedding config (hybrid retrieval baseline)', () => {
             },
           },
         },
+        communitySummaries: {
+          additionalProperties: false,
+          properties: {
+            algorithm: { enum: ['connected_components', 'louvain', 'leiden'] },
+            staleBehavior: { enum: ['skip', 'include-degraded'] },
+            readPath: { additionalProperties: false },
+            enrichment: {
+              additionalProperties: false,
+              properties: {
+                enabled: { type: 'boolean' },
+                maxCostUsd: { type: 'number', minimum: 0 },
+              },
+            },
+          },
+        },
       },
     });
   });
@@ -613,6 +787,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.maxContentLength).toBe(100_000);
     expect(saved.maxContextChars).toBe(8000);
     expect(saved.knowledgeGraph).toEqual(DEFAULT_KNOWLEDGE_GRAPH_CONFIG);
+    expect(saved.communitySummaries).toEqual(DEFAULT_COMMUNITY_SUMMARIES_CONFIG);
     expect(saved.maintenance).toEqual(DEFAULT_MAINTENANCE_CONFIG);
   });
 

@@ -317,6 +317,114 @@ CREATE INDEX IF NOT EXISTS idx_maintenance_decay_run ON maintenance_decay(run_id
 CREATE INDEX IF NOT EXISTS idx_maintenance_decay_state ON maintenance_decay(state, source_kind, source_id);
 `;
 
+export const COMMUNITY_SUMMARIES_SQL = `
+CREATE TABLE IF NOT EXISTS kg_community_runs (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_key                    TEXT NOT NULL UNIQUE,
+  project                    TEXT,
+  algorithm                  TEXT NOT NULL CHECK(algorithm IN ('connected_components_v1','louvain_v1','leiden_v1')),
+  algorithm_version          TEXT NOT NULL,
+  summary_generator          TEXT NOT NULL CHECK(summary_generator IN ('extractive_v1')),
+  config_hash                TEXT,
+  graph_signature            TEXT,
+  status                     TEXT NOT NULL CHECK(status IN ('running','committed','failed')),
+  freshness                  TEXT NOT NULL CHECK(freshness IN ('fresh','stale','rebuilding','failed','empty','degraded')),
+  degraded                   INTEGER NOT NULL DEFAULT 0 CHECK(degraded IN (0,1)),
+  degraded_reasons_json      TEXT NOT NULL DEFAULT '[]',
+  coverage_json              TEXT NOT NULL DEFAULT '{}',
+  communities_count          INTEGER NOT NULL DEFAULT 0 CHECK(communities_count >= 0),
+  entities_count             INTEGER NOT NULL DEFAULT 0 CHECK(entities_count >= 0),
+  triples_count              INTEGER NOT NULL DEFAULT 0 CHECK(triples_count >= 0),
+  source_observations_count  INTEGER NOT NULL DEFAULT 0 CHECK(source_observations_count >= 0),
+  replaced_run_id            INTEGER,
+  started_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+  committed_at               TEXT,
+  failed_at                  TEXT,
+  error                      TEXT,
+  created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (replaced_run_id) REFERENCES kg_community_runs(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS kg_communities (
+  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                      INTEGER NOT NULL,
+  project                     TEXT,
+  community_id                TEXT NOT NULL,
+  level                       INTEGER NOT NULL DEFAULT 0 CHECK(level >= 0),
+  community_key               TEXT NOT NULL,
+  summary_generator           TEXT NOT NULL DEFAULT 'extractive_v1' CHECK(summary_generator IN ('extractive_v1')),
+  summary_text                TEXT NOT NULL,
+  summary_max_chars           INTEGER NOT NULL CHECK(summary_max_chars > 0),
+  freshness                   TEXT NOT NULL DEFAULT 'fresh' CHECK(freshness IN ('fresh','stale','rebuilding','failed','empty','degraded')),
+  entity_count                INTEGER NOT NULL DEFAULT 0 CHECK(entity_count >= 0),
+  triple_count                INTEGER NOT NULL DEFAULT 0 CHECK(triple_count >= 0),
+  source_observation_count    INTEGER NOT NULL DEFAULT 0 CHECK(source_observation_count >= 0),
+  top_entities_json           TEXT NOT NULL DEFAULT '[]',
+  top_relations_json          TEXT NOT NULL DEFAULT '[]',
+  source_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+  coverage_json               TEXT NOT NULL DEFAULT '{}',
+  provenance_json             TEXT NOT NULL DEFAULT '{}',
+  confidence                  REAL NOT NULL DEFAULT 0 CHECK(confidence >= 0 AND confidence <= 1),
+  degraded                    INTEGER NOT NULL DEFAULT 0 CHECK(degraded IN (0,1)),
+  degraded_reasons_json       TEXT NOT NULL DEFAULT '[]',
+  created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project, run_id, community_id),
+  FOREIGN KEY (run_id) REFERENCES kg_community_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS kg_community_members (
+  community_row_id INTEGER NOT NULL,
+  entity_id        INTEGER NOT NULL,
+  project          TEXT,
+  run_id           INTEGER NOT NULL,
+  community_id     TEXT NOT NULL,
+  role             TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('member','top_entity')),
+  entity_rank      INTEGER NOT NULL DEFAULT 0 CHECK(entity_rank >= 0),
+  evidence_count   INTEGER NOT NULL DEFAULT 0 CHECK(evidence_count >= 0),
+  provenance_json  TEXT NOT NULL DEFAULT '{}',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (community_row_id, entity_id),
+  FOREIGN KEY (community_row_id) REFERENCES kg_communities(id) ON DELETE CASCADE,
+  FOREIGN KEY (entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (run_id) REFERENCES kg_community_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS kg_community_evidence (
+  community_row_id     INTEGER NOT NULL,
+  triple_id            INTEGER NOT NULL,
+  project              TEXT,
+  run_id               INTEGER NOT NULL,
+  community_id         TEXT NOT NULL,
+  source_observation_id INTEGER,
+  relation             TEXT NOT NULL,
+  superseded           INTEGER NOT NULL DEFAULT 0 CHECK(superseded IN (0,1)),
+  evidence_rank        INTEGER NOT NULL DEFAULT 0 CHECK(evidence_rank >= 0),
+  evidence_text        TEXT,
+  provenance_json      TEXT NOT NULL DEFAULT '{}',
+  coverage_json        TEXT NOT NULL DEFAULT '{}',
+  created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (community_row_id, triple_id),
+  FOREIGN KEY (community_row_id) REFERENCES kg_communities(id) ON DELETE CASCADE,
+  FOREIGN KEY (triple_id) REFERENCES kg_triples(id) ON DELETE CASCADE,
+  FOREIGN KEY (run_id) REFERENCES kg_community_runs(id) ON DELETE CASCADE
+);
+`;
+
+export const COMMUNITY_SUMMARIES_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_kg_community_runs_project_status_freshness ON kg_community_runs(project, status, freshness, id);
+CREATE INDEX IF NOT EXISTS idx_kg_community_runs_project_graph_signature ON kg_community_runs(project, graph_signature);
+CREATE INDEX IF NOT EXISTS idx_kg_community_runs_replaced ON kg_community_runs(replaced_run_id);
+CREATE INDEX IF NOT EXISTS idx_kg_communities_project_run ON kg_communities(project, run_id, community_id);
+CREATE INDEX IF NOT EXISTS idx_kg_communities_freshness ON kg_communities(project, freshness, degraded);
+CREATE INDEX IF NOT EXISTS idx_kg_community_members_project_run ON kg_community_members(project, run_id, community_id);
+CREATE INDEX IF NOT EXISTS idx_kg_community_members_entity ON kg_community_members(entity_id, project);
+CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_project_run ON kg_community_evidence(project, run_id, community_id);
+CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_triple ON kg_community_evidence(triple_id, project);
+CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_source_observation ON kg_community_evidence(source_observation_id, project);
+`;
+
 /**
  * Complete database schema — uses CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS
  * for idempotent setup. Safe to run on every startup.
@@ -433,6 +541,8 @@ ${SEMANTIC_METADATA_SQL}
 ${SEMANTIC_METADATA_INDEXES_SQL}
 ${MAINTENANCE_METADATA_SQL}
 ${MAINTENANCE_METADATA_INDEXES_SQL}
+${COMMUNITY_SUMMARIES_SQL}
+${COMMUNITY_SUMMARIES_INDEXES_SQL}
 `;
 
 /**

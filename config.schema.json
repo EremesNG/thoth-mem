@@ -253,6 +253,114 @@
         }
       }
     },
+    "communitySummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Derived KG community-summary settings. Environment variables named THOTH_COMMUNITY_* override these persisted values.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "readPath": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "When false, retrieval ignores community summaries while rebuild metadata can still be maintained."
+            }
+          }
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": ["connected_components", "louvain", "leiden"],
+          "default": "connected_components"
+        },
+        "advancedAlgorithmFallback": {
+          "type": "string",
+          "enum": ["connected_components", "louvain", "leiden"],
+          "default": "connected_components"
+        },
+        "summaryMaxChars": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 8000,
+          "default": 1200
+        },
+        "maxCommunitiesPerProject": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 200
+        },
+        "maxRetrievalCommunities": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 3
+        },
+        "maxEvidencePerCommunity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 8
+        },
+        "sourceObservationLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 12
+        },
+        "rebuildMaxTriples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 5000
+        },
+        "staleBehavior": {
+          "type": "string",
+          "enum": ["skip", "include-degraded"],
+          "default": "skip"
+        },
+        "kgCommunityWeight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.45
+        },
+        "enrichment": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional non-blocking enrichment bounds. No remote provider fields are required.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000,
+              "default": 8000
+            },
+            "maxCostUsd": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 0
+            },
+            "maxChars": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 8000,
+              "default": 1200
+            }
+          }
+        }
+      }
+    },
     "maintenance": {
       "type": "object",
       "additionalProperties": false,

@@ -16,6 +16,20 @@ describe('MCP tool registration', () => {
     ]);
   });
 
+  it('mcp tool registry remains six entries', () => {
+    const names = ALL_TOOLS.map((tool) => tool.name);
+
+    expect(names).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
+    expect(names.filter((name) => /communit/i.test(name))).toEqual([]);
+  });
+
   it('does not expose legacy or admin tools in the MCP surface', () => {
     const names = ALL_TOOLS.map((tool) => tool.name);
 

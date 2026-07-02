@@ -19,6 +19,36 @@ describe('mem_project tool', () => {
     return fullMarker;
   }
 
+  function seedCommunityGraph(project = 'project-a'): void {
+    const db = store.getDb();
+    db.prepare('INSERT INTO sessions (id, project) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+      .run(`${project}-community-session`, project);
+    const source = db.prepare(
+      `INSERT INTO observations (session_id, type, title, content, project, scope, normalized_hash, sync_id)
+       VALUES (?, 'manual', ?, 'project community source body', ?, 'project', ?, ?)`
+    ).run(
+      `${project}-community-session`,
+      `${project} community source`,
+      project,
+      `${project}-community-hash`,
+      `${project}-community-sync`,
+    ).lastInsertRowid as number;
+    const subject = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:subject`, `${project} Subject`) as { id: number };
+    const object = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:object`, `${project} Object`) as { id: number };
+    db.prepare(
+      `INSERT INTO kg_triples (
+        subject_entity_id, relation, object_entity_id, source_type, source_id,
+        project, provenance, confidence, triple_hash
+      ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, '{}', 0.9, ?)`
+    ).run(subject.id, object.id, source, project, `${project}:community-triple`);
+  }
+
   beforeEach(() => {
     store = new Store(':memory:');
     toolHandler = undefined;
@@ -139,5 +169,43 @@ describe('mem_project tool', () => {
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'graph', project: 'project-a', max_chars: 150 })).toThrow(/max_chars must be >= 200/);
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'graph', project: 'project-a', max_chars: 300 })).not.toThrow();
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'topic', project: 'project-a', topic_key: 'architecture/topic-a', max_chars: 0 })).toThrow(/max_chars must be >= 200/);
+  });
+
+  it('community annotation is additive', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      communitySummaries: {
+        readPath: { enabled: true },
+      },
+    });
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_project') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer;
+    registerMemProject(server, store);
+
+    const absent = await toolHandler?.({ action: 'summary', project: 'project-a', max_chars: 2000 });
+    const absentText = absent?.content[0].text ?? '';
+    expect(absentText).toContain('## Project Summary: project-a');
+    expect(absentText).not.toContain('## Community Summaries');
+
+    seedCommunityGraph('project-a');
+    store.rebuildCommunitySummaries({ project: 'project-a' });
+
+    const summary = await toolHandler?.({ action: 'summary', project: 'project-a', max_chars: 4000 });
+    const graph = await toolHandler?.({ action: 'graph', project: 'project-a', max_chars: 4000 });
+    const summaryText = summary?.content[0].text ?? '';
+    const graphText = graph?.content[0].text ?? '';
+
+    expect(summary?.isError).not.toBe(true);
+    expect(summaryText).toContain('## Project Summary: project-a');
+    expect(summaryText).toContain('## Community Summaries');
+    expect(summaryText).toContain('community=');
+    expect(summaryText).toContain('coverage=obs:1 triples:1');
+    expect(graphText).toContain('## Knowledge Graph Ledger: project-a');
+    expect(graphText).not.toContain('## Community Summaries');
   });
 });

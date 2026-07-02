@@ -9,6 +9,35 @@ interface ProjectGraphOptions {
   includeSuperseded?: boolean;
 }
 
+function formatCommunitySummaryLines(store: Store, project: string): string[] {
+  if (!store.config.communitySummaries.readPath.enabled) {
+    return [];
+  }
+
+  const result = store.getCommunitySummariesForRetrieval({
+    project,
+    limit: store.config.communitySummaries.maxRetrievalCommunities,
+    maxChars: Math.min(store.config.communitySummaries.summaryMaxChars, 600),
+  });
+
+  if ((result.state !== 'fresh' && result.state !== 'degraded') || result.candidates.length === 0) {
+    return [];
+  }
+
+  return [
+    '## Community Summaries',
+    '',
+    ...result.candidates.map((community) => [
+      `- community=${community.community_id}`,
+      `freshness=${result.state}`,
+      `coverage=obs:${community.source_observation_ids.length} triples:${community.triple_count}`,
+      `entities=${community.entity_count}`,
+      `degraded=${community.degraded ? 'yes' : 'no'}`,
+      `summary="${community.summary_text.replace(/\s+/g, ' ').slice(0, 240)}"`,
+    ].join(' | ')),
+  ];
+}
+
 export function formatProjectSummary(
   store: Store,
   project: string,
@@ -21,8 +50,10 @@ export function formatProjectSummary(
   ].join('\n');
   const budget = maxOutputChars ?? store.config.maxContextChars;
   const contextBudget = budget === 0 ? 0 : Math.max(1, budget - header.length - 1);
+  const communityLines = formatCommunitySummaryLines(store, project);
   const summary = [
     header,
+    ...(communityLines.length > 0 ? [...communityLines, ''] : []),
     store.getContext({ project, limit, maxOutputChars: contextBudget }),
   ].join('\n');
 

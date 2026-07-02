@@ -18,9 +18,25 @@ function recallHeader(hit: RecallHit, index: number): string {
   return `${index + 1}. [${primary.lane}/${source}] obs:${hit.observation.id} "${hit.observation.title}" score:${hit.score.toFixed(3)}`;
 }
 
+function formatCommunityEvidence(candidate: RecallHit['evidence']['primary']): string | null {
+  if (!candidate.community) {
+    return null;
+  }
+
+  const community = candidate.community;
+  return [
+    `community=${community.communityId}`,
+    `freshness=${community.freshness}`,
+    `coverage=obs:${community.sourceObservationIds.length} triples:${community.tripleCount}`,
+    `entities=${community.entityCount}`,
+    `degraded=${community.degraded ? 'yes' : 'no'}`,
+  ].join(' ');
+}
+
 function formatRecallHit(hit: RecallHit, index: number): string {
   const maintenance = formatMaintenanceEvidence(hit.evidence.maintenance);
-  return maintenance ? `${recallHeader(hit, index)} | ${maintenance}` : recallHeader(hit, index);
+  const community = formatCommunityEvidence(hit.evidence.primary);
+  return [recallHeader(hit, index), community, maintenance].filter((part): part is string => part !== null).join(' | ');
 }
 
 function trimToBudget(text: string, maxChars: number): string {
@@ -63,6 +79,7 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
       `<retrieved_context observation_id="${hit.observation.id}" lane="${primary.lane}" source="${primary.source ?? 'unknown'}">`,
       `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
       `retrieval_contract=${retrievalContract} compression_ratio=${compressionRatio} evidence_chars=${primaryContent.length} full_chars=${fullContent.length}`,
+      formatCommunityEvidence(primary),
       graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
       formatMaintenanceEvidence(hit.evidence.maintenance),
     ];

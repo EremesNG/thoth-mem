@@ -117,6 +117,36 @@ function seedPrunableGraphRows(store: Store, project = 'ops-project'): void {
   }
 }
 
+function seedCommunityGraphRows(store: Store, project = 'http-community-project'): void {
+  const db = store.getDb();
+  db.prepare('INSERT INTO sessions (id, project) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+    .run(`${project}-session`, project);
+  const source = db.prepare(
+    `INSERT INTO observations (session_id, type, title, content, project, scope, normalized_hash, sync_id)
+     VALUES (?, 'manual', ?, 'http community source body', ?, 'project', ?, ?)`
+  ).run(
+    `${project}-session`,
+    `${project} community source`,
+    project,
+    `${project}-community-hash`,
+    `${project}-community-sync`,
+  ).lastInsertRowid as number;
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?) RETURNING id`
+  ).get(`${project}:subject`, `${project} Subject`) as { id: number };
+  const object = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?) RETURNING id`
+  ).get(`${project}:object`, `${project} Object`) as { id: number };
+  db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, provenance, confidence, triple_hash
+    ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, '{}', 0.9, ?)`
+  ).run(subject.id, object.id, source, project, `${project}:community-triple`);
+}
+
 function getUrl(port: number, path: string): string {
   return `http://127.0.0.1:${port}${path}`;
 }
@@ -590,6 +620,97 @@ describe('createHttpBridge', () => {
     expect(maintenanceApply.response.status).toBe(200);
     expect(maintenanceApply.body.dry_run).toBe(false);
     expect(maintenanceApply.body.scope).toEqual({ topic_prefix: 'maintenance/reflection/' });
+  });
+
+  it('community HTTP admin routes exist', async () => {
+    const bridge = await startBridge();
+    seedCommunityGraphRows(bridge.store, 'http-community-project');
+
+    const operations = await fetchJson('/operations', undefined, bridge.port);
+    expect(operations.response.status).toBe(200);
+    expect(operations.body.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'community-rebuild', origin: 'http', method: 'POST', path: '/communities/rebuild' }),
+      expect.objectContaining({ id: 'community-preview', origin: 'http', method: 'POST', path: '/communities/preview' }),
+      expect.objectContaining({ id: 'community-status', origin: 'http', method: 'GET', path: '/communities/status' }),
+      expect.objectContaining({ id: 'project-communities', origin: 'http', method: 'GET', path: '/projects/:project/communities' }),
+      expect.objectContaining({ id: 'community-drop', origin: 'http', method: 'DELETE', path: '/communities' }),
+    ]));
+    expect(operations.body.operations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ origin: 'mcp', target: expect.stringMatching(/communit/i) }),
+    ]));
+
+    const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+    expect(openapi.response.status).toBe(200);
+    expect(openapi.body.paths['/communities/rebuild']).toBeDefined();
+    expect(openapi.body.paths['/communities/preview']).toBeDefined();
+    expect(openapi.body.paths['/communities/status']).toBeDefined();
+    expect(openapi.body.paths['/projects/{project}/communities']).toBeDefined();
+    expect(openapi.body.paths['/communities']).toBeDefined();
+
+    const preview = await fetchJson(
+      '/communities/preview',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project', limit: 1, max_chars: 240 }),
+      },
+      bridge.port,
+    );
+    expect(preview.response.status).toBe(200);
+    expect(preview.body).toMatchObject({
+      project: 'http-community-project',
+      would_commit: false,
+      communities: expect.any(Array),
+    });
+    expect(preview.body.communities).toHaveLength(1);
+
+    const rebuild = await fetchJson(
+      '/communities/rebuild',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project' }),
+      },
+      bridge.port,
+    );
+    expect(rebuild.response.status).toBe(200);
+    expect(rebuild.body).toMatchObject({
+      project: 'http-community-project',
+      status: 'committed',
+      communities_created: 1,
+    });
+
+    const status = await fetchJson('/communities/status?project=http-community-project', undefined, bridge.port);
+    expect(status.response.status).toBe(200);
+    expect(status.body).toMatchObject({
+      project: 'http-community-project',
+      state: 'fresh',
+      communities_count: 1,
+    });
+
+    const projectCommunities = await fetchJson('/projects/http-community-project/communities?limit=1&max_chars=240', undefined, bridge.port);
+    expect(projectCommunities.response.status).toBe(200);
+    expect(projectCommunities.body).toMatchObject({
+      project: 'http-community-project',
+      state: 'fresh',
+      communities: expect.any(Array),
+    });
+    expect(projectCommunities.body.communities).toHaveLength(1);
+
+    const dropped = await fetchJson(
+      '/communities',
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project' }),
+      },
+      bridge.port,
+    );
+    expect(dropped.response.status).toBe(200);
+    expect(dropped.body).toMatchObject({
+      project: 'http-community-project',
+      communities_deleted: 1,
+    });
   });
 
   it('supports observation CRUD, search, and paginated retrieval', async () => {

@@ -113,6 +113,43 @@ function seedPrunableGraph(dataDir: string, project = 'cli-project'): void {
   }
 }
 
+function seedCommunityGraph(dataDir: string, project = 'cli-community-project'): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    const db = store.getDb();
+    db.prepare('INSERT INTO sessions (id, project) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+      .run(`${project}-session`, project);
+    const source = db.prepare(
+      `INSERT INTO observations (session_id, type, title, content, project, scope, normalized_hash, sync_id)
+       VALUES (?, 'manual', ?, 'community source body', ?, 'project', ?, ?)`
+    ).run(
+      `${project}-session`,
+      `${project} community source`,
+      project,
+      `${project}-community-hash`,
+      `${project}-community-sync`,
+    ).lastInsertRowid as number;
+    const subject = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:subject`, `${project} Subject`) as { id: number };
+    const object = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:object`, `${project} Object`) as { id: number };
+    db.prepare(
+      `INSERT INTO kg_triples (
+        subject_entity_id, relation, object_entity_id, source_type, source_id,
+        project, provenance, confidence, triple_hash
+      ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, '{}', 0.9, ?)`
+    ).run(subject.id, object.id, source, project, `${project}:community-triple`);
+  } finally {
+    store.close();
+  }
+}
+
 function seedDeleteProjectStore(dataDir: string): void {
   ensureDir(dataDir);
   const store = new Store(join(dataDir, 'thoth.db'));
@@ -476,6 +513,53 @@ describe('runCli', () => {
     }
   });
 
+  it('community admin commands are project-scoped', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedCommunityGraph(dataDir, 'cli-community-project');
+    seedCommunityGraph(dataDir, 'cli-community-other');
+
+    const preview = await captureCli(['preview-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(preview.stderr).toBe('');
+    expect(preview.stdout).toContain('## Community Summary Preview');
+    expect(preview.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(preview.stdout).toContain('- **Would commit:** no');
+
+    const rebuild = await captureCli(['rebuild-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(rebuild.stderr).toBe('');
+    expect(rebuild.stdout).toContain('## Community Summary Rebuild Complete');
+    expect(rebuild.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(rebuild.stdout).toContain('- **Communities created:** 1');
+
+    const status = await captureCli(['communities-status', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(status.stdout).toContain('## Community Summary Status');
+    expect(status.stdout).toContain('- **Project:** cli-community-project');
+    expect(status.stdout).toContain('- **State:** fresh');
+
+    const allStatus = await captureCli(['communities-status', '--all', '--data-dir', dataDir]);
+    expect(allStatus.stdout).toContain('## Community Summary Status');
+    expect(allStatus.stdout).toContain('- cli-community-project: state=fresh');
+    expect(allStatus.stdout).toContain('- cli-community-other: state=missing');
+
+    const drop = await captureCli(['drop-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(drop.stdout).toContain('## Community Summaries Dropped');
+    expect(drop.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(drop.stdout).toContain('- **Communities deleted:** 1');
+
+    const allRebuild = await captureCli(['rebuild-communities', '--all', '--data-dir', dataDir]);
+    expect(allRebuild.stdout).toContain('## Community Summary Rebuild Complete');
+    expect(allRebuild.stdout).toContain('- cli-community-project: status=committed communities=1');
+    expect(allRebuild.stdout).toContain('- cli-community-other: status=committed communities=1');
+
+    let missingScopeError: unknown;
+    try {
+      await captureCli(['rebuild-communities', '--data-dir', dataDir]);
+    } catch (caught) {
+      missingScopeError = caught;
+    }
+    expect(missingScopeError).toBeInstanceOf(Error);
+    expect((missingScopeError as Error).message).toContain('rebuild-communities requires --project <name> or --all');
+  });
+
   it('requires exactly one rebuild-graph scope', async () => {
     let missingScopeError: unknown;
     try {
@@ -712,6 +796,10 @@ describe('runCli', () => {
     expect(shouldRunCli(['delete-project', 'project-name'])).toBe(true);
     expect(shouldRunCli(['rebuild-graph', '--all'])).toBe(true);
     expect(shouldRunCli(['prune-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['rebuild-communities', '--all'])).toBe(true);
+    expect(shouldRunCli(['preview-communities', '--project', 'project-name'])).toBe(true);
+    expect(shouldRunCli(['communities-status', '--all'])).toBe(true);
+    expect(shouldRunCli(['drop-communities', '--all'])).toBe(true);
     expect(shouldRunCli(['maintain-memory', '--all'])).toBe(true);
     expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
     expect(shouldRunCli(['mcp'])).toBe(false);

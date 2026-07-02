@@ -231,4 +231,85 @@ describe('mem_recall tool', () => {
     expect(contextText).toContain('maintenance:');
     expect(contextText).toContain('sources=obs:');
   });
+
+  it('community annotation is additive', async () => {
+    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue({
+      results: [{
+        observation: {
+          id: 101,
+          sync_id: 'sync-101',
+          session_id: 'session-101',
+          type: 'manual',
+          title: 'Community evidence host',
+          content: 'Community source observation content',
+          tool_name: null,
+          project: 'recall-community-project',
+          scope: 'project',
+          topic_key: null,
+          normalized_hash: null,
+          revision_count: 1,
+          duplicate_count: 1,
+          last_seen_at: null,
+          created_at: '2026-01-01 00:00:00',
+          updated_at: '2026-01-01 00:00:00',
+          deleted_at: null,
+        },
+        score: 0.42,
+        evidence: {
+          primary: {
+            lane: 'kg',
+            observationId: 101,
+            score: 0.42,
+            source: 'kg_community_summary',
+            text: 'Community c_demo connects auth and sessions.',
+            community: {
+              communityId: 'c_demo',
+              runId: 7,
+              freshness: 'fresh',
+              degraded: false,
+              sourceObservationIds: [101, 102],
+              entityCount: 2,
+              tripleCount: 3,
+            },
+          },
+          byLane: {
+            kg: [{
+              lane: 'kg',
+              observationId: 101,
+              score: 0.42,
+              source: 'kg_community_summary',
+              text: 'Community c_demo connects auth and sessions.',
+              community: {
+                communityId: 'c_demo',
+                runId: 7,
+                freshness: 'fresh',
+                degraded: false,
+                sourceObservationIds: [101, 102],
+                entityCount: 2,
+                tripleCount: 3,
+              },
+            }],
+          },
+        },
+      }],
+      pending: false,
+      degradedFallback: [],
+      laneOrder: ['kg'],
+      semanticInputs: [],
+    } as any);
+
+    const compact = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', limit: 1 });
+    const context = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', mode: 'context', limit: 1 });
+    const compactText = compact?.content[0].text ?? '';
+    const contextText = context?.content[0].text ?? '';
+
+    expect(compact?.isError).not.toBe(true);
+    expect(compactText).toContain('[kg/kg_community_summary]');
+    expect(compactText).toContain('community=c_demo');
+    expect(compactText).toContain('freshness=fresh');
+    expect(compactText).toContain('coverage=obs:2 triples:3');
+    expect(contextText).toContain('<retrieved_context observation_id="101" lane="kg" source="kg_community_summary">');
+    expect(contextText).toContain('community=c_demo');
+    expect(contextText).toContain('degraded=no');
+  });
 });
