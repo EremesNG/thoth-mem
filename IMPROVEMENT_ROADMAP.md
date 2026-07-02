@@ -6,10 +6,10 @@
 > resuming without re-discovery. When memory reconnects, mirror this into the
 > `review/thoth-mem/improvement-roadmap` topic.
 
-- **Last updated:** 2026-07-01
+- **Last updated:** 2026-07-02
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.6`
-- **Program status:** A · B1 · B2 · B3 · atomic-writes **SHIPPED** · **C1 implemented + verified + archived (uncommitted)** · C2 / C3 / cross-harness deferred
+- **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3 **SHIPPED** · cross-harness deferred
 
 ---
 
@@ -36,7 +36,7 @@ executable **SDD improvement program**, delivered **change by change**.
 
 ## 2. Operating Model
 
-**Per-change flow (established, consistent across A→C1):**
+**Per-change flow (established, consistent across A→C3):**
 
 1. `requirements-interview` (step 0) → route decision.
 2. **Full SDD** pipeline: `sdd-explore` → `sdd-propose` → `sdd-spec` →
@@ -66,14 +66,13 @@ executable **SDD improvement program**, delivered **change by change**.
 - **Language:** user-facing replies in Spanish; all sub-agent prompts + SDD
   artifacts in English.
 
-**⚠️ Memory status:** the `thoth-mem` MCP server (`mem_*` tools) was
-**disconnected** for this planning session (verified via ToolSearch; a client
-restart did not recover it — likely memory pressure: a JVM OOM `hs_err` was
-observed, and the thoth-mem server loads heavy ONNX embedding models). Durable
-memory writes (observations, roadmap topic, session summary) **could not run**.
-This file is the fallback. **On reconnect:** `mem_session(action="start")` →
-save this roadmap to `review/thoth-mem/improvement-roadmap` → save "B3 shipped",
-"atomic-writes shipped", "C1 planned" observations → session summary.
+**⚠️ Memory status:** this roadmap remains the durable source of truth when the
+Codex runtime does not expose the `mem_*` MCP tools. On 2026-07-02, ToolSearch
+again did **not** expose `mem_session`, `mem_save`, `mem_recall`, `mem_context`,
+`mem_get`, or `mem_project`, even though the stable Codex session identity was
+available. If `mem_*` reappears in a future session, mirror this roadmap into
+`review/thoth-mem/improvement-roadmap` and record root session continuity before
+delegating.
 
 ---
 
@@ -86,11 +85,16 @@ save this roadmap to `review/thoth-mem/improvement-roadmap` → save "B3 shipped
 | **B2** | `kg-multi-hop-recall` | Entity-anchored multi-hop KG recall | ✅ Shipped + archived | `3e27e25` plan · `dfcbdfc` feat · `c12d52d` archive |
 | **B3** | `kg-supersedes-edges` | Supersede-on-update (mark, don't blind-delete) | ✅ Shipped + archived | `d378bd7` plan · `b7c1b5d` feat · `aee8131` archive |
 | **—** | `atomic-observation-writes` | Wrap sync observation writes in a transaction (hardening from B3 review) | ✅ Shipped + archived | `54ac604` fix · `f9a2a2f` archive |
-| **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ **Implemented + verified + archived (uncommitted)** | pending commit |
-| **C2** | *(not started)* | Consolidation / reflection / decay | ⏳ Backlog | — |
-| **C3** | *(not started)* | Community summaries (LazyGraphRAG / Leiden) | ⏳ Backlog | — |
+| **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ Shipped + archived | `6fb20ad` plan · `0771990` feat · `47efb0f` fix · `6986582` archive |
+| **C2** | `memory-consolidation-reflection-decay` | Consolidation / reflection / decay | ✅ Shipped + archived | `7595e90` feat · `4b7ce07` archive · `eb021e3` fix · `9538bde` fix |
+| **C3** | `community-summaries-lazygraphrag` | Community summaries (LazyGraphRAG / Leiden-inspired MVP) | ✅ Shipped + archived | current batch: feat + archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
+
+> Drift note: `openspec/changes/production-hardening-dashboard-v2` and
+> `openspec/changes/sync-and-resilience` currently exist as active OpenSpec
+> change directories with checked task lists. They are not the C3 roadmap item;
+> review/verify/archive them only after an explicit user decision.
 
 ---
 
@@ -105,8 +109,10 @@ FTS5, `zod` ^4, `@modelcontextprotocol/sdk` ^1.29, `@huggingface/transformers` +
 `rebuild-index`, sync, migrate, and the planned `prune-graph`) are **CLI + HTTP
 only — intentionally NOT MCP tools** (`src/evals/retrieval.ts:284-286`).
 
-**Retrieval:** 4-lane hybrid fusion (sentence / chunk / lexical / kg), HyDE,
-deterministic + optional-LLM KG extraction.
+**Retrieval:** 4-lane hybrid fusion (sentence / kg / chunk / lexical), HyDE,
+deterministic + optional-LLM KG extraction. C3 community summaries contribute
+inside the existing KG lane (`source: kg_community_summary`) behind a default-off
+read path; there is still **no fifth MCP/retrieval lane**.
 
 **Knowledge graph:** `kg_entities` + `kg_triples`. `kg_triples` columns
 (`src/store/schema.ts:195-216`): `id`, `subject_entity_id`, `relation`,
@@ -261,40 +267,111 @@ Phase 3 Testing (16, covering ~27 design tests) · Phase 4 Verification & Close
 (`Spec:` + `Design anchor:` + Independent Test + Verification per task); no
 unsatisfiable gates.
 
-**Current status:** implemented by `sdd-apply`, verified by oracle `sdd-verify`
-round 2 as **PASS** (55/55 scenarios), and archived to
-`openspec/changes/archive/2026-07-01-kg-superseded-pruning/`. The only blocker
-found in round 1 was real prune orphan cleanup deleting unrelated pre-existing
-orphans while dry-run counted only prune-set-caused orphans; fixed by scoping
-real orphan deletion to prune candidate entities. No critical issues or warnings
-remain. Working tree is not yet committed.
+**Current status:** shipped, verified, archived, and committed. The only blocker
+found in verify round 1 was real prune orphan cleanup deleting unrelated
+pre-existing orphans while dry-run counted only prune-set-caused orphans; fixed
+by scoping real orphan deletion to prune candidate entities. No critical issues
+or warnings remain.
 
 ---
 
-## 7. Resume Checklist (exact next actions for C1)
+## 7. Completed — C2 `memory-consolidation-reflection-decay` ✅
 
-1. ✅ Plan gate → oracle `plan-reviewer` returned `[OKAY]`.
-2. ✅ User approved implementation.
-3. ✅ Implementation completed via `sdd-apply`.
-4. ✅ Verify loop completed: round 1 failed on scoped orphan cleanup, targeted fix
-   applied, round 2 passed with `pnpm test`, `pnpm run build`, and
-   `pnpm run eval:retrieval` green.
-5. ✅ Archive completed:
-   `openspec/changes/archive/2026-07-01-kg-superseded-pruning/`; deltas merged
-   into baseline specs.
-6. ⬜ Commit working tree. Suggested split: `feat(graph): prune superseded KG
-   history with keep-N retention` and `chore(openspec): archive
-   kg-superseded-pruning`.
+**Why:** C2 introduced the maintenance layer that C3 can build on: duplicate
+suppression/consolidation, deterministic reflection synthesis, and reversible
+decay metadata for lower-value or stale memories.
+
+**Shipped:**
+
+- Exact-hash consolidation is scoped by `topic_key`, project, scope, and type so
+  retrieval cannot collapse unrelated topical memories.
+- Reflection `source_set_hash` is portable across export/import and no longer
+  depends on local row IDs or `sync_id`.
+- Reflection upsert avoids overwriting user-authored topic collisions and reuses
+  existing/imported suffixed maintenance-reflection rows across reruns.
+- Legacy consolidation metadata is filtered against active retrieval filters
+  before canonical routing.
+- Decay cleanup clears stale metadata only for records evaluated by the current
+  plan, preserving outside-batch metadata during bounded automatic maintenance.
+- `maintenance.enabled=false` defaults read-path metadata consumption off, while
+  explicit `readPath.enabled=true` still consumes persisted metadata.
+
+**Artifacts:** archived at
+`openspec/changes/archive/2026-07-01-memory-consolidation-reflection-decay/`.
+
+**Verification:** final review was **GREEN** after remediation; focused Vitest
+gate passed (`49` files / `586` tests), `pnpm run build` passed, and
+`pnpm run eval:retrieval` passed with all Maintenance metrics at `100%`.
+
+**Commits:** `7595e90` feature, `4b7ce07` OpenSpec archive, `eb021e3`
+remediation fix, `9538bde` stale-consolidation hardening fix.
 
 ---
 
-## 8. Backlog / Deferred (toward the full goal)
+## 8. Completed — C3 `community-summaries-lazygraphrag` ✅
 
-- **C2 — consolidation / reflection / decay:** merge duplicate / near-duplicate
-  observations & facts; periodic reflection pass to synthesize durable
-  learnings; decay of low-value memories.
-- **C3 — community summaries:** LazyGraphRAG / Leiden clustering over the KG for
-  hierarchical, cheap high-level recall. (Largest; depends on a mature graph.)
+**Why:** C3 adds bounded, derived community summaries over the knowledge graph so
+agents can get cheap high-level recall without expanding the compact MCP
+surface. It is a LazyGraphRAG/Leiden-inspired MVP implemented with deterministic
+connected components and offline extractive summaries.
+
+**Shipped:**
+
+- Additive community summary tables for derived rebuild artifacts; export/import
+  stays source-memory-only.
+- Project-scoped transactional rebuild, preview, drop/status surfaces via CLI
+  and HTTP only; MCP registry remains exactly six tools.
+- Configured community summary budgets and schema validation, default-off read
+  path, enrichment disabled/offline-safe by default.
+- Retrieval integration inside the KG lane with `kg_community_summary` evidence,
+  no fifth lane, degraded fallback markers, and bounded compact annotations.
+- Staleness tracking on KG/source mutations and explicit graph-signature drift
+  detection.
+
+**Code-review remediation after initial verify:**
+
+- Community recall now filters/ranks summaries by query relevance before applying
+  `maxRetrievalCommunities`, so a relevant community beyond the first N is still
+  discoverable.
+- Runtime community budgets now clamp to the finite maxima advertised by
+  `config.schema.json`.
+- Normal retrieval no longer recomputes the full community graph signature; the
+  full scan remains on explicit state/status paths.
+- The first explicit signature-drift caller now receives
+  `graph_signature_changed` in `degraded_reasons`.
+
+**Artifacts:** archived at
+`openspec/changes/archive/2026-07-01-community-summaries-lazygraphrag/`.
+
+**Verification:** final code review was **GREEN** after remediation. Gates passed:
+focused Vitest (`6` files / `97` tests), `pnpm run build`, full `pnpm test`
+(`50` files / `621` tests), and `pnpm run eval:retrieval` (`23` cases; all
+Community metrics at `100%`).
+
+**Commits:** `722e3cc` feature; OpenSpec archive commit pending in this batch.
+
+---
+
+## 9. Resume Checklist (next actions after C3)
+
+1. ✅ Confirmed C1, C2, and C3 are shipped and archived from git/OpenSpec
+   evidence.
+2. ✅ Confirmed OpenSpec is initialized and not stale:
+   `openspec/config.yaml`, `openspec/specs/`, `openspec/changes/`, and
+   `openspec/memory/constitution.md` exist.
+3. ✅ Confirmed C3 has no active change directory; only the archived path remains.
+4. ✅ C3 code review is GREEN after targeted remediation and repeat gates.
+5. ⬜ Create the C3 feature and OpenSpec/archive commits.
+6. ⬜ Pick the next roadmap item: recommended next decision is whether to start
+   **G3 harness parity** or **MIG MemoryIntegrationCore migration**.
+7. ⬜ For the selected next item, run the established pipeline:
+   `requirements-interview` → `sdd-explore` → `sdd-propose` → `sdd-spec` →
+   `sdd-clarify` → `sdd-design` → `sdd-tasks` → oracle plan-review gate.
+
+---
+
+## 10. Backlog / Deferred (toward the full goal)
+
 - **Brecha #3 — harness parity:** bring deterministic memory hooks to **Claude
   Code + Codex** (today only **OpenCode** has them; the `thoth-agents` plugin at
   `C:\DEV\Proyectos\Webstorm\thoth-agents` is an OpenCode plugin —
@@ -322,9 +399,19 @@ remain. Working tree is not yet committed.
 
 ---
 
-## 9. Commit Ledger (program, newest first)
+## 11. Commit Ledger (program, newest first)
 
 ```
+pending chore(openspec): archive community summaries LazyGraphRAG
+722e3cc feat(retrieval): add community summaries LazyGraphRAG
+9538bde fix(memory): clear stale maintenance consolidations safely
+eb021e3 fix(memory): harden maintenance metadata idempotency
+4b7ce07 chore(openspec): archive memory consolidation reflection decay
+7595e90 feat(memory): add consolidation reflection and decay maintenance
+47efb0f fix(graph): batch KG prune orphan dry-run counting
+6986582 chore(openspec): archive kg-superseded-pruning
+0771990 feat(graph): prune superseded KG history with keep-N retention
+6fb20ad docs(openspec): add kg-superseded-pruning (C1) plan + improvement roadmap
 f9a2a2f chore(openspec): archive atomic-observation-writes
 54ac604 fix(store): wrap sync observation writes in a transaction for atomicity
 aee8131 chore(openspec): archive kg-supersedes-edges; merge deltas into baseline
