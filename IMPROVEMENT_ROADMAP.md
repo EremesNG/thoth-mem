@@ -87,7 +87,7 @@ delegating.
 | **—** | `atomic-observation-writes` | Wrap sync observation writes in a transaction (hardening from B3 review) | ✅ Shipped + archived | `54ac604` fix · `f9a2a2f` archive |
 | **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ Shipped + archived | `6fb20ad` plan · `0771990` feat · `47efb0f` fix · `6986582` archive |
 | **C2** | `memory-consolidation-reflection-decay` | Consolidation / reflection / decay | ✅ Shipped + archived | `7595e90` feat · `4b7ce07` archive · `eb021e3` fix · `9538bde` fix |
-| **C3** | `community-summaries-lazygraphrag` | Community summaries (LazyGraphRAG / Leiden-inspired MVP) | ✅ Shipped + archived | current batch: feat + archive |
+| **C3** | `community-summaries-lazygraphrag` | Community summaries (LazyGraphRAG / Leiden-inspired MVP) | ✅ Shipped + archived | `722e3cc` feat · `c94a65a` archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -348,7 +348,7 @@ focused Vitest (`6` files / `97` tests), `pnpm run build`, full `pnpm test`
 (`50` files / `621` tests), and `pnpm run eval:retrieval` (`23` cases; all
 Community metrics at `100%`).
 
-**Commits:** `722e3cc` feature; OpenSpec archive commit pending in this batch.
+**Commits:** `722e3cc` feature, `c94a65a` OpenSpec archive.
 
 ---
 
@@ -361,7 +361,7 @@ Community metrics at `100%`).
    `openspec/memory/constitution.md` exist.
 3. ✅ Confirmed C3 has no active change directory; only the archived path remains.
 4. ✅ C3 code review is GREEN after targeted remediation and repeat gates.
-5. ⬜ Create the C3 feature and OpenSpec/archive commits.
+5. ✅ Created the C3 feature and OpenSpec/archive commits (`722e3cc`, `c94a65a`).
 6. ⬜ Pick the next roadmap item: recommended next decision is whether to start
    **G3 harness parity** or **MIG MemoryIntegrationCore migration**.
 7. ⬜ For the selected next item, run the established pipeline:
@@ -402,7 +402,7 @@ Community metrics at `100%`).
 ## 11. Commit Ledger (program, newest first)
 
 ```
-pending chore(openspec): archive community summaries LazyGraphRAG
+c94a65a chore(openspec): archive community summaries LazyGraphRAG
 722e3cc feat(retrieval): add community summaries LazyGraphRAG
 9538bde fix(memory): clear stale maintenance consolidations safely
 eb021e3 fix(memory): harden maintenance metadata idempotency
