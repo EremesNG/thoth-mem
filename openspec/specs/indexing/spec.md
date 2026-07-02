@@ -335,3 +335,29 @@ Community rebuild jobs MUST be restart-safe and converge without duplicate artif
 - WHEN the rebuild is retried with the same KG inputs
 - THEN the final committed artifacts MUST converge
 - AND duplicate community artifacts MUST NOT accumulate
+
+## Production Hardening Dashboard V2 Requirements
+
+### Requirement: Indexing Health MUST Include Operator-Grade Queue Metrics
+Indexing health MUST expose queue age, pending/running/done/failed counts by job kind, stale/degraded lane state, recent errors, and coverage ratios.
+
+#### Scenario: Queue lag is visible
+- GIVEN pending semantic jobs exist
+- WHEN health is requested
+- THEN the response MUST include pending counts and queue age or equivalent lag signal
+
+### Requirement: Rebuild Operations MUST Be Available over HTTP
+Graph rebuild and semantic rebuild operations MUST be triggerable and inspectable through HTTP endpoints for Dashboard v2.
+
+#### Scenario: Graph rebuild through HTTP
+- GIVEN existing observations need graph rebuild
+- WHEN the dashboard calls rebuild graph for a project
+- THEN graph jobs or rebuild results MUST be returned with affected count metadata
+
+### Requirement: Background Worker Failures MUST Stay Visible
+Background indexing and KG failures MUST remain visible after terminal failure through recent error telemetry and trace logs.
+
+#### Scenario: Failed KG enrichment appears in health
+- GIVEN optional KG LLM enrichment fails
+- WHEN the dashboard requests health
+- THEN the recent error list MUST include the failed job warning without blocking deterministic KG results
