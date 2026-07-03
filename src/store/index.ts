@@ -1511,6 +1511,19 @@ export class Store {
     writeDeterministicKgFacts(this, observation.id);
   }
 
+  private refreshDerivedStateForObservation(
+    observation: Observation,
+    reason: string,
+    previousProject?: string | null
+  ): void {
+    this.refreshGraphFacts(observation);
+    this.markCommunitySummariesStale(observation.project, reason);
+    if (previousProject !== undefined && previousProject !== observation.project) {
+      this.markCommunitySummariesStale(previousProject, reason);
+    }
+    this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+  }
+
   private deleteSemanticArtifactsForObservation(observationId: number): void {
     const rows = this.db.prepare(
       "SELECT lane, vec_rowid FROM semantic_vector_rowids WHERE observation_id = ?"
@@ -3280,9 +3293,7 @@ export class Store {
           }
 
           this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-          this.refreshGraphFacts(observation);
-          this.markCommunitySummariesStale(observation.project, 'saveObservation');
-          this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+          this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
           return { observation, action: 'upserted' };
         })();
@@ -3313,9 +3324,7 @@ export class Store {
       }
 
       this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
-      this.refreshGraphFacts(observation);
-      this.markCommunitySummariesStale(observation.project, 'saveObservation');
-      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
       return { observation, action: 'created' };
     })();
@@ -3437,12 +3446,7 @@ export class Store {
 
       if (updated) {
         this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
-        this.refreshGraphFacts(updated);
-        this.markCommunitySummariesStale(current.project, 'updateObservation');
-        if (updated.project !== current.project) {
-          this.markCommunitySummariesStale(updated.project, 'updateObservation');
-        }
-        this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
+        this.refreshDerivedStateForObservation(updated, 'updateObservation', current.project);
       }
 
       return updated;
@@ -5605,7 +5609,7 @@ export class Store {
 
         this.ensureSession(obs.session_id, obs.project || 'unknown');
 
-        this.db.prepare(
+        const result = this.db.prepare(
           `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
@@ -5615,6 +5619,12 @@ export class Store {
           obs.revision_count, obs.duplicate_count,
           obs.created_at, obs.updated_at
         );
+        const observation = this.getObservation(Number(result.lastInsertRowid));
+
+        if (observation) {
+          this.refreshDerivedStateForObservation(observation, 'importData');
+        }
+
         observationsImported++;
       }
 
@@ -5705,11 +5715,21 @@ export class Store {
             continue;
           }
 
+          const existingObservation = this.db.prepare(
+            'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
+          ).get(syncId) as { id: number; project: string | null } | undefined;
+
+          if (!existingObservation) {
+            skipped++;
+            continue;
+          }
+
           const result = this.db.prepare(
-            "UPDATE observations SET deleted_at = datetime('now') WHERE sync_id = ? AND deleted_at IS NULL"
-          ).run(syncId);
+            "UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+          ).run(existingObservation.id);
 
           if (result.changes > 0) {
+            this.markCommunitySummariesStale(existingObservation.project, 'applyV2Chunk');
             applied++;
             deleted++;
           } else {
@@ -5754,7 +5774,7 @@ export class Store {
 
             this.ensureSession(sessionId, project || 'unknown');
 
-            this.db.prepare(
+            const result = this.db.prepare(
               `INSERT INTO observations (
                  session_id,
                  type,
@@ -5791,6 +5811,12 @@ export class Store {
               asNullableString(data.updated_at),
               asNullableString(data.deleted_at)
             );
+
+            const observation = this.getObservation(Number(result.lastInsertRowid));
+
+            if (observation) {
+              this.refreshDerivedStateForObservation(observation, 'applyV2Chunk');
+            }
 
             applied++;
             continue;
@@ -5867,8 +5893,8 @@ export class Store {
         if (mutation.operation === 'update') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
-            ).get(syncId) as { id: number } | undefined;
+              'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null } | undefined;
 
             if (!existingObservation) {
               skipped++;
@@ -6006,6 +6032,12 @@ export class Store {
             ).run(...params);
 
             if (result.changes > 0) {
+              const observation = this.getObservation(existingObservation.id);
+
+              if (observation) {
+                this.refreshDerivedStateForObservation(observation, 'applyV2Chunk', existingObservation.project);
+              }
+
               applied++;
             } else {
               skipped++;

@@ -131,6 +131,36 @@ describe('Store — exportData/importData', () => {
     }
   });
 
+  it('importData rebuilds derived graph facts and semantic jobs for imported observations', () => {
+    store.saveObservation({
+      title: 'Portable derived rebuild',
+      content: '**What**: Imported graph facts\n**Why**: Agents should not rediscover imported memory',
+      type: 'decision',
+      project: 'portable-derived',
+      topic_key: 'portable/derived-rebuild',
+    });
+
+    const exported = store.exportData('portable-derived');
+    const targetStore = new Store(':memory:');
+
+    try {
+      const result = targetStore.importData(exported);
+      const imported = targetStore.exportData('portable-derived').observations[0];
+
+      expect(result.observations_imported).toBe(1);
+      expect(imported).toBeDefined();
+      expect(targetStore.getObservationFacts({ observation_id: imported.id }).map((fact) => fact.relation))
+        .toEqual(expect.arrayContaining(['HAS_WHAT', 'HAS_WHY', 'HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY']));
+
+      const semanticJobs = targetStore.getDb().prepare(
+        "SELECT kind FROM semantic_jobs WHERE observation_id = ? ORDER BY kind"
+      ).all(imported.id) as Array<{ kind: string }>;
+      expect(semanticJobs.map((job) => job.kind)).toEqual(['chunk', 'extract_kg', 'sentence']);
+    } finally {
+      targetStore.close();
+    }
+  });
+
   it('exportData includes reflected observations but omits internal maintenance metadata', () => {
     const duplicateSource = store.saveObservation({
       title: 'Portable maintenance duplicate A',

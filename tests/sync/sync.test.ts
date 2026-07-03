@@ -382,6 +382,76 @@ describe('sync export/import', () => {
     }
   });
 
+  it('syncImport rebuilds derived graph facts and semantic jobs for v2 observation chunks', () => {
+    store.saveObservation({
+      title: 'Synced derived rebuild',
+      content: '**What**: Synced graph facts\n**Why**: Imported sync chunks should hydrate derived memory',
+      type: 'decision',
+      project: 'sync-derived',
+      topic_key: 'sync/derived-rebuild',
+    });
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+    syncExport(store, syncDir, 'sync-derived');
+
+    const targetStore = new Store(':memory:');
+
+    try {
+      const result = syncImport(targetStore, syncDir);
+      const imported = targetStore.exportData('sync-derived').observations[0];
+
+      expect(result.observations_imported).toBe(1);
+      expect(imported).toBeDefined();
+      expect(targetStore.getObservationFacts({ observation_id: imported.id }).map((fact) => fact.relation))
+        .toEqual(expect.arrayContaining(['HAS_WHAT', 'HAS_WHY', 'HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY']));
+
+      const semanticJobs = targetStore.getDb().prepare(
+        "SELECT kind FROM semantic_jobs WHERE observation_id = ? ORDER BY kind"
+      ).all(imported.id) as Array<{ kind: string }>;
+      expect(semanticJobs.map((job) => job.kind)).toEqual(['chunk', 'extract_kg', 'sentence']);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('syncImport refreshes derived graph facts after v2 observation updates', () => {
+    const saved = store.saveObservation({
+      title: 'Synced update derived rebuild',
+      content: '**What**: Original sync fact',
+      type: 'decision',
+      project: 'sync-update-derived',
+      topic_key: 'sync/update-derived',
+    }).observation;
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+    syncExport(store, syncDir, 'sync-update-derived');
+
+    const targetStore = new Store(':memory:');
+
+    try {
+      syncImport(targetStore, syncDir);
+
+      store.updateObservation({
+        id: saved.id,
+        content: '**What**: Updated sync fact\n**Why**: Update chunks must refresh derived memory',
+      });
+      syncExport(store, syncDir, 'sync-update-derived');
+      syncImport(targetStore, syncDir);
+
+      const imported = targetStore.exportData('sync-update-derived').observations[0];
+      const facts = targetStore.getObservationFacts({ observation_id: imported.id }).map((fact) => [fact.relation, fact.object]);
+
+      expect(imported.content).toContain('Updated sync fact');
+      expect(facts).toEqual(expect.arrayContaining([
+        ['HAS_WHAT', 'Updated sync fact'],
+        ['HAS_WHY', 'Update chunks must refresh derived memory'],
+      ]));
+      expect(facts).not.toContainEqual(['HAS_WHAT', 'Original sync fact']);
+    } finally {
+      targetStore.close();
+    }
+  });
+
   it('syncImport deduplicates repeated imports by chunk id', () => {
     seedStore(store);
     const syncDir = createTempDir();
@@ -550,6 +620,35 @@ describe('sync export/import', () => {
 
       expect(deletedRow).toBeDefined();
       expect(deletedRow?.deleted_at).not.toBeNull();
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('syncImport marks community summaries stale when v2 tombstones delete observations', () => {
+    const saved = store.saveObservation({
+      title: 'Community tombstone source',
+      content: '**What**: Community tombstone fact\n**Why**: Deletes should stale derived communities',
+      type: 'decision',
+      project: 'sync-community-stale',
+      topic_key: 'sync/community-stale',
+    }).observation;
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+    syncExport(store, syncDir, 'sync-community-stale');
+
+    const targetStore = new Store(':memory:');
+
+    try {
+      syncImport(targetStore, syncDir);
+      targetStore.rebuildCommunitySummaries({ project: 'sync-community-stale' });
+      expect(targetStore.getCommunitySummaryState({ project: 'sync-community-stale' }).state).toBe('fresh');
+
+      store.deleteObservation(saved.id);
+      syncExport(store, syncDir, 'sync-community-stale');
+      syncImport(targetStore, syncDir);
+
+      expect(targetStore.getCommunitySummaryState({ project: 'sync-community-stale' }).state).toBe('stale');
     } finally {
       targetStore.close();
     }
