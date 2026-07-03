@@ -125,8 +125,8 @@ thoth-mem context                      # Recent session context
 thoth-mem stats                        # Memory statistics
 thoth-mem export [file]                # Export to JSON (stdout if no file)
 thoth-mem import <file>                # Import from JSON
-thoth-mem sync [--sync-dir=<path>]     # Git sync export
-thoth-mem sync-import [--sync-dir=<path>]  # Git sync import from another instance
+thoth-mem sync [--dir=<path>]     # Git sync export
+thoth-mem sync-import [--dir=<path>]  # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem delete-project <project>     # Delete a project and its related data
 thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
@@ -221,7 +221,7 @@ pnpm run eval:retrieval
 pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The default gate now requires every eval case to land at rank 1.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The CLI gate fails below 95% recall@1 or 90% recall@k, while curated non-synthetic/current-state cases keep stricter per-case assertions.
 
 Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
 
@@ -400,7 +400,7 @@ Incremental, append-only gzipped chunks designed for version control — no merg
 
 ```bash
 # Export a chunk to the sync directory
-thoth-mem sync --sync-dir=.thoth-sync
+thoth-mem sync --dir=.thoth-sync
 
 # Structure created:
 # .thoth-sync/
@@ -412,7 +412,7 @@ thoth-mem sync --sync-dir=.thoth-sync
 Import on another machine:
 
 ```bash
-thoth-mem sync-import --sync-dir=.thoth-sync
+thoth-mem sync-import --dir=.thoth-sync
 ```
 
 Each observation and prompt carries a `sync_id` (UUID) that prevents duplicates on re-import.
@@ -451,7 +451,7 @@ Default editable config:
 
 ```json
 {
-  "$schema": "https://unpkg.com/thoth-mem@0.3.1/config.schema.json",
+  "$schema": "https://unpkg.com/thoth-mem/config.schema.json",
   "version": 1,
   "maxContentLength": 100000,
   "maxContextResults": 20,
@@ -489,9 +489,50 @@ Default editable config:
     "baseUrl": null,
     "timeoutMs": 8000,
     "minContentChars": 12000
+  },
+  "knowledgeGraph": {
+    "kgMultiHopEnabled": true,
+    "kgMaxDepth": 2,
+    "kgNeighborhoodLimit": 50,
+    "kgMultiHopWeight": 0.7,
+    "kgDepthDecay": 0.5,
+    "kgTraversalTimeoutMs": 50,
+    "kgSupersedeEnabled": true,
+    "kgSupersedeContentPatterns": false,
+    "kgSupersedeConfidenceThreshold": 0.8,
+    "kgSupersedeDeprioritizeWeight": 0.5,
+    "kgPruneEnabled": true,
+    "kgSupersededKeepN": 10,
+    "kgPruneOrphanEntities": true
+  },
+  "communitySummaries": {
+    "enabled": true,
+    "readPath": {
+      "enabled": false
+    },
+    "algorithm": "connected_components",
+    "maxCommunitiesPerProject": 200,
+    "maxRetrievalCommunities": 3,
+    "maxEvidencePerCommunity": 8,
+    "summaryMaxChars": 1200
+  },
+  "maintenance": {
+    "enabled": true,
+    "defaultMode": "dry-run",
+    "automatic": {
+      "enabled": false,
+      "maxRecordsPerRun": 500
+    },
+    "readPath": {
+      "enabled": true
+    }
   }
 }
 ```
+
+`communitySummaries` derives compressed graph neighborhoods for maintenance/rebuild and retrieval support. Rebuilds are enabled by config (`communitySummaries.enabled`) and can generate metadata continuously, but retrieval/context read-path usage remains opt-in via `communitySummaries.readPath.enabled` (default `false`) to avoid token-cost regressions before full default-on rollout. This lets agents reuse cross-session project context without re-reading all raw observations.
+
+`knowledgeGraph.kgSupersedeContentPatterns` is intentionally default-off. Deterministic same-source graph diffs remain the primary supersession signal; optional content phrases such as "replaced by" or "deprecated" are lower-confidence hints and should only be enabled after validating the project corpus against false positives.
 
 | Environment Variable          | Default    | Description                                 |
 | ----------------------------- | ---------- | ------------------------------------------- |
@@ -518,6 +559,49 @@ Default editable config:
 | `THOTH_KG_LLM_BASE_URL`       | unset      | KG LLM provider base URL for remote providers |
 | `THOTH_KG_LLM_TIMEOUT_MS`     | `8000`     | KG LLM timeout before deterministic-only fallback |
 | `THOTH_KG_LLM_MIN_CONTENT_CHARS` | `12000` | Minimum observation size that triggers LLM enrichment |
+| `THOTH_KG_SUPERSEDE_ENABLED` | `true` | Enable KG supersession marking/current-state graph views |
+| `THOTH_KG_SUPERSEDE_CONTENT_PATTERNS` | `false` | Optional lower-confidence content phrase supersession hints |
+| `THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD` | `0.8` | Minimum confidence for optional content-pattern hints |
+| `THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT` | `0.5` | Ranking multiplier for superseded KG evidence |
+| `THOTH_KG_PRUNE_ENABLED` | `true` | Enable keep-N pruning of superseded KG history |
+| `THOTH_KG_SUPERSEDED_KEEP_N` | `10` | Superseded KG triples retained per source/subject/relation slot |
+| `THOTH_KG_PRUNE_ORPHAN_ENTITIES` | `true` | Remove KG entities left without referencing triples after pruning |
+| `THOTH_COMMUNITY_ENABLED` | `true` | Enable derived community metadata/rebuild behavior |
+| `THOTH_COMMUNITY_READ_PATH_ENABLED` | `false` | Opt-in retrieval/context use of community summaries |
+| `THOTH_COMMUNITY_ALGORITHM` | `connected_components` | Community detection algorithm |
+| `THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK` | `connected_components` | Fallback community algorithm |
+| `THOTH_COMMUNITY_SUMMARY_MAX_CHARS` | `1200` | Max chars per community summary |
+| `THOTH_COMMUNITY_MAX_COMMUNITIES_PER_PROJECT` | `200` | Max communities built per project |
+| `THOTH_COMMUNITY_MAX_RETRIEVAL_COMMUNITIES` | `3` | Max communities surfaced per retrieval |
+| `THOTH_COMMUNITY_MAX_EVIDENCE_PER_COMMUNITY` | `8` | Evidence rows per community summary |
+| `THOTH_COMMUNITY_SOURCE_OBSERVATION_LIMIT` | `12` | Max source observations sampled per community |
+| `THOTH_COMMUNITY_REBUILD_MAX_TRIPLES` | `5000` | Rebuild triplets cap |
+| `THOTH_COMMUNITY_STALE_BEHAVIOR` | `skip` | Stale community metadata handling |
+| `THOTH_COMMUNITY_KG_WEIGHT` | `0.45` | Ranking weight for community signal |
+| `THOTH_COMMUNITY_ENRICHMENT_ENABLED` | `false` | Optional community summary enrichment |
+| `THOTH_COMMUNITY_ENRICHMENT_TIMEOUT_MS` | `8000` | Community enrichment timeout |
+| `THOTH_COMMUNITY_ENRICHMENT_MAX_COST_USD` | `0` | Community enrichment cost ceiling |
+| `THOTH_COMMUNITY_ENRICHMENT_MAX_CHARS` | `1200` | Max chars per enriched community summary |
+| `THOTH_MAINTENANCE_ENABLED` | `true` | Global maintenance switch |
+| `THOTH_MAINTENANCE_DEFAULT_MODE` | `dry-run` | Maintenance default mode |
+| `THOTH_MAINTENANCE_AUTOMATIC_ENABLED` | `false` | Enable automatic maintenance jobs |
+| `THOTH_MAINTENANCE_AUTOMATIC_MAX_RECORDS_PER_RUN` | `500` | Automatic job batch size |
+| `THOTH_MAINTENANCE_READ_PATH_ENABLED` | `true` | Consume maintenance metadata in retrieval/context |
+| `THOTH_MAINTENANCE_CONSOLIDATION_ENABLED` | `true` | Enable consolidation metadata generation |
+| `THOTH_MAINTENANCE_CONSOLIDATION_EXACT_HASH_THRESHOLD` | `1` | Consolidation hash threshold |
+| `THOTH_MAINTENANCE_CONSOLIDATION_LEXICAL_SIMILARITY_THRESHOLD` | `0.92` | Consolidation lexical threshold |
+| `THOTH_MAINTENANCE_CONSOLIDATION_REVIEW_SIMILARITY_THRESHOLD` | `0.82` | Consolidation review threshold |
+| `THOTH_MAINTENANCE_REFLECTION_ENABLED` | `true` | Enable reflection maintenance lane |
+| `THOTH_MAINTENANCE_REFLECTION_MIN_SOURCE_COUNT` | `2` | Reflection minimum source count |
+| `THOTH_MAINTENANCE_REFLECTION_MAX_SOURCE_COUNT` | `8` | Reflection maximum source count |
+| `THOTH_MAINTENANCE_REFLECTION_CONTENT_BUDGET_CHARS` | `1200` | Reflection content budget |
+| `THOTH_MAINTENANCE_REFLECTION_MODEL_ASSISTED` | `false` | Optional model-assisted reflection |
+| `THOTH_MAINTENANCE_DECAY_ENABLED` | `true` | Enable maintenance decay metadata |
+| `THOTH_MAINTENANCE_DECAY_DEFAULT_STATE` | `attenuated` | Default decay state |
+| `THOTH_MAINTENANCE_DECAY_STALE_AFTER_DAYS` | `180` | Decay staleness window |
+| `THOTH_MAINTENANCE_DECAY_REDUNDANT_DUPLICATE_COUNT` | `2` | Consolidation duplicate trigger |
+| `THOTH_MAINTENANCE_DECAY_LOW_VALUE_TYPES` | `discovery,manual` | Low-value observation types |
+| `THOTH_MAINTENANCE_DECAY_SCORE_MULTIPLIER` | `0.6` | Decay score multiplier |
 
 ## Storage
 
