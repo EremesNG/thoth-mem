@@ -116,6 +116,9 @@ export interface RetrievalEvalReport {
   markdown: string;
 }
 
+export const RETRIEVAL_EVAL_MIN_RECALL_AT_1 = 0.95;
+export const RETRIEVAL_EVAL_MIN_RECALL_AT_K = 0.9;
+
 const TOP_K = 5;
 const DEFAULT_NOISE_OBSERVATION_COUNT = 96;
 const SUPERSESSION_SIGNAL_OBSERVATIONS = 1;
@@ -620,6 +623,19 @@ function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : Number((numerator / denominator).toFixed(3));
+}
+
+export function assertRetrievalEvalGate(report: Pick<RetrievalEvalReport, 'summary'>): void {
+  const failures: string[] = [];
+  if (report.summary.recall_at_1 < RETRIEVAL_EVAL_MIN_RECALL_AT_1) {
+    failures.push(`Recall@1 ${report.summary.recall_at_1} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_1}`);
+  }
+  if (report.summary.recall_at_k < RETRIEVAL_EVAL_MIN_RECALL_AT_K) {
+    failures.push(`Recall@K ${report.summary.recall_at_k} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_K}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(`Retrieval eval gate failed: ${failures.join('; ')}`);
+  }
 }
 
 function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdapter {
@@ -1862,6 +1878,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   runRetrievalEval()
     .then((report) => {
       process.stdout.write(`${report.markdown}\n`);
+      assertRetrievalEvalGate(report);
     })
     .catch((error) => {
       process.stderr.write(`[retrieval-eval] failed: ${error instanceof Error ? error.message : String(error)}\n`);

@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { runRetrievalEval, type RetrievalEvalReport } from '../../src/evals/retrieval.js';
+import {
+  RETRIEVAL_EVAL_MIN_RECALL_AT_1,
+  RETRIEVAL_EVAL_MIN_RECALL_AT_K,
+  assertRetrievalEvalGate,
+  runRetrievalEval,
+  type RetrievalEvalReport,
+} from '../../src/evals/retrieval.js';
 import { fuseCandidates, type LaneCandidate } from '../../src/retrieval/ranking.js';
 import { Store } from '../../src/store/index.js';
 import type { Observation } from '../../src/store/types.js';
@@ -239,9 +245,10 @@ describe('retrieval eval baseline', () => {
   }, 20_000);
 
   it('measures deterministic hybrid recall under synthetic noise', async () => {
+    expect(() => assertRetrievalEvalGate(report)).not.toThrow();
     expect(report.summary.total_cases).toBeGreaterThanOrEqual(5);
-    expect(report.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
-    expect(report.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
+    expect(report.summary.recall_at_1).toBeGreaterThanOrEqual(RETRIEVAL_EVAL_MIN_RECALL_AT_1);
+    expect(report.summary.recall_at_k).toBeGreaterThanOrEqual(RETRIEVAL_EVAL_MIN_RECALL_AT_K);
     expect(report.summary.mean_reciprocal_rank).toBeGreaterThanOrEqual(0.97);
     expect(report.summary.context_compression).toBeGreaterThan(0);
     expect(report.summary.retrieval_defaults.lane_order).toBe('sentence > kg > chunk > lexical');
@@ -282,6 +289,20 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.kg_provenance_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.lane_truth_rate).toBeGreaterThan(0);
     expect(report.summary.hybrid.facts_source_rate).toBeGreaterThan(0);
+  });
+
+  it('rejects reports below the retrieval eval gate', () => {
+    const lowScoringReport = {
+      ...report,
+      summary: {
+        ...report.summary,
+        recall_at_1: RETRIEVAL_EVAL_MIN_RECALL_AT_1 - 0.001,
+      },
+    };
+
+    expect(() => assertRetrievalEvalGate(lowScoringReport)).toThrow(
+      `Recall@1 ${lowScoringReport.summary.recall_at_1} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_1}`
+    );
   });
 
   it('facts source checks pass on KG-only evidence and graph cases use kg_triples candidates', async () => {
@@ -406,8 +427,8 @@ describe('retrieval eval baseline', () => {
     expect(scaledReport.summary.corpus.noise_observations).toBe(120);
     expect(scaledReport.summary.corpus.total_observations).toBe(143);
     expect(scaledReport.summary.case_mix.rephrased_cases).toBeGreaterThanOrEqual(8);
-    expect(scaledReport.summary.recall_at_1).toBeGreaterThanOrEqual(0.95);
-    expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(0.9);
+    expect(scaledReport.summary.recall_at_1).toBeGreaterThanOrEqual(RETRIEVAL_EVAL_MIN_RECALL_AT_1);
+    expect(scaledReport.summary.recall_at_k).toBeGreaterThanOrEqual(RETRIEVAL_EVAL_MIN_RECALL_AT_K);
   }, 20_000);
 
   it('includes a curated non-synthetic corpus slice in the ranking gate', async () => {
