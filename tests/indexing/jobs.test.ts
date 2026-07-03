@@ -638,6 +638,40 @@ describe('writeDeterministicKgFacts', () => {
     }
   });
 
+  it('keeps content-pattern phrases inert by default across related observations', () => {
+    store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Default content pattern guard',
+      content: '**What**: Redis cache',
+      project: 'indexing-test',
+      topic_key: 'kg/pattern-default-off',
+    });
+    store.saveObservation({
+      title: 'Default content pattern guard follow-up',
+      content: [
+        '**What**: Valkey cache',
+        'Redis cache was replaced by Valkey.',
+      ].join('\n'),
+      project: 'indexing-test',
+      topic_key: 'kg/pattern-default-off-follow-up',
+    });
+
+    const row = store.getDb().prepare(
+      `SELECT kt.superseded_at, kt.superseded_by_triple_id
+       FROM kg_triples kt
+       JOIN kg_entities oe ON oe.id = kt.object_entity_id
+       WHERE kt.source_type = 'observation'
+         AND kt.source_id = ?
+         AND kt.relation = 'HAS_WHAT'
+         AND oe.canonical_name = 'Redis cache'`
+    ).get(saved.observation.id) as { superseded_at: string | null; superseded_by_triple_id: number | null };
+
+    expect(row).toEqual({
+      superseded_at: null,
+      superseded_by_triple_id: null,
+    });
+  });
+
   it('does not let content-pattern hints mark facts from another observation', () => {
     store = new Store(':memory:', {
       knowledgeGraph: {
