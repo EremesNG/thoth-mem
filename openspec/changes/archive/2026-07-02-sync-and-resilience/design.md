@@ -80,7 +80,7 @@ This change is implemented in five coordinated tracks, mapped directly to the ap
 - Top-level tombstones satisfy delete propagation and straightforward backward-compatible parsing (`tombstones` may be absent in legacy chunks).
 - Cursor range allows robust incremental export watermarking.
 
-### Decision: Exact topic-key search implemented in Store, with intent parsing in tool layer
+### Decision: Exact topic-key search implemented in Store with exact filter support in recall-facing surfaces
 **Choice**: Extend `SearchInput` with optional exact key path (`topic_key_exact`) and branch in `Store.searchObservations()` to SQL equality lookup before FTS.
 
 **Alternatives considered**:
@@ -90,44 +90,44 @@ This change is implemented in five coordinated tracks, mapped directly to the ap
 **Rationale**:
 - Exact semantics belong in persistence/query layer to keep behavior deterministic across CLI/HTTP/MCP callers.
 - Equality lookup uses existing B-tree index (`idx_obs_topic`) and avoids FTS tokenizer ambiguity.
-- Tool layer can still infer exact intent from query syntax without breaking existing `query` workflows.
+- `mem_recall` and HTTP recall handlers use explicit exact-key intent (when provided) without breaking existing query workflows.
 
 ## Data Flow
 ### Incremental export flow (v2)
 ```mermaid
 sequenceDiagram
-  participant Tool as mem_sync_export / CLI sync
+  participant Admin as CLI/HTTP Sync Admin
   participant Sync as src/sync/index.ts
   participant Store as src/store/index.ts
   participant DB as SQLite
   participant FS as .thoth-sync
 
-  Tool->>Sync: syncExport(store, syncDir, project?)
+  Admin->>Sync: syncExport(store, syncDir, project?)
   Sync->>Store: getLastExportMutationId(project?)
   Store->>DB: SELECT max(mutation_to_id) FROM sync_chunks WHERE direction='export'...
   Sync->>Store: listMutationsAfter(lastId, project?)
   Store->>DB: SELECT * FROM sync_mutations WHERE id > ? ORDER BY id
   alt no mutations
-    Sync-->>Tool: { chunk_id:'', filename:'', ...0 }
+    Sync-->>Admin: { chunk_id:'', filename:'', ...0 }
   else has mutations
     Sync->>FS: write chunks/{chunk-id}.json.gz (v2)
     Sync->>Store: recordSyncChunk(direction='export', chunk_id, hash, range)
     Store->>DB: INSERT INTO sync_chunks (...)
     Sync->>FS: update manifest.json
-    Sync-->>Tool: chunk metadata + counts
+    Sync-->>Admin: chunk metadata + counts
   end
 ```
 
 ### Import flow with dedupe + tombstones
 ```mermaid
 sequenceDiagram
-  participant Tool as mem_sync_import / CLI sync-import
+  participant Admin as CLI/HTTP Sync Admin
   participant Sync as src/sync/index.ts
   participant Store as src/store/index.ts
   participant DB as SQLite
   participant FS as .thoth-sync
 
-  Tool->>Sync: syncImport(store, syncDir)
+  Admin->>Sync: syncImport(store, syncDir)
   Sync->>FS: resolve ordered chunk list (manifest or sorted fallback)
   loop each chunk
     Sync->>FS: read + gunzip + parse
@@ -177,18 +177,14 @@ sequenceDiagram
   - Support dual import parser for v1 legacy and v2 incremental+tombstones.
   - Keep deterministic processing order (manifest first, sorted fallback).
 
-- **MODIFY** `src/tools/mem-search.ts`
-  - Accept exact-topic-key lookup intent (explicit field and/or query pattern parser).
-  - Route exact lookup to Store exact path while preserving existing modes.
+- **MODIFY** `src/tools/mem-recall.ts`
+  - Ensure exact-key recall semantics remain available and are routed to the Store exact path while preserving existing modes.
 
-- **MODIFY** `src/tools/mem-sync-export.ts`
-  - Update output semantics for incremental/no-op export.
-
-- **MODIFY** `src/tools/mem-sync-import.ts`
-  - Update output semantics for replay-safe import and skipped chunk reporting.
+- **MODIFY** `src/http-routes.ts`, `src/cli.ts`, and `src/server.ts`
+  - Keep sync export/import as CLI/HTTP admin surfaces and preserve compact MCP tool behavior.
 
 - **MODIFY** `src/tools/index.ts`
-  - Register sync tools if not currently exposed in MCP tool registry.
+  - Keep MCP tool registry constrained to the compact six tools (`mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, `mem_session`) and route sync operations to CLI/HTTP only.
 
 - **MODIFY** `src/server.ts`
   - Replace hardcoded server version with shared runtime version.
@@ -288,8 +284,8 @@ export function runMigrations(db: Database.Database): void;
    - Tombstone replay remains idempotent.
    - Mixed repository import (v1 + v2) succeeds deterministically.
 
-6. **Tool-level explicit error tests**
-   - Corrupt/unreadable chunk returns tool error (`isError: true`) rather than silent success.
+6. **Sync explicit error tests**
+   - Corrupt/unreadable chunk returns explicit sync error on CLI/HTTP surfaces rather than silent success.
 
 ## Migration / Rollout
 1. **Startup migration order**
@@ -316,3 +312,4 @@ export function runMigrations(db: Database.Database): void;
 - Should imported mutations be re-journaled for downstream fan-out, or intentionally excluded to prevent replay amplification across multi-hop topologies?
 - What retention/compaction policy should be applied to `sync_chunks` and `sync_mutations` to control long-term SQLite growth?
 - For hard deletes, do we need a dedicated persistent tombstone registry beyond mutation history to prevent possible stale resurrection in edge replay orders?
+

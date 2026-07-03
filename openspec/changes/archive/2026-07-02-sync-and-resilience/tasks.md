@@ -33,9 +33,9 @@
   - **Verification**
     - Run: `pnpm run build`
     - Expected: Compiles without errors and updated store contracts typecheck.
-- [x] 2.3 Add exact topic-key lookup branch in `Store.searchObservations()` inside `src/store/index.ts` (`WHERE topic_key = ?`), preserving project/scope/type/session filters and fallback FTS behavior (Store spec: **Exact Topic Key Lookup MUST Be Deterministic**; Tools spec: **mem_search MUST Preserve Backward-Compatible General Search**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
+- [x] 2.3 Add exact topic-key lookup branch in `Store.searchObservations()` inside `src/store/index.ts` (`WHERE topic_key = ?`), preserving project/scope/type/session filters and fallback FTS behavior (Store spec: **Exact Topic Key Lookup MUST Be Deterministic**; Tools spec: **mem_recall Must Preserve General Recall**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
-    - Run: `pnpm test -- tests/tools/mem-search.test.ts`
+    - Run: `pnpm test -- tests/tools/mem-recall.test.ts`
     - Expected: Search tests pass, including exact topic-key lookup and backward-compatible general search behavior.
 - [x] 2.4 Add `sync_chunks` table/indexes in `src/store/schema.ts` plus Store helpers in `src/store/index.ts` for chunk dedupe checks, status recording, and export watermark lookup (Store spec: **Sync Chunk State MUST Be Persisted Idempotently**). **Sequential file constraint:** continue ordered `src/store/index.ts` edits.
   - **Verification**
@@ -49,13 +49,13 @@
   - **Verification**
     - Run: `pnpm test -- tests/sync/sync.test.ts`
     - Expected: Sync tests pass, including tombstone replay safety and idempotent convergence.
-- [x] 2.7 Expand store/schema tests in `tests/store/schema.test.ts`, `tests/store/migration.test.ts`, and `tests/tools/mem-search.test.ts` for FTS topic_key coverage, rebuild continuity, exact lookup semantics, and idempotent migration reruns (Store spec scenarios: **Rebuild after topic-key index evolution**, **Exact key bypasses tokenization edge cases**).
+- [x] 2.7 Expand store/schema tests in `tests/store/schema.test.ts`, `tests/store/migration.test.ts`, and `tests/tools/mem-recall.test.ts` for FTS topic_key coverage, rebuild continuity, exact lookup semantics, and idempotent migration reruns (Store spec scenarios: **Rebuild after topic-key index evolution**, **Exact key bypasses tokenization edge cases**).
   - **Verification**
-    - Run: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts`
+    - Run: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-recall.test.ts`
     - Expected: All listed tests pass and cover topic_key FTS/rebuild/exact-lookup/idempotent migration cases.
-- [x] 2.8 Run focused verification for store phase: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts` and `pnpm run build`.
+- [x] 2.8 Run focused verification for store phase: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-recall.test.ts` and `pnpm run build`.
   - **Verification**
-    - Run: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-search.test.ts`
+    - Run: `pnpm test -- tests/store/schema.test.ts tests/store/migration.test.ts tests/tools/mem-recall.test.ts`
     - Expected: All listed tests pass.
     - Run: `pnpm run build`
     - Expected: Compiles without errors.
@@ -93,37 +93,37 @@
     - Expected: Compiles without errors.
 
 ## Phase 4: Tools & HTTP Surface Updates
-- [x] 4.1 Update `src/tools/mem-search.ts` to accept exact topic-key lookup intent (explicit field and/or exact-query parsing) and pass `topic_key_exact` to Store while preserving compact/preview behavior (Tools spec: **mem_search MUST Support Exact Topic Key Lookup Intent**).
+- [x] 4.1 Validate exact topic-key lookup on compact tool/HTTP surfaces (`mem_recall` + HTTP search) by keeping Store-backed `topic_key_exact` semantics and preserving full-text behavior for non-exact queries (Tools spec: **mem_recall MUST Support Exact Topic-Key Lookup**).
   - **Verification**
-    - Run: `pnpm test -- tests/tools/mem-search.test.ts`
-    - Expected: `mem-search` tool tests pass, including exact topic-key intent and compact/preview compatibility.
-- [x] 4.2 Update `src/tools/mem-sync-export.ts` to report incremental no-op/exported delta semantics aligned with v2 sync output (Tools spec: **mem_sync_export MUST Use Incremental Sync Semantics**).
-   - **Verification**
-     - Run: `pnpm run build`
-     - Expected: Compiles without errors. (Full test coverage added in task 4.7.)
-- [x] 4.3 Update `src/tools/mem-sync-import.ts` to report replay-safe skipped/applied totals and explicit errors for corrupt chunks (Tools spec: **mem_sync_import MUST Be Replay-Safe and Compatible**, **Tool Error Handling MUST Remain Explicit**).
-   - **Verification**
-     - Run: `pnpm run build`
-     - Expected: Compiles without errors. (Full test coverage added in task 4.7.)
-- [x] 4.4 Register/validate tool exposure updates in `src/tools/index.ts` and `tests/tools/registry.test.ts` (ensure sync tools are intentionally exposed).
-  - **Verification**
-    - Run: `pnpm test -- tests/tools/registry.test.ts`
-    - Expected: Registry tests pass with intended sync tool exposure.
-- [x] 4.5 Update HTTP route handlers in `src/http-routes.ts` for exact topic-key search parameter handling and new sync import/export response semantics. **Sequential file constraint:** all `src/http-routes.ts` tasks remain ordered, no parallel edits.
+    - Run: `pnpm test -- tests/tools/mem-recall.test.ts`
+    - Expected: `mem_recall` and HTTP search tests pass for deterministic topic-key exactness and fallback full-text behavior.
+- [x] 4.2 Validate CLI/HTTP sync export behavior (compact MCP unchanged): incremental no-op and delta semantics, explicit summaries, and explicit error behavior are preserved in `src/sync/index.ts`.
   - **Verification**
     - Run: `pnpm test -- tests/http-server.test.ts`
-    - Expected: HTTP server tests pass for exact topic-key query handling and updated sync response semantics.
+    - Expected: Sync CLI/HTTP contract tests confirm incremental/no-op and explicit summary/error behavior.
+- [x] 4.3 Validate CLI/HTTP sync import behavior (compact MCP unchanged): replay safety, mixed-format handling, and explicit error behavior remain implemented in `src/sync/index.ts`.
+  - **Verification**
+    - Run: `pnpm run build`
+    - Expected: Compiles without errors. (Full sync contract coverage is exercised in task 4.7 + task 4.8.)
+- [x] 4.4 Validate that `src/tools/index.ts` and `tests/tools/registry.test.ts` keep registry to the compact six MCP tools and explicitly do not expose sync/admin MCP tools.
+  - **Verification**
+    - Run: `pnpm test -- tests/tools/registry.test.ts`
+    - Expected: Registry tests pass and only compact tools are exposed.
+- [x] 4.5 Update HTTP route handlers in `src/http-routes.ts` for exact topic-key search parameter handling and sync response semantics. **Sequential file constraint:** all `src/http-routes.ts` tasks remain ordered, no parallel edits.
+  - **Verification**
+    - Run: `pnpm test -- tests/http-server.test.ts`
+    - Expected: HTTP server tests pass for exact topic-key query handling and sync response behavior.
 - [x] 4.6 Update `src/http-openapi.ts` request/response schemas for exact topic-key search and incremental sync summaries so OpenAPI matches runtime behavior.
   - **Verification**
     - Run: `pnpm test -- tests/http-server.test.ts`
     - Expected: HTTP/OpenAPI tests pass with schema/runtime contract consistency.
-- [x] 4.7 Expand endpoint/tool regression tests in `tests/http-server.test.ts`, `tests/tools/mem-search.test.ts`, `tests/tools/mem-sync-export.test.ts` (create), and `tests/tools/mem-sync-import.test.ts` (create) for new contracts and error behavior.
+- [x] 4.7 Expand endpoint/tool regression tests in `tests/http-server.test.ts`, `tests/tools/mem-recall.test.ts`, and `tests/tools/registry.test.ts` for new compact-surface and registry contracts, plus existing sync error handling tests.
   - **Verification**
-    - Run: `pnpm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts`
+    - Run: `pnpm test -- tests/http-server.test.ts tests/tools/mem-recall.test.ts tests/tools/registry.test.ts`
     - Expected: All listed endpoint/tool regression tests pass.
-- [x] 4.8 Run focused tool/HTTP verification: `pnpm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/registry.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts` and `pnpm run build`.
+- [x] 4.8 Run focused tool/HTTP verification: `pnpm test -- tests/http-server.test.ts tests/tools/mem-recall.test.ts tests/tools/registry.test.ts` and `pnpm run build`.
   - **Verification**
-    - Run: `pnpm test -- tests/http-server.test.ts tests/tools/mem-search.test.ts tests/tools/registry.test.ts tests/tools/mem-sync-export.test.ts tests/tools/mem-sync-import.test.ts`
+    - Run: `pnpm test -- tests/http-server.test.ts tests/tools/mem-recall.test.ts tests/tools/registry.test.ts`
     - Expected: All listed tool/HTTP tests pass.
     - Run: `pnpm run build`
     - Expected: Compiles without errors.
@@ -151,4 +151,6 @@
     - Expected: Typecheck passes with no errors.
     - Run: `pnpm test -- tests/cli.test.ts tests/http-server.test.ts`
     - Expected: Smoke tests pass for CLI version and `/openapi.json` version consistency.
+
+
 
