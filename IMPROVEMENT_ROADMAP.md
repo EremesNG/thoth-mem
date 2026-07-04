@@ -8,8 +8,9 @@
 
 - **Last updated:** 2026-07-04
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
-- **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.6`
+- **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.7`
 - **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
+  **SHIPPED** · stable-memory-identity-bootstrap **SHIPPED** · W1
   **SHIPPED** · C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
@@ -82,11 +83,13 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **B1** | `graph-lite-consolidation` | Consolidate legacy `observation_facts` into `kg_triples` (single source) | ✅ Shipped + archived | `62f2fab` plan · `6ec1913` feat · `8c16641` archive |
 | **B2** | `kg-multi-hop-recall` | Entity-anchored multi-hop KG recall | ✅ Shipped + archived | `3e27e25` plan · `dfcbdfc` feat · `c12d52d` archive |
 | **B3** | `kg-supersedes-edges` | Supersede-on-update (mark, don't blind-delete) | ✅ Shipped + archived | `d378bd7` plan · `b7c1b5d` feat · `aee8131` archive |
-| **—** | `kg_triples` legacy migration hotfix | Legacy DB startup adds supersession columns before indexes | ✅ Cherry-picked to `full-graph` | `23957d6` hotfix |
+| **—** | `kg_triples` legacy migration hotfix | Legacy DB startup adds supersession columns before indexes | ✅ Merged from `master` into `full-graph` | `23957d6` cherry-pick · `6139fa5` merge |
 | **—** | `atomic-observation-writes` | Wrap sync observation writes in a transaction (hardening from B3 review) | ✅ Shipped + archived | `54ac604` fix · `f9a2a2f` archive |
 | **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ Shipped + archived | `6fb20ad` plan · `0771990` feat · `47efb0f` fix · `6986582` archive |
 | **C2** | `memory-consolidation-reflection-decay` | Consolidation / reflection / decay | ✅ Shipped + archived | `7595e90` feat · `4b7ce07` archive · `eb021e3` fix · `9538bde` fix |
 | **C3** | `community-summaries-lazygraphrag` | Community summaries (LazyGraphRAG / Leiden-inspired MVP) | ✅ Shipped + archived | `722e3cc` feat · `c94a65a` archive |
+| **F1** | `stable-memory-identity-bootstrap` | Stable project/session identity and visible deterministic fallback metadata | ✅ Shipped + archived | `ed8780e` store · `d7ebb92` surfaces · `8dcd53e` archive |
+| **W1** | `include-superseded-http-history` | HTTP/observatory opt-in for superseded graph history | ✅ Shipped + archived | `3d82aad` feat · `39e0d6a` archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -363,12 +366,20 @@ Community metrics at `100%`).
 5. ✅ Created the C3 feature and OpenSpec/archive commits (`722e3cc`, `c94a65a`).
 6. ✅ Recorded the C1/P5 constitution PATCH in
    `openspec/memory/constitution.md` (`1.0.0 → 1.0.1`).
-7. ⬜ Pick the next roadmap item: with multi-harness support intentionally
-   deferred until the foundations are solid, recommended next target is the
-   foundation item around stable project/session identity and memory bootstrap
-   behavior before returning to **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**.
-8. ⬜ For the selected next item, run the established pipeline:
+7. ✅ Foundation item `stable-memory-identity-bootstrap` is shipped and archived
+   at `openspec/changes/archive/2026-07-04-stable-memory-identity-bootstrap/`.
+   Verification passed 32/32 scenarios, focused identity/bootstrap tests, build,
+   and full suite.
+8. ✅ W1 `include-superseded-http-history` is implemented, verified, and
+   archived at
+   `openspec/changes/archive/2026-07-04-include-superseded-http-history/`.
+   Verification passed 5/5 proposal criteria, focused HTTP suites, build, and
+   full test suite.
+9. ⬜ Pick the next roadmap item before **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**. Recommended order:
+   - W2: document the precision caveat for opt-in content-pattern supersession.
+   - Then return to G3/MIG once these remaining foundations are closed.
+10. ⬜ For the selected next item, run the established pipeline:
    `requirements-interview` → `sdd-explore` → `sdd-propose` → `sdd-spec` →
    `sdd-clarify` → `sdd-design` → `sdd-tasks` → oracle plan-review gate.
 
@@ -392,12 +403,10 @@ Community metrics at `100%`).
 **Follow-ups from the B3 code review:**
 
 - ✅ **Non-atomic writers** — DONE (`atomic-observation-writes`, `54ac604`).
-- ⬜ **W1** — the current-state filter in `getObservationFactsFromKg` also
-  filters superseded facts for the observatory ledger detail + HTTP facts route
-  (not only `mem_project action=graph`). Behaviorally benign ("prefer current
-  truth"); history still in DB. Decide: accept + doc-note, or wire an
-  `include_superseded` escape at those callers. Candidate for C-series or a doc
-  fix.
+- ✅ **W1** — DONE as `include-superseded-http-history`: HTTP
+  `/projects/{project}/graph` and `/observatory/ledger/{id}` now preserve
+  current-only defaults and expose retained superseded KG history only through
+  explicit `include_superseded=true`; OpenAPI and HTTP tests cover the opt-in.
 - ⬜ **W2** — content-pattern secondary supersession pass
   (`kgSupersedeContentPatterns`, opt-in, default OFF) has substring-match
   precision risk. Doc the knob's caveat; not default-on.
@@ -407,6 +416,14 @@ Community metrics at `100%`).
 ## 11. Commit Ledger (program, newest first)
 
 ```
+39e0d6a chore(openspec): archive include superseded HTTP history
+3d82aad feat(http): expose superseded graph history opt-in
+8dcd53e docs(openspec): archive stable memory identity bootstrap
+d7ebb92 feat(identity): surface fallback metadata across APIs
+ed8780e feat(store): add stable identity fallback metadata
+6139fa5 Merge branch 'master' into full-graph
+778d51f docs(governance): record C1 retention constitution patch
+23957d6 feat(store): support supersession columns for kg_triples
 c94a65a chore(openspec): archive community summaries LazyGraphRAG
 722e3cc feat(retrieval): add community summaries LazyGraphRAG
 9538bde fix(memory): clear stale maintenance consolidations safely
