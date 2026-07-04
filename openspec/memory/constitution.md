@@ -1,9 +1,9 @@
 # Project Constitution — thoth-mem
 
-Version: 1.0.0
+Version: 1.0.1
 Status: Ratified
 Ratified: 2026-06-29
-Last-Amended: 2026-06-29
+Last-Amended: 2026-07-04
 
 > This is an initial baseline constitution derived from README.md, openspec/config.yaml, and
 > openspec/specs/ at version 0.3.6. It captures engineering invariants that are already
@@ -122,9 +122,16 @@ a public-contract element without a prior deprecation notice in a shipped versio
 MUST be rejected at proposal-review. The archive rule ("Warn before merging
 destructive deltas") in config.yaml applies here.
 
+**Clarification:** For knowledge-graph fact history, C1-style bounded keep-N
+retention is compatible with this principle only when it prunes already-superseded
+rows, never current facts. This is not a reversal of the supersede-before-delete
+discipline established by B3.
+
 ---
 
 ## Sync-Impact Report
+
+- 1.0.1 | PATCH | P5 Stable Public Contract With Explicit Deprecation Discipline | Clarifies that bounded keep-N retention of already-superseded KG history is compatible with P5; consumed live by `sdd-design` and `plan-reviewer`; no active design.md/tasks.md artifacts flagged.
 
 | Date | Version | Change | Author |
 |---|---|---|---|

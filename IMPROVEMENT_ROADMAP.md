@@ -6,10 +6,11 @@
 > resuming without re-discovery. When memory reconnects, mirror this into the
 > `review/thoth-mem/improvement-roadmap` topic.
 
-- **Last updated:** 2026-07-02
+- **Last updated:** 2026-07-04
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.6`
-- **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3 **SHIPPED** · cross-harness deferred
+- **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
+  **SHIPPED** · C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
 
@@ -66,13 +67,10 @@ executable **SDD improvement program**, delivered **change by change**.
 - **Language:** user-facing replies in Spanish; all sub-agent prompts + SDD
   artifacts in English.
 
-**⚠️ Memory status:** this roadmap remains the durable source of truth when the
-Codex runtime does not expose the `mem_*` MCP tools. On 2026-07-02, ToolSearch
-again did **not** expose `mem_session`, `mem_save`, `mem_recall`, `mem_context`,
-`mem_get`, or `mem_project`, even though the stable Codex session identity was
-available. If `mem_*` reappears in a future session, mirror this roadmap into
-`review/thoth-mem/improvement-roadmap` and record root session continuity before
-delegating.
+**Memory status:** this roadmap remains the durable file mirror for resuming
+without re-discovery. On 2026-07-04, the `mem_*` MCP tools were available again
+in Codex, root session continuity was restored, and roadmap-level updates should
+also be mirrored into `review/thoth-mem/improvement-roadmap`.
 
 ---
 
@@ -84,6 +82,7 @@ delegating.
 | **B1** | `graph-lite-consolidation` | Consolidate legacy `observation_facts` into `kg_triples` (single source) | ✅ Shipped + archived | `62f2fab` plan · `6ec1913` feat · `8c16641` archive |
 | **B2** | `kg-multi-hop-recall` | Entity-anchored multi-hop KG recall | ✅ Shipped + archived | `3e27e25` plan · `dfcbdfc` feat · `c12d52d` archive |
 | **B3** | `kg-supersedes-edges` | Supersede-on-update (mark, don't blind-delete) | ✅ Shipped + archived | `d378bd7` plan · `b7c1b5d` feat · `aee8131` archive |
+| **—** | `kg_triples` legacy migration hotfix | Legacy DB startup adds supersession columns before indexes | ✅ Cherry-picked to `full-graph` | `23957d6` hotfix |
 | **—** | `atomic-observation-writes` | Wrap sync observation writes in a transaction (hardening from B3 review) | ✅ Shipped + archived | `54ac604` fix · `f9a2a2f` archive |
 | **C1** | `kg-superseded-pruning` | keep-N retention/pruning of superseded triples | ✅ Shipped + archived | `6fb20ad` plan · `0771990` feat · `47efb0f` fix · `6986582` archive |
 | **C2** | `memory-consolidation-reflection-decay` | Consolidation / reflection / decay | ✅ Shipped + archived | `7595e90` feat · `4b7ce07` archive · `eb021e3` fix · `9538bde` fix |
@@ -362,9 +361,14 @@ Community metrics at `100%`).
 3. ✅ Confirmed C3 has no active change directory; only the archived path remains.
 4. ✅ C3 code review is GREEN after targeted remediation and repeat gates.
 5. ✅ Created the C3 feature and OpenSpec/archive commits (`722e3cc`, `c94a65a`).
-6. ⬜ Pick the next roadmap item: recommended next decision is whether to start
-   **G3 harness parity** or **MIG MemoryIntegrationCore migration**.
-7. ⬜ For the selected next item, run the established pipeline:
+6. ✅ Recorded the C1/P5 constitution PATCH in
+   `openspec/memory/constitution.md` (`1.0.0 → 1.0.1`).
+7. ⬜ Pick the next roadmap item: with multi-harness support intentionally
+   deferred until the foundations are solid, recommended next target is the
+   foundation item around stable project/session identity and memory bootstrap
+   behavior before returning to **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**.
+8. ⬜ For the selected next item, run the established pipeline:
    `requirements-interview` → `sdd-explore` → `sdd-propose` → `sdd-spec` →
    `sdd-clarify` → `sdd-design` → `sdd-tasks` → oracle plan-review gate.
 
@@ -380,9 +384,10 @@ Community metrics at `100%`).
 - **Cross-repo migration:** move `MemoryIntegrationCore` into thoth-mem so any
   harness gets deterministic memory. (Architecture decision was saved at memory
   topic `review/thoth-mem/architecture-decision` — re-verify when memory is back.)
-- **Constitution note (PATCH):** run `sdd-constitution` to record that C1's
-  bounded keep-N retention is **not** a reversal of P5 supersede-not-delete
-  (preserves the N most-recent history). Deferred, non-blocking.
+- ✅ **Constitution note (PATCH):** DONE in
+  `openspec/memory/constitution.md` v`1.0.1`: C1 bounded keep-N retention of
+  already-superseded KG history is **not** a reversal of P5
+  supersede-before-delete.
 
 **Follow-ups from the B3 code review:**
 
