@@ -14,6 +14,30 @@ export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
 export type OperationTraceStatus = 'ok' | 'error';
+export type IdentityField = 'session_id' | 'project';
+export type IdentitySource = 'explicit' | 'config' | 'fallback' | 'import' | 'legacy';
+export type IdentityReason = 'missing' | 'blank' | 'placeholder' | 'schema-required';
+
+export interface DegradedIdentityEntry {
+  field: IdentityField;
+  reason: IdentityReason;
+  source: IdentitySource;
+  value: string | null;
+  fallback_value?: string | null;
+}
+
+export interface IdentityResolution {
+  session_id?: string;
+  project?: string | null;
+  session_project: string;
+  degraded: DegradedIdentityEntry[];
+}
+
+export interface IdentityMetadata {
+  degraded: DegradedIdentityEntry[];
+  synthesized_session_id?: string;
+  synthesized_project?: string;
+}
 
 // ── Database Entities ──
 
@@ -64,6 +88,10 @@ export interface UserPrompt {
   project: string | null;
   created_at: string;
 }
+
+export type SavePromptResult = UserPrompt & {
+  identity?: IdentityMetadata;
+};
 
 export interface OperationTrace {
   id: number;
@@ -261,6 +289,7 @@ export type SyncChunk = SyncChunkV1 | SyncChunkV2;
 export interface SaveResult {
   observation: Observation;
   action: 'created' | 'deduplicated' | 'upserted';
+  identity?: IdentityMetadata;
 }
 
 export interface PaginatedContent {
@@ -311,6 +340,14 @@ export interface ImportResult {
   observations_imported: number;
   prompts_imported: number;
   skipped: number;
+  identity?: IdentityMetadata;
+}
+
+export interface ApplyV2ChunkResult {
+  applied: number;
+  skipped: number;
+  deleted: number;
+  identity?: IdentityMetadata;
 }
 
 export interface MigrateProjectResult {

@@ -520,6 +520,54 @@ describe('Store — exportData/importData', () => {
     expect(store.getSession('created-from-prompt')).not.toBeNull();
   });
 
+  it('importData reports degraded identity for legacy records with missing project identity', () => {
+    const data = {
+      version: 1,
+      exported_at: '2026-03-23T10:00:00.000Z',
+      sessions: [],
+      observations: [{
+        id: 1,
+        sync_id: '44444444-4444-4444-8444-444444444444',
+        session_id: 'legacy-missing-project',
+        type: 'manual',
+        title: 'Legacy missing project',
+        content: 'Legacy content',
+        tool_name: null,
+        scope: 'project',
+        topic_key: null,
+        normalized_hash: null,
+        revision_count: 1,
+        duplicate_count: 1,
+        last_seen_at: null,
+        created_at: '2026-03-23 10:00:00',
+        updated_at: '2026-03-23 10:00:00',
+        deleted_at: null,
+      }],
+      prompts: [{
+        id: 1,
+        sync_id: '55555555-5555-4555-8555-555555555555',
+        session_id: 'legacy-missing-project',
+        content: 'Legacy prompt',
+        created_at: '2026-03-23 10:05:00',
+      }],
+    } as unknown as ExportData;
+
+    const result = store.importData(data);
+
+    expect(result.observations_imported).toBe(1);
+    expect(result.prompts_imported).toBe(1);
+    expect(store.getSession('legacy-missing-project')?.project).toBe('unknown');
+    expect(result.identity?.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'project',
+        reason: 'schema-required',
+        source: 'legacy',
+        value: null,
+        fallback_value: 'unknown',
+      }),
+    ]));
+  });
+
   it('importData generates a sync_id for imported observations without one', () => {
     const data: ExportData = {
       version: 1,

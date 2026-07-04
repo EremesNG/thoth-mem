@@ -33,6 +33,48 @@ describe('Store — Session Operations', () => {
     expect(session.directory).toBe('/tmp/project-a');
   });
 
+  it('ensureSession enriches placeholder projects without downgrading stable projects', () => {
+    store.ensureSession('session-placeholder', 'unknown');
+    store.ensureSession('session-placeholder', 'project-a');
+
+    expect(store.getSession('session-placeholder')?.project).toBe('project-a');
+
+    store.ensureSession('session-placeholder', 'unknown');
+
+    expect(store.getSession('session-placeholder')?.project).toBe('project-a');
+  });
+
+  it('saveObservation reports deterministic fallback identity while retaining nullable observation project', () => {
+    const result = store.saveObservation({
+      title: 'Missing identity',
+      content: 'Observation without explicit identity',
+    });
+
+    expect(result.observation.session_id).toBe('manual-save-unknown');
+    expect(result.observation.project).toBeNull();
+    expect(store.getSession('manual-save-unknown')?.project).toBe('unknown');
+    expect(result.identity).toEqual({
+      degraded: expect.arrayContaining([
+        expect.objectContaining({
+          field: 'session_id',
+          reason: 'missing',
+          source: 'fallback',
+          value: null,
+          fallback_value: 'manual-save-unknown',
+        }),
+        expect.objectContaining({
+          field: 'project',
+          reason: 'schema-required',
+          source: 'fallback',
+          value: null,
+          fallback_value: 'unknown',
+        }),
+      ]),
+      synthesized_session_id: 'manual-save-unknown',
+      synthesized_project: 'unknown',
+    });
+  });
+
   it('endSession sets ended_at and summary', () => {
     store.startSession('session-1', 'project-a');
 

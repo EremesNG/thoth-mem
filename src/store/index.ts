@@ -17,6 +17,7 @@ import type {
   DropCommunitySummariesResult,
   ExportData,
   ImportResult,
+  IdentityMetadata,
   MaintenanceInput,
   MaintenanceRunPreview,
   MaintenanceRunResult,
@@ -35,6 +36,7 @@ import type {
   RebuildObservationFactsResult,
   SaveOperationTraceInput,
   SaveObservationInput,
+  SavePromptResult,
   SaveResult,
   SearchInput,
   SearchResult,
@@ -42,6 +44,7 @@ import type {
   CommunityStateInput,
   Session,
   SyncChunkV2,
+  ApplyV2ChunkResult,
   SyncChunkRecord,
   SyncChunkStatus,
   SyncEntityType,
@@ -74,6 +77,7 @@ import type {
   VizSliceResponse,
   ListOperationTracesInput,
 } from './types.js';
+import { metadataFromResolution, normalizeExplicitString, resolveSaveIdentity, mergeIdentityMetadata } from './identity.js';
 import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
@@ -1785,8 +1789,15 @@ export class Store {
     return { before, focus, after };
   }
 
-  savePrompt(sessionId: string, content: string, project?: string): UserPrompt {
-    this.ensureSession(sessionId, project || 'unknown');
+  savePrompt(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
+    const identity = resolveSaveIdentity({
+      session_id: sessionId,
+      project,
+      requireSessionProject: true,
+    });
+    const identityMetadata = metadataFromResolution(identity);
+    const recordProject = normalizeExplicitString(project) ?? null;
+    this.ensureSession(identity.session_id!, identity.session_project);
 
     const contentHash = computeHash(content);
     const recentPrompts = this.db.prepare(
@@ -1795,18 +1806,21 @@ export class Store {
        WHERE session_id = ?
          AND created_at > datetime('now', '-30 seconds')
        ORDER BY created_at DESC`
-    ).all(sessionId) as UserPrompt[];
+    ).all(identity.session_id) as UserPrompt[];
 
     const duplicatePrompt = recentPrompts.find((prompt) => computeHash(prompt.content) === contentHash);
 
     if (duplicatePrompt) {
-      return duplicatePrompt;
+      return {
+        ...duplicatePrompt,
+        ...(identityMetadata ? { identity: identityMetadata } : {}),
+      };
     }
 
     const syncId = randomUUID();
     const result = this.db.prepare(
       'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
-    ).run(sessionId, content, project ?? null, syncId);
+    ).run(identity.session_id, content, recordProject, syncId);
 
     const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
 
@@ -1816,7 +1830,10 @@ export class Store {
 
     this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
 
-    return prompt;
+    return {
+      ...prompt,
+      ...(identityMetadata ? { identity: identityMetadata } : {}),
+    };
   }
 
   recentPrompts(limit: number = 10, project?: string, sessionId?: string): UserPrompt[] {
@@ -3231,8 +3248,15 @@ export class Store {
       process.stderr.write(`${validation.warning}\n`);
     }
 
-    const sessionId = input.session_id || `manual-save-${input.project || 'unknown'}`;
-    const project = input.project || 'unknown';
+    const identity = resolveSaveIdentity({
+      session_id: input.session_id,
+      project: input.project,
+      requireSessionProject: true,
+    });
+    const identityMetadata = metadataFromResolution(identity);
+    const sessionId = identity.session_id!;
+    const project = identity.session_project;
+    const recordProject = normalizeExplicitString(input.project) ?? null;
     const type = input.type || 'manual';
     const scope = input.scope || 'project';
     const hash = computeHash(strippedContent);
@@ -3242,7 +3266,7 @@ export class Store {
     const duplicate = checkDuplicate(
       this.db,
       hash,
-      input.project ?? null,
+      recordProject,
       scope,
       type,
       strippedTitle,
@@ -3259,7 +3283,7 @@ export class Store {
 
       this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
 
-      return { observation, action: 'deduplicated' };
+      return { observation, action: 'deduplicated', ...(identityMetadata ? { identity: identityMetadata } : {}) };
     }
 
     if (input.topic_key) {
@@ -3272,7 +3296,7 @@ export class Store {
            AND deleted_at IS NULL
          ORDER BY updated_at DESC
           LIMIT 1`
-      ).get(input.topic_key, input.project ?? null, input.project ?? null, scope) as ObservationRow | undefined;
+      ).get(input.topic_key, recordProject, recordProject, scope) as ObservationRow | undefined;
 
       const existing = this.mapObservationRow(existingRow);
 
@@ -3295,7 +3319,7 @@ export class Store {
           this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
           this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
-          return { observation, action: 'upserted' };
+          return { observation, action: 'upserted', ...(identityMetadata ? { identity: identityMetadata } : {}) };
         })();
       }
     }
@@ -3310,7 +3334,7 @@ export class Store {
         type,
         strippedTitle,
         strippedContent,
-        input.project ?? null,
+        recordProject,
         scope,
         input.topic_key ?? null,
         hash,
@@ -3326,7 +3350,7 @@ export class Store {
       this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
       this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
-      return { observation, action: 'created' };
+      return { observation, action: 'created', ...(identityMetadata ? { identity: identityMetadata } : {}) };
     })();
   }
 
@@ -5583,15 +5607,27 @@ export class Store {
     let observationsImported = 0;
     let promptsImported = 0;
     let skipped = 0;
+    const identityReports: IdentityMetadata[] = [];
 
     const doImport = this.db.transaction(() => {
       // Import sessions (skip if already exists)
       for (const session of data.sessions) {
+        const identity = resolveSaveIdentity({
+          session_id: session.id,
+          project: session.project,
+          requireSessionProject: true,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+
         const result = this.db.prepare(
           `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
            VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO NOTHING`
-        ).run(session.id, session.project, session.directory, session.started_at, session.ended_at, session.summary);
+        ).run(identity.session_id, identity.session_project, session.directory, session.started_at, session.ended_at, session.summary);
         if (result.changes > 0) sessionsImported++;
       }
 
@@ -5607,14 +5643,26 @@ export class Store {
           }
         }
 
-        this.ensureSession(obs.session_id, obs.project || 'unknown');
+        const identity = resolveSaveIdentity({
+          session_id: obs.session_id,
+          project: obs.project,
+          requireSessionProject: true,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+        const recordProject = normalizeExplicitString(obs.project) ?? null;
+
+        this.ensureSession(identity.session_id!, identity.session_project);
 
         const result = this.db.prepare(
           `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
-          obs.session_id, obs.type, obs.title, obs.content, obs.tool_name,
-          obs.project, obs.scope, obs.topic_key, obs.normalized_hash,
+          identity.session_id, obs.type, obs.title, obs.content, obs.tool_name,
+          recordProject, obs.scope, obs.topic_key, obs.normalized_hash,
           obs.sync_id || randomUUID(),
           obs.revision_count, obs.duplicate_count,
           obs.created_at, obs.updated_at
@@ -5640,13 +5688,25 @@ export class Store {
           }
         }
 
-        this.ensureSession(prompt.session_id, prompt.project || 'unknown');
+        const identity = resolveSaveIdentity({
+          session_id: prompt.session_id,
+          project: prompt.project,
+          requireSessionProject: true,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+        const recordProject = normalizeExplicitString(prompt.project) ?? null;
+
+        this.ensureSession(identity.session_id!, identity.session_project);
 
         this.db.prepare(
           `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
            VALUES (?, ?, ?, ?, ?)`
         ).run(
-          prompt.session_id, prompt.content, prompt.project,
+          identity.session_id, prompt.content, recordProject,
           prompt.sync_id || randomUUID(),
           prompt.created_at
         );
@@ -5656,13 +5716,21 @@ export class Store {
 
     doImport();
 
-    return { sessions_imported: sessionsImported, observations_imported: observationsImported, prompts_imported: promptsImported, skipped };
+    const identity = mergeIdentityMetadata(...identityReports);
+    return {
+      sessions_imported: sessionsImported,
+      observations_imported: observationsImported,
+      prompts_imported: promptsImported,
+      skipped,
+      ...(identity ? { identity } : {}),
+    };
   }
 
-  applyV2Chunk(chunk: SyncChunkV2): { applied: number; skipped: number; deleted: number } {
+  applyV2Chunk(chunk: SyncChunkV2): ApplyV2ChunkResult {
     let applied = 0;
     let skipped = 0;
     let deleted = 0;
+    const identityReports: IdentityMetadata[] = [];
 
     const isRecord = (value: unknown): value is Record<string, unknown> => {
       return typeof value === 'object' && value !== null;
@@ -5762,17 +5830,28 @@ export class Store {
             const title = asNullableString(data.title);
             const content = asNullableString(data.content);
 
-            if (!sessionId || !title || !content || !isObservationType(typeValue)) {
+            if (!title || !content || !isObservationType(typeValue)) {
               skipped++;
               continue;
             }
 
             const project = asNullableString(data.project);
+            const identity = resolveSaveIdentity({
+              session_id: sessionId,
+              project,
+              requireSessionProject: true,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const resolvedSessionId = identity.session_id!;
             const scopeValue = data.scope;
             const scope = isObservationScope(scopeValue) ? scopeValue : 'project';
             const normalizedHash = asNullableString(data.normalized_hash) ?? computeHash(content);
 
-            this.ensureSession(sessionId, project || 'unknown');
+            this.ensureSession(resolvedSessionId, identity.session_project);
 
             const result = this.db.prepare(
               `INSERT INTO observations (
@@ -5794,7 +5873,7 @@ export class Store {
                  deleted_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?)`
             ).run(
-              sessionId,
+              resolvedSessionId,
               typeValue,
               title,
               content,
@@ -5835,19 +5914,30 @@ export class Store {
             const sessionId = asNullableString(data.session_id);
             const content = asNullableString(data.content);
 
-            if (!sessionId || !content) {
+            if (!content) {
               skipped++;
               continue;
             }
 
             const project = asNullableString(data.project);
-            this.ensureSession(sessionId, project || 'unknown');
+            const identity = resolveSaveIdentity({
+              session_id: sessionId,
+              project,
+              requireSessionProject: true,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const resolvedSessionId = identity.session_id!;
+            this.ensureSession(resolvedSessionId, identity.session_project);
 
             this.db.prepare(
               `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
                VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))`
             ).run(
-              sessionId,
+              resolvedSessionId,
               content,
               project,
               syncId,
@@ -5868,7 +5958,17 @@ export class Store {
               continue;
             }
 
-            const project = asNullableString(data.project) ?? 'unknown';
+            const identity = resolveSaveIdentity({
+              session_id: syncId,
+              project: asNullableString(data.project),
+              requireSessionProject: true,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const project = identity.session_project;
 
             this.db.prepare(
               `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
@@ -5907,16 +6007,22 @@ export class Store {
 
             if (has('session_id')) {
               const sessionId = asNullableString(data.session_id);
-              if (!sessionId) {
-                skipped++;
-                continue;
-              }
-
               const projectForSession = has('project') ? asNullableString(data.project) : null;
-              this.ensureSession(sessionId, projectForSession || 'unknown');
+              const identity = resolveSaveIdentity({
+                session_id: sessionId,
+                project: projectForSession,
+                requireSessionProject: true,
+                source: 'legacy',
+              });
+              const identityMetadata = metadataFromResolution(identity);
+              if (identityMetadata) {
+                identityReports.push(identityMetadata);
+              }
+              const resolvedSessionId = identity.session_id!;
+              this.ensureSession(resolvedSessionId, identity.session_project);
 
               setClauses.push('session_id = ?');
-              params.push(sessionId);
+              params.push(resolvedSessionId);
             }
 
             if (has('type')) {
@@ -6062,16 +6168,22 @@ export class Store {
 
             if (has('session_id')) {
               const sessionId = asNullableString(data.session_id);
-              if (!sessionId) {
-                skipped++;
-                continue;
-              }
-
               const projectForSession = has('project') ? asNullableString(data.project) : null;
-              this.ensureSession(sessionId, projectForSession || 'unknown');
+              const identity = resolveSaveIdentity({
+                session_id: sessionId,
+                project: projectForSession,
+                requireSessionProject: true,
+                source: 'legacy',
+              });
+              const identityMetadata = metadataFromResolution(identity);
+              if (identityMetadata) {
+                identityReports.push(identityMetadata);
+              }
+              const resolvedSessionId = identity.session_id!;
+              this.ensureSession(resolvedSessionId, identity.session_project);
 
               setClauses.push('session_id = ?');
-              params.push(sessionId);
+              params.push(resolvedSessionId);
             }
 
             if (has('content')) {
@@ -6192,7 +6304,8 @@ export class Store {
 
     applyChunk(chunk.mutations);
 
-    return { applied, skipped, deleted };
+    const identity = mergeIdentityMetadata(...identityReports);
+    return { applied, skipped, deleted, ...(identity ? { identity } : {}) };
   }
 
   isChunkImported(chunkId: string): boolean {
