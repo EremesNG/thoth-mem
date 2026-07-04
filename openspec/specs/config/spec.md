@@ -204,7 +204,10 @@ byte-identical to pre-B3. `kgSupersedeContentPatterns` gates the optional
 lower-confidence content-pattern detector (the primary per-observation diff
 signal is unaffected by it). `kgSupersedeConfidenceThreshold` is the minimum
 confidence at or above which a content-pattern hint contributes a supersession
-marking.
+marking. Because content-pattern hints rely on substring/phrase matches rather
+than deterministic same-source graph diffs, `kgSupersedeContentPatterns` MUST
+remain opt-in/default false, and operators SHOULD validate their project corpus
+against false positives before enabling it.
 `kgSupersedeDeprioritizeWeight` is the retrieval down-weight applied to superseded
 KG evidence (a multiplier in `[0,1)` so superseded facts rank below current
 facts).
