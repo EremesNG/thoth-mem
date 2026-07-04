@@ -4,6 +4,43 @@ import { getConfig } from '../src/config.js';
 import { createHttpBridge } from '../src/http-server.js';
 import { Store } from '../src/store/index.js';
 
+function seedVizSupersededFact(store: Store, input: {
+  observationId: number;
+  project: string;
+  subjectKey: string;
+  objectKey: string;
+  objectName: string;
+  superseded?: boolean;
+}): void {
+  const db = store.getDb();
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.subjectKey, input.subjectKey) as { id: number };
+  const object = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.objectKey, input.objectName) as { id: number };
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id,
+       project, provenance, confidence, triple_hash, extractor_version, superseded_at
+     ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, 'test', 0.9, ?, 'test', ?)`
+  ).run(
+    subject.id,
+    object.id,
+    input.observationId,
+    input.project,
+    `${input.project}:${input.objectKey}`,
+    input.superseded ? '2026-01-01 00:00:00' : null,
+  );
+}
+
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = createServer();
@@ -216,6 +253,94 @@ describe('viz routes', () => {
 
     const timelineResponse = await fetch(`http://127.0.0.1:${port}/observatory/timeline?context_token=${encodeURIComponent(contextBody.context_token)}&limit=1`);
     expect(timelineResponse.status).toBe(200);
+  });
+
+  it('observatory ledger defaults to current facts for omitted and false-like include_superseded values', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Ledger default current',
+      content: '**What**: generated content ignored by fixture',
+      project: 'ledger-history',
+      session_id: 'ledger-history-session',
+      topic_key: 'ledger/history',
+      type: 'decision',
+    });
+    store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(saved.observation.id);
+    seedVizSupersededFact(store, {
+      observationId: saved.observation.id,
+      project: 'ledger-history',
+      subjectKey: 'ledger-current-subject',
+      objectKey: 'ledger-current-object',
+      objectName: 'Current ledger fact',
+    });
+    seedVizSupersededFact(store, {
+      observationId: saved.observation.id,
+      project: 'ledger-history',
+      subjectKey: 'ledger-historical-subject',
+      objectKey: 'ledger-historical-object',
+      objectName: 'Historical ledger fact',
+      superseded: true,
+    });
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    for (const suffix of ['', '?include_superseded=false', '?include_superseded=', '?include_superseded=banana']) {
+      const response = await fetch(`http://127.0.0.1:${port}/observatory/ledger/${saved.observation.id}${suffix}`);
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.what).toEqual(['Current ledger fact']);
+      expect(body.facts.filter((fact: { relation: string }) => fact.relation === 'HAS_WHAT').map((fact: { object: string }) => fact.object)).toEqual(['Current ledger fact']);
+      expect(body.facts.some((fact: { superseded?: boolean }) => fact.superseded === true)).toBe(false);
+    }
+  });
+
+  it('observatory ledger include_superseded=true includes tagged historical facts', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:');
+    const saved = store.saveObservation({
+      title: 'Ledger opt-in current',
+      content: '**What**: generated content ignored by fixture',
+      project: 'ledger-history-opt-in',
+      session_id: 'ledger-history-opt-in-session',
+      topic_key: 'ledger/history',
+      type: 'decision',
+    });
+    store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(saved.observation.id);
+    seedVizSupersededFact(store, {
+      observationId: saved.observation.id,
+      project: 'ledger-history-opt-in',
+      subjectKey: 'ledger-opt-current-subject',
+      objectKey: 'ledger-opt-current-object',
+      objectName: 'Current opt-in ledger fact',
+    });
+    seedVizSupersededFact(store, {
+      observationId: saved.observation.id,
+      project: 'ledger-history-opt-in',
+      subjectKey: 'ledger-opt-historical-subject',
+      objectKey: 'ledger-opt-historical-object',
+      objectName: 'Historical opt-in ledger fact',
+      superseded: true,
+    });
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const response = await fetch(`http://127.0.0.1:${port}/observatory/ledger/${saved.observation.id}?include_superseded=true`);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.what).toEqual(['Current opt-in ledger fact', 'Historical opt-in ledger fact']);
+    expect(body.facts.filter((fact: { relation: string }) => fact.relation === 'HAS_WHAT')).toEqual([
+      expect.objectContaining({ object: 'Current opt-in ledger fact' }),
+      expect.objectContaining({ object: 'Historical opt-in ledger fact', superseded: true }),
+    ]);
   });
 
   it('observatory lane truth: HTTP recall lane payload must not clone lexical evidence into semantic/kg lanes', async () => {

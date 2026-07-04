@@ -58,6 +58,7 @@ import type {
   UserPrompt,
   ObservatoryContextResponse,
   ObservatoryFrontierState,
+  ObservatoryLedgerDetailInput,
   ObservatoryLane,
   ObservatoryLaneStateReason,
   ObservatoryLedgerResponse,
@@ -4674,10 +4675,13 @@ export class Store {
     };
   }
 
-  getObservatoryLedgerDetail(input: { observation_id: number }): ObservatoryLedgerResponse | null {
+  getObservatoryLedgerDetail(input: ObservatoryLedgerDetailInput): ObservatoryLedgerResponse | null {
     const observation = this.getObservation(input.observation_id);
     if (!observation) return null;
-    const facts = this.getObservationFacts({ observation_id: input.observation_id });
+    const facts = this.getObservationFacts({
+      observation_id: input.observation_id,
+      include_superseded: input.include_superseded,
+    });
     const extract = (relation: string) => facts.filter((fact) => fact.relation === relation).map((fact) => stripPrivateTags(fact.object).trim());
     return {
       observation_id: observation.id,

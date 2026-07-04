@@ -170,6 +170,11 @@ export interface ObservationFactsInput {
   include_superseded?: boolean;
 }
 
+export interface ObservatoryLedgerDetailInput {
+  observation_id: number;
+  include_superseded?: boolean;
+}
+
 export interface RebuildObservationFactsInput {
   project?: string;
 }

@@ -691,7 +691,15 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
       '/observatory/ledger/{id}': {
         get: {
           summary: 'Get structured ledger/provenance detail for observation',
-          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+            {
+              name: 'include_superseded',
+              in: 'query',
+              description: 'Set to true to include historical superseded KG facts. Any other value preserves current-only results.',
+              schema: { type: 'boolean', default: false },
+            },
+          ],
           responses: { '200': { description: 'Ledger detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryLedgerResponse' } } } }, '404': { $ref: '#/components/responses/Error' } },
         },
       },
@@ -794,6 +802,12 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
             { name: 'topic_key', in: 'query', schema: { type: 'string' } },
             { name: 'relation', in: 'query', schema: GRAPH_RELATION_SCHEMA },
+            {
+              name: 'include_superseded',
+              in: 'query',
+              description: 'Set to true to include historical superseded KG facts. Any other value preserves current-only results.',
+              schema: { type: 'boolean', default: false },
+            },
             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
             { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 200, maximum: 20000, default: 6000 } },
           ],
@@ -2113,6 +2127,10 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             topic_key: { type: 'string', nullable: true },
             type: OBSERVATION_TYPE_SCHEMA,
             created_at: { type: 'string' },
+            superseded: {
+              type: 'boolean',
+              description: 'Present and true only for historical KG facts when include_superseded=true.',
+            },
           },
           required: ['id', 'observation_id', 'subject', 'relation', 'object', 'project', 'topic_key', 'type', 'created_at'],
         },

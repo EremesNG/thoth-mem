@@ -147,6 +147,43 @@ function seedCommunityGraphRows(store: Store, project = 'http-community-project'
   ).run(subject.id, object.id, source, project, `${project}:community-triple`);
 }
 
+function seedHttpSupersededFact(store: Store, input: {
+  observationId: number;
+  project: string;
+  subjectKey: string;
+  objectKey: string;
+  objectName: string;
+  superseded?: boolean;
+}): void {
+  const db = store.getDb();
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.subjectKey, input.subjectKey) as { id: number };
+  const object = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.objectKey, input.objectName) as { id: number };
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id,
+       project, provenance, confidence, triple_hash, extractor_version, superseded_at
+     ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, 'test', 0.9, ?, 'test', ?)`
+  ).run(
+    subject.id,
+    object.id,
+    input.observationId,
+    input.project,
+    `${input.project}:${input.objectKey}`,
+    input.superseded ? '2026-01-01 00:00:00' : null,
+  );
+}
+
 function getUrl(port: number, path: string): string {
   return `http://127.0.0.1:${port}${path}`;
 }
@@ -1207,6 +1244,113 @@ describe('createHttpBridge', () => {
     });
   });
 
+  it('project graph defaults to current facts for omitted and false-like include_superseded values', async () => {
+    const bridge = await startBridge();
+    const created = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP superseded project graph',
+          content: '**What**: generated content ignored by fixture',
+          project: 'http-superseded-project',
+          topic_key: 'history/http-graph',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    bridge.store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(created.body.id);
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-project',
+      subjectKey: 'http-current-subject',
+      objectKey: 'http-current-object',
+      objectName: 'Current HTTP graph fact',
+    });
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-project',
+      subjectKey: 'http-historical-subject',
+      objectKey: 'http-historical-object',
+      objectName: 'Historical HTTP graph fact',
+      superseded: true,
+    });
+
+    for (const suffix of ['', '&include_superseded=false', '&include_superseded=', '&include_superseded=banana']) {
+      const graph = await fetchJson(
+        `/projects/http-superseded-project/graph?topic_key=history%2Fhttp-graph&relation=HAS_WHAT${suffix}`,
+        undefined,
+        bridge.port,
+      );
+
+      expect(graph.response.status).toBe(200);
+      expect(graph.body.facts.map((fact: { object: string }) => fact.object)).toEqual(['Current HTTP graph fact']);
+      expect(graph.body.facts.some((fact: { superseded?: boolean }) => fact.superseded === true)).toBe(false);
+      expect(graph.body.summary.total).toBe(1);
+      expect(graph.body.text).toContain('Current HTTP graph fact');
+      expect(graph.body.text).not.toContain('Historical HTTP graph fact');
+    }
+  });
+
+  it('project graph include_superseded=true includes tagged historical facts', async () => {
+    const bridge = await startBridge();
+    const created = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP superseded opt-in project graph',
+          content: '**What**: generated content ignored by fixture',
+          project: 'http-superseded-opt-in',
+          topic_key: 'history/http-graph',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    bridge.store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(created.body.id);
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-opt-in',
+      subjectKey: 'http-opt-current-subject',
+      objectKey: 'http-opt-current-object',
+      objectName: 'Current opt-in graph fact',
+    });
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-opt-in',
+      subjectKey: 'http-opt-historical-subject',
+      objectKey: 'http-opt-historical-object',
+      objectName: 'Historical opt-in graph fact',
+      superseded: true,
+    });
+
+    const graph = await fetchJson(
+      '/projects/http-superseded-opt-in/graph?topic_key=history%2Fhttp-graph&relation=HAS_WHAT&include_superseded=true',
+      undefined,
+      bridge.port,
+    );
+
+    expect(graph.response.status).toBe(200);
+    expect(graph.body.facts.map((fact: { object: string }) => fact.object)).toEqual([
+      'Current opt-in graph fact',
+      'Historical opt-in graph fact',
+    ]);
+    expect(graph.body.facts[1]).toMatchObject({
+      object: 'Historical opt-in graph fact',
+      superseded: true,
+    });
+    expect(graph.body.summary.total).toBe(2);
+    expect(graph.body.text).toContain('Historical opt-in graph fact');
+  });
+
   it('supports topic key suggestion', async () => {
     const bridge = await startBridge();
 
@@ -1775,12 +1919,22 @@ describe('createHttpBridge', () => {
         'project',
         'topic_key',
         'relation',
+        'include_superseded',
         'limit',
         'max_chars',
+      ]);
+      expect(openapi.body.paths['/observatory/ledger/{id}'].get.parameters.map((parameter: any) => parameter.name)).toEqual([
+        'id',
+        'include_superseded',
       ]);
       expect(openapi.body.paths['/projects/{project}/graph'].get.responses['200'].content['application/json'].schema).toEqual({
         $ref: '#/components/schemas/ProjectGraphResponse',
       });
+      expect(openapi.body.components.schemas.ProjectGraphFact.properties.superseded).toEqual({
+        type: 'boolean',
+        description: 'Present and true only for historical KG facts when include_superseded=true.',
+      });
+      expect(openapi.body.components.schemas.ProjectGraphFact.required).not.toContain('superseded');
       expect(openapi.body.components.schemas.ProjectTextResponse).toBeDefined();
       expect(openapi.body.components.schemas.ProjectGraphFact).toBeDefined();
       expect(openapi.body.components.schemas.ProjectGraphSummary).toBeDefined();

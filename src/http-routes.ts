@@ -317,6 +317,10 @@ function parseGraphRelation(value: string | null, fieldName: string): GraphRelat
   return value as GraphRelation;
 }
 
+function parseExplicitTrueQuery(value: string | null): boolean {
+  return value === 'true';
+}
+
 function parseObservationId(params: Record<string, string>): number {
   return parseRequiredInteger(params.id, 'id', 1);
 }
@@ -331,9 +335,15 @@ function parseProjectParam(params: Record<string, string>): string {
   return decodeURIComponent(project);
 }
 
-function getProjectGraphFacts(store: Store, project: string, topicKey?: string, relation?: GraphRelation): ObservationFact[] {
+function getProjectGraphFacts(
+  store: Store,
+  project: string,
+  topicKey?: string,
+  relation?: GraphRelation,
+  includeSuperseded?: boolean,
+): ObservationFact[] {
   return store
-    .getObservationFacts({ project, topic_key: topicKey })
+    .getObservationFacts({ project, topic_key: topicKey, include_superseded: includeSuperseded })
     .filter((fact) => !relation || fact.relation === relation);
 }
 
@@ -1144,7 +1154,8 @@ export async function handleObservatoryMapFrontier(store: Store, request: HttpRo
 
 export async function handleObservatoryLedger(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const id = parseObservationId(request.params);
-  const payload = store.getObservatoryLedgerDetail({ observation_id: id });
+  const includeSuperseded = parseExplicitTrueQuery(request.query.get('include_superseded'));
+  const payload = store.getObservatoryLedgerDetail({ observation_id: id, include_superseded: includeSuperseded });
   if (!payload) throw new HttpRouteError(404, `Observation ${id} not found`);
   return { status: 200, body: payload };
 }
@@ -1192,12 +1203,14 @@ export async function handleProjectGraph(store: Store, request: HttpRouteRequest
   const limit = parseOptionalInteger(request.query.get('limit'), 'limit', 1);
   const maxChars = parseOptionalInteger(request.query.get('max_chars'), 'max_chars', 200) ?? 6000;
   const relation = parseGraphRelation(request.query.get('relation'), 'relation');
+  const includeSuperseded = parseExplicitTrueQuery(request.query.get('include_superseded'));
   const effectiveLimit = limit ?? 100;
-  const facts = getProjectGraphFacts(store, project, topicKey, relation);
+  const facts = getProjectGraphFacts(store, project, topicKey, relation, includeSuperseded);
   const limitedFacts = facts.slice(0, effectiveLimit);
   const text = formatProjectGraph(store, project, {
     topicKey,
     relation,
+    includeSuperseded,
     limit: effectiveLimit,
     maxChars,
   });
