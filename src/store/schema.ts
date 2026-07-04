@@ -228,8 +228,6 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_object ON kg_triples(object_entity_id)
 CREATE INDEX IF NOT EXISTS idx_kg_triples_relation ON kg_triples(relation);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_project ON kg_triples(project);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_topic ON kg_triples(topic_key);
-CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by_triple_id);
-CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at);
 `;
 
 export const MAINTENANCE_METADATA_SQL = `
@@ -423,6 +421,11 @@ CREATE INDEX IF NOT EXISTS idx_kg_community_members_entity ON kg_community_membe
 CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_project_run ON kg_community_evidence(project, run_id, community_id);
 CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_triple ON kg_community_evidence(triple_id, project);
 CREATE INDEX IF NOT EXISTS idx_kg_community_evidence_source_observation ON kg_community_evidence(source_observation_id, project);
+`;
+
+export const KG_TRIPLES_SUPERSEDITION_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by_triple_id);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at);
 `;
 
 /**

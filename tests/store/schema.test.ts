@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from '../../src/store/schema.js';
+import { runMigrationsWithSemantic } from '../../src/store/migrations.js';
 import { Store } from '../../src/store/index.js';
 
 function setupDb(): InstanceType<typeof Database> {
@@ -65,8 +66,9 @@ describe('Database Schema', () => {
     db.close();
   });
 
-  it('creates all expected indexes', () => {
+  it('creates all expected indexes after migrations', () => {
     const db = setupDb();
+    runMigrationsWithSemantic(db, {});
     const indexes = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name"
     ).all() as { name: string }[];

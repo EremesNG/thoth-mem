@@ -4,6 +4,7 @@ import {
   COMMUNITY_SUMMARIES_SQL,
   OBSERVATIONS_FTS_SQL,
   OBSERVATIONS_FTS_TRIGGERS_SQL,
+  KG_TRIPLES_SUPERSEDITION_INDEXES_SQL,
   MAINTENANCE_METADATA_INDEXES_SQL,
   MAINTENANCE_METADATA_SQL,
   SEMANTIC_METADATA_INDEXES_SQL,
@@ -31,6 +32,8 @@ const OBSERVATIONS_FTS_TRIGGER_NAMES = [
 const LEGACY_COLUMN_MIGRATIONS = [
   { tableName: 'observations', columnName: 'sync_id', columnDef: 'TEXT' },
   { tableName: 'user_prompts', columnName: 'sync_id', columnDef: 'TEXT' },
+  { tableName: 'kg_triples', columnName: 'superseded_by_triple_id', columnDef: 'INTEGER' },
+  { tableName: 'kg_triples', columnName: 'superseded_at', columnDef: 'TEXT' },
 ] as const;
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;
@@ -219,8 +222,6 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
       addColumnIfMissing(db, migration.tableName, migration.columnName, migration.columnDef);
     }
-    addColumnIfMissing(db, 'kg_triples', 'superseded_by_triple_id', 'INTEGER');
-    addColumnIfMissing(db, 'kg_triples', 'superseded_at', 'TEXT');
 
     db.exec(SYNC_CHUNKS_SQL);
     db.exec(SYNC_MUTATIONS_SQL);
@@ -233,7 +234,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     db.exec(MAINTENANCE_METADATA_INDEXES_SQL);
     db.exec(COMMUNITY_SUMMARIES_SQL);
     db.exec(COMMUNITY_SUMMARIES_INDEXES_SQL);
-    db.exec('CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at)');
+    db.exec(KG_TRIPLES_SUPERSEDITION_INDEXES_SQL);
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);
     const missingTopicKeyFtsColumn = !ftsHasColumn(
