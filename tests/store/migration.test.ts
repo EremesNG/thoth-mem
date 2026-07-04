@@ -372,6 +372,97 @@ describe('Store — Migration behaviors', () => {
     expect(indexNames).toContain('idx_sync_mutations_created_at');
   });
 
+  it('upgrades legacy kg_triples schema without supersession columns on startup', () => {
+    const dbPath = join(tmpdir(), `thoth-legacy-kg-${randomUUID()}.db`);
+    const legacyDb = new Database(dbPath);
+
+    try {
+      for (const pragma of PRAGMAS) {
+        legacyDb.exec(pragma);
+      }
+
+      legacyDb.exec(`
+        CREATE TABLE kg_taxonomy_metadata (
+          id                INTEGER PRIMARY KEY CHECK (id = 1),
+          taxonomy_version  TEXT NOT NULL,
+          entity_types_json TEXT NOT NULL,
+          relation_types_json TEXT NOT NULL,
+          updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE kg_entities (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_key     TEXT NOT NULL UNIQUE,
+          entity_type    TEXT NOT NULL,
+          canonical_name TEXT NOT NULL,
+          aliases_json   TEXT,
+          metadata_json  TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE kg_triples (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_entity_id INTEGER NOT NULL,
+          relation         TEXT NOT NULL,
+          object_entity_id INTEGER NOT NULL,
+          source_type      TEXT NOT NULL CHECK(source_type IN ('observation','prompt','session_summary','unknown')),
+          source_id        INTEGER,
+          source_sync_id   TEXT,
+          project          TEXT,
+          topic_key        TEXT,
+          provenance       TEXT NOT NULL,
+          confidence       REAL NOT NULL DEFAULT 0.0,
+          triple_hash      TEXT NOT NULL UNIQUE,
+          extractor_version TEXT,
+          created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (subject_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE,
+          FOREIGN KEY (object_entity_id) REFERENCES kg_entities(id) ON DELETE CASCADE
+        );
+      `);
+
+      legacyDb.close();
+
+      const upgradedStore = new Store(dbPath);
+      const db = upgradedStore.getDb();
+
+      const kgColumns = db.prepare('PRAGMA table_info(kg_triples)').all() as Array<{ name: string; type: string }>;
+      const columnNames = kgColumns.map((column) => column.name);
+      const supersededByColumn = kgColumns.find((column) => column.name === 'superseded_by_triple_id');
+
+      expect(columnNames).toContain('superseded_by_triple_id');
+      expect(columnNames).toContain('superseded_at');
+      expect(supersededByColumn?.type).toBe('INTEGER');
+
+      const kgTriplesSchema = db.prepare(
+        'SELECT sql FROM sqlite_master WHERE type=\'table\' AND name=\'kg_triples\''
+      ).get() as { sql: string };
+
+      expect(kgTriplesSchema.sql).not.toContain('"superseded_by_triple_id" INTEGER REFERENCES');
+
+      const kgIndexes = db.prepare(
+        'SELECT name, sql FROM sqlite_master WHERE type=\'index\' AND tbl_name=\'kg_triples\' ORDER BY name'
+      ).all() as Array<{ name: string; sql: string | null }>;
+      const indexNames = kgIndexes.map((index) => index.name);
+      const slotIndex = kgIndexes.find((index) => index.name === 'idx_kg_triples_slot_superseded');
+
+      expect(indexNames).toContain('idx_kg_triples_superseded');
+      expect(indexNames).toContain('idx_kg_triples_slot_superseded');
+      expect(slotIndex?.sql).toContain('(source_id, subject_entity_id, relation, superseded_at)');
+
+      upgradedStore.close();
+    } finally {
+      try {
+        unlinkSync(dbPath);
+        unlinkSync(`${dbPath}-shm`);
+        unlinkSync(`${dbPath}-wal`);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+
   describe('sqlite-vec migration/readiness (hybrid retrieval baseline)', () => {
     it('sqlite-vec: creates vec0 tables for chunk and sentence embeddings', () => {
       const db = store.getDb();

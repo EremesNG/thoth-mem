@@ -228,6 +228,11 @@ CREATE INDEX IF NOT EXISTS idx_kg_triples_project ON kg_triples(project);
 CREATE INDEX IF NOT EXISTS idx_kg_triples_topic ON kg_triples(topic_key);
 `;
 
+export const KG_TRIPLES_SUPERSEDITION_INDEXES_SQL = `
+CREATE INDEX IF NOT EXISTS idx_kg_triples_superseded ON kg_triples(superseded_by_triple_id);
+CREATE INDEX IF NOT EXISTS idx_kg_triples_slot_superseded ON kg_triples(source_id, subject_entity_id, relation, superseded_at);
+`;
+
 /**
  * Complete database schema — uses CREATE TABLE/INDEX/TRIGGER IF NOT EXISTS
  * for idempotent setup. Safe to run on every startup.

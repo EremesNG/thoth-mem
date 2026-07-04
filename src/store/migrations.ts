@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   OBSERVATIONS_FTS_SQL,
   OBSERVATIONS_FTS_TRIGGERS_SQL,
+  KG_TRIPLES_SUPERSEDITION_INDEXES_SQL,
   SEMANTIC_METADATA_INDEXES_SQL,
   SEMANTIC_METADATA_SQL,
   SYNC_CHUNKS_INDEXES_SQL,
@@ -27,6 +28,8 @@ const OBSERVATIONS_FTS_TRIGGER_NAMES = [
 const LEGACY_COLUMN_MIGRATIONS = [
   { tableName: 'observations', columnName: 'sync_id', columnDef: 'TEXT' },
   { tableName: 'user_prompts', columnName: 'sync_id', columnDef: 'TEXT' },
+  { tableName: 'kg_triples', columnName: 'superseded_by_triple_id', columnDef: 'INTEGER' },
+  { tableName: 'kg_triples', columnName: 'superseded_at', columnDef: 'TEXT' },
 ] as const;
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;
@@ -223,6 +226,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
     db.exec(SEMANTIC_METADATA_SQL);
     rebuildSemanticRowidsWithoutObservationForeignKey(db);
     db.exec(SEMANTIC_METADATA_INDEXES_SQL);
+    db.exec(KG_TRIPLES_SUPERSEDITION_INDEXES_SQL);
 
     const missingFtsTable = !tableExists(db, OBSERVATIONS_FTS_TABLE_NAME);
     const missingTopicKeyFtsColumn = !ftsHasColumn(
