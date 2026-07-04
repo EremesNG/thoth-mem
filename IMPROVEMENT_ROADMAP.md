@@ -90,6 +90,7 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **C3** | `community-summaries-lazygraphrag` | Community summaries (LazyGraphRAG / Leiden-inspired MVP) | ✅ Shipped + archived | `722e3cc` feat · `c94a65a` archive |
 | **F1** | `stable-memory-identity-bootstrap` | Stable project/session identity and visible deterministic fallback metadata | ✅ Shipped + archived | `ed8780e` store · `d7ebb92` surfaces · `8dcd53e` archive |
 | **W1** | `include-superseded-http-history` | HTTP/observatory opt-in for superseded graph history | ✅ Shipped + archived | `3d82aad` feat · `39e0d6a` archive |
+| **W2** | `content-pattern-supersession-caveat` | Formal caveat for opt-in content-pattern supersession precision risk | ✅ Shipped (docs/spec) | `d6d0dd4` docs |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -375,13 +376,12 @@ Community metrics at `100%`).
    `openspec/changes/archive/2026-07-04-include-superseded-http-history/`.
    Verification passed 5/5 proposal criteria, focused HTTP suites, build, and
    full test suite.
-9. ⬜ Pick the next roadmap item before **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**. Recommended order:
-   - W2: document the precision caveat for opt-in content-pattern supersession.
-   - Then return to G3/MIG once these remaining foundations are closed.
-10. ⬜ For the selected next item, run the established pipeline:
-   `requirements-interview` → `sdd-explore` → `sdd-propose` → `sdd-spec` →
-   `sdd-clarify` → `sdd-design` → `sdd-tasks` → oracle plan-review gate.
+9. ✅ W2 `content-pattern-supersession-caveat` is closed by `d6d0dd4`; the
+   formal config spec now records the substring/phrase-match precision caveat
+   and keeps `kgSupersedeContentPatterns` opt-in/default OFF.
+10. ⬜ Next decision: return to **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration** only when ready to resume multi-harness
+   work; otherwise select the next foundation item explicitly.
 
 ---
 
@@ -407,15 +407,18 @@ Community metrics at `100%`).
   `/projects/{project}/graph` and `/observatory/ledger/{id}` now preserve
   current-only defaults and expose retained superseded KG history only through
   explicit `include_superseded=true`; OpenAPI and HTTP tests cover the opt-in.
-- ⬜ **W2** — content-pattern secondary supersession pass
-  (`kgSupersedeContentPatterns`, opt-in, default OFF) has substring-match
-  precision risk. Doc the knob's caveat; not default-on.
+- ✅ **W2** — DONE as `content-pattern-supersession-caveat`: the formal config
+  spec now documents the substring/phrase-match precision risk for
+  `kgSupersedeContentPatterns`, keeps the knob opt-in/default OFF, and avoids
+  any runtime/default change.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+d6d0dd4 docs(config): document content pattern supersession caveat
+ca35c2a docs(roadmap): record stable identity and W1 progress
 39e0d6a chore(openspec): archive include superseded HTTP history
 3d82aad feat(http): expose superseded graph history opt-in
 8dcd53e docs(openspec): archive stable memory identity bootstrap
