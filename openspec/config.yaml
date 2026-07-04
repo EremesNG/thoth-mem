@@ -31,7 +31,8 @@ rules:
     traceability: true
     parallel_markers: false
   apply:
-    - Follow existing code patterns and conventions
+    guidance:
+      - Follow existing code patterns and conventions
     tdd: false
     test_command: 'pnpm test'
   verify:
