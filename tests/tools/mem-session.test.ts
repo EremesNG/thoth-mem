@@ -35,7 +35,21 @@ describe('mem_session tool', () => {
 
     expect(started?.isError).not.toBe(true);
     expect(started?.content[0].text).toContain('Session started: session-1');
+    expect(started?.content[0].text).not.toContain('Identity fallback:');
     expect(summary?.isError).not.toBe(true);
     expect(summary?.content[0].text).toContain('Session summary saved');
+    expect(summary?.content[0].text).not.toContain('Identity fallback:');
+  });
+
+  it('reports fallback identity when summary omits id', async () => {
+    const summary = await toolHandler?.({
+      action: 'summary',
+      project: 'session-project',
+      content: '## Goal\nFallback summary\n\n## Accomplished\n- Done',
+    });
+
+    expect(summary?.isError).not.toBe(true);
+    expect(summary?.content[0].text).toContain('Session summary saved');
+    expect(summary?.content[0].text).toContain('Identity fallback: session_id missing -> manual-save-session-project');
   });
 });

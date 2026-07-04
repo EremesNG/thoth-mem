@@ -6,6 +6,7 @@ import { Store } from './store/index.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { DeleteProjectResult, ExportData, MaintenanceRunPreview, MaintenanceRunResult, MaintenanceScope, Observation, ObservationScope, ObservationType } from './store/types.js';
 import { syncExport, syncImport } from './sync/index.js';
+import { formatIdentityWarning } from './store/identity.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
 import { VERSION } from './version.js';
 import { createEmbeddingProvider } from './retrieval/provider-factory.js';
@@ -526,17 +527,19 @@ async function handleSync(positionals: string[], globals: GlobalOptions): Promis
    ensureNoExtraArgs(parsedDir.rest, 'sync');
 
    const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
+   const usesDefaultDir = parsedDir.value === undefined;
 
    await withStore(globals.dataDir, ({ store }) => {
      const result = syncExport(store, syncDir, globals.project);
      printStdout([
        '## Sync Export Complete',
        `- **Directory:** ${syncDir}`,
+       usesDefaultDir ? '- **Directory default:** current working directory' : null,
        `- **Chunk:** ${result.filename || 'none'}`,
        `- **Sessions:** ${result.sessions}`,
        `- **Observations:** ${result.observations}`,
        `- **Prompts:** ${result.prompts}`,
-     ].join('\n'));
+     ].filter((line): line is string => line !== null).join('\n'));
    });
 }
 
@@ -545,18 +548,22 @@ async function handleSyncImport(positionals: string[], globals: GlobalOptions): 
    ensureNoExtraArgs(parsedDir.rest, 'sync-import');
 
    const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
+   const usesDefaultDir = parsedDir.value === undefined;
 
    await withStore(globals.dataDir, ({ store }) => {
      const result = syncImport(store, syncDir);
+     const identityWarning = formatIdentityWarning(result.identity);
      printStdout([
        '## Sync Import Complete',
        `- **Directory:** ${syncDir}`,
+       usesDefaultDir ? '- **Directory default:** current working directory' : null,
        `- **Chunks processed:** ${result.chunks_processed}`,
        `- **Sessions imported:** ${result.sessions_imported}`,
        `- **Observations imported:** ${result.observations_imported}`,
        `- **Prompts imported:** ${result.prompts_imported}`,
        `- **Skipped (duplicates):** ${result.skipped}`,
-     ].join('\n'));
+       identityWarning ? `- **Identity fallback:** ${identityWarning.replace(/^Identity fallback: /, '').replace(/\.$/, '')}` : null,
+     ].filter((line): line is string => line !== null).join('\n'));
    });
 }
 

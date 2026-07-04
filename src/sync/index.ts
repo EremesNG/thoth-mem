@@ -11,7 +11,9 @@ import type {
   SyncMutation,
   SyncMutationEnvelopeV2,
   UserPrompt,
+  IdentityMetadata,
 } from '../store/types.js';
+import { mergeIdentityMetadata } from '../store/identity.js';
 
 // ── Types ──
 
@@ -68,6 +70,7 @@ export interface SyncImportResult {
    * @deprecated Legacy compatibility field for existing callers.
    */
   prompts_imported: number;
+  identity?: IdentityMetadata;
 }
 
 // ── Constants ──
@@ -603,6 +606,7 @@ export function syncImport(store: Store, syncDir: string): SyncImportResult {
     : readdirSync(chunksDir).filter(f => f.endsWith('.json.gz')).sort();
 
   const totalResult = createSyncImportResult();
+  const identityReports: IdentityMetadata[] = [];
 
   const preparedChunks: PreparedImportChunk[] = [];
 
@@ -734,6 +738,9 @@ export function syncImport(store: Store, syncDir: string): SyncImportResult {
       if (format === 'v2') {
         const before = getEntityCounts(store);
         const result = store.applyV2Chunk(parsed as SyncChunkV2);
+        if (result.identity) {
+          identityReports.push(result.identity);
+        }
         const after = getEntityCounts(store);
 
         totalResult.sessions_imported += Math.max(0, after.sessions - before.sessions);
@@ -743,6 +750,9 @@ export function syncImport(store: Store, syncDir: string): SyncImportResult {
       } else {
         const data = parsed as ExportData;
         const result = store.importData(data);
+        if (result.identity) {
+          identityReports.push(result.identity);
+        }
 
         totalResult.sessions_imported += result.sessions_imported;
         totalResult.observations_imported += result.observations_imported;
@@ -771,6 +781,11 @@ export function syncImport(store: Store, syncDir: string): SyncImportResult {
         chunk_version: chunkVersion,
       });
     }
+  }
+
+  const identity = mergeIdentityMetadata(...identityReports);
+  if (identity) {
+    totalResult.identity = identity;
   }
 
   return totalResult;

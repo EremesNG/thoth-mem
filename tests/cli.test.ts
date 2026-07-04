@@ -412,6 +412,17 @@ describe('runCli', () => {
     expect(existsSync(join(syncDir, 'manifest.json'))).toBe(true);
   });
 
+  it('prints the cwd-based default sync directory when --dir is omitted', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedStore(dataDir);
+
+    const { stdout } = await captureCli(['sync', '--data-dir', dataDir, '--project', 'cli-project']);
+    const defaultSyncDir = join(process.cwd(), '.thoth-sync');
+
+    expect(stdout).toContain(`- **Directory:** ${defaultSyncDir}`);
+    expect(stdout).toContain('- **Directory default:** current working directory');
+  });
+
   it('migrates a project to a new name', async () => {
     const dataDir = join(tempDir, 'data');
     seedStore(dataDir);

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
+import { formatIdentityWarning, metadataFromResolution, resolveSaveIdentity } from "../store/identity.js";
 
 function extractFirstContentLine(content: string): string {
   const lines = content.split('\n');
@@ -34,7 +35,12 @@ export function registerMemSession(server: McpServer, store: Store): void {
     },
     async ({ action, id, project, directory, content, summary }) => {
       try {
-        const sessionId = id || `manual-save-${project}`;
+        const identity = resolveSaveIdentity({
+          session_id: id,
+          project,
+          requireSessionProject: true,
+        });
+        const sessionId = identity.session_id!;
 
         if (action === 'start') {
           if (!id) {
@@ -60,7 +66,13 @@ export function registerMemSession(server: McpServer, store: Store): void {
           }
 
           return {
-            content: [{ type: "text" as const, text: `Session checkpointed: ${session.id}` }],
+            content: [{
+              type: "text" as const,
+              text: [
+                `Session checkpointed: ${session.id}`,
+                formatIdentityWarning(metadataFromResolution(identity)),
+              ].filter(Boolean).join('\n\n'),
+            }],
           };
         }
 
@@ -86,7 +98,10 @@ export function registerMemSession(server: McpServer, store: Store): void {
         return {
           content: [{
             type: "text" as const,
-            text: `Session summary saved (observation ID: ${result.observation.id}) and session '${sessionId}' checkpointed.`,
+            text: [
+              `Session summary saved (observation ID: ${result.observation.id}) and session '${sessionId}' checkpointed.`,
+              formatIdentityWarning(metadataFromResolution(identity)),
+            ].filter(Boolean).join('\n\n'),
           }],
         };
       } catch (error) {

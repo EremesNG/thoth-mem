@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
 import { OBSERVATION_TYPES } from "../store/types.js";
+import { formatIdentityWarning, metadataFromResolution, resolveSaveIdentity } from "../store/identity.js";
 import { validateContentLength } from "../utils/content.js";
 import { getConfig } from "../config.js";
 import type { EmbeddingProviderAdapter } from "../retrieval/providers.js";
@@ -22,6 +23,11 @@ function extractFirstContentLine(content: string): string {
 
 function sessionSummaryTopicKey(sessionId: string): string {
   return `session/${sessionId}/summary`;
+}
+
+function appendIdentityWarning(message: string, metadata: ReturnType<typeof metadataFromResolution> | undefined): string {
+  const warning = formatIdentityWarning(metadata);
+  return warning ? `${message}\n\n${warning}` : message;
 }
 
 async function capturePassiveLearnings(
@@ -113,12 +119,14 @@ Use topic_key for evolving topics that should update in-place.`,
     }) => {
       try {
         if (kind === 'prompt') {
-          const resolvedSessionId = session_id ?? `manual-save-${project || 'unknown'}`;
-          const prompt = store.savePrompt(resolvedSessionId, content, project);
+          const prompt = store.savePrompt(session_id, content, project);
           return {
             content: [{
               type: "text" as const,
-              text: `Prompt saved (prompt ID: ${prompt.id}). Retrieve with mem_get(kind="prompt", id=${prompt.id}).`,
+              text: appendIdentityWarning(
+                `Prompt saved (prompt ID: ${prompt.id}). Retrieve with mem_get(kind="prompt", id=${prompt.id}).`,
+                prompt.identity,
+              ),
             }],
           };
         }
@@ -131,7 +139,12 @@ Use topic_key for evolving topics that should update in-place.`,
             };
           }
 
-          const resolvedSessionId = session_id ?? `manual-save-${project}`;
+          const summaryIdentity = resolveSaveIdentity({
+            session_id,
+            project,
+            requireSessionProject: true,
+          });
+          const resolvedSessionId = summaryIdentity.session_id!;
           const result = await store.saveObservationWithIndex({
             title: `Session summary: ${project}`,
             content,
@@ -145,7 +158,10 @@ Use topic_key for evolving topics that should update in-place.`,
           return {
             content: [{
               type: "text" as const,
-              text: `Session summary saved (observation ID: ${result.observation.id}) and session '${resolvedSessionId}' checkpointed.`,
+              text: appendIdentityWarning(
+                `Session summary saved (observation ID: ${result.observation.id}) and session '${resolvedSessionId}' checkpointed.`,
+                metadataFromResolution(summaryIdentity),
+              ),
             }],
           };
         }
@@ -179,7 +195,7 @@ Use topic_key for evolving topics that should update in-place.`,
           upserted: `Topic key update — observation ${result.observation.id} updated (revision ${result.observation.revision_count})`,
         };
 
-        let message = actionMessages[result.action];
+        let message = appendIdentityWarning(actionMessages[result.action], result.identity);
         const { warning } = validateContentLength(content, config.maxContentLength);
 
         if (warning) {

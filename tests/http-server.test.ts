@@ -622,6 +622,86 @@ describe('createHttpBridge', () => {
     expect(maintenanceApply.body.scope).toEqual({ topic_prefix: 'maintenance/reflection/' });
   });
 
+  it('mirrors MCP identity fallback semantics in HTTP save and session routes', async () => {
+    const bridge = await startBridge();
+
+    const explicitObservation = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Explicit identity',
+          content: 'Explicit identity body',
+          session_id: 'http-session',
+          project: 'http-project',
+        }),
+      },
+      bridge.port,
+    );
+    expect(explicitObservation.response.status).toBe(201);
+    expect(explicitObservation.body.identity).toBeUndefined();
+
+    const fallbackObservation = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Fallback identity',
+          content: 'Fallback identity body',
+        }),
+      },
+      bridge.port,
+    );
+    expect(fallbackObservation.response.status).toBe(201);
+    expect(fallbackObservation.body.identity.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'session_id',
+        reason: 'missing',
+        fallback_value: 'manual-save-unknown',
+      }),
+      expect.objectContaining({
+        field: 'project',
+        reason: 'schema-required',
+        fallback_value: 'unknown',
+      }),
+    ]));
+
+    const fallbackPrompt = await fetchJson(
+      '/prompts',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Fallback prompt' }),
+      },
+      bridge.port,
+    );
+    expect(fallbackPrompt.response.status).toBe(201);
+    expect(fallbackPrompt.body.identity.synthesized_session_id).toBe('manual-save-unknown');
+
+    const fallbackSummary = await fetchJson(
+      '/sessions/summary',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'http-project',
+          content: '## Goal\nHTTP fallback\n\n## Accomplished\n- Done',
+        }),
+      },
+      bridge.port,
+    );
+    expect(fallbackSummary.response.status).toBe(201);
+    expect(fallbackSummary.body.identity.degraded).toEqual([
+      expect.objectContaining({
+        field: 'session_id',
+        reason: 'missing',
+        fallback_value: 'manual-save-http-project',
+      }),
+    ]);
+  });
+
   it('community HTTP admin routes exist', async () => {
     const bridge = await startBridge();
     seedCommunityGraphRows(bridge.store, 'http-community-project');

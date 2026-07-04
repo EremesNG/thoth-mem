@@ -98,6 +98,19 @@ describe('mem_save tool (via Store)', () => {
     expect(result?.isError).not.toBe(true);
     expect(result.content[0].text).toContain('Prompt saved (prompt ID:');
     expect(result.content[0].text).toContain('mem_get(kind="prompt"');
+    expect(result.content[0].text).not.toContain('Identity fallback:');
+  });
+
+  it('handler reports fallback identity for prompt saves without explicit identity', async () => {
+    const result = await invokeMemSave({
+      kind: 'prompt',
+      content: 'User asked without identity',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Identity fallback:');
+    expect(result.content[0].text).toContain('session_id missing -> manual-save-unknown');
+    expect(result.content[0].text).toContain('project schema-required -> unknown');
   });
 
   it('handler captures passive learnings through kind=passive_learnings', async () => {
@@ -122,6 +135,31 @@ describe('mem_save tool (via Store)', () => {
 
     expect(result?.isError).not.toBe(true);
     expect(result.content[0].text).toContain('Session summary saved');
+    expect(result.content[0].text).not.toContain('Identity fallback:');
+  });
+
+  it('handler reports fallback identity for session summaries without an id', async () => {
+    const result = await invokeMemSave({
+      kind: 'session_summary',
+      content: '## Goal\nFallback summary\n\n## Accomplished\n- Done',
+      project: 'save-project',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Identity fallback: session_id missing -> manual-save-save-project');
+  });
+
+  it('handler reports fallback identity for observations without explicit identity', async () => {
+    const result = await invokeMemSave({
+      kind: 'observation',
+      title: 'Fallback observation',
+      content: 'Observation content without identity',
+    });
+
+    expect(result?.isError).not.toBe(true);
+    expect(result.content[0].text).toContain('Observation saved');
+    expect(result.content[0].text).toContain('Identity fallback:');
+    expect(result.content[0].text).toContain('session_id missing -> manual-save-unknown');
   });
 
 });

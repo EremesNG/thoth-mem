@@ -18,6 +18,7 @@ import type {
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
+import { metadataFromResolution, resolveSaveIdentity } from './store/identity.js';
 import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from './tools/project-views.js';
 import { suggestTopicKey } from './utils/topic-key.js';
 import type { EmbeddingProviderAdapter } from './retrieval/providers.js';
@@ -372,10 +373,6 @@ function toStatsResponse(store: Store): { sessions: number; observations: number
     prompts: stats.total_prompts,
     projects: stats.projects,
   };
-}
-
-function getMemSavePromptSessionId(sessionId: string | undefined, project: string | undefined): string {
-  return sessionId ?? `manual-save-${project || 'unknown'}`;
 }
 
 function extractFirstContentLine(content: string): string {
@@ -750,6 +747,7 @@ export async function handleCreateObservation(
       id: result.observation.id,
       action: result.action,
       revision: result.observation.revision_count,
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }
@@ -911,7 +909,12 @@ export async function handleSessionSummary(
 ): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const project = requireString(body?.project, 'project');
-  const sessionId = optionalString(body?.session_id, 'session_id') ?? `manual-save-${project}`;
+  const identity = resolveSaveIdentity({
+    session_id: optionalString(body?.session_id, 'session_id'),
+    project,
+    requireSessionProject: true,
+  });
+  const sessionId = identity.session_id!;
   const content = requireString(body?.content, 'content');
   const result = await store.saveObservationWithIndex({
     title: `Session summary: ${project}`,
@@ -929,6 +932,7 @@ export async function handleSessionSummary(
     body: {
       observation_id: result.observation.id,
       session_id: sessionId,
+      ...(metadataFromResolution(identity) ? { identity: metadataFromResolution(identity) } : {}),
     },
   };
 }
@@ -1249,14 +1253,14 @@ export async function handleSavePrompt(store: Store, request: HttpRouteRequest):
   const body = request.body as Record<string, unknown> | undefined;
   const project = optionalString(body?.project, 'project');
   const prompt = store.savePrompt(
-    getMemSavePromptSessionId(optionalString(body?.session_id, 'session_id'), project),
+    optionalString(body?.session_id, 'session_id'),
     requireString(body?.content, 'content'),
     project,
   );
 
   return {
     status: 201,
-    body: { id: prompt.id },
+    body: { id: prompt.id, ...(prompt.identity ? { identity: prompt.identity } : {}) },
   };
 }
 
@@ -1344,6 +1348,7 @@ export async function handleImport(store: Store, request: HttpRouteRequest): Pro
       skipped: {
         total: result.skipped,
       },
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }
@@ -1386,6 +1391,7 @@ export async function handleSyncImport(store: Store, request: HttpRouteRequest):
       imported: result.imported,
       skipped: result.skipped,
       failed: result.failed,
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }

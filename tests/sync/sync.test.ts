@@ -220,6 +220,31 @@ describe('sync export/import', () => {
     expect(exported.mutations.some((mutation) => mutation.entity_type === 'prompt' && mutation.operation === 'create')).toBe(true);
   });
 
+  it('syncExport preserves explicit identity and nullable project compatibility', () => {
+    store.saveObservation({
+      title: 'Nullable project export',
+      content: 'Nullable project content',
+      session_id: 'nullable-session',
+    });
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+
+    const result = syncExport(store, syncDir);
+    const chunk = readV2Chunk(syncDir, result.filename);
+
+    const observation = chunk.mutations.find((mutation) => mutation.entity_type === 'observation')?.data;
+    const session = chunk.mutations.find((mutation) => mutation.entity_type === 'session')?.data;
+
+    expect(observation).toMatchObject({
+      session_id: 'nullable-session',
+      project: null,
+    });
+    expect(session).toMatchObject({
+      id: 'nullable-session',
+      project: 'unknown',
+    });
+  });
+
   it('syncExport uses deterministic v2 chunk metadata and envelope shape', () => {
     seedStore(store);
     const syncDir = createTempDir();
@@ -377,6 +402,148 @@ describe('sync export/import', () => {
       });
       expect(targetStore.exportData().observations).toHaveLength(1);
       expect(targetStore.exportData().prompts).toHaveLength(1);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('syncImport reports degraded identity for legacy chunks with missing project identity', () => {
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+    const legacy = {
+      version: 1,
+      exported_at: '2026-03-24T10:00:00.000Z',
+      sessions: [],
+      observations: [{
+        id: 100,
+        sync_id: 'legacy-sync-missing-project',
+        session_id: 'legacy-sync-session',
+        type: 'manual',
+        title: 'Legacy sync missing project',
+        content: 'Legacy sync content',
+        tool_name: null,
+        scope: 'project',
+        topic_key: null,
+        normalized_hash: null,
+        revision_count: 1,
+        duplicate_count: 1,
+        last_seen_at: null,
+        created_at: '2026-03-24 10:00:00',
+        updated_at: '2026-03-24 10:00:00',
+        deleted_at: null,
+      }],
+      prompts: [],
+    } as unknown as ExportData;
+    writeChunk(syncDir, 'legacy-missing-project.json.gz', legacy);
+
+    const targetStore = new Store(':memory:');
+
+    try {
+      const first = syncImport(targetStore, syncDir);
+      const second = syncImport(targetStore, syncDir);
+
+      expect(first.observations_imported).toBe(1);
+      expect(first.identity?.degraded).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          field: 'project',
+          reason: 'schema-required',
+          source: 'legacy',
+          fallback_value: 'unknown',
+        }),
+      ]));
+      expect(second.observations_imported).toBe(0);
+      expect(targetStore.getSession('legacy-sync-session')?.project).toBe('unknown');
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('syncImport applies v2 records with missing session identity using deterministic fallback', () => {
+    const syncDir = createTempDir();
+    tempDirs.push(syncDir);
+    const chunk: SyncChunkV2 = {
+      version: 2,
+      chunk_id: 'chunk-v2-missing-session',
+      from_mutation_id: 10,
+      to_mutation_id: 11,
+      created_at: '2026-03-24T11:00:00.000Z',
+      mutations: [
+        {
+          operation: 'create',
+          entity_type: 'observation',
+          entity_id: 1001,
+          sync_id: 'v2-missing-session-observation',
+          data: {
+            type: 'manual',
+            title: 'V2 missing session',
+            content: 'V2 observation content',
+            tool_name: null,
+            project: null,
+            scope: 'project',
+            topic_key: null,
+            normalized_hash: null,
+            revision_count: 1,
+            duplicate_count: 1,
+            last_seen_at: null,
+            created_at: '2026-03-24 11:00:00',
+            updated_at: '2026-03-24 11:00:00',
+            deleted_at: null,
+          },
+        },
+        {
+          operation: 'create',
+          entity_type: 'prompt',
+          entity_id: 1002,
+          sync_id: 'v2-missing-session-prompt',
+          data: {
+            content: 'V2 prompt content',
+            project: null,
+            created_at: '2026-03-24 11:01:00',
+          },
+        },
+      ],
+    };
+    writeV2Chunk(syncDir, 'v2-missing-session.json.gz', chunk);
+
+    const targetStore = new Store(':memory:');
+
+    try {
+      const first = syncImport(targetStore, syncDir);
+      const second = syncImport(targetStore, syncDir);
+      const exported = targetStore.exportData();
+
+      expect(first).toMatchObject({
+        chunks_processed: 1,
+        observations_imported: 1,
+        prompts_imported: 1,
+        skipped: 0,
+      });
+      expect(first.identity?.degraded).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          field: 'session_id',
+          reason: 'missing',
+          source: 'legacy',
+          fallback_value: 'manual-save-unknown',
+        }),
+      ]));
+      expect(first.identity?.synthesized_session_id).toBe('manual-save-unknown');
+      expect(exported.observations).toHaveLength(1);
+      expect(exported.prompts).toHaveLength(1);
+      expect(exported.observations[0]).toMatchObject({
+        session_id: 'manual-save-unknown',
+        project: null,
+      });
+      expect(exported.prompts[0]).toMatchObject({
+        session_id: 'manual-save-unknown',
+        project: null,
+      });
+      expect(targetStore.getSession('manual-save-unknown')?.project).toBe('unknown');
+      expect(second).toMatchObject({
+        chunks_processed: 1,
+        observations_imported: 0,
+        prompts_imported: 0,
+        skipped: 2,
+      });
     } finally {
       targetStore.close();
     }
