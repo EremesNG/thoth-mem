@@ -13,7 +13,7 @@
   **SHIPPED** · stable-memory-identity-bootstrap **SHIPPED** · W1
   **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
   P4 token-savings metrics **SHIPPED** · community read-path readiness
-  **SHIPPED** ·
+  **SHIPPED** · community read-path rollout gate **SHIPPED** ·
   C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
@@ -97,6 +97,7 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **P6** | `agent-operational-health` | `mem_project(action="health")` and visible/non-fatal legacy KG drift | ✅ Shipped + archived | `e51633e` feat · `0fed83c` archive |
 | **P4** | `token-savings-metrics` | Token-savings and recall-efficiency measurement foundation | ✅ Shipped + archived | `00e22b5` evals · `4fa7383` recall · `e43858e` tests · `11b8ed4` archive |
 | **R1** | `community-read-path-readiness` | Eval-gated readiness scorecard for broader community read-path rollout | ✅ Shipped + archived | `8e99637` feat · `fad3fb7` archive |
+| **R2** | `community-read-path-rollout-gate` | On-demand per-project community read-path rollout gate with A/B/token/fallback enforcement | ✅ Shipped + archived | `105aba8` feat · `6a7089b` archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -396,10 +397,14 @@ Community metrics at `100%`).
    `openspec/changes/archive/2026-07-05-community-read-path-readiness/`.
    Verification passed after remediation: focused readiness tests, retrieval
    eval, build, full suite, and oracle re-review `[GREEN]`.
-13. ⬜ Next local decision before **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**: use the readiness scorecard to decide
-   whether to plan an actual community read-path rollout strategy (granular
-   opt-in/default-on gate) or keep rollout deferred for broader corpus evidence.
+13. ✅ `community-read-path-rollout-gate` is implemented and archived at
+   `openspec/changes/archive/2026-07-05-community-read-path-rollout-gate/`.
+   Verification passed after remediation: focused rollout matrix, retrieval
+   eval, build, full suite, and oracle re-review `[GREEN]`.
+14. ⬜ Next local decision before **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**: plan **P5 graph navigation v2** so agents
+   can inspect ledger/neighborhood/lineage/community/superseded graph views
+   without adding MCP tools or breaking the existing KG-ledger contract.
 
 ---
 
@@ -442,15 +447,23 @@ Community metrics at `100%`).
   readiness scorecard, fallback gates cover missing/stale/degraded/rebuilding/
   failed/enrichment-unavailable states with usable baseline hits, and defaults
   remain OFF.
-- ⬜ **Community read-path rollout decision** — NEXT CANDIDATE: decide whether
-  to plan a real rollout strategy now (granular opt-in/default-on gate) or defer
-  until more project-corpus evidence exists.
+- ✅ **Community read-path rollout gate** — DONE as
+  `community-read-path-rollout-gate`: on-demand per-project eligibility now gates
+  `kg_community_summary` read-path contribution, same-corpus A/B rollout rows
+  consume P4 token metrics, fallback states must preserve source-attributed
+  baseline hits, and `pnpm run eval:retrieval` fails if any rollout gate fails.
+- ⬜ **P5 graph navigation v2** — NEXT CANDIDATE: expose richer graph
+  navigation for agents (ledger, neighborhood, lineage, community, superseded)
+  without adding MCP tools and without turning the current
+  `mem_project(action="graph")` KG ledger into an incompatible surface.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+6a7089b docs(openspec): archive community read-path rollout gate
+105aba8 feat(recall): gate community read-path rollout
 fad3fb7 docs(openspec): archive community read-path readiness
 8e99637 feat(evals): add community read-path readiness gates
 0189b80 docs(roadmap): record P4 metrics closure
