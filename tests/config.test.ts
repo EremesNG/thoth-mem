@@ -463,6 +463,23 @@ describe('getConfig', () => {
       .toBe('connected_components');
   });
 
+  it('communitySummaries read path remains default-off unless explicitly opted in', () => {
+    expect(resolveCommunitySummariesConfig({}).readPath.enabled).toBe(false);
+
+    expect(resolveCommunitySummariesConfig({
+      communitySummaries: {
+        readPath: { enabled: true },
+      },
+    }).readPath.enabled).toBe(true);
+
+    process.env.THOTH_COMMUNITY_READ_PATH_ENABLED = 'true';
+    expect(resolveCommunitySummariesConfig({
+      communitySummaries: {
+        readPath: { enabled: false },
+      },
+    }).readPath.enabled).toBe(true);
+  });
+
   it('communitySummaries clamps over-max persisted and env budgets to schema maximums', () => {
     const persisted = resolveCommunitySummariesConfig({
       communitySummaries: {
@@ -520,6 +537,10 @@ describe('getConfig', () => {
     expect(community.properties.kgCommunityWeight).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
     expect(community.properties.enrichment.required).toBeUndefined();
     expect(community.properties.enrichment.properties.maxCostUsd).toMatchObject({ type: 'number', minimum: 0, maximum: 100 });
+    expect(community.properties.readPath.properties.enabled).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
   });
 });
 

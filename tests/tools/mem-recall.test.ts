@@ -396,6 +396,9 @@ describe('mem_recall tool', () => {
     expect(compactText).toContain('community=c_demo');
     expect(compactText).toContain('freshness=fresh');
     expect(compactText).toContain('coverage=obs:2 triples:3');
+    expect(compactText).toContain('evidence_lanes: kg:1');
+    expect(compactText).not.toContain('evidence_lanes: community:');
+    expect(compactText).not.toContain('[community/');
     expect(contextText).toContain('<retrieved_context observation_id="101" lane="kg" source="kg_community_summary">');
     expect(contextText).toContain('community=c_demo');
     expect(contextText).toContain('degraded=no');

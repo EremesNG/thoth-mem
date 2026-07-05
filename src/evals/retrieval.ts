@@ -723,6 +723,10 @@ function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function formatGateStatus(value: number): 'PASS' | 'FAIL' {
+  return value >= 1 ? 'PASS' : 'FAIL';
+}
+
 export function buildRetrievalTokenSavingsEnvelope(
   summary: RetrievalEvalSummaryForEnvelope,
   cases: RetrievalEvalCaseResult[],
@@ -838,6 +842,21 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Community Summary Bounds Rate | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
     `| Community Coverage Bounds Rate | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
     `| Community Enrichment Unavailable Fallback Rate | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
+    '',
+    '## Community Read Path Readiness',
+    '',
+    '| Gate | Status | Rate |',
+    '| --- | --- | ---: |',
+    `| Default-off preserved | ${formatGateStatus(summary.hybrid.community_read_path_default_off_rate)} | ${formatPercent(summary.hybrid.community_read_path_default_off_rate)} |`,
+    `| Disabled no-regression | ${formatGateStatus(summary.hybrid.community_disabled_no_regression_rate)} | ${formatPercent(summary.hybrid.community_disabled_no_regression_rate)} |`,
+    `| Enabled no-regression | ${formatGateStatus(summary.hybrid.community_enabled_no_regression_rate)} | ${formatPercent(summary.hybrid.community_enabled_no_regression_rate)} |`,
+    `| Missing/stale/degraded/rebuilding/failed fallback | ${formatGateStatus(summary.hybrid.community_fallback_rate)} | ${formatPercent(summary.hybrid.community_fallback_rate)} |`,
+    `| No fifth lane | ${formatGateStatus(summary.hybrid.community_no_fifth_lane_rate)} | ${formatPercent(summary.hybrid.community_no_fifth_lane_rate)} |`,
+    `| Direct KG no-regression | ${formatGateStatus(summary.hybrid.community_direct_kg_no_regression_rate)} | ${formatPercent(summary.hybrid.community_direct_kg_no_regression_rate)} |`,
+    `| Multi-hop no-regression | ${formatGateStatus(summary.hybrid.community_multi_hop_no_regression_rate)} | ${formatPercent(summary.hybrid.community_multi_hop_no_regression_rate)} |`,
+    `| Summary bounds | ${formatGateStatus(summary.hybrid.community_summary_bounds_rate)} | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
+    `| Coverage bounds | ${formatGateStatus(summary.hybrid.community_coverage_bounds_rate)} | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
+    `| Enrichment-unavailable fallback | ${formatGateStatus(summary.hybrid.community_enrichment_unavailable_fallback_rate)} | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
     '',
     '## Corpus',
     '',
@@ -1320,6 +1339,13 @@ async function validateCommunityReadPathEval(): Promise<{
       topic_key: 'eval/community/multi-hop',
       content: 'Downstream source intentionally relies on structural reachability.',
     });
+    const missingFallback = store.saveObservation({
+      title: 'Community eval missing fallback source',
+      type: 'decision',
+      project: 'community-missing-eval',
+      topic_key: 'eval/community/missing-fallback',
+      content: 'Missing community summaries still fall back to baseline orion-service nebula-cache retrieval.',
+    });
     const db = store.getDb();
     const orion = db.prepare(
       'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
@@ -1342,6 +1368,18 @@ async function validateCommunityReadPathEval(): Promise<{
          project, topic_key, provenance, confidence, triple_hash
        ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-eval', 'eval/community/multi-hop', 'eval-community:multi-hop', 0.9, ?)`
     ).run(nebula, archive, downstream.observation.id, `community-multi-hop:${downstream.observation.id}`);
+    const missingOrion = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-missing-eval:orion-service', 'concept', 'orion-service').lastInsertRowid as number;
+    const missingNebula = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-missing-eval:nebula-cache', 'concept', 'nebula-cache').lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-missing-eval', 'eval/community/missing-fallback', 'eval-community:missing-fallback', 0.9, ?)`
+    ).run(missingOrion, missingNebula, missingFallback.observation.id, `community-missing:${missingFallback.observation.id}`);
     await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
     store.rebuildCommunitySummaries({ project: 'community-eval' });
 
@@ -1414,7 +1452,7 @@ async function validateCommunityReadPathEval(): Promise<{
       );
 
     const missing = await runtime.hybridRetrieve({
-      query: 'orion-service',
+      query: 'orion-service nebula-cache',
       project: 'community-missing-eval',
       limit: TOP_K,
       embeddingProvider,
@@ -1437,6 +1475,22 @@ async function validateCommunityReadPathEval(): Promise<{
     });
     store.config.communitySummaries.algorithm = 'connected_components';
     store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.getDb().prepare(
+      `INSERT INTO kg_community_runs (
+         run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+         status, freshness, degraded, degraded_reasons_json, coverage_json
+       ) VALUES (
+         'eval-running-community', 'community-eval', 'connected_components_v1', '1', 'extractive_v1',
+         'eval-cfg', 'eval-running-graph', 'running', 'fresh', 1, '["eval_rebuilding"]', '{}'
+       )`
+    ).run();
+    const rebuilding = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
     store.getDb().exec(`
       CREATE TRIGGER community_eval_fail
       BEFORE INSERT ON kg_communities
@@ -1451,11 +1505,18 @@ async function validateCommunityReadPathEval(): Promise<{
       limit: TOP_K,
       embeddingProvider,
     });
-    const fallback = missing.degradedFallback.includes('kg_communities_missing')
-      && stale.degradedFallback.includes('kg_communities_stale')
-      && degraded.degradedFallback.includes('kg_communities_degraded')
-      && failed.degradedFallback.includes('kg_communities_failed')
-      && [missing, stale, degraded, failed].every((result) => result.results.length >= 0);
+    const fallbackResultHasBaseline = (
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      marker: string,
+      expectedObservationId: number,
+    ): boolean => result.degradedFallback.includes(marker)
+      && result.results.length > 0
+      && result.results.some((hit) => hit.observation.id === expectedObservationId);
+    const fallback = fallbackResultHasBaseline(missing, 'kg_communities_missing', missingFallback.observation.id)
+      && fallbackResultHasBaseline(stale, 'kg_communities_stale', direct.observation.id)
+      && fallbackResultHasBaseline(degraded, 'kg_communities_degraded', direct.observation.id)
+      && fallbackResultHasBaseline(rebuilding, 'kg_communities_rebuilding', direct.observation.id)
+      && fallbackResultHasBaseline(failed, 'kg_communities_failed', direct.observation.id);
 
     store.getDb().exec('DROP TRIGGER community_eval_fail');
     store.config.communitySummaries.enrichment.enabled = true;
@@ -1464,6 +1525,12 @@ async function validateCommunityReadPathEval(): Promise<{
       project: 'community-eval',
       limit: 1,
       maxChars: 1200,
+    });
+    const enrichmentUnavailableHybrid = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
     });
     const enrichmentUnavailableFallback = enrichedUnavailableRebuild.status === 'committed'
       && enrichedUnavailableRebuild.freshness === 'degraded'
@@ -1475,7 +1542,8 @@ async function validateCommunityReadPathEval(): Promise<{
         candidate.summary_text.length > 0
         && candidate.degraded
         && candidate.degraded_reasons.includes('enrichment_unavailable')
-      );
+      )
+      && fallbackResultHasBaseline(enrichmentUnavailableHybrid, 'kg_communities_degraded', direct.observation.id);
 
     return {
       defaultOff,

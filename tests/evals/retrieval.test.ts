@@ -171,6 +171,38 @@ describe('community retrieval integration', () => {
     }
   });
 
+  it('enrichment-unavailable summaries fall back through hybrid retrieval', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+        enrichment: { enabled: true },
+      },
+    });
+    try {
+      const sourceId = seedCommunityGraph(store, 'community-enrichment-fallback-eval');
+      const rebuild = store.rebuildCommunitySummaries({ project: 'community-enrichment-fallback-eval' });
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'Apollo Orbit retrieval evidence',
+        project: 'community-enrichment-fallback-eval',
+        limit: 5,
+      });
+
+      expect(rebuild.status).toBe('committed');
+      expect(rebuild.freshness).toBe('degraded');
+      expect(rebuild.degraded_reasons).toContain('enrichment_unavailable');
+      expect(retrieval.degradedFallback).toContain('kg_communities_degraded');
+      expect(retrieval.results.some((hit) => hit.observation.id === sourceId)).toBe(true);
+      expect(retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []))
+        .not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'kg_community_summary' }),
+        ]));
+    } finally {
+      store.close();
+    }
+  });
+
   it('read path defaults off even when summaries are rebuilt', async () => {
     const store = new Store(':memory:');
     try {
@@ -294,6 +326,18 @@ describe('retrieval eval baseline', () => {
       kg_primary_rate: report.summary.hybrid.kg_primary_rate,
       sentence_primary_rate: report.summary.hybrid.sentence_primary_rate,
       community_no_fifth_lane_rate: report.summary.hybrid.community_no_fifth_lane_rate,
+    });
+    expect(envelope).toMatchObject({
+      community_read_path_default_off_rate: 1,
+      community_disabled_no_regression_rate: 1,
+      community_enabled_no_regression_rate: 1,
+      community_fallback_rate: 1,
+      community_no_fifth_lane_rate: 1,
+      community_direct_kg_no_regression_rate: 1,
+      community_multi_hop_no_regression_rate: 1,
+      community_summary_bounds_rate: 1,
+      community_coverage_bounds_rate: 1,
+      community_enrichment_unavailable_fallback_rate: 1,
     });
     expect(envelope.saved_chars).toBeGreaterThan(0);
   });
@@ -426,11 +470,35 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Community Enrichment Unavailable Fallback Rate |');
   });
 
+  it('formats an explicit community readiness gate section for rollout decisions', async () => {
+    expect(report.markdown).toContain('## Community Read Path Readiness');
+    expect(report.markdown).toContain('| Gate | Status | Rate |');
+    expect(report.markdown).toContain('| Default-off preserved | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Disabled no-regression | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Enabled no-regression | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Missing/stale/degraded/rebuilding/failed fallback | PASS | 100.0% |');
+    expect(report.markdown).toContain('| No fifth lane | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Direct KG no-regression | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Multi-hop no-regression | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Summary bounds | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Coverage bounds | PASS | 100.0% |');
+    expect(report.markdown).toContain('| Enrichment-unavailable fallback | PASS | 100.0% |');
+  });
+
   it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {
     const source = readFileSync(join(process.cwd(), 'src/evals/retrieval.ts'), 'utf-8');
 
     expect(source).toContain('INSERT INTO kg_triples');
     expect(source).not.toContain('observation_facts');
+  });
+
+  it('eval fallback readiness covers rebuilding and requires usable fallback hits', () => {
+    const source = readFileSync(join(process.cwd(), 'src/evals/retrieval.ts'), 'utf-8');
+
+    expect(source).toContain('kg_communities_rebuilding');
+    expect(source).toContain('enrichmentUnavailableHybrid');
+    expect(source).toContain('result.results.length > 0');
+    expect(source).not.toContain('result.results.length >= 0');
   });
 
   it('reports ArcRift-style evidence gap metrics from hybrid retrieval', async () => {

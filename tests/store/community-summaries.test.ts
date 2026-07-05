@@ -746,6 +746,79 @@ describe('Store — community summary schema foundation', () => {
     }
   });
 
+  it('community read-path fallback keeps baseline retrieval usable for unavailable states', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+      },
+    });
+    try {
+      const seedFallbackProject = (project: string): number => {
+        seedProjectGraph(store, project);
+        return Number((store.getDb().prepare(
+          'SELECT id FROM observations WHERE project = ? ORDER BY id LIMIT 1'
+        ).get(project) as { id: number }).id);
+      };
+      const assertFallback = async (project: string, marker: string, expectedObservationId: number): Promise<void> => {
+        const retrieval = await store.hybridRetrieve({
+          query: 'alpha beta',
+          project,
+          limit: 5,
+        });
+
+        expect(retrieval.degradedFallback).toContain(marker);
+        expect(retrieval.results.some((hit) => hit.observation.id === expectedObservationId)).toBe(true);
+        expect(retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []))
+          .not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ source: 'kg_community_summary' }),
+          ]));
+        expect(new Set(retrieval.results.flatMap((hit) => hit.lanes))).not.toContain('community');
+      };
+
+      const missingSource = seedFallbackProject('fallback-missing-community');
+      await assertFallback('fallback-missing-community', 'kg_communities_missing', missingSource);
+
+      const staleSource = seedFallbackProject('fallback-stale-community');
+      store.rebuildCommunitySummaries({ project: 'fallback-stale-community' });
+      store.markCommunitySummariesStale('fallback-stale-community', 'test_stale');
+      await assertFallback('fallback-stale-community', 'kg_communities_stale', staleSource);
+
+      const degradedSource = seedFallbackProject('fallback-degraded-community');
+      store.config.communitySummaries.algorithm = 'louvain';
+      store.rebuildCommunitySummaries({ project: 'fallback-degraded-community' });
+      await assertFallback('fallback-degraded-community', 'kg_communities_degraded', degradedSource);
+      store.config.communitySummaries.algorithm = 'connected_components';
+
+      const rebuildingSource = seedFallbackProject('fallback-rebuilding-community');
+      store.rebuildCommunitySummaries({ project: 'fallback-rebuilding-community' });
+      store.getDb().prepare(
+        `INSERT INTO kg_community_runs (
+          run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+          status, freshness, degraded, degraded_reasons_json, coverage_json
+        ) VALUES (
+          'running-fallback', 'fallback-rebuilding-community', 'connected_components_v1', '1', 'extractive_v1',
+          'cfg', 'graph-running', 'running', 'fresh', 1, '["test_rebuilding"]', '{}'
+        )`
+      ).run();
+      await assertFallback('fallback-rebuilding-community', 'kg_communities_rebuilding', rebuildingSource);
+
+      const failedSource = seedFallbackProject('fallback-failed-community');
+      store.rebuildCommunitySummaries({ project: 'fallback-failed-community' });
+      store.getDb().exec(`
+        CREATE TRIGGER fail_fallback_community_insert
+        BEFORE INSERT ON kg_communities
+        BEGIN
+          SELECT RAISE(FAIL, 'forced fallback community insert failure');
+        END;
+      `);
+      store.rebuildCommunitySummaries({ project: 'fallback-failed-community' });
+      await assertFallback('fallback-failed-community', 'kg_communities_failed', failedSource);
+    } finally {
+      store.close();
+    }
+  });
+
   it('preview and drop are bounded and scoped', () => {
     const store = new Store(':memory:');
     try {
