@@ -6,12 +6,13 @@
 > resuming without re-discovery. When memory reconnects, mirror this into the
 > `review/thoth-mem/improvement-roadmap` topic.
 
-- **Last updated:** 2026-07-04
+- **Last updated:** 2026-07-05
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.7`
 - **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
   **SHIPPED** · stable-memory-identity-bootstrap **SHIPPED** · W1
   **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
+  P4 token-savings metrics **SHIPPED** ·
   C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
@@ -93,7 +94,7 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **W1** | `include-superseded-http-history` | HTTP/observatory opt-in for superseded graph history | ✅ Shipped + archived | `3d82aad` feat · `39e0d6a` archive |
 | **W2** | `content-pattern-supersession-caveat` | Formal caveat for opt-in content-pattern supersession precision risk | ✅ Shipped (docs/spec) | `d6d0dd4` docs |
 | **P6** | `agent-operational-health` | `mem_project(action="health")` and visible/non-fatal legacy KG drift | ✅ Shipped + archived | `e51633e` feat · `0fed83c` archive |
-| **P4** | `token-savings-metrics` *(recommended next)* | Token-savings and recall-efficiency measurement foundation | ⏭️ Next | — |
+| **P4** | `token-savings-metrics` | Token-savings and recall-efficiency measurement foundation | ✅ Shipped + archived | `00e22b5` evals · `4fa7383` recall · `e43858e` tests · `11b8ed4` archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -385,8 +386,13 @@ Community metrics at `100%`).
 10. ✅ P6 `agent-operational-health` is implemented and archived at
    `openspec/changes/archive/2026-07-04-agent-operational-health/`.
    Verification passed round 1, focused/full tests, and build.
-11. ⬜ Next foundation item before **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**: **P4 token-savings metrics**.
+11. ✅ P4 `token-savings-metrics` is implemented and archived at
+   `openspec/changes/archive/2026-07-05-token-savings-metrics/`.
+   Verification passed round 1: focused retrieval/recall/community tests,
+   `pnpm run eval:retrieval`, full `pnpm test`, and `pnpm run build`.
+12. ⬜ Next local foundation item before **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**: decide whether to plan the broader
+   community-summary read-path rollout now that P4 measurement gates exist.
 
 ---
 
@@ -420,14 +426,23 @@ Community metrics at `100%`).
   exposes compact semantic/job/coverage/recent-error health through the existing
   six-tool MCP surface, and missing legacy `observation_facts` drift is reported
   without crashing default KG-backed recall paths.
-- ⬜ **P4** — NEXT: define token-savings and recall-efficiency metrics before
-  enabling broader community-summary read-path rollout.
+- ✅ **P4** — DONE as `token-savings-metrics`: retrieval evals now expose a
+  canonical `token_savings_metrics` envelope, `mem_recall mode=context` reports
+  additive returned-context metrics while preserving existing metadata tokens,
+  and community-summary read-path safety remains default-off/no-fifth-lane.
+- ⬜ **Community read-path rollout** — NEXT CANDIDATE: use P4's measurement
+  envelope and existing safety gates to decide whether/how to broaden
+  community-summary retrieval usage without token-cost regression.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+11b8ed4 docs(openspec): archive token savings metrics SDD
+e43858e test(store): assert community summaries stay in kg lane
+4fa7383 feat(recall): report returned context metrics
+00e22b5 feat(evals): add token savings metrics envelope
 0fed83c docs(openspec): archive agent operational health
 e51633e feat(tools): add project health action
 4f7bed9 docs(roadmap): record W2 caveat closure
