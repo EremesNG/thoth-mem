@@ -488,7 +488,12 @@ describe('Store — community summary schema foundation', () => {
 
       expect(communityCandidates).toHaveLength(1);
       expect(communityCandidates.length).toBeLessThanOrEqual(store.config.communitySummaries.maxRetrievalCommunities);
+      expect(retrieval.laneOrder).toEqual(['sentence', 'kg', 'chunk', 'lexical']);
+      expect(new Set(retrieval.results.flatMap((hit) => hit.lanes))).not.toContain('community');
+      expect(retrieval.results.flatMap((hit) => Object.keys(hit.evidence.byLane))).not.toContain('community');
       expect(communityCandidates[0]).toMatchObject({
+        lane: 'kg',
+        source: 'kg_community_summary',
         observationId: sourceIds[3],
         community: { communityId: 'c_004' },
       });
