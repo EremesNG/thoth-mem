@@ -12,7 +12,8 @@
 - **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
   **SHIPPED** · stable-memory-identity-bootstrap **SHIPPED** · W1
   **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
-  P4 token-savings metrics **SHIPPED** ·
+  P4 token-savings metrics **SHIPPED** · community read-path readiness
+  **SHIPPED** ·
   C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
@@ -95,6 +96,7 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **W2** | `content-pattern-supersession-caveat` | Formal caveat for opt-in content-pattern supersession precision risk | ✅ Shipped (docs/spec) | `d6d0dd4` docs |
 | **P6** | `agent-operational-health` | `mem_project(action="health")` and visible/non-fatal legacy KG drift | ✅ Shipped + archived | `e51633e` feat · `0fed83c` archive |
 | **P4** | `token-savings-metrics` | Token-savings and recall-efficiency measurement foundation | ✅ Shipped + archived | `00e22b5` evals · `4fa7383` recall · `e43858e` tests · `11b8ed4` archive |
+| **R1** | `community-read-path-readiness` | Eval-gated readiness scorecard for broader community read-path rollout | ✅ Shipped + archived | `8e99637` feat · `fad3fb7` archive |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -390,9 +392,14 @@ Community metrics at `100%`).
    `openspec/changes/archive/2026-07-05-token-savings-metrics/`.
    Verification passed round 1: focused retrieval/recall/community tests,
    `pnpm run eval:retrieval`, full `pnpm test`, and `pnpm run build`.
-12. ⬜ Next local foundation item before **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**: decide whether to plan the broader
-   community-summary read-path rollout now that P4 measurement gates exist.
+12. ✅ `community-read-path-readiness` is implemented and archived at
+   `openspec/changes/archive/2026-07-05-community-read-path-readiness/`.
+   Verification passed after remediation: focused readiness tests, retrieval
+   eval, build, full suite, and oracle re-review `[GREEN]`.
+13. ⬜ Next local decision before **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**: use the readiness scorecard to decide
+   whether to plan an actual community read-path rollout strategy (granular
+   opt-in/default-on gate) or keep rollout deferred for broader corpus evidence.
 
 ---
 
@@ -430,15 +437,23 @@ Community metrics at `100%`).
   canonical `token_savings_metrics` envelope, `mem_recall mode=context` reports
   additive returned-context metrics while preserving existing metadata tokens,
   and community-summary read-path safety remains default-off/no-fifth-lane.
-- ⬜ **Community read-path rollout** — NEXT CANDIDATE: use P4's measurement
-  envelope and existing safety gates to decide whether/how to broaden
-  community-summary retrieval usage without token-cost regression.
+- ✅ **Community read-path readiness** — DONE as
+  `community-read-path-readiness`: retrieval evals now expose an explicit
+  readiness scorecard, fallback gates cover missing/stale/degraded/rebuilding/
+  failed/enrichment-unavailable states with usable baseline hits, and defaults
+  remain OFF.
+- ⬜ **Community read-path rollout decision** — NEXT CANDIDATE: decide whether
+  to plan a real rollout strategy now (granular opt-in/default-on gate) or defer
+  until more project-corpus evidence exists.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+fad3fb7 docs(openspec): archive community read-path readiness
+8e99637 feat(evals): add community read-path readiness gates
+0189b80 docs(roadmap): record P4 metrics closure
 11b8ed4 docs(openspec): archive token savings metrics SDD
 e43858e test(store): assert community summaries stay in kg lane
 4fa7383 feat(recall): report returned context metrics
