@@ -11,7 +11,8 @@
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.7`
 - **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
   **SHIPPED** · stable-memory-identity-bootstrap **SHIPPED** · W1
-  **SHIPPED** · C1 constitution PATCH **RECORDED** · cross-harness deferred
+  **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
+  C1 constitution PATCH **RECORDED** · cross-harness deferred
 
 ---
 
@@ -91,6 +92,8 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **F1** | `stable-memory-identity-bootstrap` | Stable project/session identity and visible deterministic fallback metadata | ✅ Shipped + archived | `ed8780e` store · `d7ebb92` surfaces · `8dcd53e` archive |
 | **W1** | `include-superseded-http-history` | HTTP/observatory opt-in for superseded graph history | ✅ Shipped + archived | `3d82aad` feat · `39e0d6a` archive |
 | **W2** | `content-pattern-supersession-caveat` | Formal caveat for opt-in content-pattern supersession precision risk | ✅ Shipped (docs/spec) | `d6d0dd4` docs |
+| **P6** | `agent-operational-health` | `mem_project(action="health")` and visible/non-fatal legacy KG drift | ✅ Shipped + archived | `e51633e` feat · `0fed83c` archive |
+| **P4** | `token-savings-metrics` *(recommended next)* | Token-savings and recall-efficiency measurement foundation | ⏭️ Next | — |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -379,9 +382,11 @@ Community metrics at `100%`).
 9. ✅ W2 `content-pattern-supersession-caveat` is closed by `d6d0dd4`; the
    formal config spec now records the substring/phrase-match precision caveat
    and keeps `kgSupersedeContentPatterns` opt-in/default OFF.
-10. ⬜ Next decision: return to **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration** only when ready to resume multi-harness
-   work; otherwise select the next foundation item explicitly.
+10. ✅ P6 `agent-operational-health` is implemented and archived at
+   `openspec/changes/archive/2026-07-04-agent-operational-health/`.
+   Verification passed round 1, focused/full tests, and build.
+11. ⬜ Next foundation item before **G3 harness parity** / **MIG
+   MemoryIntegrationCore migration**: **P4 token-savings metrics**.
 
 ---
 
@@ -411,12 +416,21 @@ Community metrics at `100%`).
   spec now documents the substring/phrase-match precision risk for
   `kgSupersedeContentPatterns`, keeps the knob opt-in/default OFF, and avoids
   any runtime/default change.
+- ✅ **P6** — DONE as `agent-operational-health`: `mem_project(action="health")`
+  exposes compact semantic/job/coverage/recent-error health through the existing
+  six-tool MCP surface, and missing legacy `observation_facts` drift is reported
+  without crashing default KG-backed recall paths.
+- ⬜ **P4** — NEXT: define token-savings and recall-efficiency metrics before
+  enabling broader community-summary read-path rollout.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+0fed83c docs(openspec): archive agent operational health
+e51633e feat(tools): add project health action
+4f7bed9 docs(roadmap): record W2 caveat closure
 d6d0dd4 docs(config): document content pattern supersession caveat
 ca35c2a docs(roadmap): record stable identity and W1 progress
 39e0d6a chore(openspec): archive include superseded HTTP history
