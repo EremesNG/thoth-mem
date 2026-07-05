@@ -5,6 +5,7 @@ import {
   RETRIEVAL_EVAL_MIN_RECALL_AT_1,
   RETRIEVAL_EVAL_MIN_RECALL_AT_K,
   assertRetrievalEvalGate,
+  buildRetrievalTokenSavingsEnvelope,
   runRetrievalEval,
   type RetrievalEvalReport,
 } from '../../src/evals/retrieval.js';
@@ -267,6 +268,36 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.facts_source_rate).toBeGreaterThan(0);
   });
 
+  it('exposes a canonical token-savings metrics envelope without replacing existing summary fields', async () => {
+    const envelope = report.summary.token_savings_metrics;
+    const rebuilt = buildRetrievalTokenSavingsEnvelope(report.summary, report.cases);
+    const fullChars = report.cases.reduce((sum, result) => sum + result.full_content_chars, 0);
+    const returnedChars = report.cases.reduce((sum, result) => sum + result.context_chars, 0);
+    const evidenceChars = report.cases.reduce((sum, result) => sum + result.primary_evidence_chars, 0);
+
+    expect(envelope).toEqual(rebuilt);
+    expect(envelope).toMatchObject({
+      source: 'retrieval_eval',
+      measurement: 'aggregate',
+      full_chars: fullChars,
+      evidence_chars: evidenceChars,
+      returned_chars: returnedChars,
+      saved_chars: fullChars - returnedChars,
+      compression_ratio: report.summary.context_compression,
+      compression_basis: 'returned_chars',
+      recall_at_1: report.summary.recall_at_1,
+      recall_at_k: report.summary.recall_at_k,
+      mean_reciprocal_rank: report.summary.mean_reciprocal_rank,
+      context_compression: report.summary.context_compression,
+      surgical_compression: report.summary.hybrid.surgical_compression,
+      kg_hit_rate: report.summary.hybrid.kg_hit_rate,
+      kg_primary_rate: report.summary.hybrid.kg_primary_rate,
+      sentence_primary_rate: report.summary.hybrid.sentence_primary_rate,
+      community_no_fifth_lane_rate: report.summary.hybrid.community_no_fifth_lane_rate,
+    });
+    expect(envelope.saved_chars).toBeGreaterThan(0);
+  });
+
   it('formats a markdown benchmark report', async () => {
     expect(report.markdown).toContain('# Retrieval Eval Baseline (Hybrid Retrieval)');
     expect(report.markdown).toContain('| Recall @ 1 |');
@@ -385,6 +416,10 @@ describe('retrieval eval baseline', () => {
     expect(report.summary.hybrid.community_summary_bounds_rate).toBe(1);
     expect(report.summary.hybrid.community_coverage_bounds_rate).toBe(1);
     expect(report.summary.hybrid.community_enrichment_unavailable_fallback_rate).toBe(1);
+    expect(report.summary.token_savings_metrics.community_read_path_default_off_rate).toBe(1);
+    expect(report.summary.token_savings_metrics.community_disabled_no_regression_rate).toBe(1);
+    expect(report.summary.token_savings_metrics.community_enabled_no_regression_rate).toBe(1);
+    expect(report.summary.token_savings_metrics.community_no_fifth_lane_rate).toBe(1);
     expect(report.markdown).toContain('| Community Read Path Default-Off Rate |');
     expect(report.markdown).toContain('| Community Enabled No-Regression Rate |');
     expect(report.markdown).toContain('| Community Summary Bounds Rate |');

@@ -42,6 +42,51 @@ export interface RetrievalEvalCaseResult {
   promoted_context_chars: number;
 }
 
+export const TOKEN_SAVINGS_COMPRESSION_BASIS = 'returned_chars';
+export const TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL = 'retrieval_eval';
+
+export interface RetrievalTokenSavingsMetricsEnvelope {
+  source: typeof TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL;
+  measurement: 'aggregate';
+  full_chars: number;
+  evidence_chars: number;
+  returned_chars: number;
+  saved_chars: number;
+  compression_ratio: number;
+  compression_basis: typeof TOKEN_SAVINGS_COMPRESSION_BASIS;
+  recall_at_1: number;
+  recall_at_k: number;
+  mean_reciprocal_rank: number;
+  context_compression: number;
+  surgical_compression: number;
+  pending_rate: number;
+  degraded_rate: number;
+  lexical_prefix_hit_rate: number;
+  raw_semantic_hit_rate: number;
+  hyde_semantic_hit_rate: number;
+  sentence_primary_rate: number;
+  promoted_parent_rate: number;
+  kg_hit_rate: number;
+  kg_primary_rate: number;
+  evidence_lineage_coverage: number;
+  stale_result_rate: number;
+  kg_provenance_rate: number;
+  lane_truth_rate: number;
+  facts_source_rate: number;
+  hyde_lift_rate: number;
+  hybrid_rank_source_rate: number;
+  community_read_path_default_off_rate: number;
+  community_disabled_no_regression_rate: number;
+  community_enabled_no_regression_rate: number;
+  community_fallback_rate: number;
+  community_no_fifth_lane_rate: number;
+  community_direct_kg_no_regression_rate: number;
+  community_multi_hop_no_regression_rate: number;
+  community_summary_bounds_rate: number;
+  community_coverage_bounds_rate: number;
+  community_enrichment_unavailable_fallback_rate: number;
+}
+
 export interface RetrievalEvalSummary {
   total_cases: number;
   recall_at_1: number;
@@ -108,7 +153,12 @@ export interface RetrievalEvalSummary {
     community_coverage_bounds_rate: number;
     community_enrichment_unavailable_fallback_rate: number;
   };
+  token_savings_metrics: RetrievalTokenSavingsMetricsEnvelope;
 }
+
+type RetrievalEvalSummaryForEnvelope = Omit<RetrievalEvalSummary, 'token_savings_metrics'> & {
+  token_savings_metrics?: RetrievalTokenSavingsMetricsEnvelope;
+};
 
 export interface RetrievalEvalReport {
   summary: RetrievalEvalSummary;
@@ -671,6 +721,57 @@ function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdap
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+export function buildRetrievalTokenSavingsEnvelope(
+  summary: RetrievalEvalSummaryForEnvelope,
+  cases: RetrievalEvalCaseResult[],
+): RetrievalTokenSavingsMetricsEnvelope {
+  const fullChars = cases.reduce((sum, result) => sum + result.full_content_chars, 0);
+  const returnedChars = cases.reduce((sum, result) => sum + result.context_chars, 0);
+  const evidenceChars = cases.reduce((sum, result) => sum + result.primary_evidence_chars, 0);
+
+  return {
+    source: TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL,
+    measurement: 'aggregate',
+    full_chars: fullChars,
+    evidence_chars: evidenceChars,
+    returned_chars: returnedChars,
+    saved_chars: Math.max(0, fullChars - returnedChars),
+    compression_ratio: summary.context_compression,
+    compression_basis: TOKEN_SAVINGS_COMPRESSION_BASIS,
+    recall_at_1: summary.recall_at_1,
+    recall_at_k: summary.recall_at_k,
+    mean_reciprocal_rank: summary.mean_reciprocal_rank,
+    context_compression: summary.context_compression,
+    surgical_compression: summary.hybrid.surgical_compression,
+    pending_rate: summary.hybrid.pending_rate,
+    degraded_rate: summary.hybrid.degraded_rate,
+    lexical_prefix_hit_rate: summary.hybrid.lexical_prefix_hit_rate,
+    raw_semantic_hit_rate: summary.hybrid.raw_semantic_hit_rate,
+    hyde_semantic_hit_rate: summary.hybrid.hyde_semantic_hit_rate,
+    sentence_primary_rate: summary.hybrid.sentence_primary_rate,
+    promoted_parent_rate: summary.hybrid.promoted_parent_rate,
+    kg_hit_rate: summary.hybrid.kg_hit_rate,
+    kg_primary_rate: summary.hybrid.kg_primary_rate,
+    evidence_lineage_coverage: summary.hybrid.evidence_lineage_coverage,
+    stale_result_rate: summary.hybrid.stale_result_rate,
+    kg_provenance_rate: summary.hybrid.kg_provenance_rate,
+    lane_truth_rate: summary.hybrid.lane_truth_rate,
+    facts_source_rate: summary.hybrid.facts_source_rate,
+    hyde_lift_rate: summary.hybrid.hyde_lift_rate,
+    hybrid_rank_source_rate: summary.hybrid.hybrid_rank_source_rate,
+    community_read_path_default_off_rate: summary.hybrid.community_read_path_default_off_rate,
+    community_disabled_no_regression_rate: summary.hybrid.community_disabled_no_regression_rate,
+    community_enabled_no_regression_rate: summary.hybrid.community_enabled_no_regression_rate,
+    community_fallback_rate: summary.hybrid.community_fallback_rate,
+    community_no_fifth_lane_rate: summary.hybrid.community_no_fifth_lane_rate,
+    community_direct_kg_no_regression_rate: summary.hybrid.community_direct_kg_no_regression_rate,
+    community_multi_hop_no_regression_rate: summary.hybrid.community_multi_hop_no_regression_rate,
+    community_summary_bounds_rate: summary.hybrid.community_summary_bounds_rate,
+    community_coverage_bounds_rate: summary.hybrid.community_coverage_bounds_rate,
+    community_enrichment_unavailable_fallback_rate: summary.hybrid.community_enrichment_unavailable_fallback_rate,
+  };
 }
 
 function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseResult[]): string {
@@ -1796,7 +1897,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const countTrue = (items: Array<boolean | number>): number => items.filter(Boolean).length;
     const totalHybridCases = pendingCases.length === 0 ? cases.length : pendingCases.length;
     const corpusTotal = (store.getDb().prepare('SELECT COUNT(*) AS count FROM observations WHERE deleted_at IS NULL').get() as { count: number }).count;
-    const summary: RetrievalEvalSummary = {
+    const summaryWithoutEnvelope: RetrievalEvalSummaryForEnvelope = {
       total_cases: cases.length,
       recall_at_1: ratio(cases.filter((result) => result.rank === 1).length, cases.length),
       recall_at_k: ratio(found.length, cases.length),
@@ -1862,6 +1963,10 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         community_coverage_bounds_rate: communityReadPath.coverageBounds ? 1 : 0,
         community_enrichment_unavailable_fallback_rate: communityReadPath.enrichmentUnavailableFallback ? 1 : 0,
       },
+    };
+    const summary: RetrievalEvalSummary = {
+      ...summaryWithoutEnvelope,
+      token_savings_metrics: buildRetrievalTokenSavingsEnvelope(summaryWithoutEnvelope, cases),
     };
 
     return {
