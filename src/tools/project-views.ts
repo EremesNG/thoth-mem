@@ -9,6 +9,8 @@ interface ProjectGraphOptions {
   includeSuperseded?: boolean;
 }
 
+type ProjectHealth = ReturnType<Store['getOperationalHealth']>;
+
 function formatCommunitySummaryLines(store: Store, project: string): string[] {
   if (!store.config.communitySummaries.readPath.enabled) {
     return [];
@@ -124,6 +126,53 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   }
 
   return truncatedText;
+}
+
+export function formatProjectHealth(store: Store, project?: string, maxChars: number = 4000): string {
+  const health: ProjectHealth = store.getOperationalHealth({ project });
+  const jobs = health.jobs;
+  const coverage = health.coverage;
+  const lines = [
+    '## Operational Health',
+    project ? `Project: ${project}` : 'Project: all',
+    '',
+    `- overall: ${health.status}`,
+    `- legacy_drift: ${health.legacy_drift.status}`,
+    `- graph_source: ${health.visualization.graph_source}`,
+    health.legacy_drift.missing_table ? `- legacy_detail: missing table ${health.legacy_drift.missing_table}` : `- legacy_detail: ${health.legacy_drift.message}`,
+    '',
+    '## Semantic',
+    `- state: ${health.semantic.state}`,
+    `- runtime: pending=${health.semantic.pending ? 'yes' : 'no'} stale=${health.semantic.stale ? 'yes' : 'no'} degraded=${health.semantic.degraded ? 'yes' : 'no'}`,
+    health.semantic.degradedReason ? `- degraded_reason: ${health.semantic.degradedReason}` : null,
+    `- lanes: ${health.semantic.lanes.map((lane) => `${lane.lane}:${lane.degraded ? 'degraded' : lane.stale ? 'stale' : lane.pending ? 'pending' : 'ready'}`).join(', ') || 'none'}`,
+    '',
+    '## Visualization / KG',
+    `- semantic_state: ${health.visualization.semantic_state}`,
+    `- kg_available: ${health.visualization.kg_available ? 'yes' : 'no'}`,
+    `- pending_jobs: ${health.visualization.pending_jobs}`,
+    '',
+    '## Jobs',
+    `- total: ${jobs.total}`,
+    `- pending: ${jobs.pending}`,
+    `- running: ${jobs.running}`,
+    `- failed: ${jobs.failed}`,
+    `- queue_lag_ms: ${jobs.queue_lag_ms ?? 'none'}`,
+    `- by_kind: ${jobs.by_kind.map((job) => `${job.kind}=p${job.pending}/r${job.running}/f${job.failed}`).join(', ') || 'none'}`,
+    '',
+    '## Coverage',
+    `- observations: ${coverage.observations}`,
+    `- chunks: ${coverage.chunk_vectors}/${coverage.chunks} vectors (${coverage.chunk_coverage})`,
+    `- sentences: ${coverage.sentence_vectors}/${coverage.sentences} vectors (${coverage.sentence_coverage})`,
+    '',
+    '## Recent Errors',
+    ...(health.recent_errors.length > 0
+      ? health.recent_errors.map((error) => `- ${error.kind}/${error.state} ${error.job_key}: ${error.last_error ?? 'unknown error'}`)
+      : ['- none']),
+  ].filter((line): line is string => line !== null);
+  const text = lines.join('\n');
+
+  return maxChars === 0 ? text : trimToBudget(text, maxChars);
 }
 
 function formatMaintenanceEvidenceLines(store: Store, observationIds: number[]): string[] {

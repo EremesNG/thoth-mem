@@ -86,6 +86,10 @@ describe('MCP tool registration', () => {
       project: 'registry-project',
       max_chars: 0,
     }).success).toBe(true);
+    expect(MEM_PROJECT_INPUT_SCHEMA.safeParse({
+      action: 'health',
+      max_chars: 0,
+    }).success).toBe(true);
   });
 
   it('registration does not require profile arguments', () => {

@@ -94,6 +94,48 @@ describe('mem_project tool', () => {
     expect(topic?.content[0].text).toContain('## Topic Key: architecture/topic-a');
   });
 
+  it('returns compact operational health without requiring a project', async () => {
+    store.saveObservation({
+      title: 'Health target',
+      content: '**What**: Health telemetry target',
+      project: 'project-a',
+    });
+
+    const result = await toolHandler?.({ action: 'health', max_chars: 2000 });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('## Operational Health');
+    expect(text).toContain('- overall:');
+    expect(text).toContain('- legacy_drift: ok');
+    expect(text).toContain('## Semantic');
+    expect(text).toContain('## Visualization / KG');
+    expect(text).toContain('## Jobs');
+    expect(text).toContain('## Coverage');
+    expect(text.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('reports explicit legacy drift in health when observation_facts is missing', async () => {
+    store.close();
+    store = new Store(':memory:', { graphFactsSource: 'legacy' });
+    const server = {
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_project') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer;
+    registerMemProject(server, store);
+
+    const result = await toolHandler?.({ action: 'health', project: 'legacy-project', max_chars: 2000 });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('- legacy_drift: degraded');
+    expect(text).toContain('missing table observation_facts');
+    expect(text).toContain('graph_source: legacy');
+  });
+
   it('annotates project graph with maintenance provenance without replacing KG facts', async () => {
     store.close();
     store = new Store(':memory:', {
@@ -165,6 +207,7 @@ describe('mem_project tool', () => {
 
   it('keeps graph and topic max_chars validation at 200 or greater', () => {
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'summary', project: 'project-a', max_chars: 0 })).not.toThrow();
+    expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'health', max_chars: 0 })).not.toThrow();
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'graph', project: 'project-a', max_chars: 0 })).toThrow(/max_chars must be >= 200/);
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'graph', project: 'project-a', max_chars: 150 })).toThrow(/max_chars must be >= 200/);
     expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({ action: 'graph', project: 'project-a', max_chars: 300 })).not.toThrow();

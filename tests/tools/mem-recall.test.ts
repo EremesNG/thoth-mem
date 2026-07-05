@@ -36,6 +36,22 @@ describe('mem_recall tool', () => {
     expect(result?.content[0].text).toContain('evidence_lanes:');
   });
 
+  it('does not crash default recall when observation_facts is missing', async () => {
+    const saved = store.saveObservation({
+      title: 'Recall KG drift target',
+      content: '**What**: Recall should use KG triples',
+      project: 'recall-project',
+    });
+    store.getDb().exec('DROP TABLE IF EXISTS observation_facts;');
+
+    const result = await toolHandler?.({ query: 'KG triples', project: 'recall-project', limit: 5 });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain(`obs:${saved.observation.id}`);
+    expect(text).not.toContain('no such table: observation_facts');
+  });
+
   it('can expand recall into context text', async () => {
     store.saveObservation({ title: 'Context target', content: 'expanded recall body marker', project: 'recall-project' });
 

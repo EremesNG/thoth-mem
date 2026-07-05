@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
-import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from "./project-views.js";
+import { formatProjectGraph, formatProjectHealth, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from "./project-views.js";
 
 const GRAPH_RELATIONS = [
   'HAS_TYPE',
@@ -17,8 +17,8 @@ const GRAPH_RELATIONS = [
 const MAX_CHARS_ERROR = "max_chars must be >= 200 when action is 'graph' or 'topic'";
 
 export const MEM_PROJECT_INPUT_SHAPE = {
-  action: z.enum(['list', 'summary', 'graph', 'topics', 'topic'] as const).describe("Project view to return"),
-  project: z.string().optional().describe("Project name. Required except action=list and optional for action=topics"),
+  action: z.enum(['list', 'summary', 'graph', 'topics', 'topic', 'health'] as const).describe("Project view to return"),
+  project: z.string().optional().describe("Project name. Required except action=list and optional for action=topics or health"),
   topic_key: z.string().optional().describe("Topic key for action=topic or graph filtering"),
   relation: z.enum(GRAPH_RELATIONS).optional().describe("Graph relation filter for action=graph"),
   limit: z.number().min(1).max(500).optional().describe("Maximum items to return"),
@@ -62,6 +62,15 @@ export function registerMemProject(server: McpServer, store: Store): void {
             content: [{
               type: "text" as const,
               text: formatTopicKeyList(store, project),
+            }],
+          };
+        }
+
+        if (action === 'health') {
+          return {
+            content: [{
+              type: "text" as const,
+              text: formatProjectHealth(store, project, max_chars),
             }],
           };
         }

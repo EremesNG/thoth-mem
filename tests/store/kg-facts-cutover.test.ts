@@ -245,6 +245,73 @@ describe('Store KG-backed observation facts cutover', () => {
     }
   });
 
+  it('reports compact legacy drift status when explicit legacy source lacks observation_facts', () => {
+    const store = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      const drift = store.getLegacyFactsDrift();
+      const health = store.getOperationalHealth({ project: 'legacy-project' });
+
+      expect(drift).toEqual({
+        status: 'degraded',
+        source: 'legacy',
+        missing_table: 'observation_facts',
+        message: 'explicit legacy graphFactsSource is configured but observation_facts is missing',
+      });
+      expect(health.legacy_drift.status).toBe('degraded');
+      expect(health.legacy_drift.missing_table).toBe('observation_facts');
+      expect(health.status).toBe('degraded');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('default KG read paths do not require observation_facts to exist', async () => {
+    const store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+
+    try {
+      const saved = seedKgBackedObservation(store);
+      dropLegacyObservationFactsTable(store);
+
+      expect(store.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation))
+        .toEqual(['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED']);
+      const response = await (store as any).hybridRetrieve({ query: 'middleware', project: 'auth-project', limit: 5 });
+      expect(response.results.map((result: any) => result.observation.id)).toContain(saved.id);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('explicit legacy facts read degrades to empty when observation_facts is missing', () => {
+    const store = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      seedKgBackedObservation(store);
+      dropLegacyObservationFactsTable(store);
+
+      expect(store.getObservationFacts({ project: 'auth-project' })).toEqual([]);
+      expect(store.getLegacyFactsDrift()).toMatchObject({
+        status: 'degraded',
+        missing_table: 'observation_facts',
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('explicit legacy facts read still surfaces unrelated SQL failures', () => {
+    const store = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      createLegacyObservationFactsTable(store);
+      store.getDb().exec('DROP TABLE observations;');
+
+      expect(() => store.getObservationFacts({ project: 'auth-project' })).toThrow(/no such table: observations/);
+    } finally {
+      store.close();
+    }
+  });
+
   it('does not use observation_facts as a default KG-lane source', async () => {
     const store = new Store(':memory:');
 

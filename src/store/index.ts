@@ -1470,6 +1470,10 @@ export class Store {
   }
 
   private replaceObservationFacts(observation: Observation): { deleted: number; created: number } {
+    if (!this.observationFactsTableExists()) {
+      return { deleted: 0, created: 0 };
+    }
+
     const insert = this.db.prepare(
       `INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -1505,6 +1509,93 @@ export class Store {
       .get() as Record<string, unknown> | undefined;
 
     return row !== undefined;
+  }
+
+  private isMissingLegacyObservationFactsError(error: unknown): boolean {
+    return error instanceof Error && /no such table:\s*observation_facts/i.test(error.message);
+  }
+
+  getLegacyFactsDrift(): {
+    status: 'ok' | 'degraded';
+    source: 'kg' | 'legacy';
+    missing_table: 'observation_facts' | null;
+    message: string;
+  } {
+    const source = this.config.graphFactsSource ?? 'kg';
+    if (source !== 'legacy') {
+      return {
+        status: 'ok',
+        source,
+        missing_table: null,
+        message: 'default KG graphFactsSource does not require observation_facts',
+      };
+    }
+
+    if (this.observationFactsTableExists()) {
+      return {
+        status: 'ok',
+        source,
+        missing_table: null,
+        message: 'explicit legacy graphFactsSource can read observation_facts',
+      };
+    }
+
+    return {
+      status: 'degraded',
+      source,
+      missing_table: 'observation_facts',
+      message: 'explicit legacy graphFactsSource is configured but observation_facts is missing',
+    };
+  }
+
+  getOperationalHealth(input: { project?: string } = {}): {
+    status: 'ok' | 'pending' | 'degraded';
+    project: string | null;
+    legacy_drift: ReturnType<Store['getLegacyFactsDrift']>;
+    semantic: ReturnType<Store['getSemanticIndexState']> & {
+      state: VizHealthResponse['semantic_state'];
+      lanes: VizHealthResponse['semantic']['lanes'];
+    };
+    visualization: {
+      semantic_state: VizHealthResponse['semantic_state'];
+      graph_source: 'kg' | 'legacy';
+      kg_available: boolean;
+      pending_jobs: number;
+    };
+    jobs: VizHealthResponse['semantic']['jobs'];
+    coverage: VizHealthResponse['semantic']['coverage'];
+    recent_errors: VizHealthResponse['semantic']['recent_errors'];
+  } {
+    const visualization = this.getVisualizationHealth({ project: input.project });
+    const runtime = this.getSemanticIndexState();
+    const legacyDrift = this.getLegacyFactsDrift();
+    const graphSource = this.config.graphFactsSource ?? 'kg';
+    const kgAvailable = graphSource !== 'legacy' || legacyDrift.status === 'ok';
+    const status = legacyDrift.status === 'degraded' || visualization.semantic_state === 'degraded'
+      ? 'degraded'
+      : visualization.semantic_state === 'pending' || visualization.semantic_state === 'rebuilding'
+        ? 'pending'
+        : 'ok';
+
+    return {
+      status,
+      project: input.project ?? null,
+      legacy_drift: legacyDrift,
+      semantic: {
+        ...runtime,
+        state: visualization.semantic_state,
+        lanes: visualization.semantic.lanes,
+      },
+      visualization: {
+        semantic_state: visualization.semantic_state,
+        graph_source: graphSource,
+        kg_available: kgAvailable,
+        pending_jobs: visualization.pending_jobs,
+      },
+      jobs: visualization.semantic.jobs,
+      coverage: visualization.semantic.coverage,
+      recent_errors: visualization.semantic.recent_errors.slice(0, 5),
+    };
   }
 
   private refreshGraphFacts(observation: Observation): void {
@@ -3993,9 +4084,17 @@ export class Store {
       fallbackSql.push(`AND o.id IN (${input.observationIds.map(() => '?').join(',')})`);
       fallbackParams.push(...input.observationIds);
     }
-    const fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
-      observation_id: number; subject: string; relation: string; object: string;
-    }>;
+    let fallbackRows: Array<{ observation_id: number; subject: string; relation: string; object: string }>;
+    try {
+      fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
+        observation_id: number; subject: string; relation: string; object: string;
+      }>;
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return tripleCandidates;
+      }
+      throw error;
+    }
     const factCandidates = fallbackRows.flatMap((row) => {
       const factText = `${row.subject} ${row.relation} ${row.object}`.toLowerCase();
       const matches = terms.filter((term) => factText.includes(term)).length;
@@ -4845,14 +4944,7 @@ export class Store {
       `SELECT DISTINCT session_id FROM observations WHERE deleted_at IS NULL ${input.project ? 'AND project = ?' : ''} ORDER BY session_id ASC LIMIT 500`
     ).all(...(input.project ? [input.project] : [])) as Array<{ session_id: string }>;
     const relationRows = this.config.graphFactsSource === 'legacy'
-      ? this.db.prepare(
-          `SELECT DISTINCT f.relation
-           FROM observation_facts f
-           JOIN observations o ON o.id = f.observation_id
-           WHERE o.deleted_at IS NULL
-           ${input.project ? 'AND o.project = ?' : ''}
-           ORDER BY f.relation ASC LIMIT 500`
-        ).all(...(input.project ? [input.project] : [])) as Array<{ relation: string }>
+      ? this.getLegacyVisualizationRelationRows(input.project)
       : Array.from(new Set(this.getObservationFactsFromKg({ project: input.project }).map((fact) => fact.relation)))
         .sort((a, b) => a.localeCompare(b))
         .slice(0, 500)
@@ -4946,7 +5038,32 @@ export class Store {
     }
     sql.push('ORDER BY o.id ASC, f.id ASC LIMIT ?');
     params.push(limit);
-    return this.db.prepare(sql.join(' ')).all(...params) as VizEdgeRow[];
+    try {
+      return this.db.prepare(sql.join(' ')).all(...params) as VizEdgeRow[];
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private getLegacyVisualizationRelationRows(project?: string): Array<{ relation: string }> {
+    try {
+      return this.db.prepare(
+        `SELECT DISTINCT f.relation
+         FROM observation_facts f
+         JOIN observations o ON o.id = f.observation_id
+         WHERE o.deleted_at IS NULL
+         ${project ? 'AND o.project = ?' : ''}
+         ORDER BY f.relation ASC LIMIT 500`
+      ).all(...(project ? [project] : [])) as Array<{ relation: string }>;
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   private buildVisualizationEdges(
@@ -5223,7 +5340,14 @@ export class Store {
 
     sql.push('ORDER BY f.id ASC');
 
-    return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
+    try {
+      return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   getObservationFactsFromKg(input: ObservationFactsInput = {}): ObservationFact[] {
