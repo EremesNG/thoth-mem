@@ -250,5 +250,28 @@ describe('mem_project tool', () => {
     expect(summaryText).toContain('coverage=obs:1 triples:1');
     expect(graphText).toContain('## Knowledge Graph Ledger: project-a');
     expect(graphText).not.toContain('## Community Summaries');
+    expect(graphText).not.toContain('P5');
+    expect(graphText).not.toContain('P5 graph navigation v2');
+    expect(graphText).not.toContain('GraphRAG');
+    expect(graphText).not.toContain('multi-harness');
+    expect(graphText).not.toContain('MemoryIntegrationCore');
+  });
+
+  it('keeps graph output as KG ledger semantics and avoids deferred-scope phrasing', async () => {
+    store.saveObservation({
+      title: 'Deferred-scope probe',
+      content: 'Graph ledger stays factual and does not claim migration or parity scope.',
+      project: 'project-a',
+    });
+
+    const graph = await toolHandler?.({ action: 'graph', project: 'project-a', max_chars: 1800 });
+    const graphText = graph?.content[0].text ?? '';
+
+    expect(graph?.isError).not.toBe(true);
+    expect(graphText).toContain('## Knowledge Graph Ledger: project-a');
+    expect(graphText).not.toContain('deferred scope');
+    expect(graphText).not.toContain('multi-harness parity');
+    expect(graphText).not.toContain('G3');
+    expect(graphText).not.toContain('global default-on');
   });
 });

@@ -9,6 +9,17 @@ import {
   runRetrievalEval,
   type RetrievalEvalReport,
 } from '../../src/evals/retrieval.js';
+import {
+  COMMUNITY_ROLLOUT_MIN_COMMUNITIES,
+  COMMUNITY_ROLLOUT_MIN_COMMUNITY_ENTITY_COUNT,
+  COMMUNITY_ROLLOUT_MIN_COMMUNITY_SOURCE_OBSERVATIONS,
+  COMMUNITY_ROLLOUT_MIN_COMMUNITY_TRIPLE_COUNT,
+  COMMUNITY_ROLLOUT_MIN_KG_TRIPLES,
+  COMMUNITY_ROLLOUT_MIN_SOURCE_ATTRIBUTION_RATE,
+  COMMUNITY_ROLLOUT_MIN_SOURCE_OBSERVATIONS,
+  COMMUNITY_ROLLOUT_TOKEN_EVIDENCE_CHARS_REGRESSION_TOLERANCE,
+  COMMUNITY_ROLLOUT_TOKEN_RETURNED_CHARS_REGRESSION_TOLERANCE,
+} from '../../src/retrieval/community-rollout.js';
 import { fuseCandidates, type LaneCandidate } from '../../src/retrieval/ranking.js';
 import { Store } from '../../src/store/index.js';
 import type { Observation } from '../../src/store/types.js';
@@ -380,6 +391,29 @@ describe('retrieval eval baseline', () => {
     );
   });
 
+  it('rejects reports with failed community rollout gates', () => {
+    const failedGate = {
+      ...report.summary.community_rollout_gates[0],
+      name: 'community_sparse_coverage_blocks_eligibility',
+      threshold: false,
+      observed_enabled: true,
+      passed: false,
+    };
+    const rolloutBlockedReport = {
+      ...report,
+      summary: {
+        ...report.summary,
+        recall_at_1: RETRIEVAL_EVAL_MIN_RECALL_AT_1,
+        recall_at_k: RETRIEVAL_EVAL_MIN_RECALL_AT_K,
+        community_rollout_gates: [failedGate],
+      },
+    };
+
+    expect(() => assertRetrievalEvalGate(rolloutBlockedReport)).toThrow(
+      'community_sparse_coverage_blocks_eligibility'
+    );
+  });
+
   it('facts source checks pass on KG-only evidence and graph cases use kg_triples candidates', async () => {
     expect(report.summary.hybrid.facts_source_rate).toBeGreaterThan(0);
 
@@ -483,6 +517,176 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('| Summary bounds | PASS | 100.0% |');
     expect(report.markdown).toContain('| Coverage bounds | PASS | 100.0% |');
     expect(report.markdown).toContain('| Enrichment-unavailable fallback | PASS | 100.0% |');
+  });
+
+  it('reports shared community rollout thresholds with observed values', async () => {
+    expect(report.summary.community_rollout_gates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_COMMUNITIES',
+        threshold: COMMUNITY_ROLLOUT_MIN_COMMUNITIES,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_KG_TRIPLES',
+        threshold: COMMUNITY_ROLLOUT_MIN_KG_TRIPLES,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_SOURCE_OBSERVATIONS',
+        threshold: COMMUNITY_ROLLOUT_MIN_SOURCE_OBSERVATIONS,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_COMMUNITY_SOURCE_OBSERVATIONS',
+        threshold: COMMUNITY_ROLLOUT_MIN_COMMUNITY_SOURCE_OBSERVATIONS,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_COMMUNITY_ENTITY_COUNT',
+        threshold: COMMUNITY_ROLLOUT_MIN_COMMUNITY_ENTITY_COUNT,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_COMMUNITY_TRIPLE_COUNT',
+        threshold: COMMUNITY_ROLLOUT_MIN_COMMUNITY_TRIPLE_COUNT,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_SOURCE_ATTRIBUTION_RATE',
+        threshold: COMMUNITY_ROLLOUT_MIN_SOURCE_ATTRIBUTION_RATE,
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_TOKEN_RETURNED_CHARS_REGRESSION_TOLERANCE',
+        threshold: COMMUNITY_ROLLOUT_TOKEN_RETURNED_CHARS_REGRESSION_TOLERANCE,
+        observed_disabled: expect.any(Number),
+        observed_enabled: expect.any(Number),
+      }),
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_TOKEN_EVIDENCE_CHARS_REGRESSION_TOLERANCE',
+        threshold: COMMUNITY_ROLLOUT_TOKEN_EVIDENCE_CHARS_REGRESSION_TOLERANCE,
+        observed_disabled: expect.any(Number),
+        observed_enabled: expect.any(Number),
+      }),
+    ]));
+    expect(report.markdown).toContain('| COMMUNITY_ROLLOUT_MIN_COMMUNITIES |');
+    expect(report.markdown).toContain('| COMMUNITY_ROLLOUT_TOKEN_RETURNED_CHARS_REGRESSION_TOLERANCE |');
+  });
+
+  it('reports same-corpus disabled-versus-enabled A/B rollout gate inputs', async () => {
+    const abRows = report.summary.community_rollout_gates.filter((gate) => gate.scope === 'same_corpus_ab');
+
+    expect(abRows.length).toBeGreaterThanOrEqual(8);
+    expect(abRows.every((gate) => gate.project === 'community-eval')).toBe(true);
+    expect(abRows.every((gate) => gate.corpus === 'community-rollout-fixture')).toBe(true);
+    expect(abRows.every((gate) => gate.query_set === 'community-read-path-rollout')).toBe(true);
+    expect(abRows.every((gate) => gate.retrieval_limit === 5)).toBe(true);
+    expect(abRows.every((gate) => gate.community_budget === 1)).toBe(true);
+    expect(abRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'community_ab_recall_at_k_no_regression',
+        threshold: 0,
+        observed_disabled: 1,
+        observed_enabled: 1,
+        passed: true,
+      }),
+      expect.objectContaining({
+        name: 'community_ab_rank_no_regression',
+        threshold: 0,
+        observed_disabled: 1,
+        observed_enabled: 1,
+        passed: true,
+      }),
+    ]));
+  });
+
+  it('reports P4 token-savings gate rows with complete disabled and enabled metrics', async () => {
+    const tokenRows = report.summary.community_rollout_gates.filter((gate) => gate.category === 'p4_token_savings');
+    const requiredNames = [
+      'community_p4_full_chars',
+      'community_p4_evidence_chars_no_regression',
+      'community_p4_returned_chars_no_regression',
+      'community_p4_saved_chars_preserved',
+      'community_p4_compression_ratio_preserved',
+      'community_p4_recall_quality_preserved',
+      'community_p4_rank_quality_preserved',
+      'community_p4_lane_truth_preserved',
+      'community_p4_safety_no_regression',
+    ];
+
+    expect(tokenRows.map((gate) => gate.name)).toEqual(expect.arrayContaining(requiredNames));
+    expect(tokenRows.every((gate) => typeof gate.observed_disabled === 'number')).toBe(true);
+    expect(tokenRows.every((gate) => typeof gate.observed_enabled === 'number')).toBe(true);
+    expect(tokenRows.every((gate) => gate.passed)).toBe(true);
+    expect(report.markdown).toContain('| community_p4_saved_chars_preserved |');
+    expect(report.markdown).toContain('| community_p4_lane_truth_preserved |');
+  });
+
+  it('reports readiness inputs and sparse-coverage blocking evidence', async () => {
+    const readinessRows = report.summary.community_rollout_gates.filter((gate) => gate.category === 'readiness');
+
+    expect(readinessRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'community_read_path_explicit_opt_in', threshold: true, observed_enabled: true, passed: true }),
+      expect.objectContaining({ name: 'community_state_fresh', threshold: 'fresh', observed_enabled: 'fresh', passed: true }),
+      expect.objectContaining({ name: 'community_run_committed_current', passed: true }),
+      expect.objectContaining({ name: 'community_graph_signature_current', passed: true }),
+      expect.objectContaining({ name: 'community_not_degraded', threshold: false, observed_enabled: false, passed: true }),
+      expect.objectContaining({ name: 'community_summary_max_chars_bound', threshold: 1200, passed: true }),
+      expect.objectContaining({ name: 'community_source_observation_limit_bound', threshold: 12, passed: true }),
+      expect.objectContaining({ name: 'community_degraded_state_ineligible', threshold: false, observed_enabled: false, passed: true }),
+      expect.objectContaining({ name: 'community_sparse_coverage_blocks_eligibility', threshold: false, observed_enabled: false, passed: true }),
+    ]));
+    expect(readinessRows.some((gate) => gate.name.includes('COMMUNITY_ROLLOUT_MIN_'))).toBe(true);
+    expect(report.markdown).toContain('| community_sparse_coverage_blocks_eligibility |');
+  });
+
+  it('proves every fallback state preserves source-attributed baseline hits', async () => {
+    const fallbackRows = report.summary.community_rollout_gates.filter((gate) => gate.category === 'fallback_state');
+
+    expect(fallbackRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'community_fallback_disabled', observed_enabled: 'disabled', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_missing', observed_enabled: 'kg_communities_missing', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_stale', observed_enabled: 'kg_communities_stale', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_rebuilding', observed_enabled: 'kg_communities_rebuilding', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_failed', observed_enabled: 'kg_communities_failed', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_degraded', observed_enabled: 'kg_communities_degraded', passed: true }),
+      expect.objectContaining({ name: 'community_fallback_enrichment_unavailable', observed_enabled: 'kg_communities_degraded', passed: true }),
+    ]));
+    expect(fallbackRows.every((gate) => gate.baseline_hit_count !== undefined && gate.baseline_hit_count > 0)).toBe(true);
+    expect(fallbackRows.every((gate) => gate.source_attributed_baseline_hit_count !== undefined && gate.source_attributed_baseline_hit_count > 0)).toBe(true);
+  });
+
+  it('reports zero-regression lane-truth, direct KG, and B2 multi-hop ranking gates', async () => {
+    expect(report.summary.community_rollout_gates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'community_no_fifth_lane_zero_regression',
+        category: 'lane_ranking',
+        threshold: 0,
+        observed_disabled: 0,
+        observed_enabled: 0,
+        passed: true,
+      }),
+      expect.objectContaining({
+        name: 'community_direct_kg_rank_zero_regression',
+        category: 'lane_ranking',
+        threshold: 0,
+        observed_disabled: 1,
+        observed_enabled: 1,
+        passed: true,
+      }),
+      expect.objectContaining({
+        name: 'community_b2_multi_hop_rank_zero_regression',
+        category: 'lane_ranking',
+        threshold: 0,
+        observed_disabled: expect.any(Number),
+        observed_enabled: expect.any(Number),
+        passed: true,
+      }),
+    ]));
+    const multiHopGate = report.summary.community_rollout_gates.find((gate) =>
+      gate.name === 'community_b2_multi_hop_rank_zero_regression'
+    );
+    expect(Number(multiHopGate?.observed_enabled)).toBeLessThanOrEqual(Number(multiHopGate?.observed_disabled));
   });
 
   it('eval fixture path seeds graph candidates from kg_triples and never writes legacy facts', () => {

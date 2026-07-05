@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  COMMUNITY_ROLLOUT_MIN_COMMUNITIES,
+  evaluateCommunityReadPathEligibility,
+} from '../../src/retrieval/community-rollout.js';
 import { Store } from '../../src/store/index.js';
 import { runMigrationsWithSemantic } from '../../src/store/migrations.js';
 import type {
@@ -7,6 +11,45 @@ import type {
   CommunityRetrievalResult,
   CommunityStateResult,
 } from '../../src/store/types.js';
+
+type EligibilityInput = Parameters<typeof evaluateCommunityReadPathEligibility>[0];
+
+function communityEligibilityFixture(overrides: Partial<EligibilityInput> = {}): EligibilityInput {
+  return {
+    readPathEnabled: true,
+    state: {
+      project: 'community-project',
+      state: 'fresh',
+      run_id: 7,
+      latest_committed_run_id: 7,
+      graph_signature: 'graph-a',
+      current_graph_signature: 'graph-a',
+      communities_count: 1,
+      entities_count: 2,
+      triples_count: 1,
+      source_observations_count: 1,
+      degraded: false,
+      degraded_reasons: [],
+      error: null,
+      updated_at: '2026-01-01 00:00:00',
+    },
+    candidates: [{
+      community_id: 'c_abc',
+      level: 0,
+      summary_text: 'Summary',
+      entity_count: 2,
+      triple_count: 1,
+      source_observation_count: 1,
+      top_entities: ['Entity A'],
+      top_relations: ['REFERENCES'],
+      source_observation_ids: [42],
+      confidence: 0.8,
+      degraded: false,
+      degraded_reasons: [],
+    }],
+    ...overrides,
+  };
+}
 
 function tableColumns(store: Store, tableName: string): string[] {
   return (store.getDb().prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>)
@@ -82,13 +125,14 @@ function seedCommittedCommunitySnapshots(
       status, freshness, degraded, degraded_reasons_json, coverage_json, communities_count,
       entities_count, triples_count, source_observations_count, committed_at
     ) VALUES (?, ?, 'connected_components_v1', '1', 'extractive_v1', 'cfg', ?,
-      'committed', 'fresh', 0, '[]', '{}', ?, ?, 0, ?, datetime('now'))`
+      'committed', 'fresh', 0, '[]', '{}', ?, ?, ?, ?, datetime('now'))`
   ).run(
     `run-${project}`,
     project,
     currentSignature,
     summaries.length,
     summaries.length * 2,
+    summaries.length,
     summaries.length,
   ).lastInsertRowid as number;
 
@@ -98,7 +142,7 @@ function seedCommittedCommunitySnapshots(
         run_id, project, community_id, level, community_key, summary_text, summary_max_chars,
         entity_count, triple_count, source_observation_count, top_entities_json, top_relations_json,
         source_observation_ids_json, coverage_json, provenance_json, confidence, degraded, degraded_reasons_json
-      ) VALUES (?, ?, ?, 0, ?, ?, 1200, 2, 0, 1, ?, '["RELATES_TO"]', ?, '{}', '{}', ?, 0, '[]')`
+      ) VALUES (?, ?, ?, 0, ?, ?, 1200, 2, 1, 1, ?, '["RELATES_TO"]', ?, '{}', '{}', ?, 0, '[]')`
     ).run(
       runId,
       project,
@@ -402,6 +446,64 @@ describe('Store — community summary schema foundation', () => {
     }
   });
 
+  it('shared rollout helper evaluates fresh, unavailable, and sparse coverage states without schema access', () => {
+    const fresh = evaluateCommunityReadPathEligibility(communityEligibilityFixture());
+
+    expect(fresh.eligible).toBe(true);
+    expect(fresh.gates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'COMMUNITY_ROLLOUT_MIN_COMMUNITIES',
+        threshold: COMMUNITY_ROLLOUT_MIN_COMMUNITIES,
+        observed: 1,
+        passed: true,
+      }),
+    ]));
+
+    for (const state of ['stale', 'rebuilding', 'failed', 'degraded'] as const) {
+      const result = evaluateCommunityReadPathEligibility(communityEligibilityFixture({
+        state: {
+          ...communityEligibilityFixture().state,
+          state,
+          degraded: state === 'degraded',
+          degraded_reasons: state === 'degraded' ? ['enrichment_unavailable'] : [],
+        },
+      }));
+
+      expect(result.eligible).toBe(false);
+      expect(result.degradedFallbackMarker).toBe(`kg_communities_${state}`);
+    }
+
+    const enrichmentUnavailable = evaluateCommunityReadPathEligibility(communityEligibilityFixture({
+      state: {
+        ...communityEligibilityFixture().state,
+        state: 'fresh',
+        degraded: true,
+        degraded_reasons: ['enrichment_unavailable'],
+      },
+    }));
+    const sparseCoverage = evaluateCommunityReadPathEligibility(communityEligibilityFixture({
+      state: {
+        ...communityEligibilityFixture().state,
+        communities_count: 0,
+      },
+      candidates: [],
+    }));
+    const disabled = evaluateCommunityReadPathEligibility(communityEligibilityFixture({ readPathEnabled: false }));
+
+    expect(enrichmentUnavailable).toMatchObject({
+      eligible: false,
+      degradedFallbackMarker: 'kg_communities_degraded',
+    });
+    expect(sparseCoverage).toMatchObject({
+      eligible: false,
+      degradedFallbackMarker: 'kg_communities_ineligible_coverage',
+    });
+    expect(disabled).toMatchObject({
+      eligible: false,
+      degradedFallbackMarker: undefined,
+    });
+  });
+
   it('rebuild is project-scoped and scoped', () => {
     const store = new Store(':memory:');
     try {
@@ -495,8 +597,60 @@ describe('Store — community summary schema foundation', () => {
         lane: 'kg',
         source: 'kg_community_summary',
         observationId: sourceIds[3],
-        community: { communityId: 'c_004' },
+        community: {
+          communityId: 'c_004',
+          sourceObservationIds: [sourceIds[3]],
+          entityCount: 2,
+          tripleCount: 1,
+        },
       });
+      expect(communityCandidates[0].text.length).toBeLessThanOrEqual(store.config.communitySummaries.summaryMaxChars);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('community read-path blocks signature drift before emitting committed summaries', async () => {
+    const store = new Store(':memory:', {
+      communitySummaries: {
+        enabled: true,
+        readPath: { enabled: true },
+      },
+    });
+    try {
+      const project = 'read-path-signature-drift';
+      seedProjectGraph(store, project);
+      store.rebuildCommunitySummaries({ project });
+
+      const driftSource = insertObservationSource(store, project, 'new drift source', 'epsilon links zeta');
+      const epsilon = insertEntity(store, `${project}:epsilon`, 'Epsilon');
+      const zeta = insertEntity(store, `${project}:zeta`, 'Zeta');
+      insertTriple(store, {
+        subject: epsilon,
+        relation: 'RELATES_TO',
+        object: zeta,
+        project,
+        sourceId: driftSource,
+        hash: `${project}:epsilon-zeta`,
+      });
+
+      const retrieval = await store.hybridRetrieve({
+        query: 'alpha beta',
+        project,
+        limit: 5,
+      });
+
+      expect(retrieval.degradedFallback).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^kg_communities_(stale|ineligible_signature)$/),
+      ]));
+      expect(retrieval.results.length).toBeGreaterThan(0);
+      expect(retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []))
+        .not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'kg_community_summary' }),
+        ]));
+      expect(retrieval.results.some((hit) =>
+        (hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_triples')
+      )).toBe(true);
     } finally {
       store.close();
     }

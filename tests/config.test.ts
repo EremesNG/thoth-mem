@@ -478,6 +478,13 @@ describe('getConfig', () => {
         readPath: { enabled: false },
       },
     }).readPath.enabled).toBe(true);
+
+    delete process.env.THOTH_COMMUNITY_READ_PATH_ENABLED;
+    expect(resolveCommunitySummariesConfig({
+      communitySummaries: {
+        readPath: { enabled: false },
+      },
+    }).readPath.enabled).toBe(false);
   });
 
   it('communitySummaries clamps over-max persisted and env budgets to schema maximums', () => {
@@ -541,6 +548,8 @@ describe('getConfig', () => {
       type: 'boolean',
       default: false,
     });
+    expect(community.properties.readPath.properties.enabled.description).toContain('explicit opt-in');
+    expect(community.properties.readPath.properties.enabled.description).toContain('Clearing');
   });
 });
 

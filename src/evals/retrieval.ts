@@ -3,6 +3,11 @@ import {
   DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
   DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
 } from '../config.js';
+import {
+  buildCommunityRolloutEvalGates,
+  evaluateCommunityReadPathEligibility,
+  type CommunityRolloutEvalGate,
+} from '../retrieval/community-rollout.js';
 import { Store } from '../store/index.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import type { SaveObservationInput } from '../store/types.js';
@@ -153,6 +158,7 @@ export interface RetrievalEvalSummary {
     community_coverage_bounds_rate: number;
     community_enrichment_unavailable_fallback_rate: number;
   };
+  community_rollout_gates: CommunityRolloutEvalGate[];
   token_savings_metrics: RetrievalTokenSavingsMetricsEnvelope;
 }
 
@@ -683,6 +689,14 @@ export function assertRetrievalEvalGate(report: Pick<RetrievalEvalReport, 'summa
   if (report.summary.recall_at_k < RETRIEVAL_EVAL_MIN_RECALL_AT_K) {
     failures.push(`Recall@K ${report.summary.recall_at_k} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_K}`);
   }
+  for (const gate of report.summary.community_rollout_gates) {
+    if (!gate.passed) {
+      const observed = gate.observed_disabled === undefined
+        ? `observed ${gate.observed_enabled}`
+        : `observed disabled ${gate.observed_disabled}, enabled ${gate.observed_enabled}`;
+      failures.push(`Community rollout gate ${gate.name} failed (${observed}; threshold ${gate.threshold})`);
+    }
+  }
   if (failures.length > 0) {
     throw new Error(`Retrieval eval gate failed: ${failures.join('; ')}`);
   }
@@ -857,6 +871,14 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Summary bounds | ${formatGateStatus(summary.hybrid.community_summary_bounds_rate)} | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
     `| Coverage bounds | ${formatGateStatus(summary.hybrid.community_coverage_bounds_rate)} | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
     `| Enrichment-unavailable fallback | ${formatGateStatus(summary.hybrid.community_enrichment_unavailable_fallback_rate)} | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
+    '',
+    '## Community Rollout Thresholds',
+    '',
+    '| Gate | Status | Threshold | Disabled observed | Enabled observed |',
+    '| --- | --- | ---: | ---: | ---: |',
+    ...summary.community_rollout_gates.map((gate) => (
+      `| ${gate.name} | ${gate.passed ? 'PASS' : 'FAIL'} | ${gate.threshold} | ${gate.observed_disabled ?? '-'} | ${gate.observed_enabled} |`
+    )),
     '',
     '## Corpus',
     '',
@@ -1282,6 +1304,7 @@ async function validateCommunityReadPathEval(): Promise<{
   summaryBounds: boolean;
   coverageBounds: boolean;
   enrichmentUnavailableFallback: boolean;
+  rolloutGates: CommunityRolloutEvalGate[];
 }> {
   const store = new Store(':memory:', {
     communitySummaries: {
@@ -1315,6 +1338,14 @@ async function validateCommunityReadPathEval(): Promise<{
           observation: { id: number };
           lanes: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
           evidence: {
+            primary: {
+              lane: 'sentence' | 'chunk' | 'lexical' | 'kg';
+              source: string;
+              text: string;
+              chunkKey?: string | null;
+              sentenceKey?: string | null;
+              kg?: { provenance?: string };
+            };
             byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{
               source: string;
               text?: string;
@@ -1325,6 +1356,39 @@ async function validateCommunityReadPathEval(): Promise<{
       }>;
     };
     const embeddingProvider = makeDeterministicEmbeddingProvider(store);
+    const rolloutMetadata = {
+      scope: 'same_corpus_ab' as const,
+      project: 'community-eval',
+      corpus: 'community-rollout-fixture',
+      query_set: 'community-read-path-rollout',
+      retrieval_limit: TOP_K,
+      community_budget: store.config.communitySummaries.maxRetrievalCommunities,
+    };
+    const returnedChars = (result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>): number =>
+      result.results.reduce((sum, hit) => sum + hit.evidence.primary.text.length, 0);
+    const evidenceChars = returnedChars;
+    const sourceAttributedHitCount = (result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>): number =>
+      result.results.filter((hit) => Boolean(
+        hit.evidence.primary.chunkKey
+        || hit.evidence.primary.sentenceKey
+        || hit.evidence.primary.kg?.provenance
+        || hit.evidence.primary.source
+      )).length;
+    const rankOf = (
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      observationId: number,
+    ): number | null => {
+      const index = result.results.findIndex((hit) => hit.observation.id === observationId);
+      return index >= 0 ? index + 1 : null;
+    };
+    const regressionPassed = (disabledObserved: number, enabledObserved: number): boolean =>
+      enabledObserved >= disabledObserved;
+    const noRankRegressionPassed = (disabledRank: number | null, enabledRank: number | null): boolean =>
+      disabledRank !== null && enabledRank !== null && enabledRank <= disabledRank;
+    const scopedGate = (gate: CommunityRolloutEvalGate): CommunityRolloutEvalGate => ({
+      ...rolloutMetadata,
+      ...gate,
+    });
     const direct = store.saveObservation({
       title: 'Community eval direct KG source',
       type: 'decision',
@@ -1450,6 +1514,226 @@ async function validateCommunityReadPathEval(): Promise<{
       && communityCandidates.every((candidate) =>
         (candidate.community?.entityCount ?? 0) > 0 && (candidate.community?.tripleCount ?? 0) > 0
       );
+    const disabledEvidenceChars = evidenceChars(disabled);
+    const enabledEvidenceChars = evidenceChars(enabled);
+    const disabledReturnedChars = returnedChars(disabled);
+    const enabledReturnedChars = returnedChars(enabled);
+    const disabledFullChars = direct.observation.content.length + downstream.observation.content.length;
+    const enabledFullChars = disabledFullChars;
+    const disabledSavedChars = Math.max(0, disabledFullChars - disabledReturnedChars);
+    const enabledSavedChars = Math.max(0, enabledFullChars - enabledReturnedChars);
+    const disabledCompression = disabledFullChars === 0
+      ? 0
+      : Number((1 - disabledReturnedChars / disabledFullChars).toFixed(3));
+    const enabledCompression = enabledFullChars === 0
+      ? 0
+      : Number((1 - enabledReturnedChars / enabledFullChars).toFixed(3));
+    const disabledRecall = directDisabledRank >= 0 ? 1 : 0;
+    const enabledRecall = directEnabledRank >= 0 ? 1 : 0;
+    const disabledRankQuality = directDisabledRank >= 0 ? 1 / (directDisabledRank + 1) : 0;
+    const enabledRankQuality = directEnabledRank >= 0 ? 1 / (directEnabledRank + 1) : 0;
+    const disabledLaneTruth = disabled.results.every((hit) =>
+      (hit.evidence.byLane[hit.evidence.primary.lane] ?? [])
+        .some((candidate) => candidate.source === hit.evidence.primary.source)
+    ) ? 1 : 0;
+    const enabledLaneTruth = enabled.results.every((hit) =>
+      (hit.evidence.byLane[hit.evidence.primary.lane] ?? [])
+        .some((candidate) => candidate.source === hit.evidence.primary.source)
+    ) ? 1 : 0;
+    const disabledCommunitySafety = noFifthLane ? 1 : 0;
+    const multiHopRankSafe = noRankRegressionPassed(
+      rankOf(multiHopBaseline, downstream.observation.id),
+      rankOf(multiHopEnabled, downstream.observation.id),
+    );
+    const enabledCommunitySafety = noFifthLane && enabledNoRegression && directKgNoRegression && multiHopRankSafe ? 1 : 0;
+    const rolloutGates = buildCommunityRolloutEvalGates({
+      communities: bounded.candidates.length,
+      kgTriples: bounded.candidates.reduce((sum, candidate) => sum + candidate.triple_count, 0),
+      sourceObservations: bounded.candidates.reduce((sum, candidate) => sum + candidate.source_observation_ids.length, 0),
+      communitySourceObservations: bounded.candidates.reduce(
+        (sum, candidate) => sum + candidate.source_observation_count,
+        0,
+      ),
+      communityEntityCount: bounded.candidates.reduce((sum, candidate) => sum + candidate.entity_count, 0),
+      communityTripleCount: bounded.candidates.reduce((sum, candidate) => sum + candidate.triple_count, 0),
+      sourceAttributionRate: bounded.candidates.length === 0
+        ? 0
+        : bounded.candidates.filter((candidate) => candidate.source_observation_ids.length > 0).length / bounded.candidates.length,
+      disabledReturnedChars,
+      enabledReturnedChars,
+      disabledEvidenceChars,
+      enabledEvidenceChars,
+      metadata: rolloutMetadata,
+    });
+    const readinessState = store.getCommunitySummaryState({ project: 'community-eval' });
+    const readinessEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: readinessState,
+      candidates: bounded.candidates,
+    });
+    const sparseEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: {
+        ...readinessState,
+        communities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+      },
+      candidates: [],
+    });
+    const readinessGates: CommunityRolloutEvalGate[] = [
+      ...readinessEligibility.gates.map((gate) => scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: gate.name,
+        threshold: gate.threshold,
+        observed_enabled: gate.observed,
+        passed: gate.passed,
+      })),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_summary_max_chars_bound',
+        threshold: store.config.communitySummaries.summaryMaxChars,
+        observed_enabled: Math.max(0, ...bounded.candidates.map((candidate) => candidate.summary_text.length)),
+        passed: summaryBounds,
+      }),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_source_observation_limit_bound',
+        threshold: store.config.communitySummaries.sourceObservationLimit,
+        observed_enabled: Math.max(0, ...bounded.candidates.map((candidate) => candidate.source_observation_ids.length)),
+        passed: bounded.candidates.every((candidate) =>
+          candidate.source_observation_ids.length <= store.config.communitySummaries.sourceObservationLimit
+        ),
+      }),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_sparse_coverage_blocks_eligibility',
+        threshold: false,
+        observed_enabled: sparseEligibility.eligible,
+        passed: !sparseEligibility.eligible,
+      }),
+    ];
+    const abGates: CommunityRolloutEvalGate[] = [
+      scopedGate({
+        category: 'same_corpus_ab',
+        name: 'community_ab_recall_at_k_no_regression',
+        threshold: 0,
+        observed_disabled: disabledRecall,
+        observed_enabled: enabledRecall,
+        passed: regressionPassed(disabledRecall, enabledRecall),
+      }),
+      scopedGate({
+        category: 'same_corpus_ab',
+        name: 'community_ab_rank_no_regression',
+        threshold: 0,
+        observed_disabled: directDisabledRank >= 0 ? directDisabledRank + 1 : null,
+        observed_enabled: directEnabledRank >= 0 ? directEnabledRank + 1 : null,
+        passed: enabledNoRegression,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_full_chars',
+        threshold: disabledFullChars,
+        observed_disabled: disabledFullChars,
+        observed_enabled: enabledFullChars,
+        passed: enabledFullChars === disabledFullChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_evidence_chars_no_regression',
+        threshold: 0,
+        observed_disabled: disabledEvidenceChars,
+        observed_enabled: enabledEvidenceChars,
+        passed: enabledEvidenceChars <= disabledEvidenceChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_returned_chars_no_regression',
+        threshold: 0,
+        observed_disabled: disabledReturnedChars,
+        observed_enabled: enabledReturnedChars,
+        passed: enabledReturnedChars <= disabledReturnedChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_saved_chars_preserved',
+        threshold: 0,
+        observed_disabled: disabledSavedChars,
+        observed_enabled: enabledSavedChars,
+        passed: enabledSavedChars >= disabledSavedChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_compression_ratio_preserved',
+        threshold: 0,
+        observed_disabled: disabledCompression,
+        observed_enabled: enabledCompression,
+        passed: enabledCompression >= disabledCompression,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_recall_quality_preserved',
+        threshold: 0,
+        observed_disabled: disabledRecall,
+        observed_enabled: enabledRecall,
+        passed: regressionPassed(disabledRecall, enabledRecall),
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_rank_quality_preserved',
+        threshold: 0,
+        observed_disabled: disabledRankQuality,
+        observed_enabled: enabledRankQuality,
+        passed: enabledRankQuality >= disabledRankQuality,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_lane_truth_preserved',
+        threshold: 0,
+        observed_disabled: disabledLaneTruth,
+        observed_enabled: enabledLaneTruth,
+        passed: enabledLaneTruth >= disabledLaneTruth,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_safety_no_regression',
+        threshold: 0,
+        observed_disabled: disabledCommunitySafety,
+        observed_enabled: enabledCommunitySafety,
+        passed: enabledCommunitySafety >= disabledCommunitySafety,
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_no_fifth_lane_zero_regression',
+        threshold: 0,
+        observed_disabled: 0,
+        observed_enabled: noFifthLane ? 0 : 1,
+        passed: noFifthLane,
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_direct_kg_rank_zero_regression',
+        threshold: 0,
+        observed_disabled: directDisabledRank >= 0 ? directDisabledRank + 1 : null,
+        observed_enabled: directEnabledRank >= 0 ? directEnabledRank + 1 : null,
+        passed: noRankRegressionPassed(rankOf(disabled, direct.observation.id), rankOf(enabled, direct.observation.id)),
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_b2_multi_hop_rank_zero_regression',
+        threshold: 0,
+        observed_disabled: rankOf(multiHopBaseline, downstream.observation.id),
+        observed_enabled: rankOf(multiHopEnabled, downstream.observation.id),
+        passed: multiHopRankSafe,
+      }),
+    ];
 
     const missing = await runtime.hybridRetrieve({
       query: 'orion-service nebula-cache',
@@ -1473,6 +1757,7 @@ async function validateCommunityReadPathEval(): Promise<{
       limit: TOP_K,
       embeddingProvider,
     });
+    const degradedState = store.getCommunitySummaryState({ project: 'community-eval' });
     store.config.communitySummaries.algorithm = 'connected_components';
     store.rebuildCommunitySummaries({ project: 'community-eval' });
     store.getDb().prepare(
@@ -1544,6 +1829,48 @@ async function validateCommunityReadPathEval(): Promise<{
         && candidate.degraded_reasons.includes('enrichment_unavailable')
       )
       && fallbackResultHasBaseline(enrichmentUnavailableHybrid, 'kg_communities_degraded', direct.observation.id);
+    const degradedEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: degradedState,
+      candidates: bounded.candidates.map((candidate) => ({
+        ...candidate,
+        degraded: true,
+        degraded_reasons: ['eval_degraded'],
+      })),
+    });
+    readinessGates.push(scopedGate({
+      category: 'readiness',
+      scope: 'project_readiness',
+      name: 'community_degraded_state_ineligible',
+      threshold: false,
+      observed_enabled: degradedEligibility.eligible,
+      passed: !degradedEligibility.eligible,
+    }));
+    const fallbackGate = (
+      name: string,
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      marker: string,
+      passed: boolean,
+    ): CommunityRolloutEvalGate => scopedGate({
+      category: 'fallback_state',
+      scope: 'fallback_proof',
+      name,
+      threshold: 'non_empty_source_attributed_baseline',
+      observed_disabled: sourceAttributedHitCount(disabled),
+      observed_enabled: marker,
+      passed,
+      baseline_hit_count: result.results.length,
+      source_attributed_baseline_hit_count: sourceAttributedHitCount(result),
+    });
+    const fallbackGates: CommunityRolloutEvalGate[] = [
+      fallbackGate('community_fallback_disabled', disabled, 'disabled', disabled.results.length > 0 && sourceAttributedHitCount(disabled) > 0),
+      fallbackGate('community_fallback_missing', missing, 'kg_communities_missing', fallbackResultHasBaseline(missing, 'kg_communities_missing', missingFallback.observation.id)),
+      fallbackGate('community_fallback_stale', stale, 'kg_communities_stale', fallbackResultHasBaseline(stale, 'kg_communities_stale', direct.observation.id)),
+      fallbackGate('community_fallback_rebuilding', rebuilding, 'kg_communities_rebuilding', fallbackResultHasBaseline(rebuilding, 'kg_communities_rebuilding', direct.observation.id)),
+      fallbackGate('community_fallback_failed', failed, 'kg_communities_failed', fallbackResultHasBaseline(failed, 'kg_communities_failed', direct.observation.id)),
+      fallbackGate('community_fallback_degraded', degraded, 'kg_communities_degraded', fallbackResultHasBaseline(degraded, 'kg_communities_degraded', direct.observation.id)),
+      fallbackGate('community_fallback_enrichment_unavailable', enrichmentUnavailableHybrid, 'kg_communities_degraded', enrichmentUnavailableFallback),
+    ];
 
     return {
       defaultOff,
@@ -1556,6 +1883,12 @@ async function validateCommunityReadPathEval(): Promise<{
       summaryBounds,
       coverageBounds,
       enrichmentUnavailableFallback,
+      rolloutGates: [
+        ...rolloutGates,
+        ...abGates,
+        ...readinessGates,
+        ...fallbackGates,
+      ],
     };
   } finally {
     store.close();
@@ -2031,6 +2364,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         community_coverage_bounds_rate: communityReadPath.coverageBounds ? 1 : 0,
         community_enrichment_unavailable_fallback_rate: communityReadPath.enrichmentUnavailableFallback ? 1 : 0,
       },
+      community_rollout_gates: communityReadPath.rolloutGates,
     };
     const summary: RetrievalEvalSummary = {
       ...summaryWithoutEnvelope,

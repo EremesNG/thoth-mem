@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Store } from '../../src/store/index.js';
 import { registerMemRecall } from '../../src/tools/mem-recall.js';
+import { ALL_TOOLS } from '../../src/tools/index.js';
 
 type HybridRetrieveResult = Awaited<ReturnType<Store['hybridRetrieve']>>;
 
@@ -24,6 +25,17 @@ describe('mem_recall tool', () => {
 
   afterEach(() => {
     store.close();
+  });
+
+  it('registers exactly the compact MCP tool surface', () => {
+    expect(ALL_TOOLS.map((tool) => tool.name)).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
   });
 
   it('returns fused compact recall metadata', async () => {
@@ -397,9 +409,11 @@ describe('mem_recall tool', () => {
     expect(compactText).toContain('freshness=fresh');
     expect(compactText).toContain('coverage=obs:2 triples:3');
     expect(compactText).toContain('evidence_lanes: kg:1');
+    expect(compactText).toContain('obs:101');
     expect(compactText).not.toContain('evidence_lanes: community:');
     expect(compactText).not.toContain('[community/');
     expect(contextText).toContain('<retrieved_context observation_id="101" lane="kg" source="kg_community_summary">');
+    expect(contextText).toContain('graph_enrichment=1');
     expect(contextText).toContain('community=c_demo');
     expect(contextText).toContain('degraded=no');
     expect(contextText).toContain('returned_chars=');

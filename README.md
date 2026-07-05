@@ -221,7 +221,7 @@ pnpm run eval:retrieval
 pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The CLI gate fails below 95% recall@1 or 90% recall@k, while curated non-synthetic/current-state cases keep stricter per-case assertions.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The community rollout section is scoped to P3 community read-path eligibility only: it compares disabled and enabled same-corpus runs, P4 token-savings rows, readiness inputs, fallback states, lane truth, direct KG, and B2 multi-hop no-regression for that read path. Passing these gates does not mean global default-on readiness, P5 graph navigation v2, GraphRAG synthesis, multi-harness completion, G3 harness parity, or MemoryIntegrationCore migration. The CLI gate fails below 95% recall@1 or 90% recall@k, while curated non-synthetic/current-state cases keep stricter per-case assertions.
 
 Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
 
@@ -530,7 +530,7 @@ Default editable config:
 }
 ```
 
-`communitySummaries` derives compressed graph neighborhoods for maintenance/rebuild and retrieval support. Rebuilds are enabled by config (`communitySummaries.enabled`) and can generate metadata continuously, but retrieval/context read-path usage remains opt-in via `communitySummaries.readPath.enabled` (default `false`) to avoid token-cost regressions before full default-on rollout. This lets agents reuse cross-session project context without re-reading all raw observations.
+`communitySummaries` derives compressed graph neighborhoods for maintenance/rebuild and retrieval support. Rebuilds are enabled by config (`communitySummaries.enabled`) and can generate metadata continuously, but retrieval/context usage requires operator opt-in via `communitySummaries.readPath.enabled` (default `false`) and per-project rollout eligibility gates. Opt-in is necessary but not sufficient: eligibility gates still control which projects can surface community summaries. This is reversible—clearing the opt-in in env or persisted config restores the disabled baseline. This gate is evidence-bounded and does not make community summaries globally default-on or claim deferred-scope parity; it does not add P5 graph navigation, GraphRAG synthesis, or multi-harness behavior. This lets eligible projects reuse cross-session context without re-reading all raw observations.
 
 `knowledgeGraph.kgSupersedeContentPatterns` is intentionally default-off. Deterministic same-source graph diffs remain the primary supersession signal; optional content phrases such as "replaced by" or "deprecated" are lower-confidence hints and should only be enabled after validating the project corpus against false positives.
 
@@ -567,7 +567,7 @@ Default editable config:
 | `THOTH_KG_SUPERSEDED_KEEP_N` | `10` | Superseded KG triples retained per source/subject/relation slot |
 | `THOTH_KG_PRUNE_ORPHAN_ENTITIES` | `true` | Remove KG entities left without referencing triples after pruning |
 | `THOTH_COMMUNITY_ENABLED` | `true` | Enable derived community metadata/rebuild behavior |
-| `THOTH_COMMUNITY_READ_PATH_ENABLED` | `false` | Opt-in retrieval/context use of community summaries |
+| `THOTH_COMMUNITY_READ_PATH_ENABLED` | `false` | Opt-in retrieval/context use of community summaries; clear/unset to rollback to disabled baseline |
 | `THOTH_COMMUNITY_ALGORITHM` | `connected_components` | Community detection algorithm |
 | `THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK` | `connected_components` | Fallback community algorithm |
 | `THOTH_COMMUNITY_SUMMARY_MAX_CHARS` | `1200` | Max chars per community summary |

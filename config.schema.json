@@ -269,7 +269,7 @@
             "enabled": {
               "type": "boolean",
               "default": false,
-              "description": "When false, retrieval ignores community summaries while rebuild metadata can still be maintained."
+              "description": "An explicit opt-in for community-summary read-path evidence. When false, retrieval ignores community summaries while rebuild metadata can still be maintained. Opt-in is necessary but not sufficient: rollout eligibility gates must still pass. Clearing this value returns retrieval to the community-disabled baseline."
             }
           }
         },

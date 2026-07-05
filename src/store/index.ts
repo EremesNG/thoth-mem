@@ -98,6 +98,7 @@ import {
   type MaintenanceRankingMetadata,
   type RetrievalLane,
 } from '../retrieval/ranking.js';
+import { evaluateCommunityReadPathEligibility } from '../retrieval/community-rollout.js';
 import {
   processNextSemanticJob,
   processSemanticJobs,
@@ -4123,34 +4124,39 @@ export class Store {
     const terms = this.getQueryTerms(sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase());
     if (terms.length === 0) return [];
 
-    const retrieval = this.getCommunitySummariesForRetrieval({
-      project: input.filters.project,
-      limit: 0,
-      maxChars: community.summaryMaxChars,
-    });
-    if (retrieval.state !== 'fresh') {
-      const marker = `kg_communities_${retrieval.state}`;
-      if (!input.degradedFallback.includes(marker)) {
-        input.degradedFallback.push(marker);
-      }
-      return [];
-    }
-
-    const runId = retrieval.run_id;
+    const state = this.getCommunitySummaryState({ project: input.filters.project });
+    const runId = state.run_id;
     if (runId === null) {
-      if (!input.degradedFallback.includes('kg_communities_missing')) {
-        input.degradedFallback.push('kg_communities_missing');
+      const eligibility = evaluateCommunityReadPathEligibility({
+        readPathEnabled: community.readPath.enabled,
+        state,
+        candidates: [],
+      });
+      if (eligibility.degradedFallbackMarker && !input.degradedFallback.includes(eligibility.degradedFallbackMarker)) {
+        input.degradedFallback.push(eligibility.degradedFallbackMarker);
       }
       return [];
     }
 
-    const scoreScale = community.kgCommunityWeight / DEFAULT_LANE_WEIGHTS.kg;
     const candidates = this.readMatchingCommunitySnapshots(
       runId,
       terms,
       community.maxRetrievalCommunities,
       community.summaryMaxChars,
     );
+    const eligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: community.readPath.enabled,
+      state,
+      candidates,
+    });
+    if (!eligibility.eligible) {
+      if (eligibility.degradedFallbackMarker && !input.degradedFallback.includes(eligibility.degradedFallbackMarker)) {
+        input.degradedFallback.push(eligibility.degradedFallbackMarker);
+      }
+      return [];
+    }
+
+    const scoreScale = community.kgCommunityWeight / DEFAULT_LANE_WEIGHTS.kg;
 
     return candidates.flatMap((candidate) => {
       const searchable = [
