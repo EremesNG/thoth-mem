@@ -71,30 +71,50 @@ function formatRecallContextHits(hits: RecallHit[]): string[] {
           : primary.lane === 'kg'
             ? 'graph-fact'
             : 'chunk-evidence';
-    const compressionRatio = fullContent.length > 0
-      ? Math.max(0, 1 - (primaryContent.length / fullContent.length)).toFixed(3)
-      : '0.000';
-    const metadata = [
-      recallHeader(hit, index),
-      `<retrieved_context observation_id="${hit.observation.id}" lane="${primary.lane}" source="${primary.source ?? 'unknown'}">`,
-      `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
-      `retrieval_contract=${retrievalContract} compression_ratio=${compressionRatio} evidence_chars=${primaryContent.length} full_chars=${fullContent.length}`,
-      formatCommunityEvidence(primary),
-      graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
-      formatMaintenanceEvidence(hit.evidence.maintenance),
-    ];
-    const graphLines = graphEvidence.slice(0, 3).map((candidate) => `graph: ${sanitizeRetrievedContext(candidate.text)}`);
-    const metadataCost = metadata.filter((line): line is string => line !== null).join('\n').length
-      + graphLines.join('\n').length
-      + '</retrieved_context>'.length
-      + 2;
     const content = primary.lane === 'sentence' && promotedParentContent
       ? [
           `primary_sentence: ${primaryContent}`,
           `surrounding_parent_chunk: ${promotedParentContent}`,
         ].join('\n')
       : (promotedParentContent || primaryContent);
-    const budgetedContent = trimToBudget(content, Math.max(0, remaining - metadataCost));
+    const compressionRatio = fullContent.length > 0
+      ? Math.max(0, 1 - (primaryContent.length / fullContent.length)).toFixed(3)
+      : '0.000';
+    const metadataLineForReturnedChars = (candidateReturnedChars: number): string =>
+      `retrieval_contract=${retrievalContract} compression_ratio=${compressionRatio} evidence_chars=${primaryContent.length} full_chars=${fullContent.length} returned_chars=${candidateReturnedChars} returned_basis=context_chars`;
+
+    let returnedChars = content.length;
+    let metadata: (string | null)[] = [
+      recallHeader(hit, index),
+      `<retrieved_context observation_id="${hit.observation.id}" lane="${primary.lane}" source="${primary.source ?? 'unknown'}">`,
+      `project=${hit.observation.project ?? 'none'} type=${hit.observation.type} topic_key=${hit.observation.topic_key ?? 'none'}`,
+      metadataLineForReturnedChars(returnedChars),
+      formatCommunityEvidence(primary),
+      graphEvidence.length > 0 ? `graph_enrichment=${graphEvidence.length}` : null,
+      formatMaintenanceEvidence(hit.evidence.maintenance),
+    ];
+
+    let budgetedContent = content;
+    const graphLines = graphEvidence.slice(0, 3).map((candidate) => `graph: ${sanitizeRetrievedContext(candidate.text)}`);
+    let metadataCost = 0;
+    for (let i = 0; i < 3; i += 1) {
+      metadataCost = metadata.filter((line): line is string => line !== null).join('\n').length
+        + graphLines.join('\n').length
+        + '</retrieved_context>'.length
+        + 2;
+
+      budgetedContent = trimToBudget(content, Math.max(0, remaining - metadataCost));
+      const nextReturnedChars = budgetedContent.length;
+      if (nextReturnedChars === returnedChars) {
+        break;
+      }
+      returnedChars = nextReturnedChars;
+      metadata[3] = metadataLineForReturnedChars(returnedChars);
+    }
+
+    if (returnedChars !== content.length) {
+      metadata[3] = metadataLineForReturnedChars(returnedChars);
+    }
 
     lines.push([
       ...metadata.filter((line): line is string => line !== null),

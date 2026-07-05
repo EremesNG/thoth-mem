@@ -3,6 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Store } from '../../src/store/index.js';
 import { registerMemRecall } from '../../src/tools/mem-recall.js';
 
+type HybridRetrieveResult = Awaited<ReturnType<Store['hybridRetrieve']>>;
+
 describe('mem_recall tool', () => {
   let store: Store;
   let toolHandler: ((input: any) => Promise<any>) | undefined;
@@ -88,6 +90,70 @@ describe('mem_recall tool', () => {
     expect(text).toContain('<retrieved_context observation_id=');
   });
 
+  it('reports context returned_chars as emitted context length after truncation', async () => {
+    const largeContent = `context budget marker ${'x '.repeat(4000)}`;
+    const mockedResult: HybridRetrieveResult = {
+      results: [{
+        observation: {
+          id: 1,
+          sync_id: null,
+          session_id: null,
+          type: 'manual',
+          title: 'Context returned_chars precision',
+          content: largeContent,
+          tool_name: null,
+          project: 'recall-project',
+          scope: 'project',
+          topic_key: null,
+          normalized_hash: null,
+          revision_count: 1,
+          duplicate_count: 1,
+          last_seen_at: null,
+          created_at: '2026-01-01 00:00:00',
+          updated_at: '2026-01-01 00:00:00',
+          deleted_at: null,
+        },
+        score: 0.88,
+        evidence: {
+          primary: {
+            lane: 'chunk',
+            observationId: 1,
+            score: 0.88,
+            source: 'chunk:recall-returned-chars',
+            text: largeContent,
+          },
+          byLane: {
+            kg: [],
+          },
+          maintenance: undefined,
+        },
+      }],
+      pending: false,
+      degradedFallback: [],
+      laneOrder: ['chunk'],
+      semanticInputs: [],
+    };
+    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue(mockedResult);
+    const result = await toolHandler?.({ query: 'context budget marker', project: 'recall-project', mode: 'context', limit: 1 });
+    const text = result?.content[0].text ?? '';
+    expect(result?.isError).not.toBe(true);
+
+    const blockMatch = text.match(/<retrieved_context[^>]*>[\s\S]*?<\/retrieved_context>/);
+    expect(blockMatch).not.toBeNull();
+    const block = blockMatch?.[0] ?? '';
+    const returnedCharsMatch = block.match(/returned_chars=(\d+)/);
+    expect(returnedCharsMatch).not.toBeNull();
+    const returnedChars = Number(returnedCharsMatch?.[1]);
+    expect(Number.isFinite(returnedChars)).toBe(true);
+
+    const emittedMatch = block.match(/returned_chars=\d+ returned_basis=context_chars\n([\s\S]*?)\n<\/retrieved_context>/);
+    expect(emittedMatch).not.toBeNull();
+    const emittedContent = emittedMatch?.[1] ?? '';
+
+    expect(emittedContent.length).toBe(returnedChars);
+    expect(returnedChars).toBeLessThan(largeContent.length);
+  });
+
   it('context mode keeps primary sentence first and labels promoted parent context', async () => {
     const saved = store.saveObservation({
       title: 'Sentence-first context',
@@ -137,6 +203,10 @@ describe('mem_recall tool', () => {
     const text = result?.content[0].text ?? '';
     expect(text).toContain('retrieval_contract=sentence-primary-with-parent');
     expect(text).toContain('compression_ratio=');
+    expect(text).toContain('evidence_chars=');
+    expect(text).toContain('full_chars=');
+    expect(text).toContain('returned_chars=');
+    expect(text).toContain('returned_basis=context_chars');
     expect(text).toContain('primary_sentence: Rotate encryption keys weekly.');
     expect(text).toContain('surrounding_parent_chunk: Rotate encryption keys weekly. Keep parent context nearby.');
   });
@@ -249,7 +319,7 @@ describe('mem_recall tool', () => {
   });
 
   it('community annotation is additive', async () => {
-    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue({
+    const mockedCommunityResult: HybridRetrieveResult = {
       results: [{
         observation: {
           id: 101,
@@ -312,7 +382,9 @@ describe('mem_recall tool', () => {
       degradedFallback: [],
       laneOrder: ['kg'],
       semanticInputs: [],
-    } as any);
+    };
+
+    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue(mockedCommunityResult);
 
     const compact = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', limit: 1 });
     const context = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', mode: 'context', limit: 1 });
@@ -327,5 +399,10 @@ describe('mem_recall tool', () => {
     expect(contextText).toContain('<retrieved_context observation_id="101" lane="kg" source="kg_community_summary">');
     expect(contextText).toContain('community=c_demo');
     expect(contextText).toContain('degraded=no');
+    expect(contextText).toContain('returned_chars=');
+    expect(contextText).toContain('returned_basis=context_chars');
+    expect(contextText).toContain('evidence_lanes: kg:1');
+    expect(contextText).not.toContain('evidence_lanes: community:');
+    expect(contextText).not.toContain('lane="community"');
   });
 });
