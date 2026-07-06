@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Store } from '../../src/store/index.js';
+import { ALL_TOOLS } from '../../src/tools/index.js';
 import { MEM_PROJECT_INPUT_SCHEMA, registerMemProject } from '../../src/tools/mem-project.js';
 
 describe('mem_project tool', () => {
@@ -273,5 +274,372 @@ describe('mem_project tool', () => {
     expect(graphText).not.toContain('multi-harness parity');
     expect(graphText).not.toContain('G3');
     expect(graphText).not.toContain('global default-on');
+  });
+
+  it('default graph compatibility keeps omitted navigation on the bounded KG ledger path', async () => {
+    store.saveObservation({
+      title: 'Default graph compatibility source',
+      content: '**What**: Default graph compatibility ledger fact\n**Why**: Lock existing graph behavior',
+      project: 'project-a',
+      topic_key: 'graph/default-compatibility',
+    });
+
+    const graph = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      topic_key: 'graph/default-compatibility',
+      relation: 'HAS_WHAT',
+      limit: 1,
+      max_chars: 1200,
+    });
+    const graphText = graph?.content[0].text ?? '';
+
+    expect(graph?.isError).not.toBe(true);
+    expect(graphText).toContain('## Knowledge Graph Ledger: project-a');
+    expect(graphText).toContain('Filters: topic_key=graph/default-compatibility, relation=HAS_WHAT');
+    expect(graphText).toContain('Showing 1 of');
+    expect(graphText).toContain('HAS_WHAT');
+    expect(graphText.length).toBeLessThanOrEqual(1200);
+    expect(graphText).not.toContain('## Community Summaries');
+    expect(graphText).not.toContain('GraphRAG');
+    expect(graphText).not.toContain('deferred scope');
+    expect(graphText).not.toContain('multi-harness');
+    expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({
+      action: 'graph',
+      project: 'project-a',
+      max_chars: 0,
+    })).toThrow(/max_chars must be >= 200/);
+  });
+
+  it('ledger navigation equivalence matches omitted navigation graph output', async () => {
+    store.saveObservation({
+      title: 'Ledger navigation equivalence source',
+      content: '**What**: Ledger navigation equivalence fact\n**Learned**: Explicit ledger should preserve default semantics',
+      project: 'project-a',
+      topic_key: 'graph/ledger-equivalence',
+    });
+
+    const baseInput = {
+      action: 'graph',
+      project: 'project-a',
+      topic_key: 'graph/ledger-equivalence',
+      relation: 'HAS_WHAT',
+      limit: 2,
+      max_chars: 1600,
+    };
+    const omitted = await toolHandler?.(baseInput);
+    const explicitLedger = await toolHandler?.({ ...baseInput, navigation: 'ledger' });
+
+    expect(omitted?.isError).not.toBe(true);
+    expect(explicitLedger?.isError).not.toBe(true);
+    expect(explicitLedger?.content[0].text).toEqual(omitted?.content[0].text);
+  });
+
+  it('graph navigation schema accepts additive optional inputs and rejects unsupported modes', () => {
+    const parsed = MEM_PROJECT_INPUT_SCHEMA.parse({
+      action: 'graph',
+      project: 'project-a',
+      topic_key: 'graph/schema',
+      relation: 'HAS_WHAT',
+      limit: 5,
+      max_chars: 1200,
+      navigation: 'neighborhood',
+      focus_node_id: 'entity:project-a:hub',
+      observation_id: 42,
+      continuation: 'opaque-frontier-token',
+      include_superseded: true,
+    });
+
+    expect(parsed).toMatchObject({
+      action: 'graph',
+      project: 'project-a',
+      topic_key: 'graph/schema',
+      relation: 'HAS_WHAT',
+      limit: 5,
+      max_chars: 1200,
+      navigation: 'neighborhood',
+      focus_node_id: 'entity:project-a:hub',
+      observation_id: 42,
+      continuation: 'opaque-frontier-token',
+      include_superseded: true,
+    });
+    expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'unbounded-dump',
+      max_chars: 1200,
+    })).toThrow();
+    expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'ledger',
+      max_chars: 150,
+    })).toThrow(/max_chars must be >= 200/);
+  });
+
+  it('registered tool set stays compact for graph navigation v2', () => {
+    const registeredNames = ALL_TOOLS.map((tool) => tool.name);
+
+    expect(registeredNames).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
+    expect(registeredNames).toHaveLength(6);
+    expect(registeredNames.filter((name) => name.includes('graph') || name.includes('navigation'))).toEqual([]);
+  });
+
+  it('graph navigation modes return bounded mode-specific text views', async () => {
+    store.saveObservation({
+      title: 'Navigation mode source',
+      content: [
+        '**What**: Neighborhood frontier evidence',
+        '**Why**: Lineage needs pivotable metadata',
+        '**Learned**: Mode dispatch stays bounded',
+      ].join('\n'),
+      project: 'project-a',
+      topic_key: 'graph/navigation-modes',
+      type: 'decision',
+    });
+    seedCommunityGraph('project-a');
+    store.rebuildCommunitySummaries({ project: 'project-a' });
+
+    const neighborhood = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'neighborhood',
+      focus_node_id: 'obs:1',
+      limit: 2,
+      max_chars: 1800,
+    });
+    const lineage = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      topic_key: 'graph/navigation-modes',
+      limit: 2,
+      max_chars: 1800,
+    });
+    const community = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'community',
+      limit: 2,
+      max_chars: 1800,
+    });
+
+    const neighborhoodText = neighborhood?.content[0].text ?? '';
+    const lineageText = lineage?.content[0].text ?? '';
+    const communityText = community?.content[0].text ?? '';
+
+    expect(neighborhood?.isError).not.toBe(true);
+    expect(neighborhoodText).toContain('## Graph Neighborhood: project-a');
+    expect(neighborhoodText).toContain('focus_node_id=obs:1');
+    expect(neighborhoodText).toContain('Frontier:');
+    expect(neighborhoodText.length).toBeLessThanOrEqual(1800);
+
+    expect(lineage?.isError).not.toBe(true);
+    expect(lineageText).toContain('## Graph Lineage: project-a');
+    expect(lineageText).toContain('obs:1');
+    expect(lineageText).toContain('topic=graph/navigation-modes');
+    expect(lineageText.length).toBeLessThanOrEqual(1800);
+
+    expect(community?.isError).not.toBe(true);
+    expect(communityText).toContain('## Graph Community Inspection: project-a');
+    expect(communityText).toContain('state=');
+    expect(communityText).toContain('community=');
+    expect(communityText).toContain('sources=obs:');
+    expect(communityText).not.toContain('GraphRAG');
+    expect(communityText).not.toContain('global answer');
+    expect(communityText.length).toBeLessThanOrEqual(1800);
+  });
+
+  it('focused lineage returns scoped observation outside the first timeline page', async () => {
+    const focused = store.saveObservation({
+      title: 'Focused lineage target',
+      content: '**What**: Focused lineage target remains reachable',
+      project: 'project-a',
+      topic_key: 'graph/focused-lineage',
+      type: 'decision',
+    }).observation;
+    store.saveObservation({
+      title: 'Newer lineage distractor',
+      content: '**What**: This newer item should occupy the first page',
+      project: 'project-a',
+      topic_key: 'graph/focused-lineage-distractor',
+      type: 'decision',
+    });
+    store.saveObservation({
+      title: 'Other project scoped target',
+      content: '**What**: This item must not leak across projects',
+      project: 'project-b',
+      topic_key: 'graph/focused-lineage',
+      type: 'decision',
+    });
+
+    const focusedResult = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      observation_id: focused.id,
+      limit: 1,
+      max_chars: 1800,
+    });
+    const wrongTopic = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      observation_id: focused.id,
+      topic_key: 'graph/other-topic',
+      limit: 1,
+      max_chars: 1800,
+    });
+    const wrongProject = await toolHandler?.({
+      action: 'graph',
+      project: 'project-b',
+      navigation: 'lineage',
+      observation_id: focused.id,
+      limit: 1,
+      max_chars: 1800,
+    });
+
+    const focusedText = focusedResult?.content[0].text ?? '';
+    expect(focusedResult?.isError).not.toBe(true);
+    expect(focusedText).toContain('## Graph Lineage: project-a');
+    expect(focusedText).toContain(`obs:${focused.id}`);
+    expect(focusedText).toContain('Focused lineage target');
+    expect(focusedText).not.toContain('Newer lineage distractor');
+    expect(focusedText.length).toBeLessThanOrEqual(1800);
+    expect(wrongTopic?.content[0].text).toContain('No lineage events found.');
+    expect(wrongProject?.content[0].text).toContain('No lineage events found.');
+  });
+
+  it('superseded navigation is explicit and tagged while other graph views stay current-state', async () => {
+    store.saveObservation({
+      title: 'Superseded navigation source',
+      content: '**What**: Redis cache',
+      project: 'project-a',
+      topic_key: 'graph/superseded-navigation',
+      type: 'decision',
+    });
+    store.saveObservation({
+      title: 'Superseded navigation source',
+      content: '**What**: Valkey cache',
+      project: 'project-a',
+      topic_key: 'graph/superseded-navigation',
+      type: 'decision',
+    });
+
+    const ledger = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'ledger',
+      include_superseded: true,
+      max_chars: 1800,
+    });
+    const neighborhood = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'neighborhood',
+      focus_node_id: 'obs:1',
+      include_superseded: true,
+      max_chars: 1800,
+    });
+    const superseded = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'superseded',
+      include_superseded: true,
+      max_chars: 1800,
+    });
+
+    const ledgerText = ledger?.content[0].text ?? '';
+    const neighborhoodText = neighborhood?.content[0].text ?? '';
+    const supersededText = superseded?.content[0].text ?? '';
+
+    expect(ledgerText).toContain('Valkey cache');
+    expect(ledgerText).not.toContain('Redis cache');
+    expect(neighborhoodText).not.toContain('Redis cache');
+    expect(superseded?.isError).not.toBe(true);
+    expect(supersededText).toContain('## Superseded Graph History: project-a');
+    expect(supersededText).toContain('[SUPERSEDED]');
+    expect(supersededText).toContain('Redis cache');
+    expect(supersededText).toContain('Valkey cache');
+  });
+
+  it('graph navigation invalid inputs return safe MCP error responses', async () => {
+    const badFocus = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'neighborhood',
+      focus_node_id: 'entity:project-a:hub',
+      max_chars: 1200,
+    });
+    const badContinuation = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      continuation: 'opaque-frontier-token',
+      max_chars: 1200,
+    });
+
+    expect(badFocus?.isError).toBe(true);
+    expect(badFocus?.content[0].text).toContain('focus_node_id must use obs:<id>');
+    expect(badContinuation?.isError).toBe(true);
+    expect(badContinuation?.content[0].text).toContain('Invalid continuation token');
+    expect(() => MEM_PROJECT_INPUT_SCHEMA.parse({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      limit: 501,
+      max_chars: 1200,
+    })).toThrow();
+  });
+
+  it('graph navigation attribution includes source ids topics timestamps and previews', async () => {
+    store.saveObservation({
+      title: 'Attribution source',
+      content: '**What**: Attributed fact\n**Why**: Preview metadata should be visible',
+      project: 'project-a',
+      topic_key: 'graph/attribution',
+      type: 'decision',
+    });
+
+    const ledger = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'ledger',
+      topic_key: 'graph/attribution',
+      max_chars: 1800,
+    });
+    const lineage = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'lineage',
+      topic_key: 'graph/attribution',
+      max_chars: 1800,
+    });
+    const superseded = await toolHandler?.({
+      action: 'graph',
+      project: 'project-a',
+      navigation: 'superseded',
+      topic_key: 'graph/attribution',
+      max_chars: 1800,
+    });
+
+    for (const text of [
+      ledger?.content[0].text ?? '',
+      lineage?.content[0].text ?? '',
+      superseded?.content[0].text ?? '',
+    ]) {
+      expect(text).toContain('obs:1');
+      expect(text).toContain('topic=graph/attribution');
+      expect(text).toContain('created=');
+    }
+    expect(lineage?.content[0].text).toContain('preview=');
+    expect(superseded?.content[0].text).toContain('No superseded facts found.');
   });
 });

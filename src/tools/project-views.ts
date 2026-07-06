@@ -9,7 +9,62 @@ interface ProjectGraphOptions {
   includeSuperseded?: boolean;
 }
 
+interface GraphNavigationOptions {
+  topicKey?: string;
+  relation?: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+interface NeighborhoodNavigationOptions extends GraphNavigationOptions {
+  focusNodeId: string;
+  continuation?: string;
+}
+
+interface LineageNavigationOptions extends GraphNavigationOptions {
+  observationId?: number;
+  continuation?: string;
+}
+
+interface SupersededNavigationOptions extends GraphNavigationOptions {
+  observationId?: number;
+}
+
 type ProjectHealth = ReturnType<Store['getOperationalHealth']>;
+
+function graphLimit(limit: number | undefined, fallback = 100): number {
+  return Math.min(Math.max(limit ?? fallback, 1), 500);
+}
+
+function graphBudget(maxChars: number | undefined, fallback = 6000): number {
+  return maxChars ?? fallback;
+}
+
+function trimGraphText(text: string, maxChars: number, hint: string): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const marker = `\n${hint}`;
+  const sliceLength = Math.max(0, maxChars - marker.length);
+  return `${text.slice(0, sliceLength)}${marker}`.slice(0, maxChars);
+}
+
+function factLine(fact: ReturnType<Store['getObservationFacts']>[number], tag?: string): string {
+  const metadata = [
+    `obs:${fact.observation_id}`,
+    `type=${fact.type}`,
+    fact.topic_key ? `topic=${fact.topic_key}` : null,
+    `created=${fact.created_at}`,
+    tag,
+  ].filter((part): part is string => Boolean(part));
+
+  return `- ${fact.subject} -- ${fact.relation} --> ${fact.object} | ${metadata.join(' | ')}`;
+}
+
+function preview(text: string, length = 180): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, length);
+}
 
 function formatCommunitySummaryLines(store: Store, project: string): string[] {
   if (!store.config.communitySummaries.readPath.enabled) {
@@ -63,13 +118,13 @@ export function formatProjectSummary(
 }
 
 export function formatProjectGraph(store: Store, project: string, options: ProjectGraphOptions = {}): string {
-  const limit = options.limit ?? 100;
-  const maxChars = options.maxChars ?? 6000;
+  const limit = graphLimit(options.limit);
+  const maxChars = graphBudget(options.maxChars);
   const facts = store
     .getObservationFacts({ project, topic_key: options.topicKey, include_superseded: options.includeSuperseded })
     .filter((fact) => !options.relation || fact.relation === options.relation);
   const limitedFacts = facts.slice(0, limit);
-  const factLines = limitedFacts.map((fact) => `- ${fact.subject} -- ${fact.relation} --> ${fact.object}`);
+  const factLines = limitedFacts.map((fact) => factLine(fact));
   const maintenanceLines = store.config.maintenance.readPath.enabled
     ? formatMaintenanceEvidenceLines(store, Array.from(new Set(limitedFacts.map((fact) => fact.observation_id))))
     : [];
@@ -92,7 +147,7 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
 
   const omittedByLimit = facts.length - limitedFacts.length;
   const omittedLine = omittedByLimit > 0
-    ? `Omitted ${omittedByLimit} fact(s). Narrow with relation, topic_key, or a lower limit.`
+    ? `Omitted ${omittedByLimit} fact(s). continuation=frontier:${limitedFacts.length}. Narrow with relation, topic_key, or a lower limit.`
     : null;
   const fullLines = [
     ...headerLines,
@@ -126,6 +181,185 @@ export function formatProjectGraph(store: Store, project: string, options: Proje
   }
 
   return truncatedText;
+}
+
+export function formatProjectNeighborhoodNavigation(
+  store: Store,
+  project: string,
+  options: NeighborhoodNavigationOptions,
+): string {
+  const limit = graphLimit(options.limit, 25);
+  const maxChars = graphBudget(options.maxChars, 6000);
+  const context = store.getObservatoryContext({
+    project,
+    topic_key: options.topicKey,
+    relation: options.relation,
+  });
+  const frontier = store.getObservatoryMapFrontier({
+    context_token: context.context_token,
+    focus_node_id: options.focusNodeId,
+    max_nodes: limit,
+    max_edges: Math.max(limit * 2, 1),
+    continuation: options.continuation,
+  });
+  const nodeLines = frontier.nodes.map((node) => [
+    `- node=${node.id}`,
+    `kind=${node.kind}`,
+    `label="${preview(node.label, 120)}"`,
+  ].join(' | '));
+  const edgeLines = frontier.edges.map((edge) => [
+    `- edge=${edge.id}`,
+    `${edge.source_id} -- ${edge.relation} --> ${edge.target_id}`,
+    `kind=${edge.kind}`,
+  ].join(' | '));
+  const state = frontier.frontier_state;
+  const lines = [
+    `## Graph Neighborhood: ${project}`,
+    '',
+    `Focus: focus_node_id=${options.focusNodeId}`,
+    `Filters: ${[
+      options.topicKey ? `topic_key=${options.topicKey}` : null,
+      options.relation ? `relation=${options.relation}` : null,
+    ].filter(Boolean).join(', ') || 'none'}`,
+    `Bounds: limit=${limit}, max_chars=${maxChars}`,
+    `Frontier: added=${state.added_node_ids.length} already_visible=${state.already_visible_node_ids.length} exhausted=${state.exhausted ? 'yes' : 'no'} continuation=${state.continuation ?? 'none'} reason=${state.reason ?? 'ok'}`,
+    `Added nodes: ${state.added_node_ids.join(', ') || 'none'}`,
+    `Already visible nodes: ${state.already_visible_node_ids.join(', ') || 'none'}`,
+    '',
+    'Nodes:',
+    ...(nodeLines.length > 0 ? nodeLines : ['- none']),
+    '',
+    'Edge evidence:',
+    ...(edgeLines.length > 0 ? edgeLines : ['- none']),
+  ];
+
+  return trimGraphText(lines.join('\n'), maxChars, 'Output truncated by max_chars. Continue with returned continuation or reduce limit.');
+}
+
+export function formatProjectLineageNavigation(
+  store: Store,
+  project: string,
+  options: LineageNavigationOptions = {},
+): string {
+  const limit = graphLimit(options.limit, 25);
+  const maxChars = graphBudget(options.maxChars, 6000);
+  const focusedObservation = options.observationId ? store.getObservation(options.observationId) : null;
+  const focusedEvent = focusedObservation
+    && focusedObservation.project === project
+    && (!options.topicKey || focusedObservation.topic_key === options.topicKey)
+    ? focusedObservation
+    : null;
+  const context = options.observationId ? null : store.getObservatoryContext({ project, topic_key: options.topicKey });
+  const timeline = context
+    ? store.getObservatoryTimeline({
+      context_token: context.context_token,
+      limit,
+      continuation: options.continuation,
+    })
+    : null;
+  const filteredEvents = focusedEvent ? [focusedEvent] : timeline?.events ?? [];
+  const continuation = timeline?.continuation ?? null;
+  const eventLines = filteredEvents.map((event) => [
+    `- obs:${event.id}`,
+    `title="${event.title}"`,
+    `type=${event.type}`,
+    `topic=${event.topic_key ?? 'none'}`,
+    `session=${event.session_id}`,
+    `created=${event.created_at}`,
+    `preview="${preview(event.content)}"`,
+  ].join(' | '));
+  const lines = [
+    `## Graph Lineage: ${project}`,
+    '',
+    `Filters: ${[
+      options.topicKey ? `topic_key=${options.topicKey}` : null,
+      options.observationId ? `observation_id=${options.observationId}` : null,
+    ].filter(Boolean).join(', ') || 'none'}`,
+    `Bounds: limit=${limit}, max_chars=${maxChars}`,
+    `Continuation: ${continuation ?? 'none'}`,
+    '',
+    ...(eventLines.length > 0 ? eventLines : ['No lineage events found.']),
+  ];
+
+  return trimGraphText(lines.join('\n'), maxChars, 'Output truncated by max_chars. Continue with returned continuation or reduce limit.');
+}
+
+export function formatProjectSupersededNavigation(
+  store: Store,
+  project: string,
+  options: SupersededNavigationOptions = {},
+): string {
+  const limit = graphLimit(options.limit);
+  const maxChars = graphBudget(options.maxChars, 6000);
+  const facts = store
+    .getObservationFacts({
+      project,
+      topic_key: options.topicKey,
+      observation_id: options.observationId,
+      include_superseded: true,
+    })
+    .filter((fact) => !options.relation || fact.relation === options.relation);
+  const supersededFacts = facts.filter((fact) => fact.superseded === true);
+  const orderedFacts = [
+    ...supersededFacts,
+    ...facts.filter((fact) => fact.superseded !== true),
+  ].slice(0, limit);
+  const lines = [
+    `## Superseded Graph History: ${project}`,
+    '',
+    `Filters: ${[
+      options.topicKey ? `topic_key=${options.topicKey}` : null,
+      options.observationId ? `observation_id=${options.observationId}` : null,
+      options.relation ? `relation=${options.relation}` : null,
+    ].filter(Boolean).join(', ') || 'none'}`,
+    `Showing ${orderedFacts.length} of ${facts.length} history/current fact(s). superseded=${supersededFacts.length}`,
+    '',
+    ...(orderedFacts.length > 0
+      ? orderedFacts.map((fact) => factLine(fact, fact.superseded ? '[SUPERSEDED]' : '[CURRENT]'))
+      : ['No superseded facts found.']),
+    supersededFacts.length === 0 ? 'No superseded facts found.' : null,
+    facts.length > orderedFacts.length ? `Omitted ${facts.length - orderedFacts.length} fact(s). continuation=frontier:${orderedFacts.length}.` : null,
+  ].filter((line): line is string => line !== null);
+
+  return trimGraphText(lines.join('\n'), maxChars, 'Output truncated by max_chars. Narrow with observation_id, topic_key, relation, or limit.');
+}
+
+export function formatProjectCommunityNavigation(
+  store: Store,
+  project: string,
+  options: GraphNavigationOptions = {},
+): string {
+  const limit = graphLimit(options.limit, 10);
+  const maxChars = graphBudget(options.maxChars, 6000);
+  const state = store.getCommunitySummaryState({ project });
+  const summaries = store.getCommunitySummariesForRetrieval({
+    project,
+    limit,
+    maxChars: Math.min(maxChars, 600),
+  });
+  const summaryLines = summaries.candidates.map((community) => [
+    `- community=${community.community_id}`,
+    `level=${community.level}`,
+    `state=${summaries.state}`,
+    `coverage=obs:${community.source_observation_count} triples:${community.triple_count} entities:${community.entity_count}`,
+    `sources=${community.source_observation_ids.map((id) => `obs:${id}`).join(',') || 'none'}`,
+    `confidence=${community.confidence}`,
+    `degraded=${community.degraded ? 'yes' : 'no'}`,
+    `summary="${preview(community.summary_text, 240)}"`,
+  ].join(' | '));
+  const lines = [
+    `## Graph Community Inspection: ${project}`,
+    '',
+    `State: state=${state.state} degraded=${state.degraded ? 'yes' : 'no'} run_id=${state.run_id ?? 'none'} committed_run_id=${state.latest_committed_run_id ?? 'none'} updated=${state.updated_at ?? 'none'}`,
+    `Coverage: communities=${state.communities_count} entities=${state.entities_count} triples=${state.triples_count} source_observations=${state.source_observations_count}`,
+    `Freshness: graph_signature=${state.graph_signature ?? 'none'} current_graph_signature=${state.current_graph_signature ?? 'none'}`,
+    `Degraded reasons: ${state.degraded_reasons.join(', ') || 'none'}`,
+    `Bounds: limit=${limit}, max_chars=${maxChars}`,
+    '',
+    ...(summaryLines.length > 0 ? summaryLines : ['No committed community summaries found.']),
+  ];
+
+  return trimGraphText(lines.join('\n'), maxChars, 'Output truncated by max_chars. Reduce limit for more compact inspection.');
 }
 
 export function formatProjectHealth(store: Store, project?: string, maxChars: number = 4000): string {
