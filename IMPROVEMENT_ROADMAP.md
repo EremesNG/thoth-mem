@@ -14,7 +14,8 @@
   **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
   P4 token-savings metrics **SHIPPED** · community read-path readiness
   **SHIPPED** · community read-path rollout gate **SHIPPED** ·
-  C1 constitution PATCH **RECORDED** · cross-harness deferred
+  graph-navigation-v2 **SHIPPED** · C1 constitution PATCH **RECORDED** ·
+  multi-harness support **NEXT**
 
 ---
 
@@ -98,7 +99,8 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **P4** | `token-savings-metrics` | Token-savings and recall-efficiency measurement foundation | ✅ Shipped + archived | `00e22b5` evals · `4fa7383` recall · `e43858e` tests · `11b8ed4` archive |
 | **R1** | `community-read-path-readiness` | Eval-gated readiness scorecard for broader community read-path rollout | ✅ Shipped + archived | `8e99637` feat · `fad3fb7` archive |
 | **R2** | `community-read-path-rollout-gate` | On-demand per-project community read-path rollout gate with A/B/token/fallback enforcement | ✅ Shipped + archived | `105aba8` feat · `6a7089b` archive |
-| **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏳ Deferred | — |
+| **P5** | `graph-navigation-v2` | Bounded MCP graph navigation views for ledger/neighborhood/lineage/community/superseded | ✅ Shipped + archived | `91f604e` feat · `b4e2e60` archive |
+| **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏭️ Next candidate | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
 > Drift note: `openspec/changes/production-hardening-dashboard-v2` and
@@ -401,10 +403,16 @@ Community metrics at `100%`).
    `openspec/changes/archive/2026-07-05-community-read-path-rollout-gate/`.
    Verification passed after remediation: focused rollout matrix, retrieval
    eval, build, full suite, and oracle re-review `[GREEN]`.
-14. ⬜ Next local decision before **G3 harness parity** / **MIG
-   MemoryIntegrationCore migration**: plan **P5 graph navigation v2** so agents
-   can inspect ledger/neighborhood/lineage/community/superseded graph views
-   without adding MCP tools or breaking the existing KG-ledger contract.
+14. ✅ `graph-navigation-v2` is implemented and archived at
+   `openspec/changes/archive/2026-07-05-graph-navigation-v2/`.
+   Verification passed round 2 after focused-lineage remediation: focused
+   `mem_project` graph navigation tests, focused visualization tests, build,
+   and full suite (50 files / 678 tests).
+15. ⬜ Next local decision: plan **G3 multi-harness parity** now that identity,
+   health, token metrics, community read-path rollout, and graph navigation are
+   solid. Keep **MIG MemoryIntegrationCore migration** visible as the likely
+   enabling architecture decision, but do not silently merge it into G3 without
+   an explicit scope choice.
 
 ---
 
@@ -452,16 +460,22 @@ Community metrics at `100%`).
   `kg_community_summary` read-path contribution, same-corpus A/B rollout rows
   consume P4 token metrics, fallback states must preserve source-attributed
   baseline hits, and `pnpm run eval:retrieval` fails if any rollout gate fails.
-- ⬜ **P5 graph navigation v2** — NEXT CANDIDATE: expose richer graph
-  navigation for agents (ledger, neighborhood, lineage, community, superseded)
-  without adding MCP tools and without turning the current
-  `mem_project(action="graph")` KG ledger into an incompatible surface.
+- ✅ **P5 graph navigation v2** — DONE as `graph-navigation-v2`: optional
+  `mem_project(action="graph")` navigation modes now expose bounded ledger,
+  neighborhood, lineage, community, and superseded views while preserving the
+  default KG-ledger contract and six-tool MCP surface.
+- ⬜ **G3 multi-harness parity** — NEXT CANDIDATE: plan deterministic memory
+  behavior across Codex, Claude Code, OpenCode, and related harnesses. Decide
+  explicitly whether this is pure adapter/hook parity first or includes the
+  `MemoryIntegrationCore` migration into thoth-mem.
 
 ---
 
 ## 11. Commit Ledger (program, newest first)
 
 ```
+b4e2e60 docs(openspec): archive graph navigation v2
+91f604e feat(tools): add graph navigation modes
 6a7089b docs(openspec): archive community read-path rollout gate
 105aba8 feat(recall): gate community read-path rollout
 fad3fb7 docs(openspec): archive community read-path readiness
