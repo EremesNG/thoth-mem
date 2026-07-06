@@ -582,3 +582,34 @@ Tool output and documentation for this rollout gate MUST NOT claim multi-harness
 - Do not route community rebuild, readiness, or rollout decisions through MCP.
 - Keep `mem_project action=graph` KG-ledger semantics separate from community-summary rollout evidence.
 
+
+## ADDED for graph-navigation-v2
+
+### Requirement: `mem_project action=graph` MUST Preserve Default Ledger Compatibility
+The system MUST preserve existing `mem_project action="graph"` behavior when no graph-navigation option is provided. The default graph response MUST remain the KG-backed current-state ledger, MUST use the existing `project`, `topic_key`, `relation`, `limit`, and `max_chars` semantics, MUST keep the `max_chars` minimum of `200`, and MUST NOT accept the unbounded sentinel `0`.
+
+### Requirement: Graph Navigation MUST Be Additive Within the Existing `mem_project` Tool
+The system MUST expose graph navigation through optional inputs on the existing `mem_project` tool and MUST NOT add, remove, rename, or split MCP tools. The registered MCP tool set MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
+
+### Requirement: Neighborhood Navigation MUST Return a Bounded Frontier View
+When `navigation="neighborhood"` is requested, `mem_project action="graph"` MUST return a bounded, agent-readable neighborhood/frontier view with focus identity, added/visible-node tracking, and frontier/exhaustion metadata.
+
+### Requirement: Lineage Navigation MUST Return Scoped Timeline Evidence
+When `navigation="lineage"` is requested, `mem_project action="graph"` MUST return scoped, deterministic, bounded lineage/timeline evidence and include pivot fields.
+
+### Requirement: Superseded Navigation MUST Be Explicit and Tagged
+When history is explicitly requested, retained superseded facts MUST be reachable and visibly tagged as historical while default views remain current-state.
+
+### Requirement: Community Navigation MUST Inspect Existing Community State Only
+When `navigation="community"` is requested, `mem_project action="graph"` MUST return a bounded community inspection/debugging view and must not present community summaries as global-answer GraphRAG output.
+
+## MODIFIED for graph-navigation-v2
+
+### Requirement: MCP Surface MUST Be Compact and Workflow-Level
+Graph navigation v2 MUST be additive inside the existing `mem_project` tool and MUST NOT change the compact workflow toolset from `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
+
+## Handoff Hints
+- Preserve the six-tool MCP registry exactly.
+- Keep omitted `navigation` behavior compatible with the existing ledger path.
+- Enforce bounds and source attribution in every navigation view.
+- Do not claim deferred deferred-scope features in navigation outputs.
