@@ -126,6 +126,9 @@ export interface EmbeddingConfig {
 export interface ThothConfig {
   dataDir: string;
   dbPath: string; // resolved: {dataDir}/thoth.db
+  project: {
+    default: string | null;
+  };
   /** Input-side save validation warning threshold; never truncates stored content. */
   maxContentLength: number;
   /** Output-side context/summary response budget; 0 explicitly disables the cap. */
@@ -188,6 +191,9 @@ interface PersistedConfig {
   http?: {
     port?: number;
     disabled?: boolean;
+  };
+  project?: {
+    default?: string | null;
   };
   embedding?: PersistedEmbeddingConfig;
   hyde?: Partial<HydeConfig>;
@@ -376,6 +382,11 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, '');
 }
 
+function normalizeExplicitString(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
 function inferEmbeddingDimensions(model: string): number | null {
   return KNOWN_EMBEDDING_DIMENSIONS[model] ?? KNOWN_EMBEDDING_DIMENSIONS[model.toLowerCase()] ?? null;
 }
@@ -531,6 +542,9 @@ function defaultPersistedConfig(): PersistedConfig {
       port: 7438,
       disabled: false,
     },
+    project: {
+      default: null,
+    },
     retrievalDefaults: { ...DEFAULT_RETRIEVAL_DEFAULTS },
     embedding: {
       provider: 'transformers_local',
@@ -571,6 +585,10 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
     http: {
       ...defaults.http,
       ...(existing.http ?? {}),
+    },
+    project: {
+      ...defaults.project,
+      ...(existing.project ?? {}),
     },
     retrievalDefaults: {
       ...defaults.retrievalDefaults,
@@ -1099,6 +1117,9 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
   return {
     dataDir,
     dbPath: join(dataDir, 'thoth.db'),
+    project: {
+      default: normalizeExplicitString(process.env.THOTH_PROJECT) ?? normalizeExplicitString(persisted.project?.default) ?? null,
+    },
     maxContentLength: parseNumber(process.env.THOTH_MAX_CONTENT_LENGTH) ?? persisted.maxContentLength ?? 100_000,
     maxContextChars: parseNumber(process.env.THOTH_MAX_CONTEXT_CHARS) ?? persisted.maxContextChars ?? 8000,
     maxContextResults: parseNumber(process.env.THOTH_MAX_CONTEXT_RESULTS) ?? persisted.maxContextResults ?? 20,

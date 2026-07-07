@@ -4,6 +4,8 @@ import {
   COMMUNITY_SUMMARIES_SQL,
   OBSERVATIONS_FTS_SQL,
   OBSERVATIONS_FTS_TRIGGERS_SQL,
+  OPERATION_TRACES_INDEXES_SQL,
+  OPERATION_TRACES_SQL,
   KG_TRIPLES_SUPERSEDITION_INDEXES_SQL,
   MAINTENANCE_METADATA_INDEXES_SQL,
   MAINTENANCE_METADATA_SQL,
@@ -34,6 +36,8 @@ const LEGACY_COLUMN_MIGRATIONS = [
   { tableName: 'user_prompts', columnName: 'sync_id', columnDef: 'TEXT' },
   { tableName: 'kg_triples', columnName: 'superseded_by_triple_id', columnDef: 'INTEGER' },
   { tableName: 'kg_triples', columnName: 'superseded_at', columnDef: 'TEXT' },
+  { tableName: 'operation_traces', columnName: 'correlation_id', columnDef: 'TEXT' },
+  { tableName: 'operation_traces', columnName: 'metrics_json', columnDef: 'TEXT' },
 ] as const;
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;
@@ -219,14 +223,17 @@ function rebuildSemanticRowidsWithoutObservationForeignKey(db: SqliteDatabase): 
 
 export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticMigrationOptions): void {
   const migrate = db.transaction(() => {
+    db.exec(SYNC_CHUNKS_SQL);
+    db.exec(SYNC_MUTATIONS_SQL);
+    db.exec(OPERATION_TRACES_SQL);
+
     for (const migration of LEGACY_COLUMN_MIGRATIONS) {
       addColumnIfMissing(db, migration.tableName, migration.columnName, migration.columnDef);
     }
 
-    db.exec(SYNC_CHUNKS_SQL);
-    db.exec(SYNC_MUTATIONS_SQL);
     db.exec(SYNC_CHUNKS_INDEXES_SQL);
     db.exec(SYNC_MUTATIONS_INDEXES_SQL);
+    db.exec(OPERATION_TRACES_INDEXES_SQL);
     db.exec(SEMANTIC_METADATA_SQL);
     rebuildSemanticRowidsWithoutObservationForeignKey(db);
     db.exec(SEMANTIC_METADATA_INDEXES_SQL);

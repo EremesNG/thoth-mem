@@ -109,8 +109,8 @@ describe('mem_save tool (via Store)', () => {
 
     expect(result?.isError).not.toBe(true);
     expect(result.content[0].text).toContain('Identity fallback:');
-    expect(result.content[0].text).toContain('session_id missing -> manual-save-unknown');
-    expect(result.content[0].text).toContain('project schema-required -> unknown');
+    expect(result.content[0].text).toContain('session_id missing -> manual-save-thoth-mem');
+    expect(result.content[0].text).not.toContain('project schema-required -> unknown');
   });
 
   it('handler captures passive learnings through kind=passive_learnings', async () => {
@@ -159,7 +159,7 @@ describe('mem_save tool (via Store)', () => {
     expect(result?.isError).not.toBe(true);
     expect(result.content[0].text).toContain('Observation saved');
     expect(result.content[0].text).toContain('Identity fallback:');
-    expect(result.content[0].text).toContain('session_id missing -> manual-save-unknown');
+    expect(result.content[0].text).toContain('session_id missing -> manual-save-thoth-mem');
   });
 
 });

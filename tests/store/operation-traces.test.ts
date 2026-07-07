@@ -124,4 +124,102 @@ describe('Store operation traces', () => {
       store.close();
     }
   });
+
+  it('persists metrics json and summarizes payload averages plus mem_get correlation', () => {
+    const store = new Store(':memory:');
+
+    try {
+      store.saveOperationTrace({
+        trace_id: 'trace-recall-avoided',
+        origin: 'mcp',
+        target: 'mem_recall',
+        status: 'ok',
+        project: 'trace-project',
+        started_at: '2026-06-01T10:00:00.000Z',
+        finished_at: '2026-06-01T10:00:00.010Z',
+        request: { query: 'safe recall' },
+        response: { content: [{ type: 'text', text: 'obs:10 safe evidence' }] },
+        metrics: {
+          schema_version: 1,
+          request_chars: 23,
+          response_chars: 44,
+          returned_chars: 44,
+          full_chars: 200,
+          evidence_chars: 80,
+          saved_chars: 156,
+          compression_ratio: 0.78,
+          token_basis: 'estimated_chars_div_4',
+          estimated_tokens: { request: 6, response: 11, returned: 11, full: 50, evidence: 20 },
+          evidence_observation_ids: [10],
+          retrieval_mode: 'compact',
+        },
+        correlation_id: 'corr-avoided',
+      });
+      store.saveOperationTrace({
+        trace_id: 'trace-recall-escalated',
+        origin: 'mcp',
+        target: 'mem_context',
+        status: 'ok',
+        project: 'trace-project',
+        started_at: '2026-06-01T10:01:00.000Z',
+        finished_at: '2026-06-01T10:01:00.010Z',
+        request: { recall_query: 'needs full fetch' },
+        response: { content: [{ type: 'text', text: 'obs:11 evidence' }] },
+        metrics: {
+          schema_version: 1,
+          request_chars: 35,
+          response_chars: 38,
+          returned_chars: 38,
+          full_chars: 220,
+          evidence_chars: 90,
+          saved_chars: 182,
+          compression_ratio: 0.827,
+          token_basis: 'estimated_chars_div_4',
+          estimated_tokens: { request: 9, response: 10, returned: 10, full: 55, evidence: 23 },
+          evidence_observation_ids: [11],
+          retrieval_mode: 'context',
+        },
+        correlation_id: 'corr-escalated',
+      });
+      store.saveOperationTrace({
+        trace_id: 'trace-get-escalation',
+        origin: 'mcp',
+        target: 'mem_get',
+        status: 'ok',
+        project: 'trace-project',
+        started_at: '2026-06-01T10:05:00.000Z',
+        finished_at: '2026-06-01T10:05:00.010Z',
+        request: { id: 11 },
+        response: { content: [{ type: 'text', text: 'full safe body' }] },
+        metrics: {
+          schema_version: 1,
+          request_chars: 9,
+          response_chars: 40,
+          returned_chars: 40,
+          full_chars: 40,
+          saved_chars: 0,
+          compression_ratio: 0,
+          token_basis: 'estimated_chars_div_4',
+          estimated_tokens: { request: 3, response: 10, returned: 10, full: 10 },
+          fetched_observation_id: 11,
+        },
+        correlation_id: 'corr-escalated',
+      });
+
+      const traces = store.listOperationTraces({ target: 'mem_recall' });
+      expect(traces.traces[0].correlation_id).toBe('corr-avoided');
+      expect(traces.traces[0].metrics_json).toContain('"schema_version":1');
+      expect(traces.traces[0].metrics_json).not.toContain('safe recall');
+
+      const telemetry = store.getOperationTraceTelemetry({ project: 'trace-project', now: '2026-06-01T10:20:30.000Z' });
+      expect(telemetry.average_payload_chars_by_tool.mem_recall.returned_chars).toBe(44);
+      expect(telemetry.average_payload_chars_by_tool.mem_context.returned_chars).toBe(38);
+      expect(telemetry.mem_get_avoided_count).toBe(1);
+      expect(telemetry.mem_get_escalated_count).toBe(1);
+      expect(telemetry.mem_get_pending_count).toBe(0);
+      expect(telemetry.correlation_window_minutes).toBe(15);
+    } finally {
+      store.close();
+    }
+  });
 });

@@ -220,7 +220,7 @@ describe('sync export/import', () => {
     expect(exported.mutations.some((mutation) => mutation.entity_type === 'prompt' && mutation.operation === 'create')).toBe(true);
   });
 
-  it('syncExport preserves explicit identity and nullable project compatibility', () => {
+  it('syncExport preserves explicit session identity and derived project identity', () => {
     store.saveObservation({
       title: 'Nullable project export',
       content: 'Nullable project content',
@@ -237,11 +237,11 @@ describe('sync export/import', () => {
 
     expect(observation).toMatchObject({
       session_id: 'nullable-session',
-      project: null,
+      project: 'thoth-mem',
     });
     expect(session).toMatchObject({
       id: 'nullable-session',
-      project: 'unknown',
+      project: 'thoth-mem',
     });
   });
 

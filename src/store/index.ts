@@ -8,6 +8,7 @@ import type {
   ContextInput,
   CommunityPreviewResult,
   CommunityRebuildResult,
+  CommunityHealthReadModel,
   CommunityRetrievalResult,
   CommunityState,
   CommunityStateResult,
@@ -27,6 +28,8 @@ import type {
   ObservationFactsInput,
   OperationTrace,
   OperationTraceListResult,
+  OperationTraceMetrics,
+  OperationTraceTelemetry,
   ObservationVersion,
   PruneSupersededTriplesInput,
   PruneSupersededTriplesResult,
@@ -82,6 +85,7 @@ import { metadataFromResolution, normalizeExplicitString, resolveSaveIdentity, m
 import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
+import { buildPayloadMetrics } from '../utils/token-metrics.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
 import { formatObservationMarkdown, formatSearchResults, trimToBudget, truncateForPreview, validateContentLength } from '../utils/content.js';
@@ -311,6 +315,9 @@ const KG_OBSERVATION_FACT_CONTENT_RELATIONS = ['HAS_WHAT', 'HAS_WHY', 'HAS_WHERE
 const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
   dbPath: ':memory:',
+  project: {
+    default: null,
+  },
   maxContentLength: 100_000,
   maxContextChars: 8000,
   maxContextResults: 20,
@@ -630,6 +637,10 @@ export class Store {
       ...DEFAULT_CONFIG,
       ...config,
       dbPath,
+      project: {
+        ...DEFAULT_CONFIG.project,
+        ...(config?.project ?? {}),
+      },
       knowledgeGraph: {
         ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
         ...(config?.knowledgeGraph ?? {}),
@@ -1223,11 +1234,17 @@ export class Store {
       ? { json: null, truncated: false }
       : sanitizeTracePayload(input.response, { maxChars: input.max_payload_chars });
     const error = input.error ? sanitizeTraceText(input.error, { maxChars: input.max_payload_chars }).json : null;
+    const metrics = input.metrics ?? buildPayloadMetrics({
+      request: input.request,
+      response: input.response,
+    });
+    const metricsJson = JSON.stringify(metrics);
     const result = this.db.prepare(
       `INSERT INTO operation_traces (
         trace_id, origin, target, status, project, session_id, started_at, finished_at,
-        duration_ms, request_json, response_json, error, request_truncated, response_truncated
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        duration_ms, request_json, response_json, error, correlation_id, metrics_json,
+        request_truncated, response_truncated
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.trace_id?.trim() || randomUUID(),
       input.origin,
@@ -1241,6 +1258,8 @@ export class Store {
       request.json,
       response.json,
       error,
+      input.correlation_id?.trim() || input.trace_id?.trim() || null,
+      metricsJson,
       request.truncated ? 1 : 0,
       response.truncated ? 1 : 0,
     );
@@ -1313,6 +1332,99 @@ export class Store {
       ? this.db.prepare('SELECT * FROM operation_traces WHERE id = ?').get(traceIdOrId) as OperationTraceRow | undefined
       : this.db.prepare('SELECT * FROM operation_traces WHERE trace_id = ?').get(traceIdOrId) as OperationTraceRow | undefined;
     return this.mapOperationTraceRow(row);
+  }
+
+  getOperationTraceTelemetry(input: { project?: string; since?: string; now?: string } = {}): OperationTraceTelemetry {
+    const where: string[] = ['metrics_json IS NOT NULL'];
+    const params: unknown[] = [];
+    if (input.project) {
+      where.push('project = ?');
+      params.push(input.project);
+    }
+    if (input.since) {
+      where.push('started_at >= ?');
+      params.push(input.since);
+    }
+    const rows = this.db.prepare(
+      `SELECT target, project, started_at, metrics_json
+       FROM operation_traces
+       WHERE ${where.join(' AND ')}
+       ORDER BY started_at ASC, id ASC`
+    ).all(...params) as Array<{ target: string; project: string | null; started_at: string; metrics_json: string | null }>;
+    const sums = new Map<string, { count: number; request: number; response: number; returned: number; full: number; evidence: number }>();
+    const retrievalRows: Array<{ project: string | null; started_at: string; metrics: OperationTraceMetrics }> = [];
+    const getRows: Array<{ project: string | null; started_at: string; metrics: OperationTraceMetrics }> = [];
+
+    for (const row of rows) {
+      if (!row.metrics_json) {
+        continue;
+      }
+      let metrics: OperationTraceMetrics;
+      try {
+        metrics = JSON.parse(row.metrics_json) as OperationTraceMetrics;
+      } catch {
+        continue;
+      }
+      const current = sums.get(row.target) ?? { count: 0, request: 0, response: 0, returned: 0, full: 0, evidence: 0 };
+      current.count += 1;
+      current.request += metrics.request_chars ?? 0;
+      current.response += metrics.response_chars ?? 0;
+      current.returned += metrics.returned_chars ?? 0;
+      current.full += metrics.full_chars ?? 0;
+      current.evidence += metrics.evidence_chars ?? 0;
+      sums.set(row.target, current);
+
+      if ((row.target === 'mem_recall' || row.target === 'mem_context') && (metrics.evidence_observation_ids?.length ?? 0) > 0) {
+        retrievalRows.push({ project: row.project, started_at: row.started_at, metrics });
+      }
+      if (row.target === 'mem_get' && metrics.fetched_observation_id !== undefined) {
+        getRows.push({ project: row.project, started_at: row.started_at, metrics });
+      }
+    }
+
+    const averagePayloads: OperationTraceTelemetry['average_payload_chars_by_tool'] = {};
+    for (const [target, sum] of sums) {
+      averagePayloads[target] = {
+        count: sum.count,
+        request_chars: Math.round(sum.request / sum.count),
+        response_chars: Math.round(sum.response / sum.count),
+        returned_chars: Math.round(sum.returned / sum.count),
+        full_chars: Math.round(sum.full / sum.count),
+        evidence_chars: Math.round(sum.evidence / sum.count),
+      };
+    }
+
+    const windowMs = 15 * 60 * 1000;
+    const nowMs = Date.parse(input.now ?? new Date().toISOString());
+    let avoided = 0;
+    let escalated = 0;
+    let pending = 0;
+    for (const retrieval of retrievalRows) {
+      const retrievalMs = Date.parse(retrieval.started_at);
+      const ids = new Set(retrieval.metrics.evidence_observation_ids ?? []);
+      const matched = getRows.some((get) => (
+        get.project === retrieval.project
+        && ids.has(get.metrics.fetched_observation_id!)
+        && Date.parse(get.started_at) >= retrievalMs
+        && Date.parse(get.started_at) - retrievalMs <= windowMs
+      ));
+      if (matched) {
+        escalated += 1;
+      } else if (Number.isFinite(nowMs) && nowMs - retrievalMs < windowMs) {
+        pending += 1;
+      } else {
+        avoided += 1;
+      }
+    }
+
+    return {
+      average_payload_chars_by_tool: averagePayloads,
+      mem_get_avoided_count: avoided,
+      mem_get_escalated_count: escalated,
+      mem_get_pending_count: pending,
+      correlation_window_minutes: 15,
+      token_basis: 'estimated_chars_div_4',
+    };
   }
 
   /**
@@ -1394,7 +1506,6 @@ export class Store {
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-            project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
             directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(id, project, directory ?? null);
@@ -1552,6 +1663,7 @@ export class Store {
   getOperationalHealth(input: { project?: string } = {}): {
     status: 'ok' | 'pending' | 'degraded';
     project: string | null;
+    community: CommunityHealthReadModel;
     legacy_drift: ReturnType<Store['getLegacyFactsDrift']>;
     semantic: ReturnType<Store['getSemanticIndexState']> & {
       state: VizHealthResponse['semantic_state'];
@@ -1572,6 +1684,7 @@ export class Store {
     const legacyDrift = this.getLegacyFactsDrift();
     const graphSource = this.config.graphFactsSource ?? 'kg';
     const kgAvailable = graphSource !== 'legacy' || legacyDrift.status === 'ok';
+    const community = this.getCommunityHealth(input.project);
     const status = legacyDrift.status === 'degraded' || visualization.semantic_state === 'degraded'
       ? 'degraded'
       : visualization.semantic_state === 'pending' || visualization.semantic_state === 'rebuilding'
@@ -1581,6 +1694,7 @@ export class Store {
     return {
       status,
       project: input.project ?? null,
+      community,
       legacy_drift: legacyDrift,
       semantic: {
         ...runtime,
@@ -1596,6 +1710,63 @@ export class Store {
       jobs: visualization.semantic.jobs,
       coverage: visualization.semantic.coverage,
       recent_errors: visualization.semantic.recent_errors.slice(0, 5),
+    };
+  }
+
+  private getCommunityHealth(project?: string): CommunityHealthReadModel {
+    if (!project) {
+      return {
+        state: this.config.communitySummaries.enabled === false ? 'disabled' : 'missing',
+        run_id: null,
+        latest_committed_run_id: null,
+        latest_job_status: 'none',
+        graph_signature: null,
+        current_graph_signature: null,
+        freshness_basis: this.config.communitySummaries.enabled === false ? 'config_disabled' : 'missing_run',
+        coverage: {
+          communities: 0,
+          entities: 0,
+          triples: 0,
+          source_observations: 0,
+        },
+        degraded_reasons: this.config.communitySummaries.enabled === false ? ['disabled'] : [],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    const state = this.getCommunitySummaryState({ project });
+    const publicState: CommunityHealthReadModel['state'] = state.state === 'empty' ? 'degraded' : state.state;
+    const latestJobStatus: CommunityHealthReadModel['latest_job_status'] =
+      publicState === 'rebuilding' ? 'running'
+        : publicState === 'failed' ? 'failed'
+          : state.run_id === null ? 'none'
+            : 'committed';
+    const freshnessBasis: CommunityHealthReadModel['freshness_basis'] =
+      publicState === 'disabled' ? 'config_disabled'
+        : state.run_id === null ? 'missing_run'
+          : 'graph_signature';
+    const reasons = publicState === 'degraded' && state.degraded_reasons.length === 0
+      ? ['empty_kg']
+      : state.degraded_reasons;
+
+    return {
+      state: publicState,
+      run_id: state.run_id,
+      latest_committed_run_id: state.latest_committed_run_id,
+      latest_job_status: latestJobStatus,
+      graph_signature: state.graph_signature,
+      current_graph_signature: state.current_graph_signature,
+      freshness_basis: freshnessBasis,
+      coverage: {
+        communities: state.communities_count,
+        entities: state.entities_count,
+        triples: state.triples_count,
+        source_observations: state.source_observations_count,
+      },
+      degraded_reasons: reasons,
+      error: state.error,
+      updated_at: state.updated_at,
     };
   }
 
@@ -1887,9 +2058,10 @@ export class Store {
       session_id: sessionId,
       project,
       requireSessionProject: true,
+      config: this.config,
     });
     const identityMetadata = metadataFromResolution(identity);
-    const recordProject = normalizeExplicitString(project) ?? null;
+    const recordProject = identity.project ?? null;
     this.ensureSession(identity.session_id!, identity.session_project);
 
     const contentHash = computeHash(content);
@@ -3345,11 +3517,12 @@ export class Store {
       session_id: input.session_id,
       project: input.project,
       requireSessionProject: true,
+      config: this.config,
     });
     const identityMetadata = metadataFromResolution(identity);
     const sessionId = identity.session_id!;
     const project = identity.session_project;
-    const recordProject = normalizeExplicitString(input.project) ?? null;
+    const recordProject = identity.project ?? null;
     const type = input.type || 'manual';
     const scope = input.scope || 'project';
     const hash = computeHash(strippedContent);
@@ -5750,6 +5923,7 @@ export class Store {
           session_id: session.id,
           project: session.project,
           requireSessionProject: true,
+          config: this.config,
           source: 'legacy',
         });
         const identityMetadata = metadataFromResolution(identity);
@@ -5781,6 +5955,7 @@ export class Store {
           session_id: obs.session_id,
           project: obs.project,
           requireSessionProject: true,
+          config: this.config,
           source: 'legacy',
         });
         const identityMetadata = metadataFromResolution(identity);
@@ -5826,6 +6001,7 @@ export class Store {
           session_id: prompt.session_id,
           project: prompt.project,
           requireSessionProject: true,
+          config: this.config,
           source: 'legacy',
         });
         const identityMetadata = metadataFromResolution(identity);
@@ -5974,6 +6150,7 @@ export class Store {
               session_id: sessionId,
               project,
               requireSessionProject: true,
+              config: this.config,
               source: 'legacy',
             });
             const identityMetadata = metadataFromResolution(identity);
@@ -6058,6 +6235,7 @@ export class Store {
               session_id: sessionId,
               project,
               requireSessionProject: true,
+              config: this.config,
               source: 'legacy',
             });
             const identityMetadata = metadataFromResolution(identity);
@@ -6096,6 +6274,7 @@ export class Store {
               session_id: syncId,
               project: asNullableString(data.project),
               requireSessionProject: true,
+              config: this.config,
               source: 'legacy',
             });
             const identityMetadata = metadataFromResolution(identity);
@@ -6146,6 +6325,7 @@ export class Store {
                 session_id: sessionId,
                 project: projectForSession,
                 requireSessionProject: true,
+                config: this.config,
                 source: 'legacy',
               });
               const identityMetadata = metadataFromResolution(identity);
@@ -6307,6 +6487,7 @@ export class Store {
                 session_id: sessionId,
                 project: projectForSession,
                 requireSessionProject: true,
+                config: this.config,
                 source: 'legacy',
               });
               const identityMetadata = metadataFromResolution(identity);

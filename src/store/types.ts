@@ -15,8 +15,15 @@ export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
 export type OperationTraceStatus = 'ok' | 'error';
 export type IdentityField = 'session_id' | 'project';
-export type IdentitySource = 'explicit' | 'config' | 'fallback' | 'import' | 'legacy';
-export type IdentityReason = 'missing' | 'blank' | 'placeholder' | 'schema-required';
+export type IdentitySource = 'explicit' | 'config' | 'cwd' | 'git' | 'package' | 'fallback' | 'import' | 'legacy';
+export type IdentityReason =
+  | 'missing'
+  | 'blank'
+  | 'placeholder'
+  | 'schema-required'
+  | 'synthesized'
+  | 'compatibility-default'
+  | 'metadata-unavailable';
 
 export interface DegradedIdentityEntry {
   field: IdentityField;
@@ -30,6 +37,9 @@ export interface IdentityResolution {
   session_id?: string;
   project?: string | null;
   session_project: string;
+  project_id?: string | null;
+  project_source?: IdentitySource;
+  session_source?: 'explicit' | 'placeholder' | 'fallback';
   degraded: DegradedIdentityEntry[];
 }
 
@@ -107,9 +117,57 @@ export interface OperationTrace {
   request_json: string;
   response_json: string | null;
   error: string | null;
+  correlation_id: string | null;
+  metrics_json: string | null;
   request_truncated: boolean;
   response_truncated: boolean;
   created_at: string;
+}
+
+export interface OperationTraceMetrics {
+  schema_version: 1;
+  request_chars: number;
+  response_chars: number;
+  returned_chars: number;
+  full_chars?: number;
+  evidence_chars?: number;
+  saved_chars?: number;
+  compression_ratio?: number;
+  token_basis: 'estimated_chars_div_4' | 'exact';
+  estimated_tokens: {
+    request?: number;
+    response?: number;
+    full?: number;
+    evidence?: number;
+    returned?: number;
+  };
+  exact_tokens?: {
+    request?: number;
+    response?: number;
+    full?: number;
+    evidence?: number;
+    returned?: number;
+  };
+  evidence_observation_ids?: number[];
+  fetched_observation_id?: number;
+  fetched_prompt_id?: number;
+  retrieval_mode?: 'compact' | 'context';
+}
+
+export interface OperationTraceTelemetry {
+  average_payload_chars_by_tool: Record<string, {
+    count: number;
+    request_chars: number;
+    response_chars: number;
+    returned_chars: number;
+    full_chars: number;
+    evidence_chars: number;
+  }>;
+  mem_get_avoided_count: number;
+  mem_get_escalated_count: number;
+  mem_get_pending_count: number;
+  correlation_window_minutes: number;
+  token_basis: OperationTraceMetrics['token_basis'];
 }
 
 export interface SearchResult extends Observation {
@@ -216,6 +274,8 @@ export interface SaveOperationTraceInput {
   request: unknown;
   response?: unknown;
   error?: string | null;
+  correlation_id?: string | null;
+  metrics?: OperationTraceMetrics | null;
   max_payload_chars?: number;
 }
 
@@ -395,6 +455,7 @@ export interface PruneSupersededTriplesResult {
 }
 
 export type CommunityState = 'disabled' | 'missing' | 'fresh' | 'stale' | 'rebuilding' | 'failed' | 'empty' | 'degraded';
+export type CommunityHealthState = Exclude<CommunityState, 'empty'>;
 export type CommunityRunStatus = 'running' | 'committed' | 'failed';
 export type CommunityAlgorithmName = 'connected_components';
 
@@ -477,6 +538,25 @@ export interface CommunityStateResult {
   triples_count: number;
   source_observations_count: number;
   degraded: boolean;
+  degraded_reasons: string[];
+  error: string | null;
+  updated_at: string | null;
+}
+
+export interface CommunityHealthReadModel {
+  state: CommunityHealthState;
+  run_id: number | null;
+  latest_committed_run_id: number | null;
+  latest_job_status: 'running' | 'committed' | 'failed' | 'none';
+  graph_signature: string | null;
+  current_graph_signature: string | null;
+  freshness_basis: 'graph_signature' | 'config_disabled' | 'missing_run';
+  coverage: {
+    communities: number;
+    entities: number;
+    triples: number;
+    source_observations: number;
+  };
   degraded_reasons: string[];
   error: string | null;
   updated_at: string | null;

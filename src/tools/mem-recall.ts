@@ -180,8 +180,10 @@ export function registerMemRecall(
           return acc;
         }, {});
         const graphEnrichmentCount = hits.filter((hit) => (hit.evidence.byLane.kg?.length ?? 0) > 0).length;
+        const fullChars = hits.reduce((sum, hit) => sum + hit.observation.content.length, 0);
+        const evidenceChars = hits.reduce((sum, hit) => sum + (hit.evidence.primary.text || hit.observation.content).length, 0);
 
-        const text = [
+        const baseLines = [
           `Recall query: ${query}`,
           project ? `project: ${project}` : null,
           session_id ? `session_id: ${session_id}` : null,
@@ -196,9 +198,16 @@ export function registerMemRecall(
           `graph_enrichment: ${graphEnrichmentCount}`,
           debug ? `lane_order: ${retrieval.laneOrder.join(' > ')}` : null,
           debug ? `semantic_inputs: ${retrieval.semanticInputs.map((input) => input.source).join(', ') || 'none'}` : null,
+          `measurement: token_basis=estimated_chars_div_4 full_chars=${fullChars} evidence_chars=${evidenceChars}`,
           'evidence:',
           ...(evidenceLines.length > 0 ? evidenceLines : ['none']),
-        ].filter((line): line is string => line !== null).join('\n');
+        ].filter((line): line is string => line !== null);
+        const provisional = baseLines.join('\n');
+        const measurementIndex = baseLines.findIndex((line) => line.startsWith('measurement:'));
+        if (measurementIndex >= 0) {
+          baseLines[measurementIndex] = `${baseLines[measurementIndex]} returned_chars=${provisional.length}`;
+        }
+        const text = baseLines.join('\n');
 
         return {
           content: [{ type: "text" as const, text }],

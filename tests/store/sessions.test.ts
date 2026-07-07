@@ -44,15 +44,15 @@ describe('Store — Session Operations', () => {
     expect(store.getSession('session-placeholder')?.project).toBe('project-a');
   });
 
-  it('saveObservation reports deterministic fallback identity while retaining nullable observation project', () => {
+  it('saveObservation reports deterministic derived identity when project is omitted', () => {
     const result = store.saveObservation({
       title: 'Missing identity',
       content: 'Observation without explicit identity',
     });
 
-    expect(result.observation.session_id).toBe('manual-save-unknown');
-    expect(result.observation.project).toBeNull();
-    expect(store.getSession('manual-save-unknown')?.project).toBe('unknown');
+    expect(result.observation.session_id).toBe('manual-save-thoth-mem');
+    expect(result.observation.project).toBe('thoth-mem');
+    expect(store.getSession('manual-save-thoth-mem')?.project).toBe('thoth-mem');
     expect(result.identity).toEqual({
       degraded: expect.arrayContaining([
         expect.objectContaining({
@@ -60,18 +60,10 @@ describe('Store — Session Operations', () => {
           reason: 'missing',
           source: 'fallback',
           value: null,
-          fallback_value: 'manual-save-unknown',
-        }),
-        expect.objectContaining({
-          field: 'project',
-          reason: 'schema-required',
-          source: 'fallback',
-          value: null,
-          fallback_value: 'unknown',
+          fallback_value: 'manual-save-thoth-mem',
         }),
       ]),
-      synthesized_session_id: 'manual-save-unknown',
-      synthesized_project: 'unknown',
+      synthesized_session_id: 'manual-save-thoth-mem',
     });
   });
 

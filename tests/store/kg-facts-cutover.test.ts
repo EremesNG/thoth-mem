@@ -188,7 +188,7 @@ describe('Store KG-backed observation facts cutover', () => {
     }
   });
 
-  it('honors observation_id filter and emits only HAS_TYPE when project/topic_key are absent', () => {
+  it('honors observation_id filter and emits derived project metadata when project is omitted', () => {
     const store = new Store(':memory:');
 
     try {
@@ -208,7 +208,18 @@ describe('Store KG-backed observation facts cutover', () => {
           subject: 'Metadata only memory',
           relation: 'HAS_TYPE',
           object: 'manual',
-          project: null,
+          project: 'thoth-mem',
+          topic_key: null,
+          type: 'manual',
+          created_at: expect.any(String),
+        },
+        {
+          id: expect.any(Number),
+          observation_id: withoutMetadata.id,
+          subject: 'Metadata only memory',
+          relation: 'IN_PROJECT',
+          object: 'thoth-mem',
+          project: 'thoth-mem',
           topic_key: null,
           type: 'manual',
           created_at: expect.any(String),

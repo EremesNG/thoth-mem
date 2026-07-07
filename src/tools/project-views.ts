@@ -366,6 +366,8 @@ export function formatProjectHealth(store: Store, project?: string, maxChars: nu
   const health: ProjectHealth = store.getOperationalHealth({ project });
   const jobs = health.jobs;
   const coverage = health.coverage;
+  const community = health.community;
+  const telemetry = store.getOperationTraceTelemetry({ project });
   const lines = [
     '## Operational Health',
     project ? `Project: ${project}` : 'Project: all',
@@ -385,6 +387,26 @@ export function formatProjectHealth(store: Store, project?: string, maxChars: nu
     `- semantic_state: ${health.visualization.semantic_state}`,
     `- kg_available: ${health.visualization.kg_available ? 'yes' : 'no'}`,
     `- pending_jobs: ${health.visualization.pending_jobs}`,
+    '',
+    '## Community Summaries',
+    `- state: ${community.state}`,
+    `- latest_job_status: ${community.latest_job_status}`,
+    `- run_id: ${community.run_id ?? 'none'}`,
+    `- latest_committed_run_id: ${community.latest_committed_run_id ?? 'none'}`,
+    `- freshness_basis: ${community.freshness_basis}`,
+    `- graph_signature: ${community.graph_signature ?? 'none'}`,
+    `- current_graph_signature: ${community.current_graph_signature ?? 'none'}`,
+    `- coverage: communities=${community.coverage.communities} entities=${community.coverage.entities} triples=${community.coverage.triples} source_observations=${community.coverage.source_observations}`,
+    `- degraded_reasons: ${community.degraded_reasons.join(', ') || 'none'}`,
+    community.error ? `- error: ${community.error}` : null,
+    community.updated_at ? `- updated_at: ${community.updated_at}` : null,
+    '',
+    '## Trace Telemetry',
+    `- token_basis: ${telemetry.token_basis}`,
+    `- mem_get: avoided=${telemetry.mem_get_avoided_count} escalated=${telemetry.mem_get_escalated_count} pending=${telemetry.mem_get_pending_count} window_minutes=${telemetry.correlation_window_minutes}`,
+    `- average_payload_chars_by_tool: ${Object.entries(telemetry.average_payload_chars_by_tool)
+      .map(([tool, values]) => `${tool}=returned:${values.returned_chars}/request:${values.request_chars}/response:${values.response_chars}`)
+      .join(', ') || 'none'}`,
     '',
     '## Jobs',
     `- total: ${jobs.total}`,

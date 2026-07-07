@@ -11,6 +11,7 @@ import {
 import { Store } from '../store/index.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import type { SaveObservationInput } from '../store/types.js';
+import { estimateTokensFromChars } from '../utils/token-metrics.js';
 
 interface EvalFixture {
   key: string;
@@ -59,6 +60,16 @@ export interface RetrievalTokenSavingsMetricsEnvelope {
   saved_chars: number;
   compression_ratio: number;
   compression_basis: typeof TOKEN_SAVINGS_COMPRESSION_BASIS;
+  token_basis: 'estimated_chars_div_4';
+  full_tokens_estimated: number;
+  evidence_tokens_estimated: number;
+  returned_tokens_estimated: number;
+  average_payload_chars_by_tool: Record<'mem_recall' | 'mem_context' | 'mem_get', number>;
+  mem_get_avoided_count: number;
+  mem_get_escalated_count: number;
+  recall_after_compaction_cases: number;
+  recall_after_compaction_recovered_count: number;
+  recall_after_compaction_payload_savings: number;
   recall_at_1: number;
   recall_at_k: number;
   mean_reciprocal_rank: number;
@@ -758,6 +769,20 @@ export function buildRetrievalTokenSavingsEnvelope(
     saved_chars: Math.max(0, fullChars - returnedChars),
     compression_ratio: summary.context_compression,
     compression_basis: TOKEN_SAVINGS_COMPRESSION_BASIS,
+    token_basis: 'estimated_chars_div_4',
+    full_tokens_estimated: estimateTokensFromChars(fullChars),
+    evidence_tokens_estimated: estimateTokensFromChars(evidenceChars),
+    returned_tokens_estimated: estimateTokensFromChars(returnedChars),
+    average_payload_chars_by_tool: {
+      mem_recall: cases.length === 0 ? 0 : Math.round(evidenceChars / cases.length),
+      mem_context: cases.length === 0 ? 0 : Math.round(returnedChars / cases.length),
+      mem_get: cases.length === 0 ? 0 : Math.round(fullChars / cases.length),
+    },
+    mem_get_avoided_count: cases.filter((result) => result.found && result.promoted_context_chars > 0).length,
+    mem_get_escalated_count: cases.filter((result) => result.found && result.primary_evidence_chars < result.full_content_chars).length,
+    recall_after_compaction_cases: cases.filter((result) => result.kind === 'non-synthetic').length,
+    recall_after_compaction_recovered_count: cases.filter((result) => result.kind === 'non-synthetic' && result.found).length,
+    recall_after_compaction_payload_savings: Math.max(0, fullChars - evidenceChars),
     recall_at_1: summary.recall_at_1,
     recall_at_k: summary.recall_at_k,
     mean_reciprocal_rank: summary.mean_reciprocal_rank,
@@ -856,6 +881,14 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Community Summary Bounds Rate | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
     `| Community Coverage Bounds Rate | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
     `| Community Enrichment Unavailable Fallback Rate | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
+    `| Token Basis | ${summary.token_savings_metrics.token_basis} |`,
+    `| Full Tokens Estimated | ${summary.token_savings_metrics.full_tokens_estimated} |`,
+    `| Evidence Tokens Estimated | ${summary.token_savings_metrics.evidence_tokens_estimated} |`,
+    `| Returned Tokens Estimated | ${summary.token_savings_metrics.returned_tokens_estimated} |`,
+    `| mem_get Avoided | ${summary.token_savings_metrics.mem_get_avoided_count} |`,
+    `| mem_get Escalated | ${summary.token_savings_metrics.mem_get_escalated_count} |`,
+    `| Recall-after-compaction Cases | ${summary.token_savings_metrics.recall_after_compaction_cases} |`,
+    `| Recall-after-compaction Recovered | ${summary.token_savings_metrics.recall_after_compaction_recovered_count} |`,
     '',
     '## Community Read Path Readiness',
     '',

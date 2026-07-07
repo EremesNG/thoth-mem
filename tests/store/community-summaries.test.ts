@@ -758,6 +758,48 @@ describe('Store — community summary schema foundation', () => {
     }
   });
 
+  it('operational health exposes exactly seven public community states', () => {
+    const disabled = new Store(':memory:', { communitySummaries: { enabled: false } });
+    const store = new Store(':memory:');
+    try {
+      expect(disabled.getOperationalHealth({ project: 'disabled-project' }).community.state).toBe('disabled');
+      expect(store.getOperationalHealth({ project: 'missing-project' }).community.state).toBe('missing');
+
+      seedProjectGraph(store, 'fresh-health');
+      store.rebuildCommunitySummaries({ project: 'fresh-health' });
+      expect(store.getOperationalHealth({ project: 'fresh-health' }).community.state).toBe('fresh');
+
+      seedProjectGraph(store, 'stale-health');
+      store.rebuildCommunitySummaries({ project: 'stale-health' });
+      store.markCommunitySummariesStale('stale-health', 'test_stale');
+      expect(store.getOperationalHealth({ project: 'stale-health' }).community.state).toBe('stale');
+
+      store.getDb().prepare(
+        `INSERT INTO kg_community_runs (
+          run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+          status, freshness, degraded, degraded_reasons_json, coverage_json
+        ) VALUES ('running-health', 'running-health', 'connected_components_v1', '1', 'extractive_v1', 'cfg',
+          'graph-running', 'running', 'fresh', 1, '["test_rebuild"]', '{}')`
+      ).run();
+      expect(store.getOperationalHealth({ project: 'running-health' }).community.state).toBe('rebuilding');
+
+      store.getDb().prepare(
+        `INSERT INTO kg_community_runs (
+          run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+          status, freshness, degraded, degraded_reasons_json, coverage_json, error
+        ) VALUES ('failed-health', 'failed-health', 'connected_components_v1', '1', 'extractive_v1', 'cfg',
+          'graph-failed', 'failed', 'failed', 1, '["boom"]', '{}', 'boom')`
+      ).run();
+      expect(store.getOperationalHealth({ project: 'failed-health' }).community.state).toBe('failed');
+
+      store.rebuildCommunitySummaries({ project: 'empty-health' });
+      expect(store.getOperationalHealth({ project: 'empty-health' }).community.state).toBe('degraded');
+    } finally {
+      disabled.close();
+      store.close();
+    }
+  });
+
   it('community rebuild ignores legacy observation_facts when KG is empty', () => {
     const store = new Store(':memory:', { graphFactsSource: 'legacy' });
     try {

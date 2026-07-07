@@ -52,6 +52,17 @@
         }
       }
     },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional stable project identity default. THOTH_PROJECT overrides this value at runtime without rewriting the file.",
+      "properties": {
+        "default": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
     "graphFactsSource": {
       "type": "string",
       "enum": ["legacy", "kg"],

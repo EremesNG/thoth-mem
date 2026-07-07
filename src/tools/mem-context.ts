@@ -54,12 +54,16 @@ Observation bodies are previewed by default; use mem_get(id=...) for full conten
             const maintenance = formatMaintenanceEvidence(hit.evidence.maintenance);
             return `${index + 1}. [${hit.evidence.primary.lane}] ${hit.observation.title} (source: ${source})${maintenance ? ` | ${maintenance}` : ''}`;
           });
+          const evidenceIds = retrieval.results.slice(0, 3).map((hit) => `obs:${hit.observation.id}`).join(', ') || 'none';
+          const fullChars = retrieval.results.slice(0, 3).reduce((sum, hit) => sum + hit.observation.content.length, 0);
+          const evidenceChars = retrieval.results.slice(0, 3).reduce((sum, hit) => sum + (hit.evidence.primary.text || hit.observation.content).length, 0);
           recallSection = [
             '',
             '### Optional Fused Recall',
             `- query: ${recall_query.trim()}`,
             `- pending: ${retrieval.pending ? 'yes' : 'no'}`,
             `- degraded_fallback: ${retrieval.degradedFallback.length > 0 ? retrieval.degradedFallback.join(', ') : 'none'}`,
+            `- measurement: token_basis=estimated_chars_div_4 full_chars=${fullChars} evidence_chars=${evidenceChars} evidence_ids=${evidenceIds}`,
             ...(evidence.length > 0 ? ['- evidence:', ...evidence.map((line) => `  ${line}`)] : ['- evidence: none']),
           ].join('\n');
         }

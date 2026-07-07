@@ -339,6 +339,25 @@ describe('retrieval eval baseline', () => {
       community_no_fifth_lane_rate: report.summary.hybrid.community_no_fifth_lane_rate,
     });
     expect(envelope).toMatchObject({
+      token_basis: 'estimated_chars_div_4',
+      full_tokens_estimated: Math.ceil(fullChars / 4),
+      evidence_tokens_estimated: Math.ceil(evidenceChars / 4),
+      returned_tokens_estimated: Math.ceil(returnedChars / 4),
+      average_payload_chars_by_tool: {
+        mem_recall: expect.any(Number),
+        mem_context: expect.any(Number),
+        mem_get: expect.any(Number),
+      },
+      mem_get_avoided_count: expect.any(Number),
+      mem_get_escalated_count: expect.any(Number),
+      recall_after_compaction_cases: expect.any(Number),
+      recall_after_compaction_recovered_count: expect.any(Number),
+      recall_after_compaction_payload_savings: expect.any(Number),
+    });
+    expect(envelope.mem_get_avoided_count).toBeGreaterThan(0);
+    expect(envelope.mem_get_escalated_count).toBeGreaterThan(0);
+    expect(envelope.recall_after_compaction_recovered_count).toBeGreaterThan(0);
+    expect(envelope).toMatchObject({
       community_read_path_default_off_rate: 1,
       community_disabled_no_regression_rate: 1,
       community_enabled_no_regression_rate: 1,
@@ -353,6 +372,28 @@ describe('retrieval eval baseline', () => {
     expect(envelope.saved_chars).toBeGreaterThan(0);
   });
 
+  it('preserves exact zero telemetry counts when no cases match recapture heuristics', () => {
+    const zeroRecoveryCase = {
+      ...report.cases[0],
+      kind: 'direct' as const,
+      found: false,
+      rank: null,
+      raw_rank: null,
+      hyde_rank: null,
+      result_count: 0,
+      context_chars: 0,
+      full_content_chars: 0,
+      primary_evidence_chars: 0,
+      promoted_context_chars: 0,
+    };
+    const rebuilt = buildRetrievalTokenSavingsEnvelope(report.summary, [zeroRecoveryCase]);
+
+    expect(rebuilt.mem_get_avoided_count).toBe(0);
+    expect(rebuilt.mem_get_escalated_count).toBe(0);
+    expect(rebuilt.recall_after_compaction_cases).toBe(0);
+    expect(rebuilt.recall_after_compaction_recovered_count).toBe(0);
+  });
+
   it('formats a markdown benchmark report', async () => {
     expect(report.markdown).toContain('# Retrieval Eval Baseline (Hybrid Retrieval)');
     expect(report.markdown).toContain('| Recall @ 1 |');
@@ -365,6 +406,9 @@ describe('retrieval eval baseline', () => {
     expect(report.markdown).toContain('## Retrieval Defaults');
     expect(report.markdown).toContain('## Case Results');
     expect(report.markdown).toContain('| Rephrased cases |');
+    expect(report.markdown).toContain('| Token Basis | estimated_chars_div_4 |');
+    expect(report.markdown).toContain('| mem_get Avoided |');
+    expect(report.markdown).toContain('| Recall-after-compaction Recovered |');
   });
 
   it('lane contribution gates: requires non-zero semantic/HyDE and KG enrichment when fixtures support them', async () => {

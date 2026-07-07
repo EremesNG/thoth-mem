@@ -696,12 +696,7 @@ describe('createHttpBridge', () => {
       expect.objectContaining({
         field: 'session_id',
         reason: 'missing',
-        fallback_value: 'manual-save-unknown',
-      }),
-      expect.objectContaining({
-        field: 'project',
-        reason: 'schema-required',
-        fallback_value: 'unknown',
+        fallback_value: 'manual-save-thoth-mem',
       }),
     ]));
 
@@ -715,7 +710,7 @@ describe('createHttpBridge', () => {
       bridge.port,
     );
     expect(fallbackPrompt.response.status).toBe(201);
-    expect(fallbackPrompt.body.identity.synthesized_session_id).toBe('manual-save-unknown');
+    expect(fallbackPrompt.body.identity.synthesized_session_id).toBe('manual-save-thoth-mem');
 
     const fallbackSummary = await fetchJson(
       '/sessions/summary',

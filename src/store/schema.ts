@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS operation_traces (
   request_json       TEXT NOT NULL,
   response_json      TEXT,
   error              TEXT,
+  correlation_id     TEXT,
+  metrics_json       TEXT,
   request_truncated  INTEGER NOT NULL DEFAULT 0,
   response_truncated INTEGER NOT NULL DEFAULT 0,
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
@@ -556,4 +558,6 @@ export const MIGRATIONS_SQL = [
   'ALTER TABLE observations ADD COLUMN sync_id TEXT',
   'ALTER TABLE user_prompts ADD COLUMN sync_id TEXT',
   'ALTER TABLE sync_mutations ADD COLUMN project TEXT',
+  'ALTER TABLE operation_traces ADD COLUMN correlation_id TEXT',
+  'ALTER TABLE operation_traces ADD COLUMN metrics_json TEXT',
 ];

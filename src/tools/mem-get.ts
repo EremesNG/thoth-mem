@@ -4,6 +4,7 @@ import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
 import { formatObservationMarkdown } from "../utils/content.js";
 import { formatObservationMaintenanceEvidence } from "./maintenance-format.js";
+import { estimateTokensFromChars } from "../utils/token-metrics.js";
 
 function formatPromptMarkdown(prompt: { id: number; project: string | null; session_id: string; content: string; created_at: string }): string {
   return [
@@ -29,10 +30,13 @@ function formatPaginatedObservation(
   const fullContent = observation.content;
   const totalLength = fullContent.length;
   const maintenance = formatObservationMaintenanceEvidence(store.getMaintenanceEvidenceForObservations([id])[0]);
+  const metricLine = (returnedChars: number) =>
+    `measurement: token_basis=estimated_chars_div_4 full_chars=${totalLength} returned_chars=${returnedChars} returned_tokens_estimated=${estimateTokensFromChars(returnedChars)}`;
 
   if (totalLength <= maxLength && offset === 0) {
     const base = formatObservationMarkdown(observation);
-    return { text: maintenance ? `${base}\n\n**Maintenance:** ${maintenance}` : base };
+    const withMaintenance = maintenance ? `${base}\n\n**Maintenance:** ${maintenance}` : base;
+    return { text: `${metricLine(withMaintenance.length)}\n${withMaintenance}` };
   }
 
   const slice = fullContent.substring(offset, offset + maxLength);
@@ -44,6 +48,8 @@ function formatPaginatedObservation(
     observation.topic_key ? `**Topic:** ${observation.topic_key}` : null,
     `**Revisions:** ${observation.revision_count} | **Duplicates:** ${observation.duplicate_count}`,
     maintenance ? `**Maintenance:** ${maintenance}` : null,
+    '',
+    metricLine(slice.length),
     '',
     `**Content pagination:** Showing characters ${offset}-${returnedTo} of ${totalLength}`,
     hasMore ? `Call mem_get with id=${id} and offset=${returnedTo} to get more.` : null,
@@ -63,9 +69,12 @@ function formatPaginatedPrompt(store: Store, id: number, offset: number, maxLeng
 
   const fullContent = prompt.content;
   const totalLength = fullContent.length;
+  const metricLine = (returnedChars: number) =>
+    `measurement: token_basis=estimated_chars_div_4 full_chars=${totalLength} returned_chars=${returnedChars} returned_tokens_estimated=${estimateTokensFromChars(returnedChars)}`;
 
   if (totalLength <= maxLength && offset === 0) {
-    return { text: formatPromptMarkdown(prompt) };
+    const markdown = formatPromptMarkdown(prompt);
+    return { text: `${metricLine(markdown.length)}\n${markdown}` };
   }
 
   const slice = fullContent.substring(offset, offset + maxLength);
@@ -74,6 +83,8 @@ function formatPaginatedPrompt(store: Store, id: number, offset: number, maxLeng
   const lines = [
     `### Prompt (ID: ${prompt.id})`,
     `**Project:** ${prompt.project || 'none'} | **Session:** ${prompt.session_id} | **Created:** ${prompt.created_at}`,
+    '',
+    metricLine(slice.length),
     '',
     `**Content pagination:** Showing characters ${offset}-${returnedTo} of ${totalLength}`,
     hasMore ? `Call mem_get(kind="prompt", id=${id}, offset=${returnedTo}) to get more.` : null,
