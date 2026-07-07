@@ -6,7 +6,7 @@
 > resuming without re-discovery. When memory reconnects, mirror this into the
 > `review/thoth-mem/improvement-roadmap` topic.
 
-- **Last updated:** 2026-07-05
+- **Last updated:** 2026-07-07
 - **Branch:** `full-graph` (NOT `master` — no branch-before-commit needed)
 - **Repo:** `C:\DEV\Proyectos\Webstorm\thoth-mem` · package version `0.3.7`
 - **Program status:** A · B1 · B2 · B3 · atomic-writes · C1 · C2 · C3
@@ -14,8 +14,8 @@
   **SHIPPED** · W2 **SHIPPED** · P6 agent operational health **SHIPPED** ·
   P4 token-savings metrics **SHIPPED** · community read-path readiness
   **SHIPPED** · community read-path rollout gate **SHIPPED** ·
-  graph-navigation-v2 **SHIPPED** · C1 constitution PATCH **RECORDED** ·
-  multi-harness support **NEXT**
+  graph-navigation-v2 **SHIPPED** · pre-multiharness foundations **SHIPPED** ·
+  C1 constitution PATCH **RECORDED** · multi-harness support **NEXT**
 
 ---
 
@@ -55,8 +55,9 @@ executable **SDD improvement program**, delivered **change by change**.
 
 **Conventions:**
 
-- **Persistence mode:** `openspec` (repo files only; no thoth-mem writes for SDD
-  artifacts). Chosen for the whole program.
+- **Persistence mode:** historically `openspec` (repo files only). After memory
+  tooling was restored, `pre-multiharness-foundations` used `hybrid`
+  persistence so OpenSpec and thoth-mem both carry the SDD artifacts.
 - **Change dirs:** `openspec/changes/{change}/` → archived to
   `openspec/changes/archive/{YYYY-MM-DD}-{change}/` with deltas merged into
   `openspec/specs/{domain}/spec.md`.
@@ -100,6 +101,7 @@ also be mirrored into `review/thoth-mem/improvement-roadmap`.
 | **R1** | `community-read-path-readiness` | Eval-gated readiness scorecard for broader community read-path rollout | ✅ Shipped + archived | `8e99637` feat · `fad3fb7` archive |
 | **R2** | `community-read-path-rollout-gate` | On-demand per-project community read-path rollout gate with A/B/token/fallback enforcement | ✅ Shipped + archived | `105aba8` feat · `6a7089b` archive |
 | **P5** | `graph-navigation-v2` | Bounded MCP graph navigation views for ledger/neighborhood/lineage/community/superseded | ✅ Shipped + archived | `91f604e` feat · `b4e2e60` archive |
+| **PF** | `pre-multiharness-foundations` | Stable identity resolver v2, community health state, and runtime/eval token-savings telemetry | ✅ Shipped + archived | `1c3d631` feat |
 | **G3** | *(cross-repo)* | Harness parity: deterministic memory hooks for Claude Code + Codex | ⏭️ Next candidate | — |
 | **MIG** | *(cross-repo)* | Move `MemoryIntegrationCore` into thoth-mem | ⏳ Deferred | — |
 
@@ -408,7 +410,13 @@ Community metrics at `100%`).
    Verification passed round 2 after focused-lineage remediation: focused
    `mem_project` graph navigation tests, focused visualization tests, build,
    and full suite (50 files / 678 tests).
-15. ⬜ Next local decision: plan **G3 multi-harness parity** now that identity,
+15. ✅ `pre-multiharness-foundations` is implemented, verified, and archived at
+   `openspec/changes/archive/2026-07-07-pre-multiharness-foundations/`.
+   Verification passed round 2: focused retrieval eval tests, `pnpm run
+   eval:retrieval` (23 cases; `mem_get` avoided 21 / escalated 21;
+   recall-after-compaction 4/4), `pnpm run build`, and full `pnpm test`
+   (52 files / 689 tests).
+16. ⬜ Next local decision: plan **G3 multi-harness parity** now that identity,
    health, token metrics, community read-path rollout, and graph navigation are
    solid. Keep **MIG MemoryIntegrationCore migration** visible as the likely
    enabling architecture decision, but do not silently merge it into G3 without
@@ -474,6 +482,7 @@ Community metrics at `100%`).
 ## 11. Commit Ledger (program, newest first)
 
 ```
+1c3d631 feat(memory): add pre-multiharness foundations
 b4e2e60 docs(openspec): archive graph navigation v2
 91f604e feat(tools): add graph navigation modes
 6a7089b docs(openspec): archive community read-path rollout gate
