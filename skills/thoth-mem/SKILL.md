@@ -29,58 +29,72 @@ Use this current mapping instead:
 | Project summary, graph, topics, topic context | `mem_project` |
 | Start or summarize a session | `mem_session` |
 | Save a prompt | `mem_save(kind="prompt")` |
-| Save a session summary | `mem_session(action="summary")` or `mem_save(kind="session_summary")` |
+| Save a session summary | `mem_save(kind="session_summary")` (root-owned) and/or `mem_session(action="summary")` |
 
-Admin and operations work is intentionally outside the MCP tool surface. Use CLI, HTTP, or the dashboard for export/import, sync/sync-import, project migration/deletion, graph rebuilds, index rebuilds, status inspection, and operation traces.
+Admin/export/import/sync/migration/rebuild/index/trace operations are intentionally outside MCP. Use CLI, HTTP, or dashboard flows for those operations.
 
-## Start Protocol
+## Stable identity and bootstrap guidance
 
-At the beginning of a meaningful work session:
+- Prefer harness-provided stable `session_id` and `project` whenever available.
+- If stable identity is unavailable, call out a persistence bootstrap limitation and continue with visible fallback metadata (for example `session="ephemeral"`, `project="unknown"`). Do not pretend session continuity is guaranteed.
+- Subagents must never invent a session id or call `mem_session(action="start")`.
 
-1. Call `mem_session(action="start", id="...", project="...", directory="...")`.
-2. Call `mem_context(project="...", session_id="...")` for recent continuity. Add `recall_query="..."` when one targeted fused recall should appear inline with the context.
-3. Call `mem_project(action="summary", project="...")` when project-level history matters.
-4. If the task might overlap previous work, call `mem_recall(mode="compact", query="...", project="...")` before editing code or making architecture decisions.
-5. Save significant real user intent with `mem_save(kind="prompt", content="...", session_id="...", project="...")`.
+## Start protocol
 
-Only save real user prompts. Do not save generated subagent prompts, internal handoffs, raw transcripts, or tool scaffolding as user intent.
+1. Root calls `mem_session(action="start", id="...", project="...", directory="...")` when stable identity is available.
+2. Root calls `mem_context(project="...", session_id="...")` for recent continuity. Add `recall_query="..."` only for inline context hints.
+3. Root may call `mem_project(action="summary", project="...")` when broader project history matters.
+4. If overlap is likely, root calls `mem_recall(mode="compact")` before architecture or implementation changes.
+5. Root saves real user intent with `mem_save(kind="prompt", content="...", session_id="...", project="...")`.
 
-## Recall Protocol
+Only save real user prompts. Do not save generated subagent prompts, handoff bodies, raw transcripts, or tool scaffolding as user intent.
 
-Use recall as a widening funnel:
+## Recall protocol (mem_recall)
 
-1. `mem_recall(mode="compact", query="...", project="...")` scans fused evidence cheaply.
-2. `mem_recall(mode="context", query="...", project="...")` expands the strongest hits into retrieved text.
-3. `mem_get(id=...)` fetches full content only for the final records that need exact detail.
-4. `mem_get(id=..., include_timeline=true)` when chronology matters.
+Use a widening funnel:
 
-`mem_recall` is the primary retrieval tool. It may return semantic, lexical, and graph/KG evidence together, plus `pending` and `degraded_fallback` metadata. Pending or degraded semantic lanes are not failures; they mean the fallback lanes are carrying the recall.
+1. `mem_recall(mode="compact", query="...", project="...", limit=1-20, hyde=true, debug=false, ...)`
+2. `mem_recall(mode="context", query="...", project="...", limit=1-20, ... )`
+3. `mem_get(id=..., kind="observation"|"prompt")`
+4. `mem_get(id=..., include_timeline=true, before=5, after=5)` when chronology matters.
 
-Use `hyde=false` only when comparing raw query behavior or debugging recall drift. Use `debug=true` when you need lane order, semantic input sources, or evidence diagnostics for a retrieval bug.
+`mem_recall` performs HyDE + fused recall by default (semantic + lexical + KG/graph). Set `hyde=false` only for raw query/debug comparisons.
 
-Good recall queries include concrete file names, component names, error messages, architecture terms, migration names, topic keys, and user-facing feature names. Prefer two or three focused recalls over one broad vague query.
+- `debug=true` is for diagnostics and lane evidence tracing.
+- `pending`/`degraded_fallback` in metadata is state/fallback behavior, not a hard failure.
+- Graph enrichment and token/character measurement may appear in the recall metadata.
 
-## Project Navigation
+## mem_get details
 
-Use `mem_project` for project-level browsing:
+- `kind` supports `observation` and `prompt`.
+- Use `offset` and `max_length` for large memory items.
+- Use `include_timeline=true` with numeric `before`/`after` counts (for example `before=5, after=5`) when chronological ordering is important.
 
-- `mem_project(action="list")` lists known projects.
-- `mem_project(action="summary", project="...")` gives recent scoped context.
-- `mem_project(action="topics", project="...")` lists stable topic keys.
-- `mem_project(action="topic", project="...", topic_key="...")` reads exact topic context.
-- `mem_project(action="graph", project="...", limit=..., max_chars=...)` scans structured facts and relationships.
+## Project navigation (mem_project)
 
-Use project navigation before broad recall when you are unsure of the project name, topic key, or decision area.
+Supported actions:
 
-## Saving Memory
+- `mem_project(action="list")`
+- `mem_project(action="summary", project="...")`
+- `mem_project(action="topics", project="...")`
+- `mem_project(action="topic", project="...", topic_key="...")`
+- `mem_project(action="graph", project="...", navigation="...", limit=?, max_chars=?, focus_node_id=?, observation_id=?, continuation=?, include_superseded=?)`
+- `mem_project(action="health", project="...")`
 
-Call `mem_save(kind="observation")` after durable events:
+For `action="graph"`, supported `navigation` values include:
+`ledger`, `neighborhood`, `lineage`, `community`, `superseded`.
 
-- Architecture decisions or tradeoffs.
-- Bug fixes, including root cause and verification.
-- New patterns or conventions.
-- Configuration changes or environment setup.
-- Important discoveries, gotchas, or constraints.
+Relation allowlist for graph edges:
+`HAS_TYPE`, `IN_PROJECT`, `HAS_TOPIC_KEY`, `HAS_WHAT`, `HAS_WHY`, `HAS_WHERE`, `HAS_LEARNED`.
+
+## Save protocol
+
+Use `mem_save(kind="observation")` for durable events:
+- architecture decisions and tradeoffs
+- bug fixes, with root cause
+- patterns, conventions, constraints, discoveries
+- configuration changes
+- non-obvious constraints
 
 Use this content shape:
 
@@ -91,83 +105,51 @@ Use this content shape:
 **Learned**: [gotchas, edge cases - omit if none]
 ```
 
-Use short searchable titles. Include concrete nouns such as module names, table names, endpoint names, commands, or bug symptoms.
-
-Use `topic_key` when the memory belongs to an evolving topic that should update in place, for example `architecture/retrieval-engine`, `bugfix/sqlite-vec-loading`, or `config/embedding-provider`.
-
-## Save Kinds
-
-`mem_save` supports these memory kinds:
-
-- `kind="observation"`: durable decision, bugfix, pattern, config, discovery, learning, or manual note. Requires `title`.
-- `kind="prompt"`: significant real user request or intent. Requires `content`; include `session_id` and `project` when known.
-- `kind="session_summary"`: continuity handoff. Include `session_id`, `project`, and the summary template below.
-- `kind="passive_learnings"`: extracts bullets from a `## Key Learnings:` or `## Aprendizajes Clave:` section.
-
+Use short searchable titles and concrete nouns (modules, endpoints, commands, bug signatures).
 Do not save secrets, credentials, raw logs without a durable lesson, broad transcripts, or obvious facts already present in the repository.
 
-## Session Summary
+`mem_save` kinds in general:
 
-Before ending a meaningful session, call either:
+- `kind="observation"`: durable decision, bugfix, pattern, config, discovery, learning.
+- `kind="prompt"`: significant real user request or intent.
+- `kind="session_summary"`: continuity handoff content when explicitly used by root.
+- `kind="passive_learnings"`: extract from `## Key Learnings:` style sections.
 
-- `mem_session(action="summary", id="...", project="...", content="...")`, or
-- `mem_save(kind="session_summary", session_id="...", project="...", content="...")`.
+`topic_key` is optional for general durable memories and required for evolving topics.
 
-Use this structure:
+## Session operations (mem_session)
 
-```markdown
-## Goal
-[One sentence: what were we building or working on]
+Allowed root actions:
 
-## Instructions
-[User preferences, constraints, or context discovered this session. Skip if nothing notable.]
+- `mem_session(action="start")`
+- `mem_session(action="checkpoint")`
+- `mem_session(action="summary")`
 
-## Discoveries
-- [Technical finding, gotcha, or learning]
+`start` and `checkpoint/summary` are root-owned continuity operations.
 
-## Accomplished
-- DONE [Completed task with key implementation details]
-- TODO [Identified but not yet done, if any]
+Subagents must never call `mem_session` in subagent mode.
 
-## Relevant Files
-- path/to/file.ts - [what it does or what changed]
-```
+Before ending meaningful root work, call:
 
-Keep summaries factual. Include verification results and known gaps when they matter.
+- `mem_session(action="summary", id="...", project="...", content="...")`
+- or `mem_save(kind="session_summary", session_id="...", project="...", content="...")`
 
-## Example Workflows
+## Root/subagent ownership contract
 
-### Resume a Feature
+- Root owns: `mem_session(action="start"|"checkpoint"|"summary")`, `mem_save(kind="prompt")`, and root continuity summaries.
+- Read-only subagents (explorer/librarian/oracle) may call recall/fetch/context/project reads only with parent `session_id` and `project`.
+- Write-capable subagents (deep/quick/designer) may call `mem_save(kind="observation")` only when explicitly delegated, and only in scope. Do not save prompts.
+- Generated prompts, handoffs, and raw transcripts are never saved as user intent.
 
-1. `mem_session(action="start", id="...", project="...", directory="...")`
-2. `mem_context(project="...", session_id="...")`
-3. `mem_project(action="summary", project="...")`
-4. `mem_recall(mode="compact", query="feature-name architecture decision", project="...")`
-5. `mem_recall(mode="context", query="feature-name architecture decision", project="...")` if compact hits need detail
-6. `mem_get(id=<best-id>)` only for exact implementation details
+`mem_context` and `mem_project` are bounded context reads, not session ownership transfers.
 
-### Investigate a Recurring Bug
+## Quality bar
 
-1. `mem_recall(mode="compact", query="error message function-name failing test", project="...")`
-2. `mem_recall(mode="compact", query="module-name gotcha root cause", project="...")` if the first recall is thin
-3. `mem_get(id=<best-id>, include_timeline=true)` when chronology matters
-4. After fixing, `mem_save(kind="observation", type="bugfix", title="...", content="...", project="...")`
-
-### Preserve an Evolving Decision
-
-1. `mem_project(action="topics", project="...")`
-2. Pick or create a stable `topic_key`
-3. `mem_save(kind="observation", type="decision", topic_key="...", title="...", content="...", project="...")`
-4. Later sessions update the same topic key instead of creating scattered near-duplicates
-
-## Quality Bar
-
-Good thoth-mem usage should make the next session easier. A future agent should be able to answer:
-
+Good thoth-mem usage should let the next session quickly answer:
 - What changed?
-- Why did it change?
-- Where should I look?
-- What should I avoid repeating?
+- Why it changed?
+- Where to inspect?
+- What should be avoided?
 - Which memories are authoritative versus exploratory?
 
-When in doubt, recall compactly, expand only the best hits, fetch full content sparingly, and save the durable lesson.
+When uncertain, call compact recall first, expand only best candidates, then fetch full records sparsely.
