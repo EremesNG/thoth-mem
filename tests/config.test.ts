@@ -650,7 +650,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       provider: 'transformers_local',
       model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
       baseUrl: null,
-      timeoutMs: 8000,
+      timeoutMs: 30000,
       minContentChars: 12000,
     });
   });
@@ -811,7 +811,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       provider: 'transformers_local',
       model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
       baseUrl: null,
-      timeoutMs: 8000,
+      timeoutMs: 30000,
       minContentChars: 12000,
     });
     expect(saved.maxContentLength).toBe(100_000);

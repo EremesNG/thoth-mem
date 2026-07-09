@@ -234,7 +234,7 @@ const DEFAULT_KG_LLM_CONFIG: KgLlmConfig = {
   provider: 'transformers_local',
   model: DEFAULT_LOCAL_HYDE_MODEL,
   baseUrl: null,
-  timeoutMs: 8000,
+  timeoutMs: 30_000,
   minContentChars: 12_000,
 };
 

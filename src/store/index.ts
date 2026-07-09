@@ -340,7 +340,7 @@ const DEFAULT_CONFIG: ThothConfig = {
     provider: 'transformers_local',
     model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
     baseUrl: null,
-    timeoutMs: 8000,
+    timeoutMs: 30_000,
     minContentChars: 12_000,
   },
   knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
