@@ -38,7 +38,9 @@ Agent Session 1                    Agent Session 2
 - **Git-friendly sync** — export memory as gzipped chunks for version control
 - **JSON export/import** — portable memory backup and transfer
 - **Project migration** — rename projects across all entities in one operation
-- **Knowledge Graph Ledger rebuild** — backfill derived KG/ledger facts for existing memories; legacy graph endpoint compatibility is preserved
+- **Knowledge Graph recall** — deterministic KG extraction, optional LLM enrichment, multi-hop recall, supersession history, pruning, and bounded graph navigation
+- **Community summaries** — derived KG community metadata with default-off read-path rollout gates
+- **Operational health** — semantic lane, KG, community, job, trace, and token-savings telemetry through existing tools and HTTP
 - **MCP Server Instructions** — built-in protocol guidance for connected agents
 - **Observation versioning** — full history preserved on topic_key upserts
 - **Session enrichment** — sessions auto-fill missing project/directory on reconnect
@@ -49,7 +51,7 @@ Agent Session 1                    Agent Session 2
 - **Token-efficient recall** — compact fused evidence first, context expansion only when needed
 - **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples, optional LLM KG acceptance)
 - **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
-- **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
+- **Admin tools via CLI & HTTP** — export/import, sync, migration, graph prune/rebuild, community summaries, index jobs, and maintenance without cluttering the MCP tool surface
 - **Operation trace logging** — MCP and HTTP calls persist sanitized request/response traces for dashboard inspection
 
 ## Quick Start
@@ -125,16 +127,23 @@ thoth-mem context                      # Recent session context
 thoth-mem stats                        # Memory statistics
 thoth-mem export [file]                # Export to JSON (stdout if no file)
 thoth-mem import <file>                # Import from JSON
-thoth-mem sync [--dir=<path>]     # Git sync export
-thoth-mem sync-import [--dir=<path>]  # Git sync import from another instance
+thoth-mem sync [--dir=<path>]          # Git sync export
+thoth-mem sync-import [--dir=<path>]   # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem delete-project <project>     # Delete a project and its related data
 thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
 thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
+thoth-mem prune-graph --project <name> # Bound superseded graph history
+thoth-mem rebuild-communities --project <name> # Rebuild KG community summaries
+thoth-mem preview-communities -p <name> # Preview KG community summaries
+thoth-mem communities-status -p <name>  # Inspect KG community summary state
+thoth-mem drop-communities --project <name> # Drop KG community summaries
 thoth-mem rebuild-index --project <name> # Queue semantic index rebuild for one project
 thoth-mem rebuild-index --all          # Queue semantic index rebuild for all projects
 thoth-mem rebuild-index --all --process 500 # Queue and process up to 500 jobs
 thoth-mem rebuild-index --status       # Show semantic index queue/coverage progress
+thoth-mem maintain-memory --project <name> # Preview maintenance metadata
+thoth-mem maintain-memory --project <name> --apply # Apply maintenance metadata
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -208,7 +217,9 @@ curl -X POST http://localhost:7438/index/rebuild \
   -d '{"project":"my-project","reason":"manual","process_limit":0}'
 ```
 
-The HTTP API supports sessions, observations, prompts, search, export/import, sync, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection. See the interactive `/docs` interface for the full API reference.
+The HTTP API supports sessions, observations, prompts, search, export/import, sync, operation traces, index status/rebuild, graph rebuild/prune, community summaries, maintenance preview/apply, operation catalog, and version inspection. See the interactive `/docs` interface for the full API reference.
+
+Admin surfaces also include graph pruning (`POST /graph/prune`), community summary rebuild/preview/status/drop (`/communities/*` and `/projects/:project/communities`), and memory maintenance preview/apply (`/maintenance/preview`, `/maintenance/apply`). These remain CLI/HTTP-only by design; they are not registered as MCP tools.
 
 ## Development Checks
 
@@ -240,7 +251,7 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | `mem_recall`            | Primary fused hybrid recall across semantic, KG, and lexical lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get`               | Retrieve an observation or prompt by ID, with optional timeline or pagination |
-| `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
+| `mem_project`           | List projects, summarize one project, inspect graph facts/topics/health |
 | `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
 Current tool/action map:
@@ -251,12 +262,16 @@ Current tool/action map:
 | `mem_recall` | `mode="compact"` first, `mode="context"` for retrieved text; supports filters plus `hyde` and `debug` |
 | `mem_context` | Recent sessions/prompts/observations, optionally with `recall_query` fused evidence |
 | `mem_get` | `id`, `kind`, `offset`, `max_length`, `include_timeline`, `before`, and `after` |
-| `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, or `"topic"` |
+| `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, `"topic"`, or `"health"` |
 | `mem_session` | `action="start"`, `"checkpoint"`, or `"summary"` |
 
 Legacy one-tool-per-view names are intentionally obsolete and are not registered. Use `mem_recall` instead of `mem_search`, `mem_get` instead of `mem_get_observation` or `mem_timeline`, `mem_project` instead of `mem_project_summary`, `mem_project_graph`, or `mem_topic_keys`, `mem_session` instead of `mem_session_start` or `mem_session_summary`, and `mem_save(kind="prompt")` instead of `mem_save_prompt`.
 
-> **Admin operations** (export, import, sync, sync-import, migrate-project, delete-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+`mem_project(action="graph")` defaults to the current-state KG ledger. Add `navigation="neighborhood"` with `focus_node_id="obs:<id>"` for bounded frontier expansion, `navigation="lineage"` for timeline-style evidence, `navigation="community"` for community-summary inspection, or `navigation="superseded"` for retained superseded history. Each navigation view supports bounded `limit`/`max_chars` output; superseded history is explicit and opt-in.
+
+`mem_project(action="health")` returns compact operational health for all projects or one project: semantic lane state, vector coverage, KG availability, community-summary state, recent indexing/KG errors, job counts, and trace/token telemetry.
+
+> **Admin operations** (export, import, sync, sync-import, migrate-project, delete-project, rebuild-graph, prune-graph, rebuild-index, community-summary operations, and maintenance preview/apply) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild/prune, community summaries, maintenance, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Retrieval and Embeddings
 
@@ -274,6 +289,9 @@ Legacy one-tool-per-view names are intentionally obsolete and are not registered
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
 - HyDE is enabled by default. The local fallback uses Transformers.js text generation with `onnx-community/Qwen2.5-Coder-0.5B-Instruct`; remote HyDE can use Ollama or an OpenAI-compatible LM Studio server.
 - KG extraction is deterministic-first. Optional LLM enrichment can be enabled for long conversations with Ollama or LM Studio; generated triples are filtered through the same relation taxonomy and merged with deterministic triples. If the remote extractor is disabled or unavailable, deterministic KG extraction still completes.
+- KG recall includes entity-anchored multi-hop traversal, current-state supersession handling, keep-N pruning of superseded history, and bounded graph navigation through `mem_project(action="graph")`.
+- Community summaries derive compact KG neighborhoods for eligible projects. They are built and inspected through CLI/HTTP admin surfaces, and their retrieval read path stays default-off behind rollout gates.
+- Maintenance metadata supports consolidation, reflection, and decay scoring. Read-path consumption is configurable, while preview/apply operations remain CLI/HTTP-only.
 
 ### Recommended Embedding Models
 
@@ -374,6 +392,8 @@ THOTH_KG_LLM_MODEL=loaded_model \
 thoth-mem
 ```
 
+For LM Studio, Thoth-Mem requests `response_format: { "type": "text" }` and parses JSON from `message.content`. This matches current LM Studio servers that reject `json_object` but accept `text` or `json_schema`. Use the exact model id shown by LM Studio, keep the server running on the configured base URL, and increase `THOTH_KG_LLM_TIMEOUT_MS` if your model needs longer first-load time.
+
 The LLM pass is an enrichment step, not the source of truth: invalid relation names are discarded, duplicate triples are deduped, and KG jobs continue with deterministic triples if the remote request fails.
 
 
@@ -451,9 +471,10 @@ Default editable config:
 
 ```json
 {
-  "$schema": "https://unpkg.com/thoth-mem/config.schema.json",
+  "$schema": "https://unpkg.com/thoth-mem@0.3.7/config.schema.json",
   "version": 1,
   "maxContentLength": 100000,
+  "maxContextChars": 8000,
   "maxContextResults": 20,
   "maxSearchResults": 20,
   "dedupeWindowMinutes": 15,
@@ -461,6 +482,9 @@ Default editable config:
   "http": {
     "port": 7438,
     "disabled": false
+  },
+  "project": {
+    "default": null
   },
   "retrievalDefaults": {
     "sentenceTopK": 100,
@@ -487,7 +511,7 @@ Default editable config:
     "provider": "transformers_local",
     "model": "onnx-community/Qwen2.5-Coder-0.5B-Instruct",
     "baseUrl": null,
-    "timeoutMs": 8000,
+    "timeoutMs": 30000,
     "minContentChars": 12000
   },
   "knowledgeGraph": {
@@ -497,6 +521,26 @@ Default editable config:
     "kgMultiHopWeight": 0.7,
     "kgDepthDecay": 0.5,
     "kgTraversalTimeoutMs": 50,
+    "kgRelationAllowList": [
+      "USES",
+      "DEPENDS_ON",
+      "BELONGS_TO",
+      "PART_OF",
+      "OWNS",
+      "CONFIGURES",
+      "IMPLEMENTS",
+      "RUNS_IN",
+      "DEPLOYS_TO",
+      "CAUSES",
+      "FIXES",
+      "BLOCKS",
+      "UNBLOCKS",
+      "AFFECTS",
+      "REFERENCES",
+      "AUTHENTICATES_WITH",
+      "PRECEDES",
+      "FOLLOWS"
+    ],
     "kgSupersedeEnabled": true,
     "kgSupersedeContentPatterns": false,
     "kgSupersedeConfidenceThreshold": 0.8,
@@ -511,10 +555,21 @@ Default editable config:
       "enabled": false
     },
     "algorithm": "connected_components",
+    "advancedAlgorithmFallback": "connected_components",
+    "summaryMaxChars": 1200,
     "maxCommunitiesPerProject": 200,
     "maxRetrievalCommunities": 3,
     "maxEvidencePerCommunity": 8,
-    "summaryMaxChars": 1200
+    "sourceObservationLimit": 12,
+    "rebuildMaxTriples": 5000,
+    "staleBehavior": "skip",
+    "kgCommunityWeight": 0.45,
+    "enrichment": {
+      "enabled": false,
+      "timeoutMs": 8000,
+      "maxCostUsd": 0,
+      "maxChars": 1200
+    }
   },
   "maintenance": {
     "enabled": true,
@@ -525,8 +580,33 @@ Default editable config:
     },
     "readPath": {
       "enabled": true
+    },
+    "consolidation": {
+      "enabled": true,
+      "exactHashThreshold": 1,
+      "lexicalSimilarityThreshold": 0.92,
+      "reviewSimilarityThreshold": 0.82
+    },
+    "reflection": {
+      "enabled": true,
+      "minSourceCount": 2,
+      "maxSourceCount": 8,
+      "contentBudgetChars": 1200,
+      "modelAssisted": false
+    },
+    "decay": {
+      "enabled": true,
+      "defaultState": "attenuated",
+      "staleAfterDays": 180,
+      "redundantDuplicateCount": 2,
+      "lowValueTypes": [
+        "discovery",
+        "manual"
+      ],
+      "scoreMultiplier": 0.6
     }
-  }
+  },
+  "graphFactsSource": "kg"
 }
 ```
 
@@ -537,7 +617,9 @@ Default editable config:
 | Environment Variable          | Default    | Description                                 |
 | ----------------------------- | ---------- | ------------------------------------------- |
 | `THOTH_DATA_DIR`              | `~/.thoth` | Data directory for SQLite database          |
+| `THOTH_PROJECT`               | unset      | Default project for saves/searches when callers omit one |
 | `THOTH_MAX_CONTENT_LENGTH`    | `100000`   | Max content length (warns, never truncates) |
+| `THOTH_MAX_CONTEXT_CHARS`     | `8000`     | Default output budget for context/summary responses |
 | `THOTH_MAX_CONTEXT_RESULTS`   | `20`       | Max observations in context response        |
 | `THOTH_MAX_SEARCH_RESULTS`    | `20`       | Max search results returned                 |
 | `THOTH_DEDUPE_WINDOW_MINUTES` | `15`       | Rolling deduplication window                |
@@ -557,14 +639,22 @@ Default editable config:
 | `THOTH_KG_LLM_PROVIDER`       | `transformers_local` | KG LLM provider (`transformers_local`, `ollama`, `lmstudio`) |
 | `THOTH_KG_LLM_MODEL`          | `onnx-community/Qwen2.5-Coder-0.5B-Instruct` | KG LLM model id |
 | `THOTH_KG_LLM_BASE_URL`       | unset      | KG LLM provider base URL for remote providers |
-| `THOTH_KG_LLM_TIMEOUT_MS`     | `8000`     | KG LLM timeout before deterministic-only fallback |
+| `THOTH_KG_LLM_TIMEOUT_MS`     | `30000`    | KG LLM timeout before deterministic-only fallback |
 | `THOTH_KG_LLM_MIN_CONTENT_CHARS` | `12000` | Minimum observation size that triggers LLM enrichment |
-| `THOTH_KG_SUPERSEDE_ENABLED` | `true` | Enable KG supersession marking/current-state graph views |
+| `THOTH_GRAPH_FACTS_SOURCE`  | `kg`       | Graph facts source for read paths |
+| `THOTH_KG_MULTI_HOP_ENABLED` | `true`    | Enable entity-anchored multi-hop KG recall |
+| `THOTH_KG_MAX_DEPTH`        | `2`        | Maximum KG traversal depth |
+| `THOTH_KG_NEIGHBORHOOD_LIMIT` | `50`     | Maximum KG neighborhood rows considered |
+| `THOTH_KG_MULTI_HOP_WEIGHT` | `0.7`      | Ranking contribution from multi-hop KG evidence |
+| `THOTH_KG_DEPTH_DECAY`      | `0.5`      | Per-depth decay for KG traversal weight |
+| `THOTH_KG_TRAVERSAL_TIMEOUT_MS` | `50`   | KG traversal time budget |
+| `THOTH_KG_RELATION_ALLOW_LIST` | default relation taxonomy | Comma-separated relation allow-list override |
+| `THOTH_KG_SUPERSEDE_ENABLED` | `true`    | Enable KG supersession marking/current-state graph views |
 | `THOTH_KG_SUPERSEDE_CONTENT_PATTERNS` | `false` | Optional lower-confidence content phrase supersession hints |
 | `THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD` | `0.8` | Minimum confidence for optional content-pattern hints |
 | `THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT` | `0.5` | Ranking multiplier for superseded KG evidence |
-| `THOTH_KG_PRUNE_ENABLED` | `true` | Enable keep-N pruning of superseded KG history |
-| `THOTH_KG_SUPERSEDED_KEEP_N` | `10` | Superseded KG triples retained per source/subject/relation slot |
+| `THOTH_KG_PRUNE_ENABLED`    | `true`     | Enable keep-N pruning of superseded KG history |
+| `THOTH_KG_SUPERSEDED_KEEP_N` | `10`      | Superseded KG triples retained per source/subject/relation slot |
 | `THOTH_KG_PRUNE_ORPHAN_ENTITIES` | `true` | Remove KG entities left without referencing triples after pruning |
 | `THOTH_COMMUNITY_ENABLED` | `true` | Enable derived community metadata/rebuild behavior |
 | `THOTH_COMMUNITY_READ_PATH_ENABLED` | `false` | Opt-in retrieval/context use of community summaries; clear/unset to rollback to disabled baseline |
