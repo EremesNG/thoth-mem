@@ -28,7 +28,7 @@ describe('kg llm generator', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends a constrained JSON extraction prompt to LM Studio chat completions', async () => {
+  it('requests text responses from LM Studio and parses JSON message content', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -75,7 +75,7 @@ describe('kg llm generator', () => {
     expect(JSON.parse(String(request.body))).toMatchObject({
       model: 'loaded_model',
       temperature: 0,
-      response_format: { type: 'json_object' },
+      response_format: { type: 'text' },
     });
     expect(triples).toEqual([
       {
