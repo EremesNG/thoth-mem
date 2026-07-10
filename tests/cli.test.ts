@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store/index.js';
 import type { ExportData } from '../src/store/types.js';
+import type { SetupResult } from '../src/setup/types.js';
 import { runCli } from '../src/cli.js';
 import { parseArgs, shouldRunCli } from '../src/index.js';
 import { ALL_TOOLS } from '../src/tools/index.js';
@@ -196,7 +197,10 @@ function seedBlockedDeleteProjectStore(dataDir: string): void {
   }
 }
 
-async function captureCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function captureCli(
+  args: string[],
+  options?: Parameters<typeof runCli>[1],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   let stdout = '';
   let stderr = '';
 
@@ -209,14 +213,15 @@ async function captureCli(args: string[]): Promise<{ stdout: string; stderr: str
     return true;
   }) as typeof process.stderr.write);
 
+  let exitCode = 0;
   try {
-    await runCli(args);
+    exitCode = await runCli(args, options);
   } finally {
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   }
 
-  return { stdout, stderr };
+  return { stdout, stderr, exitCode };
 }
 
 describe('runCli', () => {
@@ -239,6 +244,74 @@ describe('runCli', () => {
     expect(stdout).toContain('delete-project <project>');
     expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
+  });
+
+  it('setup command contract keeps project paths command-scoped and returns the setup exit code', async () => {
+    const setupDataDir = join(tempDir, 'setup-data');
+    const result: SetupResult = {
+      status: 'partial',
+      changed: false,
+      harness: 'codex',
+      scope: 'project',
+      target: 'C:\\Workspaces\\Project With Spaces\\.codex',
+      steps: [{ name: 'Install plugin', outcome: 'failed' }],
+      diagnostics: ['Plugin installation was not verified.'],
+      manual_actions: ['Install the Codex plugin manually.'],
+      receipt: null,
+    };
+    const setupRunner = vi.fn().mockResolvedValue(result);
+
+    const captured = await captureCli([
+      'setup',
+      'codex',
+      '--scope',
+      'project',
+      '--project',
+      'C:\\Workspaces\\Project With Spaces',
+      '--plan',
+      '--data-dir',
+      setupDataDir,
+      '--json',
+    ], { setupRunner });
+
+    expect(setupRunner).toHaveBeenCalledWith({
+      harness: 'codex',
+      scope: 'project',
+      projectPath: 'C:\\Workspaces\\Project With Spaces',
+      planOnly: true,
+      force: false,
+      json: true,
+    }, { dataDir: setupDataDir });
+    expect(JSON.parse(captured.stdout)).toEqual(result);
+    expect(captured.stderr).toBe('');
+    expect(captured.exitCode).toBe(2);
+  });
+
+  it('setup command contract renders valid-harness input failures as failed JSON', async () => {
+    const setupRunner = vi.fn();
+
+    const captured = await captureCli([
+      'setup',
+      'opencode',
+      '--scope',
+      'project',
+      '--json',
+    ], { setupRunner });
+
+    expect(setupRunner).not.toHaveBeenCalled();
+    expect(JSON.parse(captured.stdout)).toEqual({
+      status: 'failed',
+      changed: false,
+      harness: 'opencode',
+      scope: 'project',
+      target: 'unresolved project target',
+      steps: [{ name: 'Validate setup request', outcome: 'failed' }],
+      diagnostics: ['--scope project requires --project <path>'],
+      manual_actions: ['Correct the setup options and retry.'],
+      receipt: null,
+    });
+    expect(captured.stderr).toBe('');
+    expect(captured.exitCode).toBe(1);
   });
 
   it('searches memories in the configured data directory', async () => {
@@ -789,6 +862,33 @@ describe('runCli', () => {
     expect(stdout.trim()).toBe(VERSION);
   });
 
+  it('routes integration-event once, propagates the selected data directory, and prints one JSON response', async () => {
+    const response = {
+      protocolVersion: 1 as const,
+      harness: 'claude' as const,
+      intent: 'enroll_session' as const,
+      outcome: 'degraded' as const,
+      retryable: false,
+      diagnostic: 'bounded lifecycle result',
+    };
+    const integrationEventRunner = vi.fn().mockResolvedValue({ exitCode: 0, response });
+
+    const result = await captureCli([
+      '--data-dir',
+      tempDir,
+      'integration-event',
+    ], { integrationEventRunner });
+
+    expect(result).toEqual({
+      stdout: `${JSON.stringify(response)}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(integrationEventRunner).toHaveBeenCalledOnce();
+    expect(integrationEventRunner).toHaveBeenCalledWith({ dataDir: tempDir });
+    expect(result.stdout.trim().split('\n')).toHaveLength(1);
+  });
+
   it('writes errors to stderr for invalid commands', async () => {
     let error: unknown;
     try {
@@ -812,6 +912,7 @@ describe('runCli', () => {
     expect(shouldRunCli(['communities-status', '--all'])).toBe(true);
     expect(shouldRunCli(['drop-communities', '--all'])).toBe(true);
     expect(shouldRunCli(['maintain-memory', '--all'])).toBe(true);
+    expect(shouldRunCli(['integration-event'])).toBe(true);
     expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
     expect(shouldRunCli(['mcp'])).toBe(false);
   });

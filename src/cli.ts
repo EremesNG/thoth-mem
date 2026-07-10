@@ -11,6 +11,13 @@ import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/c
 import { VERSION } from './version.js';
 import { createEmbeddingProvider } from './retrieval/provider-factory.js';
 import type { SemanticIndexProgress } from './store/index.js';
+import { getSetupExitCode } from './setup/types.js';
+import type { SetupRequest, SetupResult } from './setup/types.js';
+import { inspectAndPlanSetup } from './setup/engine.js';
+import {
+  runIntegrationEventCommand,
+  type IntegrationEventCommandResult,
+} from './integration/runtime/integration-event-command.js';
 
 export { VERSION };
 
@@ -41,6 +48,7 @@ Commands:
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    maintain-memory        Preview/apply memory maintenance metadata
+   setup <opencode|codex> Plan or manage a native harness integration
    version                Show version
    help                   Show this help
 
@@ -48,6 +56,14 @@ Global Options:
   --data-dir=<path>      Data directory (default: ~/.thoth)
   -p, --project <name>   Filter by project
   --help                 Show help
+
+Setup Options:
+  --scope <global|project>  Setup scope (default: global)
+  --project <path>          Required with --scope project
+  --plan                    Inspect and report without mutation
+  --force                   Replace only conflicting managed entries
+  --rollback <receipt>      Roll back a managed setup receipt
+  --json                    Emit the setup result as JSON
 `;
 
 class CliError extends Error {
@@ -74,6 +90,16 @@ interface StoreContext {
   config: ThothConfig;
 }
 
+export interface RunCliOptions {
+  setupRunner?: (
+    request: SetupRequest,
+    options: { dataDir?: string },
+  ) => Promise<SetupResult>;
+  integrationEventRunner?: (
+    options: { dataDir?: string },
+  ) => Promise<IntegrationEventCommandResult>;
+}
+
 export function isCliError(error: unknown): error is CliError {
   return error instanceof CliError;
 }
@@ -98,9 +124,31 @@ function requireValue(args: string[], index: number, option: string): string {
   return value;
 }
 
-function parseGlobals(args: string[]): ParsedArgs {
+function detectCommand(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+
+    if (arg === '--data-dir' || arg === '-p' || arg === '--project') {
+      index++;
+      continue;
+    }
+    if (arg.startsWith('--data-dir=') || arg.startsWith('--project=')) {
+      continue;
+    }
+    if (arg.startsWith('-')) {
+      continue;
+    }
+
+    return arg;
+  }
+
+  return undefined;
+}
+
+function parseGlobals(args: string[], options: { parseProject?: boolean } = {}): ParsedArgs {
   const globals: GlobalOptions = { help: false };
   const remaining: string[] = [];
+  const parseProject = options.parseProject !== false;
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -124,13 +172,13 @@ function parseGlobals(args: string[]): ParsedArgs {
       continue;
     }
 
-    if (arg === '-p' || arg === '--project') {
+    if (parseProject && (arg === '-p' || arg === '--project')) {
       globals.project = requireValue(args, index, arg);
       index++;
       continue;
     }
 
-    if (arg.startsWith('--project=')) {
+    if (parseProject && arg.startsWith('--project=')) {
       globals.project = arg.slice('--project='.length);
       if (!globals.project) {
         fail('Missing value for --project');
@@ -143,6 +191,132 @@ function parseGlobals(args: string[]): ParsedArgs {
 
   const [command, ...positionals] = remaining;
   return { command, positionals, globals };
+}
+
+function parseSetupValue(
+  args: string[],
+  index: number,
+  option: '--scope' | '--project' | '--rollback',
+): { value: string; nextIndex: number } {
+  const arg = args[index];
+  const prefix = `${option}=`;
+
+  if (arg.startsWith(prefix)) {
+    const value = arg.slice(prefix.length);
+    if (!value) {
+      fail(`Missing value for ${option}`);
+    }
+    return { value, nextIndex: index };
+  }
+
+  return {
+    value: requireValue(args, index, option),
+    nextIndex: index + 1,
+  };
+}
+
+function setupOptionName(arg: string): string {
+  if (arg.startsWith('--scope=')) {
+    return '--scope';
+  }
+  if (arg.startsWith('--project=')) {
+    return '--project';
+  }
+  if (arg.startsWith('--rollback=')) {
+    return '--rollback';
+  }
+  return arg;
+}
+
+export function parseSetupRequest(args: string[]): SetupRequest {
+  const [harnessValue, ...options] = args;
+  if (!harnessValue) {
+    fail('setup requires opencode or codex');
+  }
+  if (harnessValue !== 'opencode' && harnessValue !== 'codex') {
+    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex`);
+  }
+
+  let scope: SetupRequest['scope'] = 'global';
+  let projectPath: string | undefined;
+  let rollbackReceipt: string | undefined;
+  let planOnly = false;
+  let force = false;
+  let json = false;
+  const seen = new Set<string>();
+
+  for (let index = 0; index < options.length; index++) {
+    const arg = options[index];
+    const option = setupOptionName(arg);
+
+    if (seen.has(option)) {
+      fail(`Duplicate setup option: ${option}`);
+    }
+
+    if (option === '--scope') {
+      seen.add(option);
+      const parsed = parseSetupValue(options, index, '--scope');
+      index = parsed.nextIndex;
+      if (parsed.value !== 'global' && parsed.value !== 'project') {
+        fail(`Invalid value for --scope: ${parsed.value}. Expected one of: global, project`);
+      }
+      scope = parsed.value;
+      continue;
+    }
+    if (option === '--project') {
+      seen.add(option);
+      const parsed = parseSetupValue(options, index, '--project');
+      index = parsed.nextIndex;
+      projectPath = parsed.value.trim();
+      if (!projectPath) {
+        fail('Missing value for --project');
+      }
+      continue;
+    }
+    if (option === '--rollback') {
+      seen.add(option);
+      const parsed = parseSetupValue(options, index, '--rollback');
+      index = parsed.nextIndex;
+      rollbackReceipt = parsed.value.trim();
+      if (!rollbackReceipt) {
+        fail('Missing value for --rollback');
+      }
+      continue;
+    }
+    if (option === '--plan' || option === '--force' || option === '--json') {
+      seen.add(option);
+      if (option === '--plan') {
+        planOnly = true;
+      } else if (option === '--force') {
+        force = true;
+      } else {
+        json = true;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('-')) {
+      fail(`Unexpected setup option: ${arg}`);
+    }
+    fail(`Unexpected setup argument: ${arg}`);
+  }
+
+  if (scope === 'project' && !projectPath) {
+    fail('--scope project requires --project <path>');
+  }
+  if (scope === 'global' && projectPath) {
+    fail('--project is only valid with --scope project');
+  }
+
+  return {
+    harness: harnessValue,
+    scope,
+    ...(projectPath ? { projectPath } : {}),
+    planOnly,
+    force,
+    ...(rollbackReceipt ? { rollbackReceipt } : {}),
+    json,
+  };
 }
 
 function parseOptionValue(positionals: string[], optionNames: string[]): { value?: string; rest: string[] } {
@@ -922,81 +1096,221 @@ async function handleMaintainMemory(positionals: string[], globals: GlobalOption
   });
 }
 
+function formatSetupItems(label: string, items: string[]): string[] {
+  return [
+    `${label}:`,
+    ...(items.length > 0 ? items.map((item) => `  - ${item}`) : ['  - none']),
+  ];
+}
+
+export function formatSetupResult(result: SetupResult, json: boolean): string {
+  if (json) {
+    return JSON.stringify(result, null, 2);
+  }
+
+  return [
+    `Setup: ${result.harness} (${result.scope})`,
+    `Status: ${result.status}`,
+    `Changed: ${result.changed ? 'yes' : 'no'}`,
+    `Target: ${result.target}`,
+    ...formatSetupItems(
+      'Steps',
+      result.steps.map((step) => `${step.name}: ${step.outcome}`),
+    ),
+    ...formatSetupItems('Diagnostics', result.diagnostics),
+    ...formatSetupItems('Manual actions', result.manual_actions),
+    `Receipt: ${result.receipt ?? 'none'}`,
+  ].join('\n');
+}
+
+function setupScopeFromArgs(args: string[]): SetupRequest['scope'] {
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--scope' && args[index + 1] === 'project') {
+      return 'project';
+    }
+    if (arg === '--scope=project') {
+      return 'project';
+    }
+  }
+  return 'global';
+}
+
+function setupProjectPathFromArgs(args: string[]): string | undefined {
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--project') {
+      return args[index + 1]?.trim() || undefined;
+    }
+    if (arg.startsWith('--project=')) {
+      return arg.slice('--project='.length).trim() || undefined;
+    }
+  }
+  return undefined;
+}
+
+function setupValidationFailure(
+  args: string[],
+  error: unknown,
+): { result: SetupResult; json: boolean } | null {
+  const harness = args[0];
+  if (harness !== 'opencode' && harness !== 'codex') {
+    return null;
+  }
+
+  const scope = setupScopeFromArgs(args);
+  const projectPath = setupProjectPathFromArgs(args);
+  const message = error instanceof Error ? error.message : 'Invalid setup options';
+  return {
+    result: {
+      status: 'failed',
+      changed: false,
+      harness,
+      scope,
+      target: projectPath ?? `unresolved ${scope} target`,
+      steps: [{ name: 'Validate setup request', outcome: 'failed' }],
+      diagnostics: [message],
+      manual_actions: ['Correct the setup options and retry.'],
+      receipt: null,
+    },
+    json: args.includes('--json'),
+  };
+}
+
+async function handleSetup(
+  positionals: string[],
+  globals: GlobalOptions,
+  options: RunCliOptions,
+): Promise<number> {
+  let request: SetupRequest;
+  try {
+    request = parseSetupRequest(positionals);
+  } catch (error) {
+    const failure = setupValidationFailure(positionals, error);
+    if (!failure) {
+      throw error;
+    }
+    printStdout(formatSetupResult(failure.result, failure.json));
+    return getSetupExitCode(failure.result.status);
+  }
+
+  let result: SetupResult;
+  try {
+    const setupEngineOptions = globals.dataDir ? { dataDir: globals.dataDir } : {};
+    result = options.setupRunner
+      ? await options.setupRunner(request, setupEngineOptions)
+      : await inspectAndPlanSetup(request, setupEngineOptions);
+  } catch {
+    result = {
+      status: 'failed',
+      changed: false,
+      harness: request.harness,
+      scope: request.scope,
+      target: request.projectPath ?? 'unresolved global target',
+      steps: [{ name: 'Execute setup inspection', outcome: 'failed' }],
+      diagnostics: ['Setup inspection failed before a verified result was available.'],
+      manual_actions: ['Verify filesystem access and retry.'],
+      receipt: null,
+    };
+  }
+  printStdout(formatSetupResult(result, request.json));
+  return getSetupExitCode(result.status);
+}
+
 async function handleVersion(positionals: string[]): Promise<void> {
   ensureNoExtraArgs(positionals, 'version');
   printStdout(VERSION);
 }
 
-export async function runCli(args: string[]): Promise<void> {
+async function handleIntegrationEvent(
+  positionals: string[],
+  globals: GlobalOptions,
+  options: RunCliOptions,
+): Promise<number> {
+  ensureNoExtraArgs(positionals, 'integration-event');
+  const commandOptions = globals.dataDir ? { dataDir: globals.dataDir } : {};
+  const result = options.integrationEventRunner
+    ? await options.integrationEventRunner(commandOptions)
+    : await runIntegrationEventCommand(process.stdin, commandOptions);
+  printStdout(JSON.stringify(result.response));
+  return result.exitCode;
+}
+
+export async function runCli(args: string[], options: RunCliOptions = {}): Promise<number> {
   try {
-    const parsed = parseGlobals(args);
+    const command = detectCommand(args);
+    const parsed = parseGlobals(args, { parseProject: command !== 'setup' });
 
     if (parsed.globals.help || parsed.command === 'help' || !parsed.command) {
       printHelp();
-      return;
+      return 0;
     }
 
     switch (parsed.command) {
       case 'search':
         await handleSearch(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'save':
         await handleSave(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'timeline':
         await handleTimeline(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'context':
         await handleContext(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'stats':
         await handleStats(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'export':
         await handleExport(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'import':
         await handleImport(parsed.positionals, parsed.globals);
-        return;
+        return 0;
       case 'sync':
          await handleSync(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'sync-import':
          await handleSyncImport(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'migrate-project':
          await handleMigrateProject(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'delete-project':
          await handleDeleteProject(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'rebuild-graph':
          await handleRebuildGraph(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'prune-graph':
          await handlePruneGraph(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'rebuild-communities':
          await handleRebuildCommunities(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'preview-communities':
          await handlePreviewCommunities(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'communities-status':
          await handleCommunitiesStatus(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'drop-communities':
          await handleDropCommunities(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'rebuild-index':
          await handleRebuildIndex(parsed.positionals, parsed.globals);
-         return;
+         return 0;
        case 'maintain-memory':
          await handleMaintainMemory(parsed.positionals, parsed.globals);
-         return;
+         return 0;
+       case 'setup':
+         return handleSetup(parsed.positionals, parsed.globals, options);
+       case 'integration-event':
+         return handleIntegrationEvent(parsed.positionals, parsed.globals, options);
        case 'version':
          await handleVersion(parsed.positionals);
-         return;
+         return 0;
       default:
         fail(`Unknown command: ${parsed.command}`);
     }

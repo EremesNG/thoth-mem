@@ -24,7 +24,7 @@ vi.mock('../src/server.js', () => ({
   createServer: mocks.createServer,
 }));
 
-import { startMcpServer } from '../src/index.js';
+import { main, shouldRunCli, startMcpServer } from '../src/index.js';
 import { registerMemRecall } from '../src/tools/mem-recall.js';
 import { Store } from '../src/store/index.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -40,7 +40,7 @@ describe('index entrypoint execution', () => {
     realpaths?: Record<string, string>;
     missingPaths?: string[];
   }): Promise<ReturnType<typeof vi.fn>> {
-    const runCli = vi.fn().mockResolvedValue(undefined);
+    const runCli = vi.fn().mockResolvedValue(0);
     const realpathNative = vi.fn((inputPath: string) => {
       if (options.missingPaths?.includes(inputPath)) {
         const error = new Error(`ENOENT: no such file or directory, realpath '${inputPath}'`) as NodeJS.ErrnoException;
@@ -139,6 +139,30 @@ describe('index entrypoint execution', () => {
     });
 
     expect(runCli).not.toHaveBeenCalled();
+  });
+});
+
+describe('setup CLI routing', () => {
+  const originalArgv = process.argv;
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.restoreAllMocks();
+    vi.doUnmock('../src/cli.js');
+  });
+
+  it('setup command contract propagates the exact setup exit code from main', async () => {
+    const runCli = vi.fn().mockResolvedValue(3);
+    vi.doMock('../src/cli.js', () => ({ runCli }));
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => code as never) as typeof process.exit);
+    process.argv = ['node', 'thoth-mem', 'setup', 'codex', '--plan'];
+
+    expect(shouldRunCli(process.argv.slice(2))).toBe(true);
+
+    await main();
+
+    expect(runCli).toHaveBeenCalledWith(['setup', 'codex', '--plan']);
+    expect(process.exit).toHaveBeenCalledWith(3);
   });
 });
 

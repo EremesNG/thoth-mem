@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "harness": "opencode",
+      "role": "plugin",
+      "path": "integrations/opencode/plugin.mjs"
+    },
+    {
+      "harness": "opencode",
+      "role": "instruction",
+      "path": "integrations/opencode/memory-protocol.md"
+    },
+    {
+      "harness": "opencode",
+      "role": "runner",
+      "path": "integrations/shared/hook-runner.mjs"
+    },
+    {
+      "harness": "codex",
+      "role": "marketplace",
+      "path": ".agents/plugins/marketplace.json"
+    },
+    {
+      "harness": "codex",
+      "role": "plugin",
+      "path": "integrations/codex/.codex-plugin/plugin.json"
+    },
+    {
+      "harness": "codex",
+      "role": "mcp",
+      "path": "integrations/codex/.mcp.json"
+    },
+    {
+      "harness": "codex",
+      "role": "hooks",
+      "path": "integrations/codex/hooks/hooks.json"
+    },
+    {
+      "harness": "codex",
+      "role": "runner",
+      "path": "integrations/codex/runners/hook-runner.mjs"
+    },
+    {
+      "harness": "codex",
+      "role": "skill",
+      "path": "integrations/codex/skills/thoth-mem/SKILL.md"
+    },
+    {
+      "harness": "claude",
+      "role": "marketplace",
+      "path": ".claude-plugin/marketplace.json"
+    },
+    {
+      "harness": "claude",
+      "role": "plugin",
+      "path": "integrations/claude-code/.claude-plugin/plugin.json"
+    },
+    {
+      "harness": "claude",
+      "role": "mcp",
+      "path": "integrations/claude-code/.mcp.json"
+    },
+    {
+      "harness": "claude",
+      "role": "hooks",
+      "path": "integrations/claude-code/hooks/hooks.json"
+    },
+    {
+      "harness": "claude",
+      "role": "runner",
+      "path": "integrations/claude-code/runners/hook-runner.mjs"
+    },
+    {
+      "harness": "claude",
+      "role": "skill",
+      "path": "integrations/claude-code/skills/thoth-mem/SKILL.md"
+    }
+  ]
+}

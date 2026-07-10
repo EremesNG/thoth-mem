@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "thoth-mem": {
+      "command": "thoth-mem",
+      "args": ["mcp", "--no-http"]
+    }
+  }
+}

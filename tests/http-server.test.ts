@@ -1814,6 +1814,69 @@ describe('createHttpBridge', () => {
       expect(openapi.body.paths['/capture-passive']).toBeDefined();
     });
 
+    it('rejects multi-harness contract expansion', async () => {
+      const bridge = await startBridge();
+
+      const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+      const paths = Object.keys(openapi.body.paths);
+      const promptRequest = openapi.body.paths['/prompts'].post.requestBody
+        .content['application/json'].schema;
+      const promptResponse = openapi.body.paths['/prompts'].post.responses['201']
+        .content['application/json'].schema;
+
+      interface PromptOpenApiSpec {
+        paths: Record<string, unknown> & {
+          '/prompts': {
+            post: {
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: { properties: Record<string, unknown> };
+                  };
+                };
+              };
+            };
+          };
+        };
+      }
+      const httpExpansionViolations = (spec: PromptOpenApiSpec): string[] => {
+        const specPaths = Object.keys(spec.paths);
+        const requestProperties = Object.keys(
+          spec.paths['/prompts'].post.requestBody.content['application/json'].schema.properties,
+        );
+        return [
+          ...requestProperties
+            .filter((name) => /adapter|event|harness|idempotenc|native/i.test(name))
+            .map((name) => `prompt-input:${name}`),
+          ...specPaths
+            .filter((path) => (
+              /adapter|harness|idempotenc|integration|lifecycle|native-event|\/events?(?:\/|$)/i.test(path)
+            ))
+            .map((path) => `path:${path}`),
+        ];
+      };
+
+      expect(openapi.response.status).toBe(200);
+      expect(Object.keys(promptRequest.properties)).toEqual([
+        'content',
+        'session_id',
+        'project',
+      ]);
+      expect(promptRequest.required).toEqual(['content']);
+      expect(Object.keys(promptResponse.properties)).toEqual(['id']);
+      expect(paths).toContain('/prompts');
+      expect(httpExpansionViolations(openapi.body as PromptOpenApiSpec)).toEqual([]);
+
+      const adversarialSpec = structuredClone(openapi.body) as PromptOpenApiSpec;
+      adversarialSpec.paths['/prompts'].post.requestBody
+        .content['application/json'].schema.properties.harness = { type: 'string' };
+      adversarialSpec.paths['/harness/events'] = { post: {} };
+      expect(httpExpansionViolations(adversarialSpec)).toEqual([
+        'prompt-input:harness',
+        'path:/harness/events',
+      ]);
+    });
+
     it('OpenAPI spec documents the /projects/delete contract', async () => {
       const bridge = await startBridge();
 

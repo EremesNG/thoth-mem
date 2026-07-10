@@ -26,6 +26,8 @@ const CLI_SUBCOMMANDS = new Set([
   'drop-communities',
   'rebuild-index',
   'maintain-memory',
+  'setup',
+  'integration-event',
   'version',
   'help',
 ]);
@@ -227,7 +229,10 @@ export async function main(): Promise<void> {
   if (shouldRunCli(args)) {
     const { runCli } = await import('./cli.js');
     try {
-      await runCli(args);
+      const exitCode = await runCli(args);
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     } catch {
       process.exit(1);
     }

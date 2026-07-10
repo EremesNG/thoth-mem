@@ -19,7 +19,10 @@
   "files": [
     "dist",
     "config.schema.json",
-    "README.md"
+    "README.md",
+    "integrations",
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json"
   ],
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.mjs && pnpm --dir dashboard build",
@@ -28,10 +31,13 @@
     "dev": "tsx watch src/index.ts",
     "eval:kg": "tsx src/evals/kg-quality.ts",
     "eval:retrieval": "tsx src/evals/retrieval.ts",
+    "integration:sync": "node scripts/sync-integration-assets.mjs",
+    "integration:verify": "node scripts/verify-integration-package.mjs",
     "release:notes": "tsx scripts/generate-release-notes.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "pnpm run build && pnpm test",
+    "version": "pnpm run integration:sync && pnpm run integration:verify",
     "release:patch": "npm version patch && git push --follow-tags",
     "release:minor": "npm version minor && git push --follow-tags",
     "release:major": "npm version major && git push --follow-tags"
@@ -52,13 +58,17 @@
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.10.0",
+    "cross-spawn": "7.0.6",
+    "jsonc-parser": "^3.3.1",
     "onnxruntime-common": "1.24.3",
     "onnxruntime-node": "1.24.3",
+    "smol-toml": "^1.7.0",
     "sqlite-vec": "^0.1.9",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/cross-spawn": "6.0.6",
     "@types/node": "^25.9.1",
     "esbuild": "^0.25.5",
     "tsx": "^4.22.3",

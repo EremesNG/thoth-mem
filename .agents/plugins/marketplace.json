@@ -1,0 +1,20 @@
+{
+  "name": "thoth-mem",
+  "interface": {
+    "displayName": "thoth-mem Persistent Memory"
+  },
+  "plugins": [
+    {
+      "name": "thoth-mem",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

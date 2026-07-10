@@ -8,6 +8,11 @@ import {
   resolveSaveIdentity,
 } from '../../src/store/identity.js';
 import { Store } from '../../src/store/index.js';
+import { resolveLifecycleIdentity } from '../../src/integration/core/lifecycle.js';
+import { MemoryIntegrationCore } from '../../src/integration/core/lifecycle.js';
+import { FileLifecycleStateStore } from '../../src/integration/core/state-store.js';
+import type { NormalizedEvent } from '../../src/integration/core/types.js';
+import type { MemoryPort } from '../../src/integration/core/memory-port.js';
 
 describe('identity resolver v2', () => {
   const originalEnv = { ...process.env };
@@ -114,5 +119,140 @@ describe('identity resolver v2', () => {
 
     process.env.THOTH_PROJECT = 'env-project';
     expect(getConfig().project.default).toBe('env-project');
+  });
+
+  it('integration lifecycle identity preserves root ownership and deterministic degradation', () => {
+    const event = (identity: NormalizedEvent['identity']): NormalizedEvent => ({
+      harness: 'codex',
+      intent: 'enroll_session',
+      actor: 'system',
+      isRootSession: true,
+      identity,
+      nativeEventId: 'identity-event',
+      nativeEvent: 'session.start',
+    });
+
+    expect(resolveLifecycleIdentity(event({
+      sessionId: 'explicit-root-session',
+      project: 'explicit-root-project',
+      cwd: join(tmpdir(), 'ignored-workspace'),
+    }))).toMatchObject({
+      rootSessionId: 'explicit-root-session',
+      projectId: 'explicit-root-project',
+      projectSource: 'explicit',
+      sessionSource: 'explicit',
+      degraded: [],
+    });
+
+    const fallbackEvent = event({ cwd: join(tmpdir(), 'Lifecycle Workspace') });
+    const firstFallback = resolveLifecycleIdentity(fallbackEvent);
+    const secondFallback = resolveLifecycleIdentity(fallbackEvent);
+    expect(secondFallback).toEqual(firstFallback);
+    expect(firstFallback).toMatchObject({
+      rootSessionId: 'manual-save-lifecycle-workspace',
+      projectId: 'lifecycle-workspace',
+      projectSource: 'cwd',
+      sessionSource: 'fallback',
+    });
+    expect(firstFallback.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'session_id', reason: 'missing' }),
+    ]));
+
+    expect(resolveLifecycleIdentity(event({
+      sessionId: 'manual-save-placeholder-project',
+      project: 'placeholder-project',
+    }))).toMatchObject({
+      rootSessionId: 'manual-save-placeholder-project',
+      sessionSource: 'placeholder',
+      degraded: expect.arrayContaining([
+        expect.objectContaining({ field: 'session_id', reason: 'placeholder' }),
+      ]),
+    });
+
+    const delegatedEvent: NormalizedEvent = {
+      ...event({ sessionId: 'subagent-session', project: 'subagent-project' }),
+      actor: 'subagent',
+      isRootSession: false,
+    };
+    expect(resolveLifecycleIdentity(delegatedEvent, {
+      sessionId: 'authoritative-root-session',
+      project: 'authoritative-root-project',
+    })).toMatchObject({
+      rootSessionId: 'authoritative-root-session',
+      projectId: 'authoritative-root-project',
+      projectSource: 'explicit',
+      sessionSource: 'explicit',
+      degraded: [],
+    });
+
+    const delegatedWithChildCwd: NormalizedEvent = {
+      ...delegatedEvent,
+      identity: {
+        sessionId: 'child-session',
+        project: 'child-project',
+        cwd: join(tmpdir(), 'child-agent-workspace'),
+      },
+    };
+    const partialRootIdentity = resolveLifecycleIdentity(delegatedWithChildCwd, {
+      sessionId: 'partial-root-session',
+      project: 'partial-root-project',
+    });
+    expect(partialRootIdentity).toMatchObject({
+      rootSessionId: 'partial-root-session',
+      projectId: 'partial-root-project',
+    });
+    expect(partialRootIdentity.cwd).toBeUndefined();
+  });
+
+  it('integration lifecycle identity metadata is returned by handled outcomes', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'thoth-handled-identity-'));
+    const lifecycleEvent: NormalizedEvent = {
+      harness: 'codex',
+      intent: 'enroll_session',
+      actor: 'system',
+      isRootSession: true,
+      identity: {
+        project: 'handled-identity-project',
+        cwd: tmpDir,
+      },
+      nativeEventId: 'handled-identity-event',
+      nativeEvent: 'session.start',
+    };
+    const identity = resolveLifecycleIdentity(lifecycleEvent);
+    const capabilities = {
+      enroll_session: { state: 'supported' as const, trigger: 'session.start' },
+      capture_root_prompt: { state: 'supported' as const, trigger: 'user.prompt' },
+      recall_guidance: { state: 'degraded' as const, reason: 'fixture omits injection' },
+      compact_session: { state: 'supported' as const, trigger: 'compact' },
+      finalize_session: { state: 'supported' as const, trigger: 'stop' },
+    };
+    const stateStore = new FileLifecycleStateStore({
+      dataDir: tmpDir,
+      harness: 'codex',
+      projectId: identity.projectId,
+      rootSessionId: identity.rootSessionId,
+      capabilities,
+    });
+    const memoryPort: MemoryPort = {
+      async call() {
+        return { confirmed: true, isError: false, text: 'confirmed' };
+      },
+      async close() {},
+    };
+    const core = new MemoryIntegrationCore({ capabilities, memoryPort, stateStore });
+
+    try {
+      const result = await core.handle(lifecycleEvent);
+      expect(result.identity).toEqual(identity);
+      expect(result.identity).toMatchObject({
+        rootSessionId: expect.stringMatching(/^manual-save-/),
+        sessionSource: 'fallback',
+        degraded: expect.arrayContaining([
+          expect.objectContaining({ field: 'session_id', reason: 'missing' }),
+        ]),
+      });
+    } finally {
+      await memoryPort.close();
+    }
   });
 });

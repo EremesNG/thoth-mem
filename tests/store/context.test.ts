@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
 
@@ -143,6 +147,125 @@ describe('Store — Context, Timeline, Prompts', () => {
       const recent = store.recentPrompts(10, 'proj-a');
       expect(recent).toHaveLength(1);
       expect(recent[0].content).toBe('Prompt A');
+    });
+
+    it('preserves canonical prompt and retrieval behavior', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'thoth-canonical-prompts-'));
+      const dbPath = join(directory, 'memory.db');
+      let firstStore: Store | null = null;
+      let afterWindowStore: Store | null = null;
+      store.close();
+
+      try {
+        firstStore = new Store(dbPath);
+        const first = firstStore.savePrompt('canonical-session', 'Identical prompt.', 'canonical-project');
+        const insideWindow = firstStore.savePrompt(
+          'canonical-session',
+          'Identical prompt.',
+          'canonical-project',
+        );
+        expect(insideWindow.id).toBe(first.id);
+        expect(firstStore.recentPrompts(10, 'canonical-project', 'canonical-session')).toHaveLength(1);
+        firstStore.close();
+        firstStore = null;
+
+        const database = new Database(dbPath);
+        try {
+          database.prepare(
+            "UPDATE user_prompts SET created_at = datetime('now', '-31 seconds') WHERE id = ?",
+          ).run(first.id);
+        } finally {
+          database.close();
+        }
+
+        afterWindowStore = new Store(dbPath);
+        const afterWindow = afterWindowStore.savePrompt(
+          'canonical-session',
+          'Identical prompt.',
+          'canonical-project',
+        );
+        expect(afterWindow.id).not.toBe(first.id);
+        expect(afterWindowStore.recentPrompts(10, 'canonical-project', 'canonical-session')).toHaveLength(2);
+      } finally {
+        firstStore?.close();
+        afterWindowStore?.close();
+        store = new Store(':memory:');
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects multi-harness contract expansion', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'thoth-prompt-schema-contract-'));
+      const dbPath = join(directory, 'thoth.db');
+      store.close();
+      const schemaStore = new Store(dbPath);
+      schemaStore.close();
+
+      const database = new Database(dbPath, { readonly: true });
+      try {
+        const promptColumns = database.pragma('table_info(user_prompts)') as Array<{ name: string }>;
+        const tableNames = database.prepare(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
+        ).all() as Array<{ name: string }>;
+
+        const promptColumnNames = promptColumns.map((column) => column.name);
+        const persistedTableNames = tableNames.map((table) => table.name);
+        const schemaExpansionViolations = (columns: string[], tables: string[]): string[] => [
+          ...columns
+            .filter((name) => /adapter|event|harness|idempotenc|native/i.test(name))
+            .map((name) => `column:user_prompts.${name}`),
+          ...tables
+            .filter((name) => (
+              /adapter|harness|idempotenc|lifecycle_event|native_event|(?:^|_)events?(?:_|$)/i.test(name)
+            ))
+            .map((name) => `table:${name}`),
+        ];
+
+        expect(promptColumnNames).toEqual([
+          'id',
+          'sync_id',
+          'session_id',
+          'content',
+          'project',
+          'created_at',
+        ]);
+        expect(schemaExpansionViolations(promptColumnNames, persistedTableNames)).toEqual([]);
+
+        const adversarialDatabase = new Database(':memory:');
+        try {
+          adversarialDatabase.exec(`
+            CREATE TABLE user_prompts (
+              id INTEGER PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              content TEXT NOT NULL,
+              harness TEXT,
+              native_event_id TEXT,
+              idempotency_key TEXT
+            );
+            CREATE TABLE harness_events (id INTEGER PRIMARY KEY);
+          `);
+          const adversarialColumns = (
+            adversarialDatabase.pragma('table_info(user_prompts)') as Array<{ name: string }>
+          ).map((column) => column.name);
+          const adversarialTables = (
+            adversarialDatabase.prepare(
+              "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
+            ).all() as Array<{ name: string }>
+          ).map((table) => table.name);
+          expect(schemaExpansionViolations(adversarialColumns, adversarialTables)).toEqual([
+            'column:user_prompts.harness',
+            'column:user_prompts.native_event_id',
+            'column:user_prompts.idempotency_key',
+            'table:harness_events',
+          ]);
+        } finally {
+          adversarialDatabase.close();
+        }
+      } finally {
+        database.close();
+        store = new Store(':memory:');
+        rmSync(directory, { recursive: true, force: true });
+      }
     });
   });
 });
