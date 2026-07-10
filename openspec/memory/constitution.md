@@ -1,9 +1,9 @@
 # Project Constitution — thoth-mem
 
-Version: 1.0.1
+Version: 1.1.0
 Status: Ratified
 Ratified: 2026-06-29
-Last-Amended: 2026-07-04
+Last-Amended: 2026-07-10
 
 > This is an initial baseline constitution derived from README.md, openspec/config.yaml, and
 > openspec/specs/ at version 0.3.6. It captures engineering invariants that are already
@@ -71,6 +71,7 @@ taxonomy, topic_key upsert semantics, sync_id deduplication) MUST be designed so
 that any conforming MCP client or CLI consumer can read and write memory without
 harness-specific knowledge. The HTTP REST API MUST expose the same operations
 available through the MCP and CLI surfaces.
+Native harness integrations MUST translate supported host events through one host-neutral lifecycle contract, keep harness-specific payloads and capability detection at adapter boundaries, and preserve the existing MCP and storage semantics. Unsupported, degraded, or unverified capabilities MUST remain explicit and MUST NOT be simulated as successful.
 
 **Rationale:** Thoth-mem serves Claude Code, OpenCode, Gemini CLI, and any future
 MCP-compatible harness. Lock-in to a single harness's conventions would undermine
@@ -81,6 +82,7 @@ database level precisely to keep consumers interoperable.
 encoding assumptions, or tool shapes not expressible in plain MCP MUST be flagged.
 Schema migrations MUST be additive or backward-compatible; destructive migrations
 require a MAJOR version bump and archive warn in config.yaml.
+Plans that duplicate lifecycle semantics per harness, allow native payload fields to enter the core memory contract, or claim parity without evidence-backed capability mapping MUST be rejected.
 
 ---
 
@@ -131,6 +133,7 @@ discipline established by B3.
 
 ## Sync-Impact Report
 
+- 1.1.0 | MINOR | P3 Harness-Agnostic Memory Contract | Expands P3 from storage/tool interoperability to one host-neutral, evidence-backed native lifecycle across OpenCode, Codex, and Claude Code; consumed live by `sdd-design` and `plan-reviewer`; no in-flight `design.md`/`tasks.md` artifacts flagged.
 - 1.0.1 | PATCH | P5 Stable Public Contract With Explicit Deprecation Discipline | Clarifies that bounded keep-N retention of already-superseded KG history is compatible with P5; consumed live by `sdd-design` and `plan-reviewer`; no active design.md/tasks.md artifacts flagged.
 
 | Date | Version | Change | Author |

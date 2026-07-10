@@ -3,7 +3,13 @@
 ## Requirements
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
-The MCP server MUST expose a compact set of workflow-level tools rather than one tool per internal table, view, or legacy retrieval step. This change modifies the *output behavior* of the existing `mem_context` and `mem_project` tools only; it MUST NOT add, remove, rename, or split any tool. The registered set MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
+The MCP server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` after OpenCode, Codex, and Claude Code integrations are installed. This change MUST NOT add, remove, rename, or split an MCP tool, and setup, capability inspection, hook administration, marketplace registration, rollback, and packaging operations MUST remain outside the MCP registry.
+
+The MCP server MUST expose a compact set of workflow-level tools rather than one tool per internal table, view, or legacy retrieval step. Bounded-output behavior of the existing `mem_context` and `mem_project` tools MUST NOT add, remove, rename, or split any tool.
+
+Repointing the data source behind `mem_project action=graph` and the ledger/timeline views from the retired `observation_facts` store to the consolidated `kg_triples`+`kg_entities` source MUST NOT change the registered tool set.
+
+Graph navigation v2 MUST remain additive inside the existing `mem_project` tool and MUST NOT change the compact workflow toolset.
 
 #### Scenario: Compact MCP registry is exposed
 - GIVEN the MCP server registers tools
@@ -20,6 +26,25 @@ The MCP server MUST expose a compact set of workflow-level tools rather than one
 - WHEN clients list available tools
 - THEN the registered tool set MUST be unchanged from the compact six-tool surface
 - AND no new bounding-specific tool MUST appear in the registry
+
+#### Scenario: Compact MCP registry is unchanged by the consolidation
+- GIVEN the graph-fact source is repointed to `kg_triples`
+- WHEN clients list available tools
+- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`,
+  and `mem_session` MUST be registered
+- AND no graph-consolidation-specific tool MUST appear in the registry
+
+#### Scenario: Registry remains exactly six tools
+- GIVEN any supported native integration is installed or enabled
+- WHEN a client lists MCP tools
+- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
+- AND no harness-specific integration tool MUST appear
+
+#### Scenario: Setup and administration stay outside MCP
+- GIVEN an operator needs setup, rollback, capability detection, marketplace registration, plugin installation, package validation, or sync administration
+- WHEN the supported operational surface is used
+- THEN those actions MUST remain on CLI, harness, package, HTTP, or documentation surfaces as already appropriate
+- AND they MUST NOT expand the MCP registry
 
 ### Requirement: Recall Surface MUST Expose Four-Lane Fused Retrieval
 `mem_recall` MUST expose fused ranked evidence combining sentence semantic, chunk semantic, lexical FTS5, and graph/KG lanes when available.
@@ -180,21 +205,7 @@ of `200`, which does NOT accept the unbounded sentinel `0`) MUST be unchanged.
 - GIVEN a project whose observations have not yet been backfilled into the KG
 - WHEN `mem_project action=graph` is requested for that project
 - THEN it MUST render an empty-but-valid ledger (no graph rows) without raising
-  an error## MODIFIED Requirements
-### Requirement: MCP Surface MUST Be Compact and Workflow-Level
-The MCP server MUST expose a compact set of workflow-level tools. This change does
-NOT add, remove, rename, or split any tool: it only repoints the data source
-behind `mem_project action=graph` (and the ledger/timeline views) from the retired
-`observation_facts` store to the consolidated `kg_triples`+`kg_entities` source.
-The registered set MUST remain exactly `mem_save`, `mem_recall`, `mem_context`,
-`mem_get`, `mem_project`, and `mem_session`.
-
-#### Scenario: Compact MCP registry is unchanged by the consolidation
-- GIVEN the graph-fact source is repointed to `kg_triples`
-- WHEN clients list available tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`,
-  and `mem_session` MUST be registered
-- AND no graph-consolidation-specific tool MUST appear in the registry
+  an error
 
 ## Assumptions
 - **Behavior parity scope (CL-4):** "Behavior-preserving" for `action=graph` is
@@ -360,7 +371,7 @@ not present as current truth. The registered set MUST remain exactly `mem_save`,
 ### Requirement: Community Summaries MUST NOT Change the MCP Registry
 This change MUST NOT add, remove, rename, or split any MCP tool. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Community rebuild and inspection controls are admin operations and SHALL NOT be registered as MCP tools.
 
-#### Scenario: MCP registry remains six tools
+#### Scenario: Community summary registry remains six tools
 - GIVEN community summaries are implemented
 - WHEN clients list MCP tools
 - THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
@@ -498,7 +509,7 @@ HTTP routes that mirror session and save behavior MUST preserve explicit identit
 ### Requirement: Identity Bootstrap MUST NOT Expand the Compact MCP Tool Surface
 This change MUST NOT add, remove, rename, or split MCP tools. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; identity fallback reporting MUST be implemented within existing tool responses and handlers.
 
-#### Scenario: MCP registry remains six tools
+#### Scenario: Identity bootstrap registry remains six tools
 - GIVEN stable identity bootstrap behavior is implemented
 - WHEN clients list available MCP tools
 - THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
@@ -527,7 +538,7 @@ This change MUST NOT add, remove, rename, or split MCP tools. The registered MCP
 ### Requirement: Rollout Gate MUST Preserve the Compact MCP Surface
 This change MUST NOT add, remove, rename, or split MCP tools. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; community rollout decisions, rebuilds, status checks, and readiness evidence SHALL NOT create a community-specific MCP tool.
 
-#### Scenario: MCP registry remains six tools
+#### Scenario: Rollout gate registry remains six tools
 - GIVEN the community read-path rollout gate is implemented
 - WHEN clients list MCP tools
 - THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
@@ -603,11 +614,6 @@ When history is explicitly requested, retained superseded facts MUST be reachabl
 ### Requirement: Community Navigation MUST Inspect Existing Community State Only
 When `navigation="community"` is requested, `mem_project action="graph"` MUST return a bounded community inspection/debugging view and must not present community summaries as global-answer GraphRAG output.
 
-## MODIFIED for graph-navigation-v2
-
-### Requirement: MCP Surface MUST Be Compact and Workflow-Level
-Graph navigation v2 MUST be additive inside the existing `mem_project` tool and MUST NOT change the compact workflow toolset from `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
-
 ## Handoff Hints
 - Preserve the six-tool MCP registry exactly.
 - Keep omitted `navigation` behavior compatible with the existing ledger path.
@@ -657,7 +663,7 @@ Graph navigation v2 MUST be additive inside the existing `mem_project` tool and 
 ### Requirement: This Change MUST Preserve the Compact MCP Tool Surface
 This change MUST NOT add, remove, rename, or split MCP tools. Identity resolver v2 warnings, community health state, and token-savings telemetry MUST be surfaced through existing tools and metadata where appropriate. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
 
-#### Scenario: MCP registry remains six tools
+#### Scenario: Foundation health registry remains six tools
 - GIVEN pre-multiharness foundation behavior is implemented
 - WHEN clients list MCP tools
 - THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
@@ -681,3 +687,72 @@ This change MUST NOT add, remove, rename, or split MCP tools. Identity resolver 
 - Design should reuse existing `formatProjectHealth` and store health readers when possible.
 - Design must keep community rebuild/admin controls outside MCP and preserve the six-tool registry test.
 - Verification should include all seven community states and max_chars/privacy assertions.
+
+## Native Multi-Harness Integration Requirements
+
+### Requirement: Native Integrations MUST Use Only the Existing MCP Tool Surface
+OpenCode, Codex, and Claude Code lifecycle integrations MUST perform memory operations only through `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Session enrollment and lifecycle checkpoint/summary MUST use `mem_session`; root-user prompt and explicit observation persistence MUST use `mem_save`; compact/context recall and full-record escalation MUST use `mem_recall`, `mem_context`, and `mem_get`; project navigation or health MUST use `mem_project`. Native integration MUST NOT require direct storage access, a harness-specific memory tool, a legacy granular tool, or an admin/sync operation to satisfy lifecycle behavior.
+
+#### Scenario: Session lifecycle uses existing tools
+- GIVEN a native harness starts, compacts, or finalizes a root session
+- WHEN its integration performs memory work
+- THEN enrollment and lifecycle checkpoint/summary MUST use `mem_session`
+- AND root-user prompt or explicit observation persistence MUST use `mem_save`
+- AND recall or full-record escalation MUST use `mem_recall`, `mem_context`, or `mem_get` according to the requested tier
+- AND it MUST NOT invoke a harness-specific MCP tool
+
+#### Scenario: Project context uses existing tools
+- GIVEN a native integration needs project-level memory context or health information
+- WHEN it requests that information
+- THEN it MUST use existing `mem_project`, `mem_context`, or `mem_recall` behavior as applicable
+- AND it MUST NOT access storage through a new MCP surface
+
+### Requirement: Native Integration MUST Preserve Existing Tool Request and Response Contracts
+Multi-harness integration MUST NOT add a required field, remove an accepted field, rename an action, or incompatibly change the success, error, bounded-output, identity, privacy, or degraded-state behavior of any existing MCP tool. It MUST NOT add an optional prompt idempotency key, harness event field, or other public tool input to alter prompt-row cardinality. Harness capability, setup, and lifecycle-status diagnostics MUST be returned by adapter or CLI surfaces and MUST NOT be injected into existing MCP responses. Optional metadata already defined by an existing tool contract MAY continue independently of native integration.
+
+#### Scenario: Existing client remains compatible
+- GIVEN an MCP client uses the pre-change request shapes for all six tools
+- WHEN the same requests run after native integrations are installed
+- THEN the requests MUST remain valid
+- AND their observable tool semantics MUST remain backward-compatible
+
+#### Scenario: Integration does not create required harness fields
+- GIVEN the same memory request can originate from OpenCode, Codex, Claude Code, or another conforming client
+- WHEN an existing tool validates the request
+- THEN no harness identifier or adapter-specific field MUST be required
+- AND the request MUST remain expressible as the existing harness-agnostic contract
+
+### Requirement: Native Integration MUST Preserve Storage and Retrieval Semantics
+Installing or enabling a native integration MUST NOT change the SQLite schema, observation taxonomy, topic-key upsert behavior, sync-id deduplication, prompt-row cardinality behavior, retrieval lanes, ranking, bounds, graph semantics, or mirrored HTTP memory semantics. `Store.savePrompt` MUST remain authoritative: same-session byte-identical content received within 30 seconds MUST resolve to one canonical prompt row, including distinct intentional prompt events, and a byte-identical repeat after the window MAY create a new row under existing behavior. Native event/message identity MUST suppress repeated delivery and lifecycle effects but MUST NOT override this storage rule. For a fixed database, fixed configuration, and identical request, deterministic serialized tool output MUST be byte-for-byte equal before and after native integration enablement; fields already documented as volatile, such as a current execution timestamp, MAY differ only according to their pre-existing contract.
+
+#### Scenario: Stored memory remains harness-independent
+- GIVEN equivalent memory is saved with the same project, session, type, topic key, and content through two supported harnesses
+- WHEN a conforming client retrieves those records
+- THEN the records MUST follow the same existing storage and query semantics
+- AND retrieval MUST NOT require knowledge of the originating harness
+
+#### Scenario: Intentional identical prompts inside 30 seconds share one row
+- GIVEN two distinct genuine prompt events in the same session contain byte-identical sanitized content within 30 seconds
+- WHEN each event submits one existing `mem_save(kind='prompt')` operation
+- THEN `Store.savePrompt` MUST resolve both operations to one canonical prompt row
+- AND no event identity MUST force creation of a second row
+
+#### Scenario: Identical prompt after 30 seconds follows existing behavior
+- GIVEN a same-session prompt row was created more than 30 seconds earlier
+- WHEN a distinct prompt event submits byte-identical content through existing `mem_save(kind='prompt')`
+- THEN `Store.savePrompt` MAY create a new row according to its existing behavior
+- AND the integration MUST NOT add a public input or HTTP semantic to force the outcome
+
+#### Scenario: Retrieval behavior is unchanged by integration enablement
+- GIVEN a fixed database and an existing `mem_recall`, `mem_context`, `mem_get`, or `mem_project` request
+- WHEN the request runs before and after a native integration is enabled
+- THEN deterministic serialized output MUST be byte-for-byte equal for the fixed fixture
+- AND any pre-existing volatile field MAY differ only as already documented by its existing contract
+- AND lane selection, ranking, bounds, source attribution, and degraded-state semantics MUST remain governed by the existing retrieval contracts
+- AND integration enablement MUST NOT claim or introduce a retrieval behavior change
+
+#### Scenario: Existing identity behavior remains authoritative
+- GIVEN a tool request supplies explicit project and session identity or requires deterministic fallback
+- WHEN it is issued through any native harness
+- THEN the existing identity-preservation and degraded-fallback rules MUST apply
+- AND the adapter MUST NOT substitute a harness-local identity policy
