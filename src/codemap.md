@@ -1,7 +1,7 @@
 # src/
 
 ## Responsibility
-Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the top-level process lifecycle. `index.ts` is the MCP stdio entrypoint, `cli.ts` is the CLI command dispatcher, `http-server.ts` and `http-routes.ts` provide a REST API bridge, `server.ts` assembles the server/store/tool graph, and `config.ts` owns environment-driven startup settings.
+Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the top-level process lifecycle. `index.ts` is the MCP stdio entrypoint, `cli.ts` dispatches public CLI commands and the package-internal integration-event route, `integration/` owns native lifecycle execution, `setup/` owns managed harness installation, `http-server.ts` and `http-routes.ts` provide the REST API bridge, and `server.ts` assembles the server/store/tool graph.
 
 ## Design Patterns
 - Thin composition root: `createServer()` centralizes dependency construction before handing control to the MCP runtime.
@@ -11,7 +11,9 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 - CLI command dispatch: `runCli()` parses arguments and routes to command handlers (search, save, timeline, context, stats, export, import, sync, migrate-project, version, help) via a `withStore` lifecycle wrapper.
 - HTTP bridge with ownership/takeover: `createHttpBridge()` attempts to bind to a port; if occupied, it takes over the existing bridge via a handshake protocol.
 - OpenAPI spec generation: `getOpenApiSpec(port)` dynamically builds an OpenAPI 3.0 document describing the REST API routes and schemas.
-- Subsystems are isolated behind directory codemaps in `src/store/`, `src/tools/`, `src/utils/`, and `src/sync/`.
+- Host-neutral lifecycle core: adapters normalize host events before `MemoryIntegrationCore` plans and confirms effects through the existing six MCP tools.
+- Managed setup transaction: scope/path inspection, ownership-aware config merges, atomic filesystem changes, write-ahead receipts, and bounded rollback remain separate from lifecycle execution.
+- Subsystems are isolated behind directory codemaps in `src/store/`, `src/tools/`, `src/utils/`, and `src/sync/`; native `src/integration/` and `src/setup/` modules are mapped below.
 
 ## Data & Control Flow
 
@@ -24,10 +26,23 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 6. `index.ts` attaches a `StdioServerTransport`, registers shutdown handlers, logs startup, and connects the server to stdio.
 
 ### CLI Command Path (cli.ts)
-1. `runCli()` parses `process.argv` and dispatches to command handlers (search, save, timeline, context, stats, export, import, sync, migrate-project, version, help).
+1. `runCli()` parses `process.argv` and dispatches to command handlers (search, save, timeline, context, stats, export, import, sync, setup, package-internal integration events, migrate-project, version, help).
 2. Most commands use `withStore()` to acquire a Store instance, execute the command, and close the store on completion.
 3. Command handlers delegate to Store methods, sync operations, and formatters to produce output.
 4. `version.ts` provides `VERSION` constant and `getVersion()` for the version command.
+
+### Native Integration Event Path (cli.ts, integration/)
+1. `src/cli.ts` routes bounded package-internal event input to `src/integration/runtime/integration-event-command.ts`.
+2. `src/integration/runtime/hook-command.ts` validates the shared JSON protocol and selects the OpenCode, Codex, or Claude Code adapter.
+3. The adapter emits normalized events and capability evidence; `src/integration/core/lifecycle.ts` resolves root identity, sanitizes eligible root prompts, and plans host-neutral effects.
+4. `src/integration/core/mcp-memory-port.ts` executes only the six allowed MCP tools, while `src/integration/core/state-store.ts` records confirmed, HMAC-keyed progress for retry/restart safety.
+
+### Managed Harness Setup Path (cli.ts, setup/)
+1. `src/cli.ts` parses exact setup flags and delegates to `src/setup/engine.ts`.
+2. `src/setup/paths.ts` resolves global or explicit project targets; harness modules inspect and plan only their owned configuration locations.
+3. `src/setup/managed-config.ts` prepares JSONC/TOML changes, and `src/setup/filesystem.ts` applies verified backup-first atomic mutations.
+4. `src/setup/receipt.ts` persists HMAC-protected write-ahead ownership evidence and recovery state.
+5. `src/setup/codex-cli.ts` capability-gates optional Codex registration commands and verifies their outcomes independently.
 
 ### HTTP Bridge Path (http-server.ts, http-routes.ts)
 1. `createHttpBridge()` attempts to bind to a configured port; if occupied, it performs a takeover handshake with the existing bridge.
@@ -41,8 +56,43 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 - `src/store/` for SQLite-backed persistence and observation/search state.
 - `src/tools/` for compact MCP tool registration.
 - `src/sync/` for multi-project sync operations used by CLI and HTTP routes.
+- `src/integration/` for native lifecycle normalization and confirmed six-tool memory effects.
+- `src/setup/` for opt-in OpenCode/Codex setup, verification, recovery, and rollback.
 - `src/utils/` for shared helpers used by deeper layers.
 - `src/cli.ts` imports Store, sync functions, config, and formatters; exports `runCli`, `isCliError`, `VERSION`.
 - `src/http-server.ts` and `src/http-routes.ts` provide REST API handlers; `http-openapi.ts` generates OpenAPI specs.
 - `src/version.ts` provides runtime version from `package.json` with fallback path resolution.
 - Environment variables consumed by `src/config.ts`: `THOTH_DATA_DIR`, `THOTH_MAX_CONTENT_LENGTH`, `THOTH_MAX_CONTEXT_RESULTS`, `THOTH_MAX_SEARCH_RESULTS`, `THOTH_DEDUPE_WINDOW_MINUTES`, `THOTH_PREVIEW_LENGTH`.
+
+## Native Integration Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `src/integration/core/types.ts` | Normalized event, capability, effect, result, and state contracts. |
+| `src/integration/core/protocol.ts` | Canonical six-tool lifecycle and recovery guidance shared with packaged instructions. |
+| `src/integration/core/lifecycle.ts` | Pure lifecycle planning plus confirmed-success effect execution and identity handling. |
+| `src/integration/core/sanitizer.ts` | Root-user prompt ownership, privacy stripping, and bounded capture. |
+| `src/integration/core/memory-port.ts` | Six-tool-only memory port contract. |
+| `src/integration/core/mcp-memory-port.ts` | Linked in-process MCP implementation of the memory port. |
+| `src/integration/core/state-store.ts` | HMAC event identity, bounded locking, atomic state, and restart recovery. |
+| `src/integration/adapters/shared.ts` | Shared adapter validation and normalized capability helpers. |
+| `src/integration/adapters/opencode.ts` | OpenCode native event and capability normalization. |
+| `src/integration/adapters/codex.ts` | Codex evidence-backed event and capability normalization. |
+| `src/integration/adapters/claude-code.ts` | Claude Code lifecycle hook normalization and sub-agent exclusion. |
+| `src/integration/runtime/hook-command.ts` | Bounded JSON hook protocol validation and adapter dispatch. |
+| `src/integration/runtime/integration-event-command.ts` | Production data-dir, memory-port, state-store, lifecycle-core, and stdin route composition. |
+
+## Managed Setup Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `src/setup/types.ts` | Setup request, plan, step, status, result, and exit-code contracts. |
+| `src/setup/engine.ts` | Inspect/plan/apply/verify orchestration, Codex external checkpoints, receipt recovery, and rollback. |
+| `src/setup/paths.ts` | Platform-specific global and explicit project target resolution. |
+| `src/setup/managed-config.ts` | Ownership-aware JSONC edits and validated TOML marker blocks. |
+| `src/setup/filesystem.ts` | Contained backup-first atomic writes, restoration, hashing, and verification. |
+| `src/setup/receipt.ts` | Durable HMAC receipt creation, validation, checkpoints, and recovery metadata. |
+| `src/setup/codex-cli.ts` | Bounded Codex CLI grammar probes, argument-array execution, and post-command verification. |
+| `src/setup/transaction-lock.ts` | Canonical-target transaction locking, stale-lock recovery, and ownership-safe release. |
+| `src/setup/harnesses/opencode.ts` | OpenCode config/plugin asset planning and verification. |
+| `src/setup/harnesses/codex.ts` | Codex plugin-scoped TOML planning and filesystem verification. |

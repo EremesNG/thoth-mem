@@ -1,155 +1,70 @@
 ---
 name: thoth-mem
-description: Use thoth-mem correctly as persistent memory for coding agents with its compact MCP surface. Use this whenever starting or resuming work, recalling previous decisions or bugs, browsing project memory, saving durable learnings, recording user intent, or writing session summaries. Use the six MCP tools: mem_recall, mem_save, mem_context, mem_get, mem_project, and mem_session.
+description: Use thoth-mem as persistent memory through its compact six-tool MCP surface while preserving root ownership, privacy, stable identity, and truthful lifecycle outcomes.
 ---
 
 # thoth-mem Usage
 
-thoth-mem is a persistent memory MCP server for coding agents. Use it to recover context from previous sessions, avoid repeating past mistakes, and preserve decisions or discoveries that future agents should inherit.
+Use exactly these six MCP tools:
 
-Use the MCP surface as a set of workflow-level tools:
+- `mem_recall`
+- `mem_save`
+- `mem_context`
+- `mem_get`
+- `mem_project`
+- `mem_session`
+
+Administrative, setup, sync, and harness operations stay outside MCP.
 
 | Workflow | Tool |
 | --- | --- |
-| Fused retrieval/search | `mem_recall` |
-| Save any durable memory | `mem_save` |
-| Start-of-session orientation | `mem_context` |
-| Fetch exact full memory or timeline | `mem_get` |
-| Project navigation and topic/graph views | `mem_project` |
-| Session lifecycle | `mem_session` |
+| Fused retrieval | `mem_recall` |
+| Durable observations, prompts, and summaries | `mem_save` |
+| Bounded recent continuity | `mem_context` |
+| Exact record or timeline fetch | `mem_get` |
+| Project, topic, graph, and health navigation | `mem_project` |
+| Root session start, checkpoint, and summary | `mem_session` |
 
-The active MCP surface has only these six tools. Do not call legacy split tools such as `mem_search`, `mem_get_observation`, `mem_timeline`, `mem_project_summary`, `mem_project_graph`, `mem_topic_keys`, `mem_session_start`, `mem_session_summary`, or `mem_save_prompt`.
+## Ownership, privacy, and identity
 
-Use this current mapping instead:
+The root/orchestrator owns session lifecycle, prompt capture, and continuity summaries. Subagents must not start, checkpoint, or summarize the root session and must not save prompts.
 
-| Old intent | Current tool |
-| --- | --- |
-| Search/recall | `mem_recall` |
-| Fetch one memory or timeline | `mem_get` |
-| Project summary, graph, topics, topic context | `mem_project` |
-| Start or summarize a session | `mem_session` |
-| Save a prompt | `mem_save(kind="prompt")` |
-| Save a session summary | `mem_save(kind="session_summary")` (root-owned) and/or `mem_session(action="summary")` |
+Save only real root-user intent. Generated prompts must not be saved as user intent. Exclude assistant, tool, subagent, handoff, and scaffolding traffic, and remove content inside `<private>` tags before persistence.
 
-Admin/export/import/sync/migration/rebuild/index/trace operations are intentionally outside MCP. Use CLI, HTTP, or dashboard flows for those operations.
+Use stable `session_id` and `project` identity on supported operations. When either is unavailable, expose the limitation and do not invent a fallback session that claims durable continuity.
 
-## Stable identity and bootstrap guidance
+## Root start protocol
 
-- Prefer harness-provided stable `session_id` and `project` whenever available.
-- If stable identity is unavailable, call out a persistence bootstrap limitation and continue with visible fallback metadata (for example `session="ephemeral"`, `project="unknown"`). Do not pretend session continuity is guaranteed.
-- Subagents must never invent a session id or call `mem_session(action="start")`.
+1. Start the root memory session with its stable identity and working directory.
+2. Load bounded recent continuity for that same project and session.
+3. Read a project summary only when broader history matters.
+4. Use compact recall before architecture or implementation work that may overlap earlier decisions.
+5. Save only the actual user request as prompt intent.
 
-## Start protocol
+## Recall and save flow
 
-1. Root calls `mem_session(action="start", id="...", project="...", directory="...")` when stable identity is available.
-2. Root calls `mem_context(project="...", session_id="...")` for recent continuity. Add `recall_query="..."` only for inline context hints.
-3. Root may call `mem_project(action="summary", project="...")` when broader project history matters.
-4. If overlap is likely, root calls `mem_recall(mode="compact")` before architecture or implementation changes.
-5. Root saves real user intent with `mem_save(kind="prompt", content="...", session_id="...", project="...")`.
+Use the bounded recall funnel:
 
-Only save real user prompts. Do not save generated subagent prompts, handoff bodies, raw transcripts, or tool scaffolding as user intent.
+1. `mem_recall(mode="compact")` scans candidate evidence.
+2. `mem_recall(mode="context")` expands only the strongest hits.
+3. `mem_get(id=...)` fetches only selected full records; request a bounded timeline only when chronology matters.
 
-## Recall protocol (mem_recall)
+Use `mem_context` for recent continuity and `mem_project` for project summaries, topics, graph views, and health. Use `mem_save` for durable observations, real root-user prompts, and root-owned summaries. Durable observations should state **What**, **Why**, **Where**, and any non-obvious **Learned** detail.
 
-Use a widening funnel:
+Recall is fused by default. Keep limits bounded, use exact project/session/topic filters when available, and expand only the strongest candidates. Fetch a timeline only when chronology changes the decision.
 
-1. `mem_recall(mode="compact", query="...", project="...", limit=1-20, hyde=true, debug=false, ...)`
-2. `mem_recall(mode="context", query="...", project="...", limit=1-20, ... )`
-3. `mem_get(id=..., kind="observation"|"prompt")`
-4. `mem_get(id=..., include_timeline=true, before=5, after=5)` when chronology matters.
+Project navigation supports lists, summaries, topics, one topic, graph views, and health. Keep graph navigation bounded and follow returned continuation data rather than requesting an unbounded project dump.
 
-`mem_recall` performs HyDE + fused recall by default (semantic + lexical + KG/graph). Set `hyde=false` only for raw query/debug comparisons.
+Save decisions, architecture, bug fixes with root cause, patterns, configuration changes, discoveries, and non-obvious learnings. Use a stable topic key for evolving facts. Do not save credentials, raw logs without a durable lesson, whole transcripts, or obvious facts already present in the repository.
 
-- `debug=true` is for diagnostics and lane evidence tracing.
-- `pending`/`degraded_fallback` in metadata is state/fallback behavior, not a hard failure.
-- Graph enrichment and token/character measurement may appear in the recall metadata.
+## Lifecycle truth
 
-## mem_get details
+Capability states are `supported`, `degraded`, and `unsupported`. Advance lifecycle state only after confirmed MCP success; a failed or indeterminate call stays retryable.
 
-- `kind` supports `observation` and `prompt`.
-- Use `offset` and `max_length` for large memory items.
-- Use `include_timeline=true` with numeric `before`/`after` counts (for example `before=5, after=5`) when chronological ordering is important.
+Compaction is explicit and retry-safe: checkpoint only for a verified root compaction event, and leave failure eligible for retry. Finalization is explicit and retry-safe: summarize only for a verified root terminal event and never infer completion from partial state.
 
-## Project navigation (mem_project)
+A duplicate event is suppressed using stable event identity. Distinct intentional events remain separate lifecycle effects, while byte-identical same-session prompts inside the existing 30-second window may resolve to one canonical prompt row. Event identity must not change that storage rule.
 
-Supported actions:
+Manual recovery stays visible for every degraded or unsupported capability. One unavailable capability must not disable unrelated supported memory operations.
 
-- `mem_project(action="list")`
-- `mem_project(action="summary", project="...")`
-- `mem_project(action="topics", project="...")`
-- `mem_project(action="topic", project="...", topic_key="...")`
-- `mem_project(action="graph", project="...", navigation="...", limit=?, max_chars=?, focus_node_id=?, observation_id=?, continuation=?, include_superseded=?)`
-- `mem_project(action="health", project="...")`
-
-For `action="graph"`, supported `navigation` values include:
-`ledger`, `neighborhood`, `lineage`, `community`, `superseded`.
-
-Relation allowlist for graph edges:
-`HAS_TYPE`, `IN_PROJECT`, `HAS_TOPIC_KEY`, `HAS_WHAT`, `HAS_WHY`, `HAS_WHERE`, `HAS_LEARNED`.
-
-## Save protocol
-
-Use `mem_save(kind="observation")` for durable events:
-- architecture decisions and tradeoffs
-- bug fixes, with root cause
-- patterns, conventions, constraints, discoveries
-- configuration changes
-- non-obvious constraints
-
-Use this content shape:
-
-```markdown
-**What**: [concise description]
-**Why**: [reasoning or problem that drove it]
-**Where**: [files/paths affected]
-**Learned**: [gotchas, edge cases - omit if none]
-```
-
-Use short searchable titles and concrete nouns (modules, endpoints, commands, bug signatures).
-Do not save secrets, credentials, raw logs without a durable lesson, broad transcripts, or obvious facts already present in the repository.
-
-`mem_save` kinds in general:
-
-- `kind="observation"`: durable decision, bugfix, pattern, config, discovery, learning.
-- `kind="prompt"`: significant real user request or intent.
-- `kind="session_summary"`: continuity handoff content when explicitly used by root.
-- `kind="passive_learnings"`: extract from `## Key Learnings:` style sections.
-
-`topic_key` is optional for general durable memories and required for evolving topics.
-
-## Session operations (mem_session)
-
-Allowed root actions:
-
-- `mem_session(action="start")`
-- `mem_session(action="checkpoint")`
-- `mem_session(action="summary")`
-
-`start` and `checkpoint/summary` are root-owned continuity operations.
-
-Subagents must never call `mem_session` in subagent mode.
-
-Before ending meaningful root work, call:
-
-- `mem_session(action="summary", id="...", project="...", content="...")`
-- or `mem_save(kind="session_summary", session_id="...", project="...", content="...")`
-
-## Root/subagent ownership contract
-
-- Root owns: `mem_session(action="start"|"checkpoint"|"summary")`, `mem_save(kind="prompt")`, and root continuity summaries.
-- Read-only subagents (explorer/librarian/oracle) may call recall/fetch/context/project reads only with parent `session_id` and `project`.
-- Write-capable subagents (deep/quick/designer) may call `mem_save(kind="observation")` only when explicitly delegated, and only in scope. Do not save prompts.
-- Generated prompts, handoffs, and raw transcripts are never saved as user intent.
-
-`mem_context` and `mem_project` are bounded context reads, not session ownership transfers.
-
-## Quality bar
-
-Good thoth-mem usage should let the next session quickly answer:
-- What changed?
-- Why it changed?
-- Where to inspect?
-- What should be avoided?
-- Which memories are authoritative versus exploratory?
-
-When uncertain, call compact recall first, expand only best candidates, then fetch full records sparsely.
+Before meaningful root work ends, persist one root-owned summary containing the goal, instructions, discoveries, completed work, next steps, and relevant files. Do not claim it was saved unless the memory call was confirmed.

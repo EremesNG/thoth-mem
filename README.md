@@ -69,6 +69,79 @@ Requires Node.js >= 18.
 
 For backwards compatibility, running `thoth-mem` with no subcommand also starts the MCP server and HTTP bridge. New MCP client configs should prefer the explicit `mcp` subcommand.
 
+## Transitioning to native harness integration
+
+Native setup is opt-in. Existing manual MCP connections and stored memories continue to work until you deliberately enable a native integration. OpenCode and Codex use the managed setup commands documented below; Claude Code uses its plugin marketplace flow:
+
+```bash
+claude plugin marketplace add EremesNG/thoth-mem
+claude plugin install thoth-mem
+```
+
+The installed plugin may also be shown in qualified form as `thoth-mem@thoth-mem`, but the commands above are the supported transition path.
+
+Global scope manages only the current user's harness configuration plus thoth-mem receipts and backups. Project scope manages only the explicitly selected project directory and its project-local receipt tree. Neither scope grants ownership of another project or repository.
+
+Engram, thoth-agents, or another memory integration may already provide overlapping hooks or instructions. Treat this as a warning only: thoth-mem does not edit, disable, remove, or write to external repositories. Review the active harness configuration and choose which integration should own overlapping lifecycle events.
+
+### Manual MCP fallback
+
+Native hooks are optional. You can keep or restore a plain MCP connection at any time using the [manual MCP configuration](#mcp-configuration) below; this fallback uses the same six-tool server and does not require managed setup or a native plugin.
+
+## Managed Harness Setup
+
+Use managed setup for native OpenCode or Codex integration. Global scope is the default:
+
+```bash
+thoth-mem setup opencode
+thoth-mem setup codex --scope global --plan --json
+```
+
+Project scope is explicit and requires a project path. The following examples also show the ownership-bounded conflict override and receipt rollback forms:
+
+```bash
+thoth-mem setup opencode --scope project --project /path/to/project --force
+thoth-mem setup codex --rollback /path/to/receipt.json
+```
+
+### Setup reference
+
+| Option | Behavior |
+| --- | --- |
+| no scope option | Uses global scope. |
+| `--scope global` | Explicitly selects global scope; `--project` is rejected. |
+| `--scope project --project <path>` | Confines inspection, files, receipts, and rollback to the selected project. |
+| `--plan` | Reports the ordered plan and detected conflicts/capabilities. Plan mode performs zero writes, backups, receipts, or mutating external commands. |
+| `--force` | Replaces conflicts only at thoth-mem-managed locations after backup. It never grants access to unrelated configuration or bypasses receipt validation. |
+| `--rollback <receipt-path>` | Reverts only locations owned by that valid receipt and preserves unrelated settings and later unrelated edits. |
+| `--json` | Emits the stable machine-readable result object. |
+
+OpenCode global setup probes `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` or `opencode.jsonc`; in other words, the selected filename is `opencode.json` or `opencode.jsonc`. On Windows the default root is `%USERPROFILE%\.config\opencode`. Project setup probes `<project>/opencode.json` or `<project>/opencode.jsonc` and installs the direct plugin entry under `<project>/.opencode/plugins/`. If both sibling configuration files exist, setup stops for explicit operator action instead of guessing ownership.
+
+Setup reports one status and matching process exit code:
+
+| Status | Exit code | Meaning |
+| --- | --- | --- |
+| `complete` | `0` | Every required outcome is verified, including a no-op. |
+| `failed` | `1` | Validation, backup, mutation, verification, or rollback failed. |
+| `partial` | `2` | At least one Codex external step verified and another attempted step failed or remained unverifiable. |
+| `requires_user_action` | `3` | A conflict or unavailable/unsafe capability needs operator action. |
+
+### Receipts, recovery, and rollback
+
+Backups are created before the first mutation. After backups succeed, setup durably writes an HMAC-protected receipt with status `in_progress` before changing a target or invoking a mutating external command. Each attempted step is then recorded atomically. Receipt locations are:
+
+- global receipts: `<thoth-data-dir>/setup/receipts/<receipt-id>/receipt.json`
+- project receipts: `<project>/.thoth/setup/receipts/<receipt-id>/receipt.json`
+
+An interrupted `in_progress` transaction is never inferred as complete. The next setup or rollback reports recovery guidance based on the receipt. A missing, invalid, or tampered receipt is refused even with `--force`; restore only from verified receipt evidence and its named backups.
+
+Rollback restores or removes only receipt-owned values. If an owned value diverged, rollback stops with `requires_user_action`; `--force` remains limited to that valid receipt-owned location and creates fresh rollback backups and a rollback receipt. Repeated setup and repeated completed rollback are no-ops with `changed=false` when the verified state already matches.
+
+### Codex capability limits
+
+Codex marketplace registration and plugin installation are capability-gated and verified independently. Exit zero from an external command is not enough to report `complete`. If the installed Codex CLI does not advertise a safe command or cannot verify the result, setup returns `requires_user_action` or `partial` with exact manual actions; open Codex `/plugins` to inspect or complete the plugin installation. External Codex registration is not atomically reversible, so its receipt steps report evidence independently from reversible filesystem changes.
+
 ## MCP Configuration
 
 ### Claude Code
@@ -79,7 +152,7 @@ claude mcp add thoth-mem -- npx -y thoth-mem@latest mcp
 
 ### OpenCode
 
-Add to `~/.config/opencode/config.json`:
+Add to `~/.config/opencode/opencode.json` (or the sibling `opencode.jsonc`):
 
 ```json
 {
