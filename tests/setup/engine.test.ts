@@ -361,13 +361,15 @@ function normalizeTestRelativePath(path: string): string {
   return normalized === '.' ? '' : normalized;
 }
 
+const FIXTURE_ROOT = resolve('test fixtures', 'setup engine');
 const ROOTS: SetupRoots = {
-  homeDir: 'C:\\Users\\Example User',
-  cwd: 'C:\\Workspaces',
-  packageRoot: 'C:\\Program Files\\thoth-mem',
-  xdgConfigHome: 'C:\\Harness Config',
-  codexHome: 'C:\\Codex Home',
+  homeDir: join(FIXTURE_ROOT, 'home', 'Example User'),
+  cwd: join(FIXTURE_ROOT, 'Workspaces'),
+  packageRoot: join(FIXTURE_ROOT, 'Program Files', 'thoth-mem'),
+  xdgConfigHome: join(FIXTURE_ROOT, 'Harness Config'),
+  codexHome: join(FIXTURE_ROOT, 'Codex Home'),
 };
+const PROJECT_PATH = join(ROOTS.cwd, 'Project With Spaces');
 
 function setupRequest(
   harness: SetupRequest['harness'],
@@ -455,32 +457,38 @@ describe('inspects and plans with zero writes', () => {
   it('resolves global and explicit project targets without ambient home state', () => {
     const openCode = resolveSetupPaths(setupRequest('opencode'), ROOTS);
     expect(openCode).toEqual({
-      targetRoot: 'C:\\Harness Config\\opencode',
-      configPath: 'C:\\Harness Config\\opencode\\opencode.json',
+      targetRoot: join(ROOTS.xdgConfigHome!, 'opencode'),
+      configPath: join(ROOTS.xdgConfigHome!, 'opencode', 'opencode.json'),
       configCandidates: [
-        'C:\\Harness Config\\opencode\\opencode.json',
-        'C:\\Harness Config\\opencode\\opencode.jsonc',
+        join(ROOTS.xdgConfigHome!, 'opencode', 'opencode.json'),
+        join(ROOTS.xdgConfigHome!, 'opencode', 'opencode.jsonc'),
       ],
-      assetPath: 'C:\\Harness Config\\opencode\\plugins\\.thoth-mem',
-      pluginEntryPath: 'C:\\Harness Config\\opencode\\plugins\\thoth-mem.js',
-      metadataPath: 'C:\\Harness Config\\opencode\\plugins\\.thoth-mem\\.thoth-mem-managed.json',
-      sourceAssetsPath: 'C:\\Program Files\\thoth-mem\\integrations\\opencode',
-      sourceSharedPath: 'C:\\Program Files\\thoth-mem\\integrations\\shared',
+      assetPath: join(ROOTS.xdgConfigHome!, 'opencode', 'plugins', '.thoth-mem'),
+      pluginEntryPath: join(ROOTS.xdgConfigHome!, 'opencode', 'plugins', 'thoth-mem.js'),
+      metadataPath: join(
+        ROOTS.xdgConfigHome!,
+        'opencode',
+        'plugins',
+        '.thoth-mem',
+        '.thoth-mem-managed.json',
+      ),
+      sourceAssetsPath: join(ROOTS.packageRoot, 'integrations', 'opencode'),
+      sourceSharedPath: join(ROOTS.packageRoot, 'integrations', 'shared'),
     });
 
-    const projectPath = 'C:\\Workspaces\\Project With Spaces';
+    const projectPath = PROJECT_PATH;
     const codex = resolveSetupPaths(setupRequest('codex', {
       scope: 'project',
       projectPath,
     }), ROOTS);
     expect(codex).toEqual({
-      targetRoot: `${projectPath}\\.codex`,
-      configPath: `${projectPath}\\.codex\\config.toml`,
-      configCandidates: [`${projectPath}\\.codex\\config.toml`],
-      assetPath: `${projectPath}\\.codex\\plugins\\thoth-mem`,
-      pluginEntryPath: `${projectPath}\\.codex\\plugins\\thoth-mem`,
-      metadataPath: `${projectPath}\\.codex\\plugins\\thoth-mem\\.thoth-mem-managed.json`,
-      sourceAssetsPath: 'C:\\Program Files\\thoth-mem\\integrations\\codex',
+      targetRoot: join(projectPath, '.codex'),
+      configPath: join(projectPath, '.codex', 'config.toml'),
+      configCandidates: [join(projectPath, '.codex', 'config.toml')],
+      assetPath: join(projectPath, '.codex', 'plugins', 'thoth-mem'),
+      pluginEntryPath: join(projectPath, '.codex', 'plugins', 'thoth-mem'),
+      metadataPath: join(projectPath, '.codex', 'plugins', 'thoth-mem', '.thoth-mem-managed.json'),
+      sourceAssetsPath: join(ROOTS.packageRoot, 'integrations', 'codex'),
       sourceSharedPath: null,
     });
   });
@@ -530,7 +538,7 @@ describe('inspects and plans with zero writes', () => {
   it('returns an idempotent no-op for verified OpenCode project setup', async () => {
     const request = setupRequest('opencode', {
       scope: 'project',
-      projectPath: 'C:\\Workspaces\\Project With Spaces',
+      projectPath: PROJECT_PATH,
       planOnly: false,
     });
     const paths = resolveSetupPaths(request, ROOTS);
@@ -550,7 +558,7 @@ describe('inspects and plans with zero writes', () => {
       'confirmed',
     ]);
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
-    expect(fileSystem.reads.some((path) => path.startsWith('C:\\Harness Config'))).toBe(false);
+    expect(fileSystem.reads.some((path) => path.startsWith(ROOTS.xdgConfigHome!))).toBe(false);
     expectZeroWrites(fileSystem, before);
   });
 
@@ -597,7 +605,7 @@ describe('inspects and plans with zero writes', () => {
   it('does not trust matching metadata when managed config or assets drift', async () => {
     const request = setupRequest('opencode', {
       scope: 'project',
-      projectPath: 'C:\\Workspaces\\Project With Spaces',
+      projectPath: PROJECT_PATH,
     });
     const paths = resolveSetupPaths(request, ROOTS);
 
@@ -695,7 +703,7 @@ describe('inspects and plans with zero writes', () => {
   });
 
   it('confines verified and conflicting Codex project plans to the explicit project', async () => {
-    const projectPath = 'C:\\Workspaces\\Project With Spaces';
+    const projectPath = PROJECT_PATH;
     const request = setupRequest('codex', {
       scope: 'project',
       projectPath,

@@ -130,6 +130,57 @@ function runPnpm(
   return run('pnpm', args, options);
 }
 
+function isOfflineCacheMiss(diagnostic: string): boolean {
+  return /(?:^|[^A-Za-z0-9_])(?:ENOTCACHED|ERR_PNPM_NO_OFFLINE_(?:TARBALL|META))(?=$|[^A-Za-z0-9_])/
+    .test(diagnostic);
+}
+
+function pnpmInstallAttempts(tarball: string): {
+  offline: string[];
+  publicRegistryFallback: string[];
+} {
+  const installArgs = [
+    'add',
+    tarball,
+    '--ignore-scripts',
+    '--save-exact',
+    '--registry',
+    'https://registry.npmjs.org/',
+  ];
+  return {
+    offline: [...installArgs, '--offline'],
+    publicRegistryFallback: [...installArgs, '--offline=false'],
+  };
+}
+
+describe('packed install retry policy', () => {
+  it.each([
+    ['npm cache miss', 'ENOTCACHED', true],
+    ['npm cache miss in an error line', 'npm ERR! code ENOTCACHED\n', true],
+    ['pnpm tarball cache miss', 'ERR_PNPM_NO_OFFLINE_TARBALL', true],
+    ['pnpm tarball cache miss with punctuation', 'ERR_PNPM_NO_OFFLINE_TARBALL: missing tarball', true],
+    ['pnpm metadata cache miss', 'ERR_PNPM_NO_OFFLINE_META', true],
+    ['pnpm metadata cache miss with whitespace', '  ERR_PNPM_NO_OFFLINE_META  ', true],
+    ['prefixed npm cache-miss lookalike', 'XENOTCACHED', false],
+    ['suffixed npm cache-miss lookalike', 'ENOTCACHED_EXTRA', false],
+    ['prefixed pnpm tarball lookalike', 'XERR_PNPM_NO_OFFLINE_TARBALL', false],
+    ['suffixed pnpm metadata lookalike', 'ERR_PNPM_NO_OFFLINE_META_EXTRA', false],
+    ['unrelated pnpm failure', 'ERR_PNPM_FETCH_500', false],
+  ])('classifies %s', (_label, diagnostic, shouldRetry) => {
+    expect(isOfflineCacheMiss(diagnostic)).toBe(shouldRetry);
+  });
+
+  it('keeps the initial attempt offline and the public-registry fallback online', () => {
+    const attempts = pnpmInstallAttempts('package.tgz');
+
+    expect(attempts.offline).toContain('--offline');
+    expect(attempts.offline).not.toContain('--offline=false');
+    expect(attempts.publicRegistryFallback).toContain('--offline=false');
+    expect(attempts.publicRegistryFallback).not.toContain('--offline');
+    expect(attempts.publicRegistryFallback).toContain('https://registry.npmjs.org/');
+  });
+});
+
 function expectCommandSucceeded(result: SpawnSyncReturns<string>, label: string): void {
   expect(
     result.status,
@@ -194,23 +245,16 @@ async function packAndInstall(): Promise<InstalledPackageFixture> {
     private: true,
     version: '1.0.0',
   }), 'utf8');
-  const installArgs = [
-    'add',
-    tarball,
-    '--ignore-scripts',
-    '--save-exact',
-    '--registry',
-    'https://registry.npmjs.org/',
-  ];
+  const installAttempts = pnpmInstallAttempts(tarball);
   let installMode: InstalledPackageFixture['installMode'] = 'offline';
-  let installed = runPnpm([...installArgs, '--offline'], { cwd: installRoot, env: npmEnv });
+  let installed = runPnpm(installAttempts.offline, { cwd: installRoot, env: npmEnv });
   const installDiagnostic = `${installed.stdout ?? ''}\n${installed.stderr ?? ''}`;
   if (
     installed.status !== 0
-    && /(?:ENOTCACHED|ERR_PNPM_NO_OFFLINE_TARBALL)/.test(installDiagnostic)
+    && isOfflineCacheMiss(installDiagnostic)
   ) {
     installMode = 'public-registry-fallback';
-    installed = runPnpm(installArgs, { cwd: installRoot, env: npmEnv });
+    installed = runPnpm(installAttempts.publicRegistryFallback, { cwd: installRoot, env: npmEnv });
   }
   expectCommandSucceeded(installed, 'script-disabled isolated pnpm tarball install');
 
