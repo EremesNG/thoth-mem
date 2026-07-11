@@ -2,10 +2,67 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Store } from '../../src/store/index.js';
 import { vectorToBuffer } from '../../src/retrieval/sqlite-vec.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../../src/retrieval/sentences.js';
+import { fuseCandidates } from '../../src/retrieval/ranking.js';
 import { KG_ENTITY_TYPES } from '../../src/indexing/kg-extractor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+function createLegacyObservationFactsTable(store: Store) {
+  store.getDb().exec(`
+    CREATE TABLE IF NOT EXISTS observation_facts (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      observation_id INTEGER NOT NULL,
+      subject        TEXT NOT NULL,
+      relation       TEXT NOT NULL,
+      object         TEXT NOT NULL,
+      project        TEXT,
+      topic_key      TEXT,
+      type           TEXT NOT NULL,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+    CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+  `);
+}
+
+function insertKgEntity(store: Store, key: string, canonicalName: string): number {
+  return (store.getDb().prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json)
+     VALUES (?, 'service', ?, '[]', '{}')
+     ON CONFLICT(entity_key) DO UPDATE SET canonical_name = excluded.canonical_name
+     RETURNING id`
+  ).get(key, canonicalName) as { id: number }).id;
+}
+
+function insertKgTestTriple(store: Store, input: {
+  subjectId: number;
+  relation: string;
+  objectId: number;
+  observationId: number;
+  project: string;
+  confidence?: number;
+  hash: string;
+}): void {
+  const observation = store.getObservation(input.observationId);
+  store.getDb().prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+      project, topic_key, provenance, confidence, triple_hash, extractor_version
+    ) VALUES (?, ?, ?, 'observation', ?, ?, ?, NULL, ?, ?, ?, 'test')`
+  ).run(
+    input.subjectId,
+    input.relation,
+    input.objectId,
+    input.observationId,
+    observation?.sync_id ?? null,
+    input.project,
+    `test:${input.hash}`,
+    input.confidence ?? 0.9,
+    input.hash,
+  );
+}
 
 describe('Store', () => {
   let store: Store;
@@ -228,16 +285,25 @@ describe('Store', () => {
       await runtime.processSemanticJobs({ limit: 20 });
 
       const triples = db.prepare(
-        `SELECT s.canonical_name AS subject, t.relation, o.canonical_name AS object, t.provenance
+        `SELECT s.canonical_name AS subject, t.relation, o.canonical_name AS object, t.provenance,
+                t.superseded_at, t.superseded_by_triple_id
          FROM kg_triples t
          JOIN kg_entities s ON s.id = t.subject_entity_id
          JOIN kg_entities o ON o.id = t.object_entity_id
          WHERE t.source_type = 'observation' AND t.source_id = ?
          ORDER BY t.id`
-      ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; provenance: string | null }>;
+      ).all(saved.observation.id) as Array<{
+        subject: string;
+        relation: string;
+        object: string;
+        provenance: string | null;
+        superseded_at: string | null;
+        superseded_by_triple_id: number | null;
+      }>;
+      const staleTriple = triples.find((triple) => `${triple.subject} ${triple.relation} ${triple.object}`.includes('payments-service'));
 
       expect(triples.length).toBeGreaterThan(0);
-      expect(triples.some((triple) => `${triple.subject} ${triple.relation} ${triple.object}`.includes('payments-service'))).toBe(false);
+      expect(staleTriple?.superseded_at).toEqual(expect.any(String));
       expect(triples.every((triple) => typeof triple.provenance === 'string' && triple.provenance.length > 0)).toBe(true);
     });
 
@@ -517,47 +583,50 @@ describe('Store', () => {
     });
 
     it('fusion policy: lane order/weights change winner when lexical and semantic disagree', async () => {
-      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
-      const runtime = store as any;
-      const semanticVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
-      const lexicalVector = Array.from({ length: 384 }, (_, i) => (i === 1 ? 0.9 : 0));
-      const queryVector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 0.9 : 0));
-      const provider = {
-        config: store.config.embedding!,
-        embed: async (texts: string[]) => texts.map((text) => {
-          const normalized = text.toLowerCase();
-          if (normalized.includes('semantic') || normalized.includes('rollover')) return semanticVector;
-          if (normalized.includes('rotate key rotate key')) return lexicalVector;
-          return queryVector;
-        }),
-      };
+      store = new Store(':memory:');
       const semanticHit = store.saveObservation({
         title: 'fusion policy semantic',
-        content: 'rotate cryptographic material with staged key rollover',
+        content: 'staged key rotation with semantic evidence',
         project: 'hybrid-test',
       });
       const lexicalHit = store.saveObservation({
         title: 'fusion policy lexical',
-        content: 'rotate key rotate key rotate key',
+        content: 'cipherterm cipherterm cipherterm lexical evidence',
         project: 'hybrid-test',
       });
-      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
-
-      const base = await runtime.hybridRetrieve({
-        query: 'rotate key rollover',
+      const observations = new Map([
+        [semanticHit.observation.id, semanticHit.observation],
+        [lexicalHit.observation.id, lexicalHit.observation],
+      ]);
+      const candidates = [
+        {
+          lane: 'sentence' as const,
+          observationId: semanticHit.observation.id,
+          score: 0.8,
+          source: 'raw_query' as const,
+          text: 'semantic evidence',
+        },
+        {
+          lane: 'lexical' as const,
+          observationId: lexicalHit.observation.id,
+          score: 0.8,
+          source: 'lexical_prefix' as const,
+          text: 'lexical evidence',
+        },
+      ];
+      const base = fuseCandidates(observations, candidates, {
         laneOrder: ['sentence', 'chunk', 'lexical', 'kg'],
         laneWeights: { sentence: 2, chunk: 2, lexical: 0, kg: 0 },
       });
-      const lexicalFavored = await runtime.hybridRetrieve({
-        query: 'rotate key rollover',
+      const lexicalFavored = fuseCandidates(observations, candidates, {
         laneOrder: ['lexical', 'sentence', 'chunk', 'kg'],
         laneWeights: { sentence: 0, chunk: 0, lexical: 3, kg: 0 },
       });
 
-      const baseTop = base.results[0]?.observation?.id;
-      const lexicalTop = lexicalFavored.results[0]?.observation?.id;
-      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(baseTop);
-      expect([semanticHit.observation.id, lexicalHit.observation.id]).toContain(lexicalTop);
+      const baseTop = base[0]?.observation?.id;
+      const lexicalTop = lexicalFavored[0]?.observation?.id;
+      expect(baseTop).toBe(semanticHit.observation.id);
+      expect(lexicalTop).toBe(lexicalHit.observation.id);
       expect(baseTop).not.toBe(lexicalTop);
     });
 
@@ -884,20 +953,30 @@ describe('Store', () => {
     it('graph discovery: can return query-matching graph facts even without lexical or semantic core hits', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
+      const db = store.getDb();
       const saved = store.saveObservation({
         title: 'Graph discovery only',
         content: 'body intentionally does not mention codename',
         project: 'hybrid-test',
       });
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(saved.observation.id, 'Helios', 'HAS_WHAT', 'Redis cache decision', 'hybrid-test', null, 'decision');
+      const subject = db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('test:helios', 'concept', 'Helios').lastInsertRowid;
+      const object = db.prepare(
+        "INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json) VALUES (?, ?, ?, '[]', '{}')"
+      ).run('test:redis-cache-decision', 'concept', 'Redis cache decision').lastInsertRowid;
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          project, topic_key, provenance, confidence, triple_hash, extractor_version
+        ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, 'hybrid-test', NULL, ?, 0.9, ?, 'test')`
+      ).run(subject, object, saved.observation.id, `observation:${saved.observation.id}`, `test:helios:${saved.observation.id}`);
 
       const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
       const hit = response.results.find((r: any) => r.observation.id === saved.observation.id);
       expect(hit).toBeDefined();
       expect(hit.evidence.primary.lane).toBe('kg');
-      expect(hit.evidence.primary.source).toBe('observation_facts');
+      expect(hit.evidence.primary.source).toBe('kg_triples');
     });
 
     it('graph discovery: orders graph-only KG candidates by confidence when lane weight is enabled', async () => {
@@ -976,22 +1055,256 @@ describe('Store', () => {
       expect(response.results[0].score).toBeGreaterThan(response.results[1].score);
     });
 
+    it('graph discovery: deprioritizes and flags superseded KG candidates without dropping them', async () => {
+      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 1 } });
+      const runtime = store as any;
+      const db = store.getDb();
+
+      const saved = store.saveObservation({
+        title: 'Superseded graph fact',
+        content: '**What**: Redis cache',
+        project: 'hybrid-test',
+        topic_key: 'graph/superseded',
+      });
+      store.saveObservation({
+        title: 'Superseded graph fact',
+        content: '**What**: Valkey cache',
+        project: 'hybrid-test',
+        topic_key: 'graph/superseded',
+      });
+
+      const rows = db.prepare(
+        `SELECT kt.id, oe.canonical_name AS object
+         FROM kg_triples kt
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'HAS_WHAT'`
+      ).all(saved.observation.id) as Array<{ id: number; object: string }>;
+      expect(rows.map((row) => row.object)).toEqual(expect.arrayContaining(['Redis cache', 'Valkey cache']));
+
+      const response = await runtime.hybridRetrieve({ query: 'cache', project: 'hybrid-test', limit: 5 });
+      const hit = response.results.find((result: any) => result.observation.id === saved.observation.id);
+      const kgCandidates = hit.evidence.byLane.kg.filter((candidate: any) => candidate.source === 'kg_triples');
+      const oldCandidate = kgCandidates.find((candidate: any) => candidate.text.includes('Redis cache'));
+      const newCandidate = kgCandidates.find((candidate: any) => candidate.text.includes('Valkey cache'));
+
+      expect(oldCandidate).toBeDefined();
+      expect(newCandidate).toBeDefined();
+      expect(oldCandidate.kg?.superseded).toBe(true);
+      expect(newCandidate.kg?.superseded).toBeUndefined();
+      expect(newCandidate.score).toBeGreaterThan(oldCandidate.score);
+    });
+
     it('graph discovery: unrelated KG facts do not flood retrieval', async () => {
       store = new Store(':memory:');
       const runtime = store as any;
       for (let index = 0; index < 5; index += 1) {
-        const saved = store.saveObservation({
+        store.saveObservation({
           title: `Graph flood ${index}`,
           content: 'content does not include codenames',
           project: 'hybrid-test',
         });
-        store.getDb().prepare(
-          'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).run(saved.observation.id, `Other-${index}`, 'HAS_WHAT', `Non matching object ${index}`, 'hybrid-test', null, 'decision');
       }
 
       const response = await runtime.hybridRetrieve({ query: 'helios', project: 'hybrid-test', limit: 5 });
       expect(response.results.length).toBe(0);
+    });
+
+    it('kg multi-hop: introduces a new observation under the kg lane', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios seed',
+        content: 'Helios query seed should be the direct result.',
+        project: 'kg-mh-fusion',
+      });
+      const reached = store.saveObservation({
+        title: 'Silent dependency',
+        content: 'Unrelated body deliberately avoids the query token.',
+        project: 'kg-mh-fusion',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmh:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmh:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmh:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-fusion', hash: 'kgmh-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-fusion', hash: 'kgmh-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-fusion', limit: 5 });
+      const hit = response.results.find((result: any) => result.observation.id === reached.observation.id);
+
+      expect(hit).toBeDefined();
+      expect(hit.evidence.primary.lane).toBe('kg');
+      expect(hit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(hit.evidence.byLane.kg.some((candidate: any) => candidate.source === 'kg_multi_hop')).toBe(true);
+    });
+
+    it('kg multi-hop: preserves direct primary evidence and ranks depth one above depth two', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios depth seed',
+        content: 'Helios direct seed for depth traversal.',
+        project: 'kg-mh-depth',
+      });
+      const direct = store.saveObservation({
+        title: 'Helios direct graph hit',
+        content: 'Unrelated content.',
+        project: 'kg-mh-depth',
+      });
+      const depthOne = store.saveObservation({
+        title: 'Depth one neighbor',
+        content: 'No query token here.',
+        project: 'kg-mh-depth',
+      });
+      const depthTwo = store.saveObservation({
+        title: 'Depth two neighbor',
+        content: 'Still no query token here.',
+        project: 'kg-mh-depth',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmhd:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmhd:auth', 'Auth service');
+      const directEntity = insertKgEntity(store, 'kgmhd:direct', 'Direct KG target');
+      const token = insertKgEntity(store, 'kgmhd:token', 'Token store');
+      const vault = insertKgEntity(store, 'kgmhd:vault', 'Vault');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-depth', confidence: 0.9, hash: 'kgmhd-seed' });
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: directEntity, observationId: direct.observation.id, project: 'kg-mh-depth', confidence: 0.9, hash: 'kgmhd-direct' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: depthOne.observation.id, project: 'kg-mh-depth', confidence: 0.8, hash: 'kgmhd-depth-one' });
+      insertKgTestTriple(store, { subjectId: token, relation: 'DEPENDS_ON', objectId: vault, observationId: depthTwo.observation.id, project: 'kg-mh-depth', confidence: 0.8, hash: 'kgmhd-depth-two' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-depth', limit: 10 });
+      const directHit = response.results.find((result: any) => result.observation.id === direct.observation.id);
+      const depthOneHit = response.results.find((result: any) => result.observation.id === depthOne.observation.id);
+      const depthTwoHit = response.results.find((result: any) => result.observation.id === depthTwo.observation.id);
+
+      expect(directHit.evidence.primary.source).toBe('kg_triples');
+      expect(depthOneHit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(depthTwoHit.evidence.primary.source).toBe('kg_multi_hop');
+      expect(depthOneHit.evidence.primary.kg?.depth).toBe(1);
+      expect(depthTwoHit.evidence.primary.kg?.depth).toBe(2);
+      expect(depthTwoHit.evidence.primary.text).toContain('Auth service');
+      expect(depthTwoHit.evidence.primary.text).toContain('DEPENDS_ON');
+      expect(depthTwoHit.evidence.primary.text).toContain('Token store');
+      expect(depthOneHit.score).toBeGreaterThan(depthTwoHit.score);
+      expect(depthOneHit.score).toBeCloseTo(0.8 * 0.7, 8);
+      expect(depthTwoHit.score).toBeCloseTo(0.8 * 0.5 * 0.7, 8);
+      expect(depthOneHit.score).toBeLessThan(directHit.score);
+    });
+
+    it('fusion: direct KG candidate wins primary evidence over multi-hop for the same observation', () => {
+      store = new Store(':memory:');
+      const saved = store.saveObservation({
+        title: 'Direct and multi-hop candidate',
+        content: 'Direct graph evidence should remain primary.',
+        project: 'kg-mh-dedup',
+      });
+      const observations = new Map([[saved.observation.id, saved.observation]]);
+
+      const [hit] = fuseCandidates(observations, [
+        {
+          lane: 'kg',
+          observationId: saved.observation.id,
+          score: 0.9,
+          source: 'kg_triples',
+          text: 'Direct KG evidence',
+        },
+        {
+          lane: 'kg',
+          observationId: saved.observation.id,
+          score: 0.8 * (0.7 / 0.9),
+          source: 'kg_multi_hop',
+          text: 'Multi-hop KG evidence',
+          kg: { provenance: 'test:multi-hop', confidence: 0.8, sourceType: 'observation' },
+        },
+      ]);
+
+      expect(hit.observation.id).toBe(saved.observation.id);
+      expect(hit.evidence.primary.source).toBe('kg_triples');
+      expect(hit.evidence.byLane.kg?.map((candidate) => candidate.source)).toEqual(['kg_triples', 'kg_multi_hop']);
+    });
+
+    it('kg multi-hop: flag-off skips traversal and leaves direct output unchanged', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+        knowledgeGraph: {
+          kgMultiHopEnabled: false,
+          kgMaxDepth: 2,
+          kgNeighborhoodLimit: 50,
+          kgMultiHopWeight: 0.7,
+          kgDepthDecay: 0.5,
+          kgTraversalTimeoutMs: 50,
+          kgRelationAllowList: ['USES', 'DEPENDS_ON'],
+        },
+      });
+      const runtime = store as any;
+      let traversalCalls = 0;
+      runtime.queryKnowledgeMultiHopLane = () => {
+        traversalCalls += 1;
+        return [];
+      };
+      const seed = store.saveObservation({
+        title: 'Helios disabled seed',
+        content: 'Helios direct seed only.',
+        project: 'kg-mh-off',
+      });
+      const reached = store.saveObservation({
+        title: 'Disabled neighbor',
+        content: 'Unrelated body.',
+        project: 'kg-mh-off',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmho:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmho:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmho:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-off', hash: 'kgmho-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-off', hash: 'kgmho-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-off', limit: 5 });
+
+      expect(traversalCalls).toBe(0);
+      expect(response.results.map((result: any) => result.observation.id)).toEqual([seed.observation.id]);
+      expect(response.results.flatMap((result: any) => result.evidence.byLane.kg ?? []).some((candidate: any) => candidate.source === 'kg_multi_hop')).toBe(false);
+    });
+
+    it('kg multi-hop: timeout degrade returns direct results and signals fallback', async () => {
+      store = new Store(':memory:', {
+        retrievalDefaults: { minSemanticScore: 1 },
+        knowledgeGraph: {
+          kgMultiHopEnabled: true,
+          kgMaxDepth: 2,
+          kgNeighborhoodLimit: 50,
+          kgMultiHopWeight: 0.7,
+          kgDepthDecay: 0.5,
+          kgTraversalTimeoutMs: 0,
+          kgRelationAllowList: ['USES', 'DEPENDS_ON'],
+        },
+      });
+      const runtime = store as any;
+      const seed = store.saveObservation({
+        title: 'Helios timeout seed',
+        content: 'Helios direct seed.',
+        project: 'kg-mh-timeout',
+      });
+      const reached = store.saveObservation({
+        title: 'Timeout neighbor',
+        content: 'Unrelated body.',
+        project: 'kg-mh-timeout',
+      });
+      store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+      const helios = insertKgEntity(store, 'kgmht:helios', 'Helios');
+      const auth = insertKgEntity(store, 'kgmht:auth', 'Auth service');
+      const token = insertKgEntity(store, 'kgmht:token', 'Token store');
+      insertKgTestTriple(store, { subjectId: helios, relation: 'USES', objectId: auth, observationId: seed.observation.id, project: 'kg-mh-timeout', hash: 'kgmht-seed' });
+      insertKgTestTriple(store, { subjectId: auth, relation: 'DEPENDS_ON', objectId: token, observationId: reached.observation.id, project: 'kg-mh-timeout', hash: 'kgmht-reached' });
+
+      const response = await runtime.hybridRetrieve({ query: 'helios', project: 'kg-mh-timeout', limit: 5 });
+
+      expect(response.degradedFallback).toContain('kg_multi_hop');
+      expect(response.results.map((result: any) => result.observation.id)).toEqual([seed.observation.id]);
     });
 
     it('fusion: deterministically merges lane evidence and uses stable tie-breakers', async () => {
@@ -1002,7 +1315,7 @@ describe('Store', () => {
       const response = await runtime.hybridRetrieve({ query: 'encrypt data rotate' });
       expect(response.results.length).toBeGreaterThanOrEqual(2);
       const ids = response.results.map((r: any) => r.observation.id);
-      expect([...ids].sort((a, b) => b - a)).toEqual(ids);
+      expect([...ids].sort((a, b) => a - b)).toEqual(ids);
     });
 
     it('HyDE: embeds raw query always and adds hypothetical embedding when available', async () => {
@@ -1147,7 +1460,7 @@ describe('Store', () => {
       expect(hit.evidence.promotedParent).toBeUndefined();
     });
 
-    it('knowledge graph: defines taxonomy breadth, provenance/confidence, dedupe, and observation_facts fallback', () => {
+    it('knowledge graph: defines taxonomy breadth, provenance/confidence, dedupe, and no default observation_facts table', () => {
       store = new Store(':memory:');
       const runtime = store as any;
       const kg = runtime.extractKnowledgeTriples?.({
@@ -1173,11 +1486,12 @@ describe('Store', () => {
       const factsFallback = store.getDb().prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name = 'observation_facts'"
       ).get() as { name?: string } | undefined;
-      expect(factsFallback?.name).toBe('observation_facts');
+      expect(factsFallback).toBeUndefined();
     });
 
     it('observation_facts fallback: keeps kg_triples evidence and adds matching facts as complementary provenance', async () => {
-      store = new Store(':memory:', { retrievalDefaults: { minSemanticScore: 0 } });
+      store = new Store(':memory:', { graphFactsSource: 'legacy', retrievalDefaults: { minSemanticScore: 0 } });
+      createLegacyObservationFactsTable(store);
       const runtime = store as any;
       const saved = store.saveObservation({
         title: 'KG + facts',
@@ -1274,6 +1588,66 @@ describe('Store', () => {
         object: 'context budget',
         confidence: 0.94,
       });
+    });
+
+    it('background indexing: LLM enrichment keeps deterministic triples current when the model omits them', async () => {
+      store = new Store(':memory:', {
+        kgLlm: {
+          enabled: true,
+          provider: 'ollama',
+          model: 'qwen2.5:7b-instruct',
+          baseUrl: 'http://127.0.0.1:11434',
+          timeoutMs: 8000,
+          minContentChars: 100,
+        },
+      } as any);
+      const saved = store.saveObservation({
+        title: 'Long KG union source',
+        content: [
+          'Auth service depends on Redis cache.',
+          ...Array.from({ length: 10 }, (_, index) => (
+            `Turn ${index}: long conversation context keeps the LLM enrichment gate enabled.`
+          )),
+        ].join('\n'),
+        project: 'hybrid-test',
+      });
+
+      const runtime = store as any;
+      await runtime.processSemanticJobs({
+        limit: 20,
+        kgLlmExtractor: {
+          extract: async () => [
+            {
+              subject: 'LLM Router',
+              relation: 'DEPENDS_ON',
+              object: 'Context Budget',
+              confidence: 0.94,
+            },
+          ],
+        },
+      });
+
+      const rows = store.getDb().prepare(
+        `SELECT se.canonical_name AS subject, kt.relation, oe.canonical_name AS object, kt.superseded_at
+         FROM kg_triples kt
+         JOIN kg_entities se ON se.id = kt.subject_entity_id
+         JOIN kg_entities oe ON oe.id = kt.object_entity_id
+         WHERE kt.source_id = ? AND kt.relation = 'DEPENDS_ON'
+         ORDER BY kt.id`
+      ).all(saved.observation.id) as Array<{ subject: string; relation: string; object: string; superseded_at: string | null }>;
+
+      expect(rows).toContainEqual(expect.objectContaining({
+        subject: 'auth service',
+        relation: 'DEPENDS_ON',
+        object: 'redis cache',
+        superseded_at: null,
+      }));
+      expect(rows).toContainEqual(expect.objectContaining({
+        subject: 'llm router',
+        relation: 'DEPENDS_ON',
+        object: 'context budget',
+        superseded_at: null,
+      }));
     });
 
     it('background indexing: records optional KG LLM failures as job telemetry while completing deterministic KG', async () => {

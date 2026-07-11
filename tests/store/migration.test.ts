@@ -110,6 +110,238 @@ describe('Store — Migration behaviors', () => {
     }).not.toThrow();
   });
 
+  it('creates maintenance metadata tables idempotently during migrations', () => {
+    const db = store.getDb();
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+    }).not.toThrow();
+
+    const tableNames = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'maintenance_%' ORDER BY name"
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+    const indexes = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_maintenance_%' ORDER BY name"
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+
+    expect(tableNames).toEqual([
+      'maintenance_consolidation_members',
+      'maintenance_consolidations',
+      'maintenance_decay',
+      'maintenance_reflection_sources',
+      'maintenance_reflections',
+      'maintenance_runs',
+    ]);
+    expect(indexes).toContain('idx_maintenance_decay_state');
+  });
+
+  it('drops legacy observation_facts table and indexes idempotently in semantic migrations', () => {
+    const db = store.getDb();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_facts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        observation_id INTEGER NOT NULL,
+        subject        TEXT NOT NULL,
+        relation       TEXT NOT NULL,
+        object         TEXT NOT NULL,
+        project        TEXT,
+        topic_key      TEXT,
+        type           TEXT NOT NULL,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+      CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+    `);
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+    }).not.toThrow();
+
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+    ).get() as { name: string } | undefined;
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_observation_facts_%'"
+    ).all() as Array<{ name: string }>;
+
+    expect(table).toBeUndefined();
+    expect(indexes).toEqual([]);
+  });
+
+  it('runMigrationsWithSemantic remains idempotent after the legacy graph table has already been dropped', () => {
+    const db = store.getDb();
+
+    expect(() => {
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {
+        sqliteVecReady: true,
+        embeddingDimensions: 384,
+        embeddingConfigHash: 'post-drop-idempotent',
+      });
+    }).not.toThrow();
+
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+    ).get() as { name: string } | undefined;
+    expect(table).toBeUndefined();
+  });
+
+  it('adds nullable kg_triples supersession columns idempotently to legacy databases', () => {
+    const db = new Database(':memory:');
+
+    try {
+      for (const pragma of PRAGMAS) {
+        db.exec(pragma);
+      }
+
+      db.exec(`
+        CREATE TABLE observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id TEXT,
+          session_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          tool_name TEXT,
+          project TEXT,
+          topic_key TEXT
+        );
+
+        CREATE TABLE user_prompts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sync_id TEXT,
+          session_id TEXT NOT NULL,
+          content TEXT NOT NULL
+        );
+
+        CREATE TABLE kg_entities (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_key     TEXT NOT NULL UNIQUE,
+          entity_type    TEXT NOT NULL,
+          canonical_name TEXT NOT NULL,
+          aliases_json   TEXT,
+          metadata_json  TEXT,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE kg_triples (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_entity_id INTEGER NOT NULL,
+          relation         TEXT NOT NULL,
+          object_entity_id INTEGER NOT NULL,
+          source_type      TEXT NOT NULL CHECK(source_type IN ('observation','prompt','session_summary','unknown')),
+          source_id        INTEGER,
+          source_sync_id   TEXT,
+          project          TEXT,
+          topic_key        TEXT,
+          provenance       TEXT NOT NULL,
+          confidence       REAL NOT NULL DEFAULT 0.0,
+          triple_hash      TEXT NOT NULL UNIQUE,
+          extractor_version TEXT,
+          created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO kg_entities(entity_key, entity_type, canonical_name)
+        VALUES ('entity:a', 'system', 'a'), ('entity:b', 'system', 'b');
+        INSERT INTO kg_triples(
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          provenance, confidence, triple_hash
+        )
+        VALUES (1, 'USES', 2, 'observation', 42, 'legacy', 0.9, 'legacy-hash');
+      `);
+
+      expect(db.prepare('PRAGMA table_info(kg_triples)').all()).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'superseded_by_triple_id' }),
+          expect.objectContaining({ name: 'superseded_at' }),
+        ])
+      );
+
+      runMigrationsWithSemantic(db, {});
+      runMigrationsWithSemantic(db, {});
+
+      const columns = db.prepare('PRAGMA table_info(kg_triples)').all() as Array<{
+        name: string;
+        notnull: number;
+        type: string;
+      }>;
+      const byName = new Map(columns.map((column) => [column.name, column]));
+      const row = db.prepare(
+        'SELECT superseded_by_triple_id, superseded_at FROM kg_triples WHERE triple_hash = ?'
+      ).get('legacy-hash') as { superseded_by_triple_id: number | null; superseded_at: string | null };
+      const index = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_kg_triples_superseded'"
+      ).get() as { name?: string } | undefined;
+      const pruneIndex = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_kg_triples_slot_superseded'"
+      ).get() as { name?: string } | undefined;
+
+      expect(byName.get('superseded_by_triple_id')).toMatchObject({ type: 'INTEGER', notnull: 0 });
+      expect(byName.get('superseded_at')).toMatchObject({ type: 'TEXT', notnull: 0 });
+      expect(row).toEqual({ superseded_by_triple_id: null, superseded_at: null });
+      expect(index?.name).toBe('idx_kg_triples_superseded');
+      expect(pruneIndex?.name).toBe('idx_kg_triples_slot_superseded');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('legacy graphFactsSource can rebuild a recreated legacy table for rollback fixtures', () => {
+    const legacyStore = new Store(':memory:', { graphFactsSource: 'legacy' });
+
+    try {
+      const db = legacyStore.getDb();
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS observation_facts (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id INTEGER NOT NULL,
+          subject        TEXT NOT NULL,
+          relation       TEXT NOT NULL,
+          object         TEXT NOT NULL,
+          project        TEXT,
+          topic_key      TEXT,
+          type           TEXT NOT NULL,
+          created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_observation ON observation_facts(observation_id);
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_project ON observation_facts(project);
+        CREATE INDEX IF NOT EXISTS idx_observation_facts_topic ON observation_facts(topic_key);
+      `);
+      const saved = legacyStore.saveObservation({
+        title: 'Rollback graph fixture',
+        type: 'decision',
+        project: 'rollback-project',
+        topic_key: 'rollback/graph',
+        content: '**What**: Recreated legacy table remains readable',
+      }).observation;
+      db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(saved.id);
+
+      const result = legacyStore.rebuildObservationFacts({ project: 'rollback-project' });
+
+      expect(result).toMatchObject({
+        project: 'rollback-project',
+        observations_scanned: 1,
+        facts_deleted: 0,
+        facts_created: 4,
+      });
+      expect(legacyStore.getObservationFacts({ observation_id: saved.id }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+        'HAS_WHAT',
+      ]);
+    } finally {
+      legacyStore.close();
+    }
+  });
+
   it('rebuilds observations FTS when topic_key column is missing', () => {
     const db = store.getDb();
     const saved = store.saveObservation({

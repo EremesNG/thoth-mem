@@ -214,6 +214,167 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/graph/prune': {
+        post: {
+          summary: 'Prune superseded graph history',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/PruneGraphRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Graph prune result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/PruneGraphResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities/rebuild': {
+        post: {
+          summary: 'Rebuild project community summaries',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CommunityProjectRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Community rebuild result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityRebuildResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities/preview': {
+        post: {
+          summary: 'Preview project community summaries',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/CommunityPreviewRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Community preview result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityPreviewResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities/status': {
+        get: {
+          summary: 'Get project community summary status',
+          parameters: [{ name: 'project', in: 'query', required: true, schema: { type: 'string' } }],
+          responses: {
+            '200': {
+              description: 'Community state result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/CommunityStateResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/communities': {
+        delete: {
+          summary: 'Drop derived community summary artifacts',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DropCommunitiesRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Drop community summaries result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DropCommunitiesResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/maintenance/preview': {
+        post: {
+          summary: 'Preview memory maintenance',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/MaintenanceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Maintenance preview result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/MaintenanceRunPreview' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/maintenance/apply': {
+        post: {
+          summary: 'Apply memory maintenance',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/MaintenanceRequest' },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Maintenance apply result',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/MaintenanceRunResult' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -530,7 +691,15 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
       '/observatory/ledger/{id}': {
         get: {
           summary: 'Get structured ledger/provenance detail for observation',
-          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } },
+            {
+              name: 'include_superseded',
+              in: 'query',
+              description: 'Set to true to include historical superseded KG facts. Any other value preserves current-only results.',
+              schema: { type: 'boolean', default: false },
+            },
+          ],
           responses: { '200': { description: 'Ledger detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryLedgerResponse' } } } }, '404': { $ref: '#/components/responses/Error' } },
         },
       },
@@ -633,6 +802,12 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
             { name: 'topic_key', in: 'query', schema: { type: 'string' } },
             { name: 'relation', in: 'query', schema: GRAPH_RELATION_SCHEMA },
+            {
+              name: 'include_superseded',
+              in: 'query',
+              description: 'Set to true to include historical superseded KG facts. Any other value preserves current-only results.',
+              schema: { type: 'boolean', default: false },
+            },
             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
             { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 200, maximum: 20000, default: 6000 } },
           ],
@@ -642,6 +817,27 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
               content: {
                 'application/json': {
                   schema: { $ref: '#/components/schemas/ProjectGraphResponse' },
+                },
+              },
+            },
+            '400': { $ref: '#/components/responses/Error' },
+          },
+        },
+      },
+      '/projects/{project}/communities': {
+        get: {
+          summary: 'Get bounded committed project community summaries',
+          parameters: [
+            { name: 'project', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 0, maximum: 200 } },
+            { name: 'max_chars', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 20000 } },
+          ],
+          responses: {
+            '200': {
+              description: 'Project community summaries',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ProjectCommunitiesResponse' },
                 },
               },
             },
@@ -1142,6 +1338,216 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             facts_created: { type: 'integer' },
           },
           required: ['project', 'observations_scanned', 'facts_deleted', 'facts_created'],
+        },
+        PruneGraphRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            dryRun: { type: 'boolean' },
+          },
+        },
+        PruneGraphResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            dry_run: { type: 'boolean' },
+            slots_scanned: { type: 'integer' },
+            triples_pruned: { type: 'integer' },
+            entities_pruned: { type: 'integer' },
+            dangling_refs_nulled: { type: 'integer' },
+            superseded_before: { type: 'integer' },
+            superseded_after: { type: 'integer' },
+          },
+          required: [
+            'project',
+            'dry_run',
+            'slots_scanned',
+            'triples_pruned',
+            'entities_pruned',
+            'dangling_refs_nulled',
+            'superseded_before',
+            'superseded_after',
+          ],
+        },
+        CommunityProjectRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+          },
+          required: ['project'],
+        },
+        CommunityPreviewRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            limit: { type: 'integer', minimum: 0, maximum: 200 },
+            max_chars: { type: 'integer', minimum: 1, maximum: 20000 },
+          },
+          required: ['project'],
+        },
+        DropCommunitiesRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            all: { type: 'boolean' },
+          },
+          description: 'Provide either project or all.',
+        },
+        CommunitySummarySnapshot: {
+          type: 'object',
+          properties: {
+            community_id: { type: 'string' },
+            level: { type: 'integer' },
+            summary_text: { type: 'string' },
+            entity_count: { type: 'integer' },
+            triple_count: { type: 'integer' },
+            source_observation_count: { type: 'integer' },
+            top_entities: { type: 'array', items: { type: 'string' } },
+            top_relations: { type: 'array', items: { type: 'string' } },
+            source_observation_ids: { type: 'array', items: { type: 'integer' } },
+            confidence: { type: 'number' },
+            degraded: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+          },
+          required: [
+            'community_id',
+            'level',
+            'summary_text',
+            'entity_count',
+            'triple_count',
+            'source_observation_count',
+            'top_entities',
+            'top_relations',
+            'source_observation_ids',
+            'confidence',
+            'degraded',
+            'degraded_reasons',
+          ],
+        },
+        CommunityRebuildResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            run_id: { type: 'integer' },
+            status: { type: 'string', enum: ['running', 'committed', 'failed'] },
+            freshness: { type: 'string', enum: ['disabled', 'missing', 'fresh', 'stale', 'rebuilding', 'failed', 'empty', 'degraded'] },
+            algorithm: { type: 'string', enum: ['connected_components'] },
+            graph_signature: { type: 'string', nullable: true },
+            communities_created: { type: 'integer' },
+            entities_scanned: { type: 'integer' },
+            triples_scanned: { type: 'integer' },
+            source_observations_scanned: { type: 'integer' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            error: { type: 'string' },
+          },
+          required: ['project', 'run_id', 'status', 'freshness', 'algorithm', 'graph_signature', 'communities_created', 'entities_scanned', 'triples_scanned', 'source_observations_scanned', 'degraded_reasons'],
+        },
+        CommunityPreviewResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            state: { type: 'string' },
+            would_commit: { type: 'boolean' },
+            graph_signature: { type: 'string', nullable: true },
+            communities: { type: 'array', items: { $ref: '#/components/schemas/CommunitySummarySnapshot' } },
+            entities_scanned: { type: 'integer' },
+            triples_scanned: { type: 'integer' },
+            source_observations_scanned: { type: 'integer' },
+            truncated: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['project', 'state', 'would_commit', 'graph_signature', 'communities', 'entities_scanned', 'triples_scanned', 'source_observations_scanned', 'truncated', 'degraded_reasons'],
+        },
+        CommunityStateResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            state: { type: 'string' },
+            run_id: { type: 'integer', nullable: true },
+            latest_committed_run_id: { type: 'integer', nullable: true },
+            graph_signature: { type: 'string', nullable: true },
+            current_graph_signature: { type: 'string', nullable: true },
+            communities_count: { type: 'integer' },
+            entities_count: { type: 'integer' },
+            triples_count: { type: 'integer' },
+            source_observations_count: { type: 'integer' },
+            degraded: { type: 'boolean' },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            error: { type: 'string', nullable: true },
+            updated_at: { type: 'string', nullable: true },
+          },
+          required: ['project', 'state', 'run_id', 'latest_committed_run_id', 'graph_signature', 'current_graph_signature', 'communities_count', 'entities_count', 'triples_count', 'source_observations_count', 'degraded', 'degraded_reasons', 'error', 'updated_at'],
+        },
+        ProjectCommunitiesResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string' },
+            state: { type: 'string' },
+            run_id: { type: 'integer', nullable: true },
+            graph_signature: { type: 'string', nullable: true },
+            degraded_reasons: { type: 'array', items: { type: 'string' } },
+            communities: { type: 'array', items: { $ref: '#/components/schemas/CommunitySummarySnapshot' } },
+          },
+          required: ['project', 'state', 'run_id', 'graph_signature', 'degraded_reasons', 'communities'],
+        },
+        DropCommunitiesResponse: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', nullable: true },
+            runs_deleted: { type: 'integer' },
+            communities_deleted: { type: 'integer' },
+            members_deleted: { type: 'integer' },
+            evidence_deleted: { type: 'integer' },
+          },
+          required: ['project', 'runs_deleted', 'communities_deleted', 'members_deleted', 'evidence_deleted'],
+        },
+        MaintenanceRequest: {
+          type: 'object',
+          properties: {
+            all: { type: 'boolean' },
+            project: { type: 'string' },
+            topic_key: { type: 'string' },
+            topic_prefix: { type: 'string' },
+          },
+          description: 'Provide exactly one scope field.',
+        },
+        MaintenanceCounts: {
+          type: 'object',
+          properties: {
+            records_scanned: { type: 'integer' },
+            consolidation_candidates: { type: 'integer' },
+            reflection_candidates: { type: 'integer' },
+            decay_candidates: { type: 'integer' },
+            review_required: { type: 'integer' },
+          },
+          required: ['records_scanned', 'consolidation_candidates', 'reflection_candidates', 'decay_candidates', 'review_required'],
+        },
+        MaintenanceRunPreview: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean', enum: [true] },
+            scope: { type: 'object' },
+            counts: { $ref: '#/components/schemas/MaintenanceCounts' },
+            consolidations: { type: 'array', items: { type: 'object' } },
+            reflections: { type: 'array', items: { type: 'object' } },
+            decays: { type: 'array', items: { type: 'object' } },
+            degraded: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['dry_run', 'scope', 'counts', 'consolidations', 'reflections', 'decays', 'degraded'],
+        },
+        MaintenanceRunResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean', enum: [false] },
+            run_id: { type: 'integer' },
+            scope: { type: 'object' },
+            counts: { $ref: '#/components/schemas/MaintenanceCounts' },
+            consolidations: { type: 'array', items: { type: 'object' } },
+            reflections: { type: 'array', items: { type: 'object' } },
+            decays: { type: 'array', items: { type: 'object' } },
+            degraded: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['dry_run', 'run_id', 'scope', 'counts', 'consolidations', 'reflections', 'decays', 'degraded'],
         },
         DeleteProjectRequest: {
           type: 'object',
@@ -1721,6 +2127,10 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             topic_key: { type: 'string', nullable: true },
             type: OBSERVATION_TYPE_SCHEMA,
             created_at: { type: 'string' },
+            superseded: {
+              type: 'boolean',
+              description: 'Present and true only for historical KG facts when include_superseded=true.',
+            },
           },
           required: ['id', 'observation_id', 'subject', 'relation', 'object', 'project', 'topic_key', 'type', 'created_at'],
         },

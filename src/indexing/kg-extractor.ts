@@ -11,12 +11,15 @@ export const KG_ENTITY_TYPES = [
 export const KG_RELATION_TYPES = [
   'USES', 'DEPENDS_ON', 'BELONGS_TO', 'PART_OF', 'OWNS', 'CONFIGURES', 'IMPLEMENTS', 'RUNS_IN', 'DEPLOYS_TO', 'CAUSES',
   'FIXES', 'BLOCKS', 'UNBLOCKS', 'AFFECTS', 'REFERENCES', 'MENTIONS', 'EXTRACTED_FROM', 'HAS_TOPIC', 'HAS_SCOPE', 'PRECEDES',
-  'FOLLOWS', 'AUTHENTICATES_WITH', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED',
+  'FOLLOWS', 'AUTHENTICATES_WITH', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED', 'SUPERSEDES',
 ] as const;
 
 type EntityType = typeof KG_ENTITY_TYPES[number];
 type RelationType = typeof KG_RELATION_TYPES[number];
 const KG_RELATION_TYPE_SET = new Set<string>(KG_RELATION_TYPES);
+const STRUCTURAL_RELATION_TYPE_SET = new Set<string>(
+  KG_RELATION_TYPES.filter((relation) => relation !== 'SUPERSEDES')
+);
 
 export interface ExtractedTriple {
   subject: string;
@@ -100,6 +103,17 @@ const RELATION_PATTERNS: Array<{
   { tokens: ['affects'], relation: 'AFFECTS', confidence: 0.72 },
   { tokens: ['references'], relation: 'REFERENCES', confidence: 0.7 },
   { tokens: ['mentions'], relation: 'MENTIONS', confidence: 0.65 },
+];
+
+export const SUPERSESSION_CONTENT_PATTERNS: Array<{
+  pattern: RegExp;
+  confidence: number;
+}> = [
+  { pattern: /\bno longer\b/i, confidence: 0.74 },
+  { pattern: /\breplaced by\b/i, confidence: 0.76 },
+  { pattern: /\bdeprecated\b/i, confidence: 0.72 },
+  { pattern: /\bchanged to\b/i, confidence: 0.74 },
+  { pattern: /\bsuperseded by\b/i, confidence: 0.78 },
 ];
 
 const STRUCTURED_SECTION_RELATIONS: Record<string, RelationType> = {
@@ -191,7 +205,7 @@ function extractStructuredSections(content: string): Array<{ relation: RelationT
     if (!currentRelation) return;
     const object = currentValue.join('\n').trim();
     if (object.length > 0) {
-      sections.push({ relation: currentRelation, object: object.slice(0, 500) });
+      sections.push({ relation: currentRelation, object });
     }
   };
 
@@ -258,7 +272,11 @@ function cleanExplicitEntity(value: string): string | null {
 
 function cleanLlmRelation(value: string): RelationType | null {
   const relation = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
-  return KG_RELATION_TYPE_SET.has(relation) ? relation as RelationType : null;
+  return STRUCTURAL_RELATION_TYPE_SET.has(relation) ? relation as RelationType : null;
+}
+
+function isStructuralRelation(value: string): value is RelationType {
+  return STRUCTURAL_RELATION_TYPE_SET.has(value);
 }
 
 function cleanConfidence(value: number | undefined, fallback: number): number {
@@ -289,14 +307,14 @@ function extractExplicitGraphTriples(content: string): Array<{ subject: string; 
       }
 
       const relation = match[2].toUpperCase();
-      if (!KG_RELATION_TYPE_SET.has(relation)) {
+      if (!isStructuralRelation(relation)) {
         break;
       }
 
       const subject = cleanExplicitEntity(match[1]);
       const object = cleanExplicitEntity(match[3]);
       if (subject && object && subject !== object) {
-        triples.push({ subject, relation: relation as RelationType, object });
+        triples.push({ subject, relation, object });
       }
       break;
     }
@@ -315,7 +333,7 @@ function extractStructuredTripleBlocks(content: string): Array<{ subject: string
     }
 
     const relation = current.relation.trim().toUpperCase().replace(/[\s-]+/g, '_');
-    if (!KG_RELATION_TYPE_SET.has(relation)) {
+    if (!isStructuralRelation(relation)) {
       current = {};
       return;
     }
@@ -323,7 +341,7 @@ function extractStructuredTripleBlocks(content: string): Array<{ subject: string
     const subject = cleanExplicitEntity(current.subject);
     const object = cleanExplicitEntity(current.object);
     if (subject && object && subject !== object) {
-      triples.push({ subject, relation: relation as RelationType, object });
+      triples.push({ subject, relation, object });
     }
     current = {};
   };

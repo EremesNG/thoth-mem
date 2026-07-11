@@ -2,6 +2,7 @@ import { getOpenApiSpec } from './http-openapi.js';
 import type {
   ExportData,
   ListOperationTracesInput,
+  MaintenanceScope,
   ObservationFact,
   Observation,
   ObservationScope,
@@ -17,6 +18,7 @@ import type {
 import { OBSERVATION_TYPES } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
+import { metadataFromResolution, resolveSaveIdentity } from './store/identity.js';
 import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from './tools/project-views.js';
 import { suggestTopicKey } from './utils/topic-key.js';
 import type { EmbeddingProviderAdapter } from './retrieval/providers.js';
@@ -59,6 +61,14 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'rebuild-index', origin: 'http', label: 'Rebuild index', kind: 'indexing', method: 'POST', path: '/index/rebuild', description: 'Queue semantic index rebuild work and optionally process queued jobs.' },
   { id: 'index-status', origin: 'http', label: 'Index status', kind: 'indexing', method: 'GET', path: '/index/status', description: 'Inspect semantic lane readiness, queue counts, coverage, and recent failures.' },
   { id: 'rebuild-graph', origin: 'http', label: 'Rebuild graph', kind: 'indexing', method: 'POST', path: '/graph/rebuild', description: 'Rebuild deterministic graph-lite facts from saved observations.' },
+  { id: 'prune-graph', origin: 'http', label: 'Prune graph', kind: 'indexing', method: 'POST', path: '/graph/prune', description: 'Bound superseded KG history using the configured keep-N policy.' },
+  { id: 'community-rebuild', origin: 'http', label: 'Rebuild communities', kind: 'admin', method: 'POST', path: '/communities/rebuild', description: 'Rebuild derived KG community summaries for one project.' },
+  { id: 'community-preview', origin: 'http', label: 'Preview communities', kind: 'admin', method: 'POST', path: '/communities/preview', description: 'Preview bounded derived KG community summaries without committing them.' },
+  { id: 'community-status', origin: 'http', label: 'Community status', kind: 'admin', method: 'GET', path: '/communities/status', description: 'Inspect derived KG community summary state for one project.' },
+  { id: 'project-communities', origin: 'http', label: 'Project communities', kind: 'read', method: 'GET', path: '/projects/:project/communities', description: 'Read bounded committed community summaries for one project.' },
+  { id: 'community-drop', origin: 'http', label: 'Drop communities', kind: 'admin', method: 'DELETE', path: '/communities', description: 'Drop derived KG community summary artifacts for one project or all projects.' },
+  { id: 'maintenance-preview', origin: 'http', label: 'Maintenance preview', kind: 'admin', method: 'POST', path: '/maintenance/preview', description: 'Preview scoped consolidation, reflection, and decay maintenance without writes.' },
+  { id: 'maintenance-apply', origin: 'http', label: 'Maintenance apply', kind: 'admin', method: 'POST', path: '/maintenance/apply', description: 'Apply scoped consolidation, reflection, and decay maintenance transactionally.' },
   { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
   { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
   { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
@@ -69,6 +79,11 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'mcp-mem-session', origin: 'mcp', label: 'mem_session', kind: 'write', target: 'mem_session', description: 'Start, checkpoint, or summarize a memory session.' },
   { id: 'cli-rebuild-index', origin: 'cli', label: 'rebuild-index', kind: 'indexing', target: 'rebuild-index', description: 'CLI equivalent for queueing or inspecting semantic index rebuild jobs.' },
   { id: 'cli-rebuild-graph', origin: 'cli', label: 'rebuild-graph', kind: 'indexing', target: 'rebuild-graph', description: 'CLI equivalent for rebuilding graph-lite facts.' },
+  { id: 'cli-prune-graph', origin: 'cli', label: 'prune-graph', kind: 'indexing', target: 'prune-graph', description: 'CLI equivalent for bounding superseded graph history.' },
+  { id: 'cli-rebuild-communities', origin: 'cli', label: 'rebuild-communities', kind: 'admin', target: 'rebuild-communities', description: 'CLI equivalent for rebuilding derived KG community summaries.' },
+  { id: 'cli-preview-communities', origin: 'cli', label: 'preview-communities', kind: 'admin', target: 'preview-communities', description: 'CLI equivalent for previewing derived KG community summaries.' },
+  { id: 'cli-communities-status', origin: 'cli', label: 'communities-status', kind: 'admin', target: 'communities-status', description: 'CLI equivalent for inspecting derived KG community state.' },
+  { id: 'cli-drop-communities', origin: 'cli', label: 'drop-communities', kind: 'admin', target: 'drop-communities', description: 'CLI equivalent for dropping derived KG community artifacts.' },
   { id: 'cli-version', origin: 'cli', label: 'version', kind: 'read', target: 'version', description: 'CLI equivalent for package version output.' },
 ];
 
@@ -218,6 +233,18 @@ function parseOptionalBoolean(value: string | null, fieldName: string): boolean 
   throw new HttpRouteError(400, `Invalid boolean field: ${fieldName}`);
 }
 
+function optionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'boolean') {
+    throw new HttpRouteError(400, `Invalid field: ${fieldName}`);
+  }
+
+  return value;
+}
+
 function parseObservationType(value: unknown, fieldName: string): ObservationType | undefined {
   if (value === undefined) {
     return undefined;
@@ -290,6 +317,10 @@ function parseGraphRelation(value: string | null, fieldName: string): GraphRelat
   return value as GraphRelation;
 }
 
+function parseExplicitTrueQuery(value: string | null): boolean {
+  return value === 'true';
+}
+
 function parseObservationId(params: Record<string, string>): number {
   return parseRequiredInteger(params.id, 'id', 1);
 }
@@ -304,9 +335,15 @@ function parseProjectParam(params: Record<string, string>): string {
   return decodeURIComponent(project);
 }
 
-function getProjectGraphFacts(store: Store, project: string, topicKey?: string, relation?: GraphRelation): ObservationFact[] {
+function getProjectGraphFacts(
+  store: Store,
+  project: string,
+  topicKey?: string,
+  relation?: GraphRelation,
+  includeSuperseded?: boolean,
+): ObservationFact[] {
   return store
-    .getObservationFacts({ project, topic_key: topicKey })
+    .getObservationFacts({ project, topic_key: topicKey, include_superseded: includeSuperseded })
     .filter((fact) => !relation || fact.relation === relation);
 }
 
@@ -346,10 +383,6 @@ function toStatsResponse(store: Store): { sessions: number; observations: number
     prompts: stats.total_prompts,
     projects: stats.projects,
   };
-}
-
-function getMemSavePromptSessionId(sessionId: string | undefined, project: string | undefined): string {
-  return sessionId ?? `manual-save-${project || 'unknown'}`;
 }
 
 function extractFirstContentLine(content: string): string {
@@ -580,6 +613,128 @@ export async function handleRebuildGraph(store: Store, request: HttpRouteRequest
   };
 }
 
+function parseMaintenanceScopeBody(body: Record<string, unknown> | undefined): MaintenanceScope {
+  const all = optionalBoolean(body?.all, 'all') === true;
+  const project = optionalString(body?.project, 'project');
+  const topicKey = optionalString(body?.topic_key, 'topic_key');
+  const topicPrefix = optionalString(body?.topic_prefix, 'topic_prefix');
+  const scopes = [all, project !== undefined, topicKey !== undefined, topicPrefix !== undefined]
+    .filter(Boolean).length;
+
+  if (scopes !== 1) {
+    throw new HttpRouteError(400, 'Provide exactly one maintenance scope: all, project, topic_key, or topic_prefix');
+  }
+
+  if (all) return { all: true };
+  if (project) return { project };
+  if (topicKey) return { topic_key: topicKey };
+  return { topic_prefix: topicPrefix! };
+}
+
+export async function handlePruneGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.pruneSupersededTriples({
+      project: optionalString(body?.project, 'project'),
+      dryRun: optionalBoolean(body?.dryRun, 'dryRun') ?? false,
+    }),
+  };
+}
+
+export async function handleRebuildCommunities(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.rebuildCommunitySummaries({
+      project: requireString(body?.project, 'project'),
+    }),
+  };
+}
+
+export async function handlePreviewCommunities(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.previewCommunitySummaries({
+      project: requireString(body?.project, 'project'),
+      limit: body?.limit === undefined ? undefined : parseRequiredInteger(String(body.limit), 'limit', 0),
+      maxChars: body?.max_chars === undefined ? undefined : parseRequiredInteger(String(body.max_chars), 'max_chars', 1),
+    }),
+  };
+}
+
+export async function handleCommunitiesStatus(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return {
+    status: 200,
+    body: store.getCommunitySummaryState({
+      project: requireString(request.query.get('project') ?? undefined, 'project'),
+    }),
+  };
+}
+
+export async function handleProjectCommunities(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const project = parseProjectParam(request.params);
+  const result = store.getCommunitySummariesForRetrieval({
+    project,
+    limit: parseOptionalInteger(request.query.get('limit'), 'limit', 0),
+    maxChars: parseOptionalInteger(request.query.get('max_chars'), 'max_chars', 1),
+  });
+
+  return {
+    status: 200,
+    body: {
+      project,
+      state: result.state,
+      run_id: result.run_id,
+      graph_signature: result.graph_signature,
+      degraded_reasons: result.degraded_reasons,
+      communities: result.candidates,
+    },
+  };
+}
+
+export async function handleDropCommunities(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  const all = optionalBoolean(body?.all, 'all') === true;
+  const project = optionalString(body?.project, 'project');
+
+  if (all && project) {
+    throw new HttpRouteError(400, 'Use either project or all, not both');
+  }
+
+  if (!all && !project) {
+    throw new HttpRouteError(400, 'Missing required field: project');
+  }
+
+  return {
+    status: 200,
+    body: store.dropCommunitySummaries({ project }),
+  };
+}
+
+export async function handleMaintenancePreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.evaluateMaintenance({
+      scope: parseMaintenanceScopeBody(body),
+      mode: 'dry-run',
+    }),
+  };
+}
+
+export async function handleMaintenanceApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  return {
+    status: 200,
+    body: store.runMaintenance({
+      scope: parseMaintenanceScopeBody(body),
+      mode: 'apply',
+    }),
+  };
+}
+
 export async function handleCreateObservation(
   store: Store,
   request: HttpRouteRequest,
@@ -602,6 +757,7 @@ export async function handleCreateObservation(
       id: result.observation.id,
       action: result.action,
       revision: result.observation.revision_count,
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }
@@ -763,7 +919,12 @@ export async function handleSessionSummary(
 ): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const project = requireString(body?.project, 'project');
-  const sessionId = optionalString(body?.session_id, 'session_id') ?? `manual-save-${project}`;
+  const identity = resolveSaveIdentity({
+    session_id: optionalString(body?.session_id, 'session_id'),
+    project,
+    requireSessionProject: true,
+  });
+  const sessionId = identity.session_id!;
   const content = requireString(body?.content, 'content');
   const result = await store.saveObservationWithIndex({
     title: `Session summary: ${project}`,
@@ -781,6 +942,7 @@ export async function handleSessionSummary(
     body: {
       observation_id: result.observation.id,
       session_id: sessionId,
+      ...(metadataFromResolution(identity) ? { identity: metadataFromResolution(identity) } : {}),
     },
   };
 }
@@ -992,7 +1154,8 @@ export async function handleObservatoryMapFrontier(store: Store, request: HttpRo
 
 export async function handleObservatoryLedger(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const id = parseObservationId(request.params);
-  const payload = store.getObservatoryLedgerDetail({ observation_id: id });
+  const includeSuperseded = parseExplicitTrueQuery(request.query.get('include_superseded'));
+  const payload = store.getObservatoryLedgerDetail({ observation_id: id, include_superseded: includeSuperseded });
   if (!payload) throw new HttpRouteError(404, `Observation ${id} not found`);
   return { status: 200, body: payload };
 }
@@ -1040,12 +1203,14 @@ export async function handleProjectGraph(store: Store, request: HttpRouteRequest
   const limit = parseOptionalInteger(request.query.get('limit'), 'limit', 1);
   const maxChars = parseOptionalInteger(request.query.get('max_chars'), 'max_chars', 200) ?? 6000;
   const relation = parseGraphRelation(request.query.get('relation'), 'relation');
+  const includeSuperseded = parseExplicitTrueQuery(request.query.get('include_superseded'));
   const effectiveLimit = limit ?? 100;
-  const facts = getProjectGraphFacts(store, project, topicKey, relation);
+  const facts = getProjectGraphFacts(store, project, topicKey, relation, includeSuperseded);
   const limitedFacts = facts.slice(0, effectiveLimit);
   const text = formatProjectGraph(store, project, {
     topicKey,
     relation,
+    includeSuperseded,
     limit: effectiveLimit,
     maxChars,
   });
@@ -1101,14 +1266,14 @@ export async function handleSavePrompt(store: Store, request: HttpRouteRequest):
   const body = request.body as Record<string, unknown> | undefined;
   const project = optionalString(body?.project, 'project');
   const prompt = store.savePrompt(
-    getMemSavePromptSessionId(optionalString(body?.session_id, 'session_id'), project),
+    optionalString(body?.session_id, 'session_id'),
     requireString(body?.content, 'content'),
     project,
   );
 
   return {
     status: 201,
-    body: { id: prompt.id },
+    body: { id: prompt.id, ...(prompt.identity ? { identity: prompt.identity } : {}) },
   };
 }
 
@@ -1196,6 +1361,7 @@ export async function handleImport(store: Store, request: HttpRouteRequest): Pro
       skipped: {
         total: result.skipped,
       },
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }
@@ -1238,6 +1404,7 @@ export async function handleSyncImport(store: Store, request: HttpRouteRequest):
       imported: result.imported,
       skipped: result.skipped,
       failed: result.failed,
+      ...(result.identity ? { identity: result.identity } : {}),
     },
   };
 }

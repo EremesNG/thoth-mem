@@ -1,0 +1,11 @@
+{
+  "name": "thoth-mem",
+  "description": "Persistent project memory through the existing six thoth-mem MCP tools.",
+  "version": "0.3.7",
+  "author": {
+    "name": "thoth-mem maintainers"
+  },
+  "homepage": "https://github.com/EremesNG/thoth-mem",
+  "repository": "https://github.com/EremesNG/thoth-mem",
+  "license": "MIT"
+}

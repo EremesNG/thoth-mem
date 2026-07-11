@@ -1,5 +1,7 @@
 # AGENTS.md
 
+IMPORTANT: Always use `webstorm-index` MCP tools for project file navigation, including text search, file search, file reading, and refactoring. This rule applies to the root agent **and to every delegated sub-agent**.
+
 ## Scope
 
 - This file applies to the entire repository at `C:\DEV\Proyectos\Webstorm\thoth`.

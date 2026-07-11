@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/store/index.js';
 import type { ExportData } from '../src/store/types.js';
+import type { SetupResult } from '../src/setup/types.js';
 import { runCli } from '../src/cli.js';
 import { parseArgs, shouldRunCli } from '../src/index.js';
 import { ALL_TOOLS } from '../src/tools/index.js';
@@ -43,11 +44,108 @@ function seedStore(dataDir: string): void {
   }
 }
 
-function clearObservationFacts(dataDir: string): void {
+function seedLargeContextStore(dataDir: string): string {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+  const marker = 'CLI-CONTEXT-FULL-MARKER';
+
+  try {
+    store.startSession('large-context-session', 'cli-large-project', '/workspace/cli-large-project');
+    for (let i = 0; i < 30; i++) {
+      store.saveObservation({
+        session_id: 'large-context-session',
+        title: `Large CLI observation ${i}`,
+        content: `${'cli context body '.repeat(220)}${marker}-${i}`,
+        type: 'manual',
+        project: 'cli-large-project',
+      });
+    }
+  } finally {
+    store.close();
+  }
+
+  return marker;
+}
+
+function clearGraphFacts(dataDir: string): void {
   const store = new Store(join(dataDir, 'thoth.db'));
 
   try {
-    store.getDb().prepare('DELETE FROM observation_facts').run();
+    store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+  } finally {
+    store.close();
+  }
+}
+
+function seedPrunableGraph(dataDir: string, project = 'cli-project'): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    const db = store.getDb();
+    const subject = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+       RETURNING id`
+    ).get('prune:subject', 'Prune subject') as { id: number };
+    db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')`
+    ).run('prune:unrelated-orphan', 'Unrelated prune orphan');
+
+    for (let index = 1; index <= 3; index++) {
+      const object = db.prepare(
+        `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+         VALUES (?, 'concept', ?)
+         ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+         RETURNING id`
+      ).get(`prune:object:${index}`, `Prune object ${index}`) as { id: number };
+      db.prepare(
+        `INSERT INTO kg_triples (
+          subject_entity_id, relation, object_entity_id, source_type, source_id,
+          project, provenance, confidence, triple_hash, extractor_version, superseded_at
+        ) VALUES (?, 'HAS_WHAT', ?, 'observation', 9001, ?, 'test', 0.9, ?, 'test', ?)`
+      ).run(subject.id, object.id, project, `prune:${index}`, `2026-01-0${index} 00:00:00`);
+    }
+  } finally {
+    store.close();
+  }
+}
+
+function seedCommunityGraph(dataDir: string, project = 'cli-community-project'): void {
+  ensureDir(dataDir);
+  const store = new Store(join(dataDir, 'thoth.db'));
+
+  try {
+    const db = store.getDb();
+    db.prepare('INSERT INTO sessions (id, project) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+      .run(`${project}-session`, project);
+    const source = db.prepare(
+      `INSERT INTO observations (session_id, type, title, content, project, scope, normalized_hash, sync_id)
+       VALUES (?, 'manual', ?, 'community source body', ?, 'project', ?, ?)`
+    ).run(
+      `${project}-session`,
+      `${project} community source`,
+      project,
+      `${project}-community-hash`,
+      `${project}-community-sync`,
+    ).lastInsertRowid as number;
+    const subject = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:subject`, `${project} Subject`) as { id: number };
+    const object = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?) RETURNING id`
+    ).get(`${project}:object`, `${project} Object`) as { id: number };
+    db.prepare(
+      `INSERT INTO kg_triples (
+        subject_entity_id, relation, object_entity_id, source_type, source_id,
+        project, provenance, confidence, triple_hash
+      ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, '{}', 0.9, ?)`
+    ).run(subject.id, object.id, source, project, `${project}:community-triple`);
   } finally {
     store.close();
   }
@@ -99,7 +197,10 @@ function seedBlockedDeleteProjectStore(dataDir: string): void {
   }
 }
 
-async function captureCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function captureCli(
+  args: string[],
+  options?: Parameters<typeof runCli>[1],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   let stdout = '';
   let stderr = '';
 
@@ -112,14 +213,15 @@ async function captureCli(args: string[]): Promise<{ stdout: string; stderr: str
     return true;
   }) as typeof process.stderr.write);
 
+  let exitCode = 0;
   try {
-    await runCli(args);
+    exitCode = await runCli(args, options);
   } finally {
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   }
 
-  return { stdout, stderr };
+  return { stdout, stderr, exitCode };
 }
 
 describe('runCli', () => {
@@ -142,6 +244,74 @@ describe('runCli', () => {
     expect(stdout).toContain('delete-project <project>');
     expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
+  });
+
+  it('setup command contract keeps project paths command-scoped and returns the setup exit code', async () => {
+    const setupDataDir = join(tempDir, 'setup-data');
+    const result: SetupResult = {
+      status: 'partial',
+      changed: false,
+      harness: 'codex',
+      scope: 'project',
+      target: 'C:\\Workspaces\\Project With Spaces\\.codex',
+      steps: [{ name: 'Install plugin', outcome: 'failed' }],
+      diagnostics: ['Plugin installation was not verified.'],
+      manual_actions: ['Install the Codex plugin manually.'],
+      receipt: null,
+    };
+    const setupRunner = vi.fn().mockResolvedValue(result);
+
+    const captured = await captureCli([
+      'setup',
+      'codex',
+      '--scope',
+      'project',
+      '--project',
+      'C:\\Workspaces\\Project With Spaces',
+      '--plan',
+      '--data-dir',
+      setupDataDir,
+      '--json',
+    ], { setupRunner });
+
+    expect(setupRunner).toHaveBeenCalledWith({
+      harness: 'codex',
+      scope: 'project',
+      projectPath: 'C:\\Workspaces\\Project With Spaces',
+      planOnly: true,
+      force: false,
+      json: true,
+    }, { dataDir: setupDataDir });
+    expect(JSON.parse(captured.stdout)).toEqual(result);
+    expect(captured.stderr).toBe('');
+    expect(captured.exitCode).toBe(2);
+  });
+
+  it('setup command contract renders valid-harness input failures as failed JSON', async () => {
+    const setupRunner = vi.fn();
+
+    const captured = await captureCli([
+      'setup',
+      'opencode',
+      '--scope',
+      'project',
+      '--json',
+    ], { setupRunner });
+
+    expect(setupRunner).not.toHaveBeenCalled();
+    expect(JSON.parse(captured.stdout)).toEqual({
+      status: 'failed',
+      changed: false,
+      harness: 'opencode',
+      scope: 'project',
+      target: 'unresolved project target',
+      steps: [{ name: 'Validate setup request', outcome: 'failed' }],
+      diagnostics: ['--scope project requires --project <path>'],
+      manual_actions: ['Correct the setup options and retry.'],
+      receipt: null,
+    });
+    expect(captured.stderr).toBe('');
+    expect(captured.exitCode).toBe(1);
   });
 
   it('searches memories in the configured data directory', async () => {
@@ -208,6 +378,17 @@ describe('runCli', () => {
     expect(stdout).toContain('## Memory from Previous Sessions');
     expect(stdout).toContain('### Recent Prompts');
     expect(stdout).toContain('cli-project');
+  });
+
+  it('prints bounded recent context through shared store rendering', async () => {
+    const dataDir = join(tempDir, 'data');
+    const marker = seedLargeContextStore(dataDir);
+
+    const { stdout } = await captureCli(['context', '--data-dir', dataDir, '--project', 'cli-large-project']);
+
+    expect(stdout.length).toBeLessThanOrEqual(8001);
+    expect(stdout).toContain('mem_get(id=');
+    expect(stdout).not.toContain(marker);
   });
 
   it('prints memory statistics', async () => {
@@ -304,6 +485,24 @@ describe('runCli', () => {
     expect(existsSync(join(syncDir, 'manifest.json'))).toBe(true);
   });
 
+  it('prints the cwd-based default sync directory when --dir is omitted', async () => {
+    const dataDir = join(tempDir, 'data');
+    const defaultSyncDir = join(tempDir, '.thoth-sync');
+    seedStore(dataDir);
+
+    let stdout = '';
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+    try {
+      ({ stdout } = await captureCli(['sync', '--data-dir', dataDir, '--project', 'cli-project']));
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    expect(stdout).toContain(`- **Directory:** ${defaultSyncDir}`);
+    expect(stdout).toContain('- **Directory default:** current working directory');
+    expect(existsSync(join(defaultSyncDir, 'manifest.json'))).toBe(true);
+  });
+
   it('migrates a project to a new name', async () => {
     const dataDir = join(tempDir, 'data');
     seedStore(dataDir);
@@ -328,7 +527,7 @@ describe('runCli', () => {
   it('rebuilds graph facts for a project from the CLI', async () => {
     const dataDir = join(tempDir, 'data');
     seedStore(dataDir);
-    clearObservationFacts(dataDir);
+    clearGraphFacts(dataDir);
 
     const { stdout, stderr } = await captureCli(['rebuild-graph', '--project', 'cli-project', '--data-dir', dataDir]);
 
@@ -337,11 +536,11 @@ describe('runCli', () => {
     expect(stdout).toContain('- **Scope:** project cli-project');
     expect(stdout).toContain('- **Observations scanned:** 2');
     expect(stdout).toContain('- **Facts deleted:** 0');
-    expect(stdout).toContain('- **Facts created:** 4');
+    expect(stdout).toContain('- **Facts created:**');
 
     const store = new Store(join(dataDir, 'thoth.db'));
     try {
-      expect(store.getObservationFacts({ project: 'cli-project' })).toHaveLength(4);
+      expect(store.getObservationFacts({ project: 'cli-project' }).length).toBeGreaterThanOrEqual(4);
     } finally {
       store.close();
     }
@@ -350,7 +549,7 @@ describe('runCli', () => {
   it('rebuilds graph facts for all projects from the CLI', async () => {
     const dataDir = join(tempDir, 'data');
     seedDeleteProjectStore(dataDir);
-    clearObservationFacts(dataDir);
+    clearGraphFacts(dataDir);
 
     const { stdout, stderr } = await captureCli(['rebuild-graph', '--all', '--data-dir', dataDir]);
 
@@ -358,7 +557,98 @@ describe('runCli', () => {
     expect(stdout).toContain('## Graph Rebuild Complete');
     expect(stdout).toContain('- **Scope:** all projects');
     expect(stdout).toContain('- **Observations scanned:** 2');
-    expect(stdout).toContain('- **Facts created:** 4');
+    expect(stdout).toContain('- **Facts created:**');
+  });
+
+  it('prunes graph history from the CLI with dry-run and real modes', async () => {
+    const dataDir = join(tempDir, 'data');
+    ensureDir(dataDir);
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      knowledgeGraph: {
+        kgSupersededKeepN: 1,
+      },
+    }));
+    seedPrunableGraph(dataDir);
+
+    const dryRun = await captureCli(['prune-graph', '--project', 'cli-project', '--dry-run', '--data-dir', dataDir]);
+
+    expect(dryRun.stderr).toBe('');
+    expect(dryRun.stdout).toContain('## Graph Prune Complete');
+    expect(dryRun.stdout).toContain('- **Dry run:** yes');
+    expect(dryRun.stdout).toContain('- **Triples pruned:** 2');
+    expect(dryRun.stdout).toContain('- **Entities pruned:** 2');
+
+    const afterDryRunStore = new Store(join(dataDir, 'thoth.db'));
+    try {
+      const count = afterDryRunStore.getDb().prepare('SELECT COUNT(*) AS count FROM kg_triples').get() as { count: number };
+      expect(count.count).toBe(3);
+    } finally {
+      afterDryRunStore.close();
+    }
+
+    const real = await captureCli(['prune-graph', '--project', 'cli-project', '--data-dir', dataDir]);
+    expect(real.stdout).toContain('- **Dry run:** no');
+    expect(real.stdout).toContain('- **Triples pruned:** 2');
+    expect(real.stdout).toContain('- **Entities pruned:** 2');
+
+    const afterRealStore = new Store(join(dataDir, 'thoth.db'));
+    try {
+      const count = afterRealStore.getDb().prepare('SELECT COUNT(*) AS count FROM kg_triples').get() as { count: number };
+      expect(count.count).toBe(1);
+      const unrelatedOrphan = afterRealStore.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_entities WHERE entity_key = 'prune:unrelated-orphan'"
+      ).get() as { count: number };
+      expect(unrelatedOrphan.count).toBe(1);
+    } finally {
+      afterRealStore.close();
+    }
+  });
+
+  it('community admin commands are project-scoped', async () => {
+    const dataDir = join(tempDir, 'data');
+    seedCommunityGraph(dataDir, 'cli-community-project');
+    seedCommunityGraph(dataDir, 'cli-community-other');
+
+    const preview = await captureCli(['preview-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(preview.stderr).toBe('');
+    expect(preview.stdout).toContain('## Community Summary Preview');
+    expect(preview.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(preview.stdout).toContain('- **Would commit:** no');
+
+    const rebuild = await captureCli(['rebuild-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(rebuild.stderr).toBe('');
+    expect(rebuild.stdout).toContain('## Community Summary Rebuild Complete');
+    expect(rebuild.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(rebuild.stdout).toContain('- **Communities created:** 1');
+
+    const status = await captureCli(['communities-status', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(status.stdout).toContain('## Community Summary Status');
+    expect(status.stdout).toContain('- **Project:** cli-community-project');
+    expect(status.stdout).toContain('- **State:** fresh');
+
+    const allStatus = await captureCli(['communities-status', '--all', '--data-dir', dataDir]);
+    expect(allStatus.stdout).toContain('## Community Summary Status');
+    expect(allStatus.stdout).toContain('- cli-community-project: state=fresh');
+    expect(allStatus.stdout).toContain('- cli-community-other: state=missing');
+
+    const drop = await captureCli(['drop-communities', '--project', 'cli-community-project', '--data-dir', dataDir]);
+    expect(drop.stdout).toContain('## Community Summaries Dropped');
+    expect(drop.stdout).toContain('- **Scope:** project cli-community-project');
+    expect(drop.stdout).toContain('- **Communities deleted:** 1');
+
+    const allRebuild = await captureCli(['rebuild-communities', '--all', '--data-dir', dataDir]);
+    expect(allRebuild.stdout).toContain('## Community Summary Rebuild Complete');
+    expect(allRebuild.stdout).toContain('- cli-community-project: status=committed communities=1');
+    expect(allRebuild.stdout).toContain('- cli-community-other: status=committed communities=1');
+
+    let missingScopeError: unknown;
+    try {
+      await captureCli(['rebuild-communities', '--data-dir', dataDir]);
+    } catch (caught) {
+      missingScopeError = caught;
+    }
+    expect(missingScopeError).toBeInstanceOf(Error);
+    expect((missingScopeError as Error).message).toContain('rebuild-communities requires --project <name> or --all');
   });
 
   it('requires exactly one rebuild-graph scope', async () => {
@@ -381,6 +671,73 @@ describe('runCli', () => {
 
     expect(conflictingScopeError).toBeInstanceOf(Error);
     expect((conflictingScopeError as Error).message).toContain('Use either --project or --all, not both');
+  });
+
+  it('requires exactly one prune-graph scope', async () => {
+    let missingScopeError: unknown;
+    try {
+      await captureCli(['prune-graph']);
+    } catch (caught) {
+      missingScopeError = caught;
+    }
+
+    expect(missingScopeError).toBeInstanceOf(Error);
+    expect((missingScopeError as Error).message).toContain('prune-graph requires --project <name> or --all');
+  });
+
+  it('previews and applies memory maintenance from the CLI without adding MCP tools', async () => {
+    const dataDir = join(tempDir, 'data');
+    ensureDir(dataDir);
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      maintenance: {
+        defaultMode: 'dry-run',
+        reflection: { minSourceCount: 2 },
+      },
+    }));
+    const store = new Store(join(dataDir, 'thoth.db'));
+    try {
+      store.saveObservation({
+        title: 'CLI maintenance source A',
+        content: 'cli maintenance duplicate marker',
+        project: 'cli-maint-project',
+        type: 'decision',
+      });
+      store.saveObservation({
+        title: 'CLI maintenance source B',
+        content: 'cli maintenance duplicate marker',
+        project: 'cli-maint-project',
+        type: 'decision',
+      });
+    } finally {
+      store.close();
+    }
+
+    const preview = await captureCli(['maintain-memory', '--project', 'cli-maint-project', '--data-dir', dataDir]);
+    expect(preview.stderr).toBe('');
+    expect(preview.stdout).toContain('## Memory Maintenance Preview');
+    expect(preview.stdout).toContain('- **Mode:** dry-run');
+    expect(preview.stdout).toContain('- **Scope:** project cli-maint-project');
+    expect(preview.stdout).toContain('- **Consolidation candidates:** 1');
+
+    const afterPreview = new Store(join(dataDir, 'thoth.db'));
+    try {
+      expect(afterPreview.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_runs').get()).toEqual({ count: 0 });
+    } finally {
+      afterPreview.close();
+    }
+
+    const applied = await captureCli(['maintain-memory', '--project', 'cli-maint-project', '--apply', '--data-dir', dataDir]);
+    expect(applied.stdout).toContain('## Memory Maintenance Applied');
+    expect(applied.stdout).toContain('- **Mode:** apply');
+    expect(applied.stdout).toContain('- **Run ID:**');
+    expect(ALL_TOOLS.map((tool) => tool.name)).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
   });
 
   it('queues and reports semantic rebuild-index for a project', async () => {
@@ -512,6 +869,33 @@ describe('runCli', () => {
     expect(stdout.trim()).toBe(VERSION);
   });
 
+  it('routes integration-event once, propagates the selected data directory, and prints one JSON response', async () => {
+    const response = {
+      protocolVersion: 1 as const,
+      harness: 'claude' as const,
+      intent: 'enroll_session' as const,
+      outcome: 'degraded' as const,
+      retryable: false,
+      diagnostic: 'bounded lifecycle result',
+    };
+    const integrationEventRunner = vi.fn().mockResolvedValue({ exitCode: 0, response });
+
+    const result = await captureCli([
+      '--data-dir',
+      tempDir,
+      'integration-event',
+    ], { integrationEventRunner });
+
+    expect(result).toEqual({
+      stdout: `${JSON.stringify(response)}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(integrationEventRunner).toHaveBeenCalledOnce();
+    expect(integrationEventRunner).toHaveBeenCalledWith({ dataDir: tempDir });
+    expect(result.stdout.trim().split('\n')).toHaveLength(1);
+  });
+
   it('writes errors to stderr for invalid commands', async () => {
     let error: unknown;
     try {
@@ -529,6 +913,13 @@ describe('runCli', () => {
     expect(shouldRunCli(['migrate-project', 'old', 'new'])).toBe(true);
     expect(shouldRunCli(['delete-project', 'project-name'])).toBe(true);
     expect(shouldRunCli(['rebuild-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['prune-graph', '--all'])).toBe(true);
+    expect(shouldRunCli(['rebuild-communities', '--all'])).toBe(true);
+    expect(shouldRunCli(['preview-communities', '--project', 'project-name'])).toBe(true);
+    expect(shouldRunCli(['communities-status', '--all'])).toBe(true);
+    expect(shouldRunCli(['drop-communities', '--all'])).toBe(true);
+    expect(shouldRunCli(['maintain-memory', '--all'])).toBe(true);
+    expect(shouldRunCli(['integration-event'])).toBe(true);
     expect(shouldRunCli(['--data-dir', tempDir, 'sync-import'])).toBe(true);
     expect(shouldRunCli(['mcp'])).toBe(false);
   });

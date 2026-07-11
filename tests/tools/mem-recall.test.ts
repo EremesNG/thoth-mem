@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Store } from '../../src/store/index.js';
 import { registerMemRecall } from '../../src/tools/mem-recall.js';
+import { ALL_TOOLS } from '../../src/tools/index.js';
+
+type HybridRetrieveResult = Awaited<ReturnType<Store['hybridRetrieve']>>;
 
 describe('mem_recall tool', () => {
   let store: Store;
@@ -24,6 +27,17 @@ describe('mem_recall tool', () => {
     store.close();
   });
 
+  it('registers exactly the compact MCP tool surface', () => {
+    expect(ALL_TOOLS.map((tool) => tool.name)).toEqual([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]);
+  });
+
   it('returns fused compact recall metadata', async () => {
     store.saveObservation({ title: 'Recall target', content: 'hybrid compact marker', project: 'recall-project' });
 
@@ -36,6 +50,22 @@ describe('mem_recall tool', () => {
     expect(result?.content[0].text).toContain('evidence_lanes:');
   });
 
+  it('does not crash default recall when observation_facts is missing', async () => {
+    const saved = store.saveObservation({
+      title: 'Recall KG drift target',
+      content: '**What**: Recall should use KG triples',
+      project: 'recall-project',
+    });
+    store.getDb().exec('DROP TABLE IF EXISTS observation_facts;');
+
+    const result = await toolHandler?.({ query: 'KG triples', project: 'recall-project', limit: 5 });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain(`obs:${saved.observation.id}`);
+    expect(text).not.toContain('no such table: observation_facts');
+  });
+
   it('can expand recall into context text', async () => {
     store.saveObservation({ title: 'Context target', content: 'expanded recall body marker', project: 'recall-project' });
 
@@ -45,6 +75,95 @@ describe('mem_recall tool', () => {
     expect(result?.content[0].text).toContain('expanded recall body marker');
     expect(result?.content[0].text).toContain('<retrieved_context observation_id=');
     expect(result?.content[0].text).toContain('</retrieved_context>');
+  });
+
+  it('does not use maxContextChars for context-mode recall output', async () => {
+    store.close();
+    store = new Store(':memory:', { maxContextChars: 50 });
+    registerMemRecall({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    store.saveObservation({
+      title: 'Independent recall budget',
+      content: 'independent recall marker '.repeat(80),
+      project: 'recall-project',
+    });
+
+    const result = await toolHandler?.({ query: 'independent recall marker', project: 'recall-project', mode: 'context' });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text.length).toBeGreaterThan(50);
+    expect(text.length).toBeLessThanOrEqual(6000);
+    expect(text).toContain('<retrieved_context observation_id=');
+  });
+
+  it('reports context returned_chars as emitted context length after truncation', async () => {
+    const largeContent = `context budget marker ${'x '.repeat(4000)}`;
+    const mockedResult: HybridRetrieveResult = {
+      results: [{
+        observation: {
+          id: 1,
+          sync_id: null,
+          session_id: null,
+          type: 'manual',
+          title: 'Context returned_chars precision',
+          content: largeContent,
+          tool_name: null,
+          project: 'recall-project',
+          scope: 'project',
+          topic_key: null,
+          normalized_hash: null,
+          revision_count: 1,
+          duplicate_count: 1,
+          last_seen_at: null,
+          created_at: '2026-01-01 00:00:00',
+          updated_at: '2026-01-01 00:00:00',
+          deleted_at: null,
+        },
+        score: 0.88,
+        evidence: {
+          primary: {
+            lane: 'chunk',
+            observationId: 1,
+            score: 0.88,
+            source: 'chunk:recall-returned-chars',
+            text: largeContent,
+          },
+          byLane: {
+            kg: [],
+          },
+          maintenance: undefined,
+        },
+      }],
+      pending: false,
+      degradedFallback: [],
+      laneOrder: ['chunk'],
+      semanticInputs: [],
+    };
+    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue(mockedResult);
+    const result = await toolHandler?.({ query: 'context budget marker', project: 'recall-project', mode: 'context', limit: 1 });
+    const text = result?.content[0].text ?? '';
+    expect(result?.isError).not.toBe(true);
+
+    const blockMatch = text.match(/<retrieved_context[^>]*>[\s\S]*?<\/retrieved_context>/);
+    expect(blockMatch).not.toBeNull();
+    const block = blockMatch?.[0] ?? '';
+    const returnedCharsMatch = block.match(/returned_chars=(\d+)/);
+    expect(returnedCharsMatch).not.toBeNull();
+    const returnedChars = Number(returnedCharsMatch?.[1]);
+    expect(Number.isFinite(returnedChars)).toBe(true);
+
+    const emittedMatch = block.match(/returned_chars=\d+ returned_basis=context_chars\n([\s\S]*?)\n<\/retrieved_context>/);
+    expect(emittedMatch).not.toBeNull();
+    const emittedContent = emittedMatch?.[1] ?? '';
+
+    expect(emittedContent.length).toBe(returnedChars);
+    expect(returnedChars).toBeLessThan(largeContent.length);
   });
 
   it('context mode keeps primary sentence first and labels promoted parent context', async () => {
@@ -96,6 +215,10 @@ describe('mem_recall tool', () => {
     const text = result?.content[0].text ?? '';
     expect(text).toContain('retrieval_contract=sentence-primary-with-parent');
     expect(text).toContain('compression_ratio=');
+    expect(text).toContain('evidence_chars=');
+    expect(text).toContain('full_chars=');
+    expect(text).toContain('returned_chars=');
+    expect(text).toContain('returned_basis=context_chars');
     expect(text).toContain('primary_sentence: Rotate encryption keys weekly.');
     expect(text).toContain('surrounding_parent_chunk: Rotate encryption keys weekly. Keep parent context nearby.');
   });
@@ -159,5 +282,144 @@ describe('mem_recall tool', () => {
     expect(text).toContain('time_from: 2999-01-01');
     expect(text).toContain('evidence:\nnone');
     expect(text).not.toContain('Temporal recall target');
+  });
+
+  it('surfaces maintenance effects in compact and context output', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      maintenance: {
+        consolidation: { enabled: true },
+        reflection: { enabled: true, minSourceCount: 2 },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+      knowledgeGraph: { kgMultiHopEnabled: false },
+    });
+    registerMemRecall({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_recall') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    const first = store.saveObservation({
+      title: 'Recall maintenance source A',
+      content: 'maintenance recall duplicate marker',
+      project: 'recall-maint-project',
+      type: 'manual',
+    }).observation;
+    const second = store.saveObservation({
+      title: 'Recall maintenance source B',
+      content: 'maintenance recall duplicate marker',
+      project: 'recall-maint-project',
+      type: 'manual',
+    }).observation;
+    store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id IN (?, ?)")
+      .run(first.id, second.id);
+    store.runMaintenance({ scope: { project: 'recall-maint-project' } });
+
+    const compact = await toolHandler?.({ query: 'maintenance recall duplicate marker', project: 'recall-maint-project', limit: 5 });
+    const context = await toolHandler?.({ query: 'maintenance recall duplicate marker', project: 'recall-maint-project', mode: 'context', limit: 5 });
+    const compactText = compact?.content[0].text ?? '';
+    const contextText = context?.content[0].text ?? '';
+
+    expect(compact?.isError).not.toBe(true);
+    expect(compactText).toContain('maintenance:');
+    expect(compactText).toContain('consolidation');
+    expect(compactText).toContain('decay state=attenuated');
+    expect(contextText).toContain('maintenance:');
+    expect(contextText).toContain('sources=obs:');
+  });
+
+  it('community annotation is additive', async () => {
+    const mockedCommunityResult: HybridRetrieveResult = {
+      results: [{
+        observation: {
+          id: 101,
+          sync_id: 'sync-101',
+          session_id: 'session-101',
+          type: 'manual',
+          title: 'Community evidence host',
+          content: 'Community source observation content',
+          tool_name: null,
+          project: 'recall-community-project',
+          scope: 'project',
+          topic_key: null,
+          normalized_hash: null,
+          revision_count: 1,
+          duplicate_count: 1,
+          last_seen_at: null,
+          created_at: '2026-01-01 00:00:00',
+          updated_at: '2026-01-01 00:00:00',
+          deleted_at: null,
+        },
+        score: 0.42,
+        evidence: {
+          primary: {
+            lane: 'kg',
+            observationId: 101,
+            score: 0.42,
+            source: 'kg_community_summary',
+            text: 'Community c_demo connects auth and sessions.',
+            community: {
+              communityId: 'c_demo',
+              runId: 7,
+              freshness: 'fresh',
+              degraded: false,
+              sourceObservationIds: [101, 102],
+              entityCount: 2,
+              tripleCount: 3,
+            },
+          },
+          byLane: {
+            kg: [{
+              lane: 'kg',
+              observationId: 101,
+              score: 0.42,
+              source: 'kg_community_summary',
+              text: 'Community c_demo connects auth and sessions.',
+              community: {
+                communityId: 'c_demo',
+                runId: 7,
+                freshness: 'fresh',
+                degraded: false,
+                sourceObservationIds: [101, 102],
+                entityCount: 2,
+                tripleCount: 3,
+              },
+            }],
+          },
+        },
+      }],
+      pending: false,
+      degradedFallback: [],
+      laneOrder: ['kg'],
+      semanticInputs: [],
+    };
+
+    vi.spyOn(store, 'hybridRetrieve').mockResolvedValue(mockedCommunityResult);
+
+    const compact = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', limit: 1 });
+    const context = await toolHandler?.({ query: 'auth sessions', project: 'recall-community-project', mode: 'context', limit: 1 });
+    const compactText = compact?.content[0].text ?? '';
+    const contextText = context?.content[0].text ?? '';
+
+    expect(compact?.isError).not.toBe(true);
+    expect(compactText).toContain('[kg/kg_community_summary]');
+    expect(compactText).toContain('community=c_demo');
+    expect(compactText).toContain('freshness=fresh');
+    expect(compactText).toContain('coverage=obs:2 triples:3');
+    expect(compactText).toContain('evidence_lanes: kg:1');
+    expect(compactText).toContain('obs:101');
+    expect(compactText).not.toContain('evidence_lanes: community:');
+    expect(compactText).not.toContain('[community/');
+    expect(contextText).toContain('<retrieved_context observation_id="101" lane="kg" source="kg_community_summary">');
+    expect(contextText).toContain('graph_enrichment=1');
+    expect(contextText).toContain('community=c_demo');
+    expect(contextText).toContain('degraded=no');
+    expect(contextText).toContain('returned_chars=');
+    expect(contextText).toContain('returned_basis=context_chars');
+    expect(contextText).toContain('evidence_lanes: kg:1');
+    expect(contextText).not.toContain('evidence_lanes: community:');
+    expect(contextText).not.toContain('lane="community"');
   });
 });

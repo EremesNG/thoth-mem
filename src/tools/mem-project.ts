@@ -2,7 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Store } from "../store/index.js";
 import { registerTracedTool } from "./tracing.js";
-import { formatProjectGraph, formatProjectSummary, formatTopicKeyContext, formatTopicKeyList } from "./project-views.js";
+import {
+  formatProjectCommunityNavigation,
+  formatProjectGraph,
+  formatProjectHealth,
+  formatProjectLineageNavigation,
+  formatProjectNeighborhoodNavigation,
+  formatProjectSummary,
+  formatProjectSupersededNavigation,
+  formatTopicKeyContext,
+  formatTopicKeyList,
+} from "./project-views.js";
 
 const GRAPH_RELATIONS = [
   'HAS_TYPE',
@@ -14,22 +24,55 @@ const GRAPH_RELATIONS = [
   'HAS_LEARNED',
 ] as const;
 
+const MAX_CHARS_ERROR = "max_chars must be >= 200 when action is 'graph' or 'topic'";
+const GRAPH_NAVIGATION_MODES = ['ledger', 'neighborhood', 'lineage', 'community', 'superseded'] as const;
+
+export const MEM_PROJECT_INPUT_SHAPE = {
+  action: z.enum(['list', 'summary', 'graph', 'topics', 'topic', 'health'] as const).describe("Project view to return"),
+  project: z.string().optional().describe("Project name. Required except action=list and optional for action=topics or health"),
+  topic_key: z.string().optional().describe("Topic key for action=topic or graph filtering"),
+  relation: z.enum(GRAPH_RELATIONS).optional().describe("Graph relation filter for action=graph"),
+  limit: z.number().min(1).max(500).optional().describe("Maximum items to return"),
+  max_chars: z.number().int().min(0).max(20000).optional().describe("Response character budget; 0 is supported for action=summary only"),
+  navigation: z.enum(GRAPH_NAVIGATION_MODES).optional().describe("Graph navigation mode for action=graph; defaults to ledger"),
+  focus_node_id: z.string().optional().describe("Graph focus node id for navigation=neighborhood, currently obs:<id>"),
+  observation_id: z.number().int().positive().optional().describe("Observation id for lineage or superseded graph navigation"),
+  continuation: z.string().optional().describe("Opaque continuation token returned by graph navigation views"),
+  include_superseded: z.boolean().optional().describe("Explicit history opt-in; honored by navigation=superseded only"),
+};
+
+export const MEM_PROJECT_INPUT_SCHEMA = z.object(MEM_PROJECT_INPUT_SHAPE).superRefine((input, context) => {
+  if ((input.action === 'graph' || input.action === 'topic') && input.max_chars !== undefined && input.max_chars < 200) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['max_chars'],
+      message: MAX_CHARS_ERROR,
+    });
+  }
+});
+
 export function registerMemProject(server: McpServer, store: Store): void {
   registerTracedTool(
     server,
     store,
     "mem_project",
     "Project-level memory navigation. Lists projects, summarizes one project, reads graph facts, or inspects topic-key memory.",
-    {
-      action: z.enum(['list', 'summary', 'graph', 'topics', 'topic'] as const).describe("Project view to return"),
-      project: z.string().optional().describe("Project name. Required except action=list and optional for action=topics"),
-      topic_key: z.string().optional().describe("Topic key for action=topic or graph filtering"),
-      relation: z.enum(GRAPH_RELATIONS).optional().describe("Graph relation filter for action=graph"),
-      limit: z.number().min(1).max(500).optional().describe("Maximum items to return"),
-      max_chars: z.number().min(200).max(20000).optional().describe("Response character budget"),
-    },
-    async ({ action, project, topic_key, relation, limit, max_chars }) => {
+    MEM_PROJECT_INPUT_SHAPE,
+    async (input) => {
       try {
+        const {
+          action,
+          project,
+          topic_key,
+          relation,
+          limit,
+          max_chars,
+          navigation,
+          focus_node_id,
+          observation_id,
+          continuation,
+        } = MEM_PROJECT_INPUT_SCHEMA.parse(input);
+
         if (action === 'list') {
           const stats = store.getStats();
           const lines = stats.projects.map((name) => `- ${name}`);
@@ -50,6 +93,15 @@ export function registerMemProject(server: McpServer, store: Store): void {
           };
         }
 
+        if (action === 'health') {
+          return {
+            content: [{
+              type: "text" as const,
+              text: formatProjectHealth(store, project, max_chars),
+            }],
+          };
+        }
+
         if (!project) {
           return {
             isError: true,
@@ -61,12 +113,78 @@ export function registerMemProject(server: McpServer, store: Store): void {
           return {
             content: [{
               type: "text" as const,
-              text: formatProjectSummary(store, project, limit && limit <= 20 ? limit : 10),
+              text: formatProjectSummary(store, project, limit && limit <= 20 ? limit : 10, max_chars),
             }],
           };
         }
 
         if (action === 'graph') {
+          const graphNavigation = navigation ?? 'ledger';
+          if (graphNavigation === 'neighborhood') {
+            if (!focus_node_id || !/^obs:\d+$/.test(focus_node_id)) {
+              return {
+                isError: true,
+                content: [{ type: "text" as const, text: "focus_node_id must use obs:<id> for navigation=neighborhood" }],
+              };
+            }
+
+            return {
+              content: [{
+                type: "text" as const,
+                text: formatProjectNeighborhoodNavigation(store, project, {
+                  topicKey: topic_key,
+                  relation,
+                  focusNodeId: focus_node_id,
+                  continuation,
+                  limit,
+                  maxChars: max_chars,
+                }),
+              }],
+            };
+          }
+
+          if (graphNavigation === 'lineage') {
+            return {
+              content: [{
+                type: "text" as const,
+                text: formatProjectLineageNavigation(store, project, {
+                  topicKey: topic_key,
+                  observationId: observation_id,
+                  continuation,
+                  limit,
+                  maxChars: max_chars,
+                }),
+              }],
+            };
+          }
+
+          if (graphNavigation === 'community') {
+            return {
+              content: [{
+                type: "text" as const,
+                text: formatProjectCommunityNavigation(store, project, {
+                  limit,
+                  maxChars: max_chars,
+                }),
+              }],
+            };
+          }
+
+          if (graphNavigation === 'superseded') {
+            return {
+              content: [{
+                type: "text" as const,
+                text: formatProjectSupersededNavigation(store, project, {
+                  topicKey: topic_key,
+                  observationId: observation_id,
+                  relation,
+                  limit,
+                  maxChars: max_chars,
+                }),
+              }],
+            };
+          }
+
           return {
             content: [{
               type: "text" as const,

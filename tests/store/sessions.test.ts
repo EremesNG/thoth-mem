@@ -33,6 +33,40 @@ describe('Store — Session Operations', () => {
     expect(session.directory).toBe('/tmp/project-a');
   });
 
+  it('ensureSession enriches placeholder projects without downgrading stable projects', () => {
+    store.ensureSession('session-placeholder', 'unknown');
+    store.ensureSession('session-placeholder', 'project-a');
+
+    expect(store.getSession('session-placeholder')?.project).toBe('project-a');
+
+    store.ensureSession('session-placeholder', 'unknown');
+
+    expect(store.getSession('session-placeholder')?.project).toBe('project-a');
+  });
+
+  it('saveObservation reports deterministic derived identity when project is omitted', () => {
+    const result = store.saveObservation({
+      title: 'Missing identity',
+      content: 'Observation without explicit identity',
+    });
+
+    expect(result.observation.session_id).toBe('manual-save-thoth-mem');
+    expect(result.observation.project).toBe('thoth-mem');
+    expect(store.getSession('manual-save-thoth-mem')?.project).toBe('thoth-mem');
+    expect(result.identity).toEqual({
+      degraded: expect.arrayContaining([
+        expect.objectContaining({
+          field: 'session_id',
+          reason: 'missing',
+          source: 'fallback',
+          value: null,
+          fallback_value: 'manual-save-thoth-mem',
+        }),
+      ]),
+      synthesized_session_id: 'manual-save-thoth-mem',
+    });
+  });
+
   it('endSession sets ended_at and summary', () => {
     store.startSession('session-1', 'project-a');
 

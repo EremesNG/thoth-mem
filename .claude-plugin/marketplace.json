@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "thoth-mem",
+  "description": "Persistent project memory for coding agents through the compact six-tool MCP surface.",
+  "owner": {
+    "name": "thoth-mem maintainers"
+  },
+  "plugins": [
+    {
+      "name": "thoth-mem",
+      "description": "Root-session memory lifecycle, bounded recall, compaction recovery, and privacy-safe prompt capture.",
+      "version": "0.3.7",
+      "author": {
+        "name": "thoth-mem maintainers"
+      },
+      "source": "./integrations/claude-code",
+      "category": "productivity",
+      "homepage": "https://github.com/EremesNG/thoth-mem"
+    }
+  ]
+}

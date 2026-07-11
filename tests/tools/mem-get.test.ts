@@ -78,4 +78,47 @@ describe('mem_get tool', () => {
     expect(result?.content[0].text).toContain('Before');
     expect(result?.content[0].text).toContain('After');
   });
+
+  it('returns suppressed or decayed observations by id with maintenance metadata', async () => {
+    store.close();
+    store = new Store(':memory:', {
+      maintenance: {
+        consolidation: { enabled: true },
+        reflection: { enabled: true, minSourceCount: 2 },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+    });
+    registerMemGet({
+      tool: vi.fn((name: string, _description: string, _schema: unknown, handler: (input: any) => Promise<any>) => {
+        if (name === 'mem_get') {
+          toolHandler = handler;
+        }
+      }),
+    } as unknown as McpServer, store);
+    const first = store.saveObservation({
+      title: 'Get maintenance source A',
+      content: 'get maintenance duplicate marker',
+      project: 'get-maint-project',
+      type: 'manual',
+    }).observation;
+    const second = store.saveObservation({
+      title: 'Get maintenance source B',
+      content: 'get maintenance duplicate marker',
+      project: 'get-maint-project',
+      type: 'manual',
+    }).observation;
+    store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id IN (?, ?)")
+      .run(first.id, second.id);
+    store.runMaintenance({ scope: { project: 'get-maint-project' } });
+
+    const result = await toolHandler?.({ id: first.id });
+    const text = result?.content[0].text ?? '';
+
+    expect(result?.isError).not.toBe(true);
+    expect(text).toContain('get maintenance duplicate marker');
+    expect(text).toContain('**Maintenance:**');
+    expect(text).toContain('consolidation');
+    expect(text).toContain('sources=obs:');
+    expect(text).toContain('decay state=attenuated');
+  });
 });

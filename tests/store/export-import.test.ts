@@ -83,10 +83,329 @@ describe('Store — exportData/importData', () => {
 
     const exported = store.exportData();
 
+    expect(Object.keys(exported).sort()).toEqual(['exported_at', 'observations', 'project', 'prompts', 'sessions', 'version']);
     expect(exported.version).toBe(1);
     expect(exported.sessions).toHaveLength(2);
     expect(exported.observations).toHaveLength(2);
     expect(exported.prompts).toHaveLength(2);
+    expect(exported).not.toHaveProperty('kg_triples');
+    expect(exported).not.toHaveProperty('kg_entities');
+    expect(exported).not.toHaveProperty('observation_facts');
+  });
+
+  it('exportData stays portable after KG supersession and import ignores KG-only state', () => {
+    store.saveObservation({
+      title: 'Portable supersession',
+      content: '**What**: Redis cache',
+      type: 'decision',
+      project: 'project-a',
+      topic_key: 'kg/portable-supersession',
+    });
+    store.saveObservation({
+      title: 'Portable supersession',
+      content: '**What**: Valkey cache',
+      type: 'decision',
+      project: 'project-a',
+      topic_key: 'kg/portable-supersession',
+    });
+
+    const exported = store.exportData();
+    const portableJson = JSON.stringify(exported);
+
+    expect(exported.version).toBe(1);
+    expect(exported).not.toHaveProperty('kg_triples');
+    expect(portableJson).not.toContain('kg_triples');
+    expect(portableJson).not.toContain('superseded_by_triple_id');
+    expect(portableJson).not.toContain('superseded_at');
+
+    const targetStore = new Store(':memory:');
+    try {
+      const result = targetStore.importData(exported);
+      expect(result).toMatchObject({
+        observations_imported: 1,
+        skipped: 0,
+      });
+      expect(targetStore.exportData().observations).toHaveLength(1);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('importData rebuilds derived graph facts and semantic jobs for imported observations', () => {
+    store.saveObservation({
+      title: 'Portable derived rebuild',
+      content: '**What**: Imported graph facts\n**Why**: Agents should not rediscover imported memory',
+      type: 'decision',
+      project: 'portable-derived',
+      topic_key: 'portable/derived-rebuild',
+    });
+
+    const exported = store.exportData('portable-derived');
+    const targetStore = new Store(':memory:');
+
+    try {
+      const result = targetStore.importData(exported);
+      const imported = targetStore.exportData('portable-derived').observations[0];
+
+      expect(result.observations_imported).toBe(1);
+      expect(imported).toBeDefined();
+      expect(targetStore.getObservationFacts({ observation_id: imported.id }).map((fact) => fact.relation))
+        .toEqual(expect.arrayContaining(['HAS_WHAT', 'HAS_WHY', 'HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY']));
+
+      const semanticJobs = targetStore.getDb().prepare(
+        "SELECT kind FROM semantic_jobs WHERE observation_id = ? ORDER BY kind"
+      ).all(imported.id) as Array<{ kind: string }>;
+      expect(semanticJobs.map((job) => job.kind)).toEqual(['chunk', 'extract_kg', 'sentence']);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('exportData includes reflected observations but omits internal maintenance metadata', () => {
+    const duplicateSource = store.saveObservation({
+      title: 'Portable maintenance duplicate A',
+      content: 'portable maintenance duplicate marker',
+      type: 'decision',
+      project: 'portable-maintenance',
+    }).observation;
+    store.getDb().prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+    ).run(
+      duplicateSource.session_id,
+      duplicateSource.type,
+      'Portable maintenance duplicate B',
+      duplicateSource.content,
+      duplicateSource.project,
+      duplicateSource.scope,
+      duplicateSource.normalized_hash,
+      '66666666-6666-4666-8666-666666666666'
+    );
+    const stale = store.saveObservation({
+      title: 'Portable stale maintenance note',
+      content: 'portable stale maintenance marker',
+      type: 'discovery',
+      project: 'portable-maintenance',
+    }).observation;
+    store.getDb().prepare(
+      "UPDATE observations SET updated_at = datetime('now', '-365 days'), created_at = datetime('now', '-365 days') WHERE id = ?"
+    ).run(stale.id);
+    store.saveObservation({
+      title: 'Portable reflection A',
+      content: 'First portable reflection source',
+      type: 'architecture',
+      project: 'portable-maintenance',
+    });
+    store.saveObservation({
+      title: 'Portable reflection B',
+      content: 'Second portable reflection source',
+      type: 'architecture',
+      project: 'portable-maintenance',
+    });
+    const maintenance = store.runMaintenance({ scope: { project: 'portable-maintenance' } });
+
+    expect(maintenance.reflections.length).toBeGreaterThan(0);
+
+    const exported = store.exportData('portable-maintenance');
+    const portableJson = JSON.stringify(exported);
+
+    expect(exported.observations.some((observation) => observation.tool_name === 'maintenance-reflection')).toBe(true);
+    expect(portableJson).not.toContain('maintenance_runs');
+    expect(portableJson).not.toContain('maintenance_decay');
+    expect(portableJson).not.toContain('maintenance_consolidations');
+
+    const targetStore = new Store(':memory:');
+    try {
+      const result = targetStore.importData(exported);
+      expect(result.observations_imported).toBe(exported.observations.length);
+      expect(targetStore.exportData('portable-maintenance').observations.some((observation) =>
+        observation.tool_name === 'maintenance-reflection'
+      )).toBe(true);
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_consolidations').get()).toEqual({ count: 0 });
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_decay').get()).toEqual({ count: 0 });
+
+      const regenerated = targetStore.runMaintenance({ scope: { project: 'portable-maintenance' } });
+      expect(regenerated.counts.records_scanned).toBeGreaterThan(0);
+      expect(regenerated.counts.consolidation_candidates).toBeGreaterThan(0);
+      expect(regenerated.counts.decay_candidates).toBeGreaterThan(0);
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_consolidations').get()).toEqual({ count: 1 });
+      expect(targetStore.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_decay').get()).toEqual({ count: 1 });
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('does not duplicate reflected observations after import into a non-empty store', () => {
+    store.saveObservation({
+      title: 'Portable reflection stable A',
+      content: 'First stable portable reflection source',
+      type: 'architecture',
+      project: 'stable-reflection-portable',
+    });
+    store.saveObservation({
+      title: 'Portable reflection stable B',
+      content: 'Second stable portable reflection source',
+      type: 'architecture',
+      project: 'stable-reflection-portable',
+    });
+    const sourceRun = store.runMaintenance({ scope: { project: 'stable-reflection-portable' } });
+    expect(sourceRun.reflections).toHaveLength(1);
+    const exported = store.exportData('stable-reflection-portable');
+
+    const targetStore = new Store(':memory:');
+    try {
+      targetStore.saveObservation({
+        title: 'Preexisting local row',
+        content: 'This row shifts imported row ids',
+        type: 'manual',
+        project: 'local-project',
+      });
+      targetStore.importData(exported);
+      const importedReflectionCount = targetStore.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection'"
+      ).get('stable-reflection-portable') as { count: number };
+      expect(importedReflectionCount.count).toBe(1);
+
+      targetStore.runMaintenance({ scope: { project: 'stable-reflection-portable' } });
+
+      const reflectionRows = targetStore.getDb().prepare(
+        "SELECT id, topic_key FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection' ORDER BY id"
+      ).all('stable-reflection-portable') as Array<{ id: number; topic_key: string }>;
+      expect(reflectionRows).toHaveLength(1);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('does not duplicate legacy null-sync reflections after import into a non-empty store', () => {
+    store.startSession('legacy-null-sync-session', 'legacy-null-sync-reflection');
+    const insertLegacyObservation = store.getDb().prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, tool_name, project, scope, topic_key,
+         normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, NULL, ?, 'project', NULL, ?, NULL, 1, 1, ?, ?)`
+    );
+    insertLegacyObservation.run(
+      'legacy-null-sync-session',
+      'architecture',
+      'Legacy null-sync reflection A',
+      'First stable legacy null-sync reflection source',
+      'legacy-null-sync-reflection',
+      null,
+      '2026-03-23 10:00:00',
+      '2026-03-23 10:00:00',
+    );
+    insertLegacyObservation.run(
+      'legacy-null-sync-session',
+      'architecture',
+      'Legacy null-sync reflection B',
+      'Second stable legacy null-sync reflection source',
+      'legacy-null-sync-reflection',
+      null,
+      '2026-03-23 10:01:00',
+      '2026-03-23 10:01:00',
+    );
+
+    const sourceRun = store.runMaintenance({ scope: { project: 'legacy-null-sync-reflection' } });
+    expect(sourceRun.reflections).toHaveLength(1);
+    const exported = store.exportData('legacy-null-sync-reflection');
+    expect(exported.observations.filter((observation) => observation.tool_name !== 'maintenance-reflection'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ sync_id: null }),
+        expect.objectContaining({ sync_id: null }),
+      ]));
+
+    const targetStore = new Store(':memory:');
+    try {
+      targetStore.saveObservation({
+        title: 'Preexisting local row for null-sync import',
+        content: 'This row shifts imported legacy null-sync row ids',
+        type: 'manual',
+        project: 'local-project',
+      });
+      targetStore.importData(exported);
+      const importedReflectionCount = targetStore.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection'"
+      ).get('legacy-null-sync-reflection') as { count: number };
+      expect(importedReflectionCount.count).toBe(1);
+
+      targetStore.runMaintenance({ scope: { project: 'legacy-null-sync-reflection' } });
+
+      const reflectionRows = targetStore.getDb().prepare(
+        "SELECT id, topic_key FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection' ORDER BY id"
+      ).all('legacy-null-sync-reflection') as Array<{ id: number; topic_key: string }>;
+      expect(reflectionRows).toHaveLength(1);
+    } finally {
+      targetStore.close();
+    }
+  });
+
+  it('reuses imported suffixed maintenance reflections on rerun maintenance', () => {
+    const collisionProject = 'maintenance-collision-reuse-project';
+    const sourceStore = new Store(':memory:');
+
+    try {
+      sourceStore.saveObservation({
+        title: 'Source one',
+        content: 'Source one for suffix collision',
+        type: 'decision',
+        project: collisionProject,
+      });
+      sourceStore.saveObservation({
+        title: 'Source two',
+        content: 'Source two for suffix collision',
+        type: 'decision',
+        project: collisionProject,
+      });
+
+      const plannedBase = sourceStore.evaluateMaintenance({ scope: { project: collisionProject } }).reflections[0]?.topic_key;
+      expect(plannedBase).toBeDefined();
+
+      sourceStore.saveObservation({
+        title: 'Manual collision at planned base',
+        content: 'Manual row that should block base topic reuse',
+        type: 'manual',
+        topic_key: plannedBase,
+        project: collisionProject,
+      });
+
+      const sourceRun = sourceStore.runMaintenance({ scope: { project: collisionProject } });
+      expect(sourceRun.reflections).toHaveLength(1);
+      expect(sourceRun.reflections[0].topic_key).toBe(`${plannedBase}/2`);
+
+      const exported = sourceStore.exportData(collisionProject);
+
+      const targetStore = new Store(':memory:');
+      try {
+        targetStore.saveObservation({
+          title: 'Unrelated local row',
+          content: 'Shifts imported ids in the target',
+          type: 'manual',
+          project: 'local-project',
+        });
+
+        targetStore.importData(exported);
+
+        const importedRows = targetStore.getDb().prepare(
+          "SELECT id, topic_key FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection' AND deleted_at IS NULL ORDER BY id"
+        ).all(collisionProject) as Array<{ id: number; topic_key: string }>;
+        expect(importedRows).toHaveLength(1);
+        expect(importedRows[0].topic_key).toBe(sourceRun.reflections[0].topic_key);
+
+        targetStore.runMaintenance({ scope: { project: collisionProject } });
+
+        const afterRunRows = targetStore.getDb().prepare(
+          "SELECT topic_key FROM observations WHERE project = ? AND tool_name = 'maintenance-reflection' AND deleted_at IS NULL ORDER BY id"
+        ).all(collisionProject) as Array<{ topic_key: string }>;
+        expect(afterRunRows).toHaveLength(1);
+        expect(afterRunRows[0].topic_key).toBe(sourceRun.reflections[0].topic_key);
+      } finally {
+        targetStore.close();
+      }
+    } finally {
+      sourceStore.close();
+    }
   });
 
   it('exportData with a project filter only returns data from that project', () => {
@@ -199,6 +518,54 @@ describe('Store — exportData/importData', () => {
     expect(result.prompts_imported).toBe(1);
     expect(store.getSession('created-from-observation')).not.toBeNull();
     expect(store.getSession('created-from-prompt')).not.toBeNull();
+  });
+
+  it('importData reports degraded identity for legacy records with missing project identity', () => {
+    const data = {
+      version: 1,
+      exported_at: '2026-03-23T10:00:00.000Z',
+      sessions: [],
+      observations: [{
+        id: 1,
+        sync_id: '44444444-4444-4444-8444-444444444444',
+        session_id: 'legacy-missing-project',
+        type: 'manual',
+        title: 'Legacy missing project',
+        content: 'Legacy content',
+        tool_name: null,
+        scope: 'project',
+        topic_key: null,
+        normalized_hash: null,
+        revision_count: 1,
+        duplicate_count: 1,
+        last_seen_at: null,
+        created_at: '2026-03-23 10:00:00',
+        updated_at: '2026-03-23 10:00:00',
+        deleted_at: null,
+      }],
+      prompts: [{
+        id: 1,
+        sync_id: '55555555-5555-4555-8555-555555555555',
+        session_id: 'legacy-missing-project',
+        content: 'Legacy prompt',
+        created_at: '2026-03-23 10:05:00',
+      }],
+    } as unknown as ExportData;
+
+    const result = store.importData(data);
+
+    expect(result.observations_imported).toBe(1);
+    expect(result.prompts_imported).toBe(1);
+    expect(store.getSession('legacy-missing-project')?.project).toBe('unknown');
+    expect(result.identity?.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'project',
+        reason: 'schema-required',
+        source: 'legacy',
+        value: null,
+        fallback_value: 'unknown',
+      }),
+    ]));
   });
 
   it('importData generates a sync_id for imported observations without one', () => {

@@ -15,14 +15,24 @@ rules:
     - Use Given/When/Then format for scenarios
     - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
   design:
-    - Include sequence diagrams for complex flows
-    - Document architecture decisions with rationale
+    guidance:
+      - Include sequence diagrams for complex flows
+      - Document architecture decisions with rationale
+    sub_artifacts: false
+    complexity_threshold:
+      affected_domains: 3
+      affected_files: 12
+      external_research: true
   tasks:
-    - Group tasks by phase (infrastructure, implementation, testing)
-    - Use hierarchical numbering (1.1, 1.2, etc.)
-    - Keep tasks small enough to complete in one session
+    guidance:
+      - Group tasks by phase (infrastructure, implementation, testing)
+      - Use hierarchical numbering (1.1, 1.2, etc.)
+      - Keep tasks small enough to complete in one session
+    traceability: true
+    parallel_markers: false
   apply:
-    - Follow existing code patterns and conventions
+    guidance:
+      - Follow existing code patterns and conventions
     tdd: false
     test_command: 'pnpm test'
   verify:
@@ -31,3 +41,21 @@ rules:
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas
+  constitution:
+    path: openspec/memory/constitution.md
+    enforce_check: true
+    version_policy: semver
+  consistency:
+    enforce_block: true
+    require_coverage_percentage: true
+  requirements_quality:
+    enforce_block: true
+    dimensions:
+      - completeness
+      - clarity
+      - measurability
+      - testability
+  clarification:
+    max_markers_per_spec: 3
+  handoffs:
+    surface_hints: true

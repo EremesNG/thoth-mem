@@ -2,29 +2,52 @@ import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { ThothConfig } from '../config.js';
+import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   ContextInput,
+  CommunityPreviewResult,
+  CommunityRebuildResult,
+  CommunityHealthReadModel,
+  CommunityRetrievalResult,
+  CommunityState,
+  CommunityStateResult,
+  CommunitySummarySnapshot,
   DeleteProjectResult,
+  DropCommunitySummariesInput,
+  DropCommunitySummariesResult,
   ExportData,
   ImportResult,
+  IdentityMetadata,
+  MaintenanceInput,
+  MaintenanceRunPreview,
+  MaintenanceRunResult,
   MigrateProjectResult,
   Observation,
   ObservationFact,
   ObservationFactsInput,
   OperationTrace,
   OperationTraceListResult,
+  OperationTraceMetrics,
+  OperationTraceTelemetry,
   ObservationVersion,
+  PruneSupersededTriplesInput,
+  PruneSupersededTriplesResult,
+  PreviewCommunitySummariesInput,
   RebuildObservationFactsInput,
+  RebuildCommunitySummariesInput,
   RebuildObservationFactsResult,
   SaveOperationTraceInput,
   SaveObservationInput,
+  SavePromptResult,
   SaveResult,
   SearchInput,
   SearchResult,
+  CommunityRetrievalInput,
+  CommunityStateInput,
   Session,
   SyncChunkV2,
+  ApplyV2ChunkResult,
   SyncChunkRecord,
   SyncChunkStatus,
   SyncEntityType,
@@ -38,6 +61,7 @@ import type {
   UserPrompt,
   ObservatoryContextResponse,
   ObservatoryFrontierState,
+  ObservatoryLedgerDetailInput,
   ObservatoryLane,
   ObservatoryLaneStateReason,
   ObservatoryLedgerResponse,
@@ -57,28 +81,35 @@ import type {
   VizSliceResponse,
   ListOperationTracesInput,
 } from './types.js';
+import { metadataFromResolution, normalizeExplicitString, resolveSaveIdentity, mergeIdentityMetadata } from './identity.js';
+import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
 import { stripPrivateTags } from '../utils/privacy.js';
 import { sanitizeTracePayload, sanitizeTraceText } from '../utils/trace-sanitize.js';
+import { buildPayloadMetrics } from '../utils/token-metrics.js';
 import { sanitizeFTS, sanitizeFTSPrefix } from '../utils/sanitize.js';
 import { checkDuplicate, computeHash, incrementDuplicate } from '../utils/dedup.js';
-import { formatObservationMarkdown, formatSearchResults, truncateForPreview, validateContentLength } from '../utils/content.js';
+import { formatObservationMarkdown, formatSearchResults, trimToBudget, truncateForPreview, validateContentLength } from '../utils/content.js';
 import { prepareHydeSemanticInputs } from '../retrieval/hyde.js';
 import type { HydeGenerator, SemanticInput } from '../retrieval/hyde.js';
 import { DEFAULT_RETRIEVAL_DEFAULTS, resolveRetrievalDefaults, scoreFromDistance, vectorToBuffer } from '../retrieval/sqlite-vec.js';
 import {
   DEFAULT_LANE_ORDER,
+  DEFAULT_LANE_WEIGHTS,
   fuseCandidates,
   type FusionOptions,
   type HybridHit,
   type LaneCandidate,
+  type MaintenanceRankingMetadata,
   type RetrievalLane,
 } from '../retrieval/ranking.js';
+import { evaluateCommunityReadPathEligibility } from '../retrieval/community-rollout.js';
 import {
   processNextSemanticJob,
   processSemanticJobs,
   recoverRetriableSemanticJobs,
   recoverStaleSemanticJobs,
   requeueFailedEmbeddingJobs,
+  writeDeterministicKgFacts,
 } from '../indexing/jobs.js';
 import { extractKnowledgeTriples } from '../indexing/kg-extractor.js';
 import type { KgLlmExtractor } from '../indexing/kg-llm-generator.js';
@@ -91,6 +122,20 @@ type OperationTraceRow = Omit<OperationTrace, 'request_truncated' | 'response_tr
 };
 
 type SearchRow = ObservationRow & { rank: number };
+type CommunitySummarySnapshotRow = {
+  community_id: string;
+  level: number;
+  summary_text: string;
+  entity_count: number;
+  triple_count: number;
+  source_observation_count: number;
+  top_entities_json: string;
+  top_relations_json: string;
+  source_observation_ids_json: string;
+  confidence: number;
+  degraded: number;
+  degraded_reasons_json: string;
+};
 type SemanticLaneName = 'chunk' | 'sentence';
 type RetrievalCandidateFilters = {
   project?: string;
@@ -101,6 +146,49 @@ type RetrievalCandidateFilters = {
   time_from?: string;
   time_to?: string;
 };
+
+export interface ObservationMaintenanceEvidence {
+  observationId: number;
+  consolidation?: {
+    clusterKey: string;
+    canonicalId: number;
+    memberIds: number[];
+    reasonClass: string;
+  };
+  reflection?: {
+    sourceIds: number[];
+    reasonClass: string;
+  };
+  decay?: {
+    scoreMultiplier: number;
+    state: 'active' | 'attenuated' | 'suppressed';
+    reasonClass: string;
+  };
+}
+
+type PruneSlotPair = {
+  subjectEntityId: number;
+  relation: string;
+};
+
+interface SupersededPruneOptions {
+  keepN: number;
+  project?: string;
+  dryRun?: boolean;
+  orphanCleanup: boolean;
+  slotFilter?: {
+    sourceId: number;
+    pairs: PruneSlotPair[];
+  };
+}
+
+interface PruneCandidateRow {
+  id: number;
+  subject_entity_id: number;
+  object_entity_id: number;
+}
+
+const PRUNE_ID_BATCH_SIZE = 500;
 type SemanticLaneReadiness = Record<SemanticLaneName, {
   pending: boolean;
   degraded: boolean;
@@ -117,6 +205,49 @@ type VizEdgeRow = {
   content: string;
   relation: string;
   object: string;
+};
+
+type CommunityGraphTriple = {
+  id: number;
+  subject_entity_id: number;
+  subject_key: string;
+  subject_name: string;
+  relation: string;
+  object_entity_id: number;
+  object_key: string;
+  object_name: string;
+  source_observation_id: number | null;
+  source_title: string | null;
+  confidence: number;
+  triple_hash: string;
+  superseded: number;
+  updated_at: string;
+};
+
+type CommunityBuildPlan = {
+  project: string;
+  graphSignature: string;
+  snapshots: CommunitySummarySnapshot[];
+  memberRows: Array<{
+    community_id: string;
+    entity_id: number;
+    role: 'member' | 'top_entity';
+    entity_rank: number;
+    evidence_count: number;
+  }>;
+  evidenceRows: Array<{
+    community_id: string;
+    triple_id: number;
+    source_observation_id: number | null;
+    relation: string;
+    superseded: number;
+    evidence_rank: number;
+    evidence_text: string;
+  }>;
+  entitiesScanned: number;
+  triplesScanned: number;
+  sourceObservationsScanned: number;
+  degradedReasons: string[];
 };
 
 export interface SemanticIndexProgress {
@@ -179,17 +310,23 @@ const STRUCTURED_FACT_RELATIONS = {
 } as const;
 
 type StructuredFactKey = keyof typeof STRUCTURED_FACT_RELATIONS;
+const KG_OBSERVATION_FACT_CONTENT_RELATIONS = ['HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED'] as const;
 
 const DEFAULT_CONFIG: ThothConfig = {
   dataDir: '',
   dbPath: ':memory:',
+  project: {
+    default: null,
+  },
   maxContentLength: 100_000,
+  maxContextChars: 8000,
   maxContextResults: 20,
   maxSearchResults: 20,
   dedupeWindowMinutes: 15,
   previewLength: 300,
   httpPort: 7438,
   httpDisabled: false,
+  graphFactsSource: 'kg',
   retrievalDefaults: DEFAULT_RETRIEVAL_DEFAULTS,
   hyde: {
     enabled: true,
@@ -203,9 +340,12 @@ const DEFAULT_CONFIG: ThothConfig = {
     provider: 'transformers_local',
     model: 'onnx-community/Qwen2.5-Coder-0.5B-Instruct',
     baseUrl: null,
-    timeoutMs: 8000,
+    timeoutMs: 30_000,
     minContentChars: 12_000,
   },
+  knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
+  communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
+  maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
 };
 
 const RETRIEVAL_QUERY_STOPWORDS = new Set([
@@ -254,6 +394,230 @@ const VIZ_LIMITS = {
 const OBSERVATORY_CONTEXT_TTL_MS = 1000 * 60 * 30;
 const OBSERVATORY_PIVOT_TTL_MS = 1000 * 60 * 10;
 
+function chunkIds(ids: number[], size = PRUNE_ID_BATCH_SIZE): number[][] {
+  const chunks: number[][] = [];
+  for (let index = 0; index < ids.length; index += size) {
+    chunks.push(ids.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function placeholders(count: number): string {
+  return Array(count).fill('?').join(', ');
+}
+
+function supersededScopeClause(options: SupersededPruneOptions, alias = 't'): { clause: string; params: unknown[] } {
+  const parts = [
+    `${alias}.source_type = 'observation'`,
+    `(${alias}.superseded_at IS NOT NULL OR ${alias}.superseded_by_triple_id IS NOT NULL)`,
+  ];
+  const params: unknown[] = [];
+
+  if (options.project) {
+    parts.push(`${alias}.project = ?`);
+    params.push(options.project);
+  }
+
+  if (options.slotFilter) {
+    if (options.slotFilter.pairs.length === 0) {
+      parts.push('1 = 0');
+    } else {
+      parts.push(`${alias}.source_id = ?`);
+      params.push(options.slotFilter.sourceId);
+      const pairClauses = options.slotFilter.pairs.map(() => `(${alias}.subject_entity_id = ? AND ${alias}.relation = ?)`);
+      parts.push(`(${pairClauses.join(' OR ')})`);
+      for (const pair of options.slotFilter.pairs) {
+        params.push(pair.subjectEntityId, pair.relation);
+      }
+    }
+  }
+
+  return {
+    clause: parts.join(' AND '),
+    params,
+  };
+}
+
+function selectPruneCandidates(db: Database.Database, options: SupersededPruneOptions): PruneCandidateRow[] {
+  const scope = supersededScopeClause(options);
+  return db.prepare(
+    `WITH ranked AS (
+       SELECT
+         t.id,
+         t.subject_entity_id,
+         t.object_entity_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY t.source_id, t.subject_entity_id, t.relation
+           ORDER BY t.superseded_at DESC, t.id DESC
+         ) AS rn
+       FROM kg_triples t
+       WHERE ${scope.clause}
+     )
+     SELECT id, subject_entity_id, object_entity_id
+     FROM ranked
+     WHERE rn > ?`
+  ).all(...scope.params, options.keepN) as PruneCandidateRow[];
+}
+
+function countSuperseded(db: Database.Database, options: SupersededPruneOptions): number {
+  const scope = supersededScopeClause(options);
+  return (db.prepare(`SELECT COUNT(*) AS count FROM kg_triples t WHERE ${scope.clause}`).get(...scope.params) as { count: number }).count;
+}
+
+function countSlots(db: Database.Database, options: SupersededPruneOptions): number {
+  const scope = supersededScopeClause(options);
+  return (db.prepare(
+    `SELECT COUNT(*) AS count
+     FROM (
+       SELECT 1
+       FROM kg_triples t
+       WHERE ${scope.clause}
+       GROUP BY t.source_id, t.subject_entity_id, t.relation
+     )`
+  ).get(...scope.params) as { count: number }).count;
+}
+
+function countDanglingRefsToPruneSet(db: Database.Database, pruneIds: number[]): number {
+  if (pruneIds.length === 0) {
+    return 0;
+  }
+
+  let count = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    count += (db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE superseded_by_triple_id IN (${placeholders(chunk.length)})`
+    ).get(...chunk) as { count: number }).count;
+  }
+  return count;
+}
+
+function entityIdsFromPruneCandidates(candidates: PruneCandidateRow[]): number[] {
+  return Array.from(new Set(
+    candidates.flatMap((candidate) => [candidate.subject_entity_id, candidate.object_entity_id])
+  ));
+}
+
+function countEntitiesOrphanedByPruneSet(db: Database.Database, candidates: PruneCandidateRow[]): number {
+  if (candidates.length === 0) {
+    return 0;
+  }
+
+  const pruneIds = new Set(candidates.map((candidate) => candidate.id));
+  const entityIds = entityIdsFromPruneCandidates(candidates);
+  const candidateEntityIds = new Set(entityIds);
+  const entitiesWithSurvivorRefs = new Set<number>();
+
+  for (const chunk of chunkIds(entityIds)) {
+    const rows = db.prepare(
+      `SELECT id, subject_entity_id, object_entity_id
+       FROM kg_triples
+       WHERE subject_entity_id IN (${placeholders(chunk.length)})
+          OR object_entity_id IN (${placeholders(chunk.length)})`
+    ).all(...chunk, ...chunk) as PruneCandidateRow[];
+
+    for (const row of rows) {
+      if (pruneIds.has(row.id)) {
+        continue;
+      }
+
+      if (candidateEntityIds.has(row.subject_entity_id)) {
+        entitiesWithSurvivorRefs.add(row.subject_entity_id);
+      }
+      if (candidateEntityIds.has(row.object_entity_id)) {
+        entitiesWithSurvivorRefs.add(row.object_entity_id);
+      }
+    }
+  }
+
+  return entityIds.filter((entityId) => !entitiesWithSurvivorRefs.has(entityId)).length;
+}
+
+function deleteEntitiesOrphanedByPruneSet(db: Database.Database, candidates: PruneCandidateRow[]): number {
+  const entityIds = entityIdsFromPruneCandidates(candidates);
+
+  if (entityIds.length === 0) {
+    return 0;
+  }
+
+  let changes = 0;
+  for (const chunk of chunkIds(entityIds)) {
+    changes += db.prepare(
+      `DELETE FROM kg_entities
+       WHERE id IN (${placeholders(chunk.length)})
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kg_triples
+           WHERE kg_triples.subject_entity_id = kg_entities.id
+              OR kg_triples.object_entity_id = kg_entities.id
+         )`
+    ).run(...chunk).changes;
+  }
+
+  return changes;
+}
+
+export function runSupersededPrune(
+  db: Database.Database,
+  options: SupersededPruneOptions,
+): PruneSupersededTriplesResult {
+  const keepN = Math.max(0, Math.floor(options.keepN));
+  const normalizedOptions = { ...options, keepN };
+  const candidates = selectPruneCandidates(db, normalizedOptions);
+  const pruneIds = candidates.map((candidate) => candidate.id);
+  const supersededBefore = countSuperseded(db, normalizedOptions);
+  const slotsScanned = countSlots(db, normalizedOptions);
+  const danglingRefs = countDanglingRefsToPruneSet(db, pruneIds);
+  const entitiesToPrune = normalizedOptions.orphanCleanup
+    ? countEntitiesOrphanedByPruneSet(db, candidates)
+    : 0;
+
+  if (normalizedOptions.dryRun) {
+    return {
+      project: normalizedOptions.project ?? null,
+      dry_run: true,
+      slots_scanned: slotsScanned,
+      triples_pruned: pruneIds.length,
+      entities_pruned: entitiesToPrune,
+      dangling_refs_nulled: danglingRefs,
+      superseded_before: supersededBefore,
+      superseded_after: Math.max(0, supersededBefore - pruneIds.length),
+    };
+  }
+
+  let danglingRefsNulled = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    danglingRefsNulled += db.prepare(
+      `UPDATE kg_triples
+       SET superseded_by_triple_id = NULL,
+           superseded_at = NULL
+       WHERE superseded_by_triple_id IN (${placeholders(chunk.length)})`
+    ).run(...chunk).changes;
+  }
+
+  let triplesPruned = 0;
+  for (const chunk of chunkIds(pruneIds)) {
+    triplesPruned += db.prepare(
+      `DELETE FROM kg_triples WHERE id IN (${placeholders(chunk.length)})`
+    ).run(...chunk).changes;
+  }
+
+  const entitiesPruned = normalizedOptions.orphanCleanup ? deleteEntitiesOrphanedByPruneSet(db, candidates) : 0;
+  const supersededAfter = countSuperseded(db, normalizedOptions);
+
+  return {
+    project: normalizedOptions.project ?? null,
+    dry_run: false,
+    slots_scanned: slotsScanned,
+    triples_pruned: triplesPruned,
+    entities_pruned: entitiesPruned,
+    dangling_refs_nulled: danglingRefsNulled,
+    superseded_before: supersededBefore,
+    superseded_after: supersededAfter,
+  };
+}
+
 export class Store {
   private db: Database.Database;
   public readonly config: ThothConfig;
@@ -265,7 +629,60 @@ export class Store {
   };
 
   constructor(dbPath: string, config?: Partial<ThothConfig>) {
-    this.config = { ...DEFAULT_CONFIG, ...config, dbPath };
+    const maintenanceConfig = config?.maintenance;
+    const readPathEnabled = maintenanceConfig?.readPath?.enabled
+      ?? (maintenanceConfig?.enabled === false ? false : DEFAULT_MAINTENANCE_CONFIG.readPath.enabled);
+
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      dbPath,
+      project: {
+        ...DEFAULT_CONFIG.project,
+        ...(config?.project ?? {}),
+      },
+      knowledgeGraph: {
+        ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+        ...(config?.knowledgeGraph ?? {}),
+      },
+      communitySummaries: {
+        ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+        ...(config?.communitySummaries ?? {}),
+        readPath: {
+          ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.readPath,
+          ...(config?.communitySummaries?.readPath ?? {}),
+        },
+        enrichment: {
+          ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.enrichment,
+          ...(config?.communitySummaries?.enrichment ?? {}),
+        },
+      },
+      maintenance: {
+        ...DEFAULT_MAINTENANCE_CONFIG,
+        ...(maintenanceConfig ?? {}),
+        automatic: {
+          ...DEFAULT_MAINTENANCE_CONFIG.automatic,
+          ...(maintenanceConfig?.automatic ?? {}),
+        },
+        readPath: {
+          ...DEFAULT_MAINTENANCE_CONFIG.readPath,
+          ...(maintenanceConfig?.readPath ?? {}),
+          enabled: readPathEnabled,
+        },
+        consolidation: {
+          ...DEFAULT_MAINTENANCE_CONFIG.consolidation,
+          ...(maintenanceConfig?.consolidation ?? {}),
+        },
+        reflection: {
+          ...DEFAULT_MAINTENANCE_CONFIG.reflection,
+          ...(maintenanceConfig?.reflection ?? {}),
+        },
+        decay: {
+          ...DEFAULT_MAINTENANCE_CONFIG.decay,
+          ...(maintenanceConfig?.decay ?? {}),
+        },
+      },
+    };
     this.db = new Database(dbPath);
 
     for (const pragma of PRAGMAS) {
@@ -817,11 +1234,17 @@ export class Store {
       ? { json: null, truncated: false }
       : sanitizeTracePayload(input.response, { maxChars: input.max_payload_chars });
     const error = input.error ? sanitizeTraceText(input.error, { maxChars: input.max_payload_chars }).json : null;
+    const metrics = input.metrics ?? buildPayloadMetrics({
+      request: input.request,
+      response: input.response,
+    });
+    const metricsJson = JSON.stringify(metrics);
     const result = this.db.prepare(
       `INSERT INTO operation_traces (
         trace_id, origin, target, status, project, session_id, started_at, finished_at,
-        duration_ms, request_json, response_json, error, request_truncated, response_truncated
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        duration_ms, request_json, response_json, error, correlation_id, metrics_json,
+        request_truncated, response_truncated
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.trace_id?.trim() || randomUUID(),
       input.origin,
@@ -835,6 +1258,8 @@ export class Store {
       request.json,
       response.json,
       error,
+      input.correlation_id?.trim() || input.trace_id?.trim() || null,
+      metricsJson,
       request.truncated ? 1 : 0,
       response.truncated ? 1 : 0,
     );
@@ -907,6 +1332,99 @@ export class Store {
       ? this.db.prepare('SELECT * FROM operation_traces WHERE id = ?').get(traceIdOrId) as OperationTraceRow | undefined
       : this.db.prepare('SELECT * FROM operation_traces WHERE trace_id = ?').get(traceIdOrId) as OperationTraceRow | undefined;
     return this.mapOperationTraceRow(row);
+  }
+
+  getOperationTraceTelemetry(input: { project?: string; since?: string; now?: string } = {}): OperationTraceTelemetry {
+    const where: string[] = ['metrics_json IS NOT NULL'];
+    const params: unknown[] = [];
+    if (input.project) {
+      where.push('project = ?');
+      params.push(input.project);
+    }
+    if (input.since) {
+      where.push('started_at >= ?');
+      params.push(input.since);
+    }
+    const rows = this.db.prepare(
+      `SELECT target, project, started_at, metrics_json
+       FROM operation_traces
+       WHERE ${where.join(' AND ')}
+       ORDER BY started_at ASC, id ASC`
+    ).all(...params) as Array<{ target: string; project: string | null; started_at: string; metrics_json: string | null }>;
+    const sums = new Map<string, { count: number; request: number; response: number; returned: number; full: number; evidence: number }>();
+    const retrievalRows: Array<{ project: string | null; started_at: string; metrics: OperationTraceMetrics }> = [];
+    const getRows: Array<{ project: string | null; started_at: string; metrics: OperationTraceMetrics }> = [];
+
+    for (const row of rows) {
+      if (!row.metrics_json) {
+        continue;
+      }
+      let metrics: OperationTraceMetrics;
+      try {
+        metrics = JSON.parse(row.metrics_json) as OperationTraceMetrics;
+      } catch {
+        continue;
+      }
+      const current = sums.get(row.target) ?? { count: 0, request: 0, response: 0, returned: 0, full: 0, evidence: 0 };
+      current.count += 1;
+      current.request += metrics.request_chars ?? 0;
+      current.response += metrics.response_chars ?? 0;
+      current.returned += metrics.returned_chars ?? 0;
+      current.full += metrics.full_chars ?? 0;
+      current.evidence += metrics.evidence_chars ?? 0;
+      sums.set(row.target, current);
+
+      if ((row.target === 'mem_recall' || row.target === 'mem_context') && (metrics.evidence_observation_ids?.length ?? 0) > 0) {
+        retrievalRows.push({ project: row.project, started_at: row.started_at, metrics });
+      }
+      if (row.target === 'mem_get' && metrics.fetched_observation_id !== undefined) {
+        getRows.push({ project: row.project, started_at: row.started_at, metrics });
+      }
+    }
+
+    const averagePayloads: OperationTraceTelemetry['average_payload_chars_by_tool'] = {};
+    for (const [target, sum] of sums) {
+      averagePayloads[target] = {
+        count: sum.count,
+        request_chars: Math.round(sum.request / sum.count),
+        response_chars: Math.round(sum.response / sum.count),
+        returned_chars: Math.round(sum.returned / sum.count),
+        full_chars: Math.round(sum.full / sum.count),
+        evidence_chars: Math.round(sum.evidence / sum.count),
+      };
+    }
+
+    const windowMs = 15 * 60 * 1000;
+    const nowMs = Date.parse(input.now ?? new Date().toISOString());
+    let avoided = 0;
+    let escalated = 0;
+    let pending = 0;
+    for (const retrieval of retrievalRows) {
+      const retrievalMs = Date.parse(retrieval.started_at);
+      const ids = new Set(retrieval.metrics.evidence_observation_ids ?? []);
+      const matched = getRows.some((get) => (
+        get.project === retrieval.project
+        && ids.has(get.metrics.fetched_observation_id!)
+        && Date.parse(get.started_at) >= retrievalMs
+        && Date.parse(get.started_at) - retrievalMs <= windowMs
+      ));
+      if (matched) {
+        escalated += 1;
+      } else if (Number.isFinite(nowMs) && nowMs - retrievalMs < windowMs) {
+        pending += 1;
+      } else {
+        avoided += 1;
+      }
+    }
+
+    return {
+      average_payload_chars_by_tool: averagePayloads,
+      mem_get_avoided_count: avoided,
+      mem_get_escalated_count: escalated,
+      mem_get_pending_count: pending,
+      correlation_window_minutes: 15,
+      token_basis: 'estimated_chars_div_4',
+    };
   }
 
   /**
@@ -988,7 +1506,6 @@ export class Store {
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-            project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
             directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(id, project, directory ?? null);
@@ -1065,6 +1582,10 @@ export class Store {
   }
 
   private replaceObservationFacts(observation: Observation): { deleted: number; created: number } {
+    if (!this.observationFactsTableExists()) {
+      return { deleted: 0, created: 0 };
+    }
+
     const insert = this.db.prepare(
       `INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -1094,6 +1615,183 @@ export class Store {
     this.replaceObservationFacts(observation);
   }
 
+  private observationFactsTableExists(): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts' LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+
+    return row !== undefined;
+  }
+
+  private isMissingLegacyObservationFactsError(error: unknown): boolean {
+    return error instanceof Error && /no such table:\s*observation_facts/i.test(error.message);
+  }
+
+  getLegacyFactsDrift(): {
+    status: 'ok' | 'degraded';
+    source: 'kg' | 'legacy';
+    missing_table: 'observation_facts' | null;
+    message: string;
+  } {
+    const source = this.config.graphFactsSource ?? 'kg';
+    if (source !== 'legacy') {
+      return {
+        status: 'ok',
+        source,
+        missing_table: null,
+        message: 'default KG graphFactsSource does not require observation_facts',
+      };
+    }
+
+    if (this.observationFactsTableExists()) {
+      return {
+        status: 'ok',
+        source,
+        missing_table: null,
+        message: 'explicit legacy graphFactsSource can read observation_facts',
+      };
+    }
+
+    return {
+      status: 'degraded',
+      source,
+      missing_table: 'observation_facts',
+      message: 'explicit legacy graphFactsSource is configured but observation_facts is missing',
+    };
+  }
+
+  getOperationalHealth(input: { project?: string } = {}): {
+    status: 'ok' | 'pending' | 'degraded';
+    project: string | null;
+    community: CommunityHealthReadModel;
+    legacy_drift: ReturnType<Store['getLegacyFactsDrift']>;
+    semantic: ReturnType<Store['getSemanticIndexState']> & {
+      state: VizHealthResponse['semantic_state'];
+      lanes: VizHealthResponse['semantic']['lanes'];
+    };
+    visualization: {
+      semantic_state: VizHealthResponse['semantic_state'];
+      graph_source: 'kg' | 'legacy';
+      kg_available: boolean;
+      pending_jobs: number;
+    };
+    jobs: VizHealthResponse['semantic']['jobs'];
+    coverage: VizHealthResponse['semantic']['coverage'];
+    recent_errors: VizHealthResponse['semantic']['recent_errors'];
+  } {
+    const visualization = this.getVisualizationHealth({ project: input.project });
+    const runtime = this.getSemanticIndexState();
+    const legacyDrift = this.getLegacyFactsDrift();
+    const graphSource = this.config.graphFactsSource ?? 'kg';
+    const kgAvailable = graphSource !== 'legacy' || legacyDrift.status === 'ok';
+    const community = this.getCommunityHealth(input.project);
+    const status = legacyDrift.status === 'degraded' || visualization.semantic_state === 'degraded'
+      ? 'degraded'
+      : visualization.semantic_state === 'pending' || visualization.semantic_state === 'rebuilding'
+        ? 'pending'
+        : 'ok';
+
+    return {
+      status,
+      project: input.project ?? null,
+      community,
+      legacy_drift: legacyDrift,
+      semantic: {
+        ...runtime,
+        state: visualization.semantic_state,
+        lanes: visualization.semantic.lanes,
+      },
+      visualization: {
+        semantic_state: visualization.semantic_state,
+        graph_source: graphSource,
+        kg_available: kgAvailable,
+        pending_jobs: visualization.pending_jobs,
+      },
+      jobs: visualization.semantic.jobs,
+      coverage: visualization.semantic.coverage,
+      recent_errors: visualization.semantic.recent_errors.slice(0, 5),
+    };
+  }
+
+  private getCommunityHealth(project?: string): CommunityHealthReadModel {
+    if (!project) {
+      return {
+        state: this.config.communitySummaries.enabled === false ? 'disabled' : 'missing',
+        run_id: null,
+        latest_committed_run_id: null,
+        latest_job_status: 'none',
+        graph_signature: null,
+        current_graph_signature: null,
+        freshness_basis: this.config.communitySummaries.enabled === false ? 'config_disabled' : 'missing_run',
+        coverage: {
+          communities: 0,
+          entities: 0,
+          triples: 0,
+          source_observations: 0,
+        },
+        degraded_reasons: this.config.communitySummaries.enabled === false ? ['disabled'] : [],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    const state = this.getCommunitySummaryState({ project });
+    const publicState: CommunityHealthReadModel['state'] = state.state === 'empty' ? 'degraded' : state.state;
+    const latestJobStatus: CommunityHealthReadModel['latest_job_status'] =
+      publicState === 'rebuilding' ? 'running'
+        : publicState === 'failed' ? 'failed'
+          : state.run_id === null ? 'none'
+            : 'committed';
+    const freshnessBasis: CommunityHealthReadModel['freshness_basis'] =
+      publicState === 'disabled' ? 'config_disabled'
+        : state.run_id === null ? 'missing_run'
+          : 'graph_signature';
+    const reasons = publicState === 'degraded' && state.degraded_reasons.length === 0
+      ? ['empty_kg']
+      : state.degraded_reasons;
+
+    return {
+      state: publicState,
+      run_id: state.run_id,
+      latest_committed_run_id: state.latest_committed_run_id,
+      latest_job_status: latestJobStatus,
+      graph_signature: state.graph_signature,
+      current_graph_signature: state.current_graph_signature,
+      freshness_basis: freshnessBasis,
+      coverage: {
+        communities: state.communities_count,
+        entities: state.entities_count,
+        triples: state.triples_count,
+        source_observations: state.source_observations_count,
+      },
+      degraded_reasons: reasons,
+      error: state.error,
+      updated_at: state.updated_at,
+    };
+  }
+
+  private refreshGraphFacts(observation: Observation): void {
+    if (this.config.graphFactsSource === 'legacy') {
+      this.refreshObservationFacts(observation);
+      return;
+    }
+
+    writeDeterministicKgFacts(this, observation.id);
+  }
+
+  private refreshDerivedStateForObservation(
+    observation: Observation,
+    reason: string,
+    previousProject?: string | null
+  ): void {
+    this.refreshGraphFacts(observation);
+    this.markCommunitySummariesStale(observation.project, reason);
+    if (previousProject !== undefined && previousProject !== observation.project) {
+      this.markCommunitySummariesStale(previousProject, reason);
+    }
+    this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+  }
+
   private deleteSemanticArtifactsForObservation(observationId: number): void {
     const rows = this.db.prepare(
       "SELECT lane, vec_rowid FROM semantic_vector_rowids WHERE observation_id = ?"
@@ -1115,8 +1813,21 @@ export class Store {
   }
 
   private deleteKnowledgeArtifactsForObservation(observationId: number): void {
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    if (knowledgeGraph.kgSupersedeEnabled) {
+      this.db.prepare(
+        `UPDATE kg_triples
+         SET superseded_by_triple_id = NULL,
+             superseded_at = NULL
+         WHERE superseded_by_triple_id IN (
+           SELECT id FROM kg_triples WHERE source_type = 'observation' AND source_id = ?
+         )`
+      ).run(observationId);
+    }
     this.db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
-    this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
+    if (this.config.graphFactsSource === 'legacy' && this.observationFactsTableExists()) {
+      this.db.prepare('DELETE FROM observation_facts WHERE observation_id = ?').run(observationId);
+    }
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
@@ -1209,8 +1920,6 @@ export class Store {
       .map((prompt) => `- ${prompt.created_at}: ${truncateForPreview(prompt.content, 100)}`)
       .join('\n');
 
-    const observationBlocks = observations.map((obs) => formatObservationMarkdown(obs)).join('\n\n');
-
     const totalSessions = this.db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
     const totalObs = this.db.prepare('SELECT COUNT(*) as count FROM observations WHERE deleted_at IS NULL').get() as { count: number };
     const projects = this.db.prepare(
@@ -1224,7 +1933,7 @@ export class Store {
        ORDER BY project`
     ).all() as Array<{ project: string }>;
 
-    return [
+    const renderContext = (observationBlocks: string): string => [
       '## Memory from Previous Sessions',
       '',
       '### Recent Sessions',
@@ -1239,6 +1948,82 @@ export class Store {
       '---',
       `Memory stats: ${totalSessions.count} sessions, ${totalObs.count} observations across projects: ${projects.map((p) => p.project).join(', ')}`,
     ].join('\n');
+
+    const budget = input.maxOutputChars ?? this.config.maxContextChars;
+
+    if (budget === 0) {
+      return renderContext(observations.map((obs) => formatObservationMarkdown(obs)).join('\n\n'));
+    }
+
+    const positiveBudget = Math.max(0, budget);
+
+    if (observations.length === 0) {
+      return trimToBudget(renderContext('No recent observations.'), positiveBudget);
+    }
+
+    const prefix = [
+      '## Memory from Previous Sessions',
+      '',
+      '### Recent Sessions',
+      sessionLines || '- None',
+      '',
+      '### Recent Prompts',
+      promptLines || '- None',
+      '',
+      '### Recent Observations',
+    ].join('\n');
+    const suffix = [
+      '',
+      '---',
+      `Memory stats: ${totalSessions.count} sessions, ${totalObs.count} observations across projects: ${projects.map((p) => p.project).join(', ')}`,
+    ].join('\n');
+    const footerFor = (shown: number): string => {
+      const omitted = Math.max(0, observations.length - shown);
+      const omittedText = omitted > 0 ? `; ${omitted} more omitted` : '; 0 omitted';
+      return `> Showing ${shown} of ${observations.length} observations (budget ${positiveBudget}c). Use mem_get(id=...) for full content${omittedText}.`;
+    };
+    const assemble = (blocks: string[], shown: number): string => [
+      prefix,
+      blocks.length > 0 ? blocks.join('\n\n') : 'No observation preview fit in the available budget.',
+      '',
+      footerFor(shown),
+      suffix,
+    ].join('\n');
+
+    const blocks: string[] = [];
+    let shown = 0;
+
+    for (const observation of observations) {
+      const block = formatObservationMarkdown(observation, {
+        preview: true,
+        previewLength: this.config.previewLength,
+      });
+      const candidateBlocks = [...blocks, block];
+      const candidate = assemble(candidateBlocks, shown + 1);
+
+      if (candidate.length <= positiveBudget) {
+        blocks.push(block);
+        shown += 1;
+        continue;
+      }
+
+      if (shown === 0) {
+        const overhead = assemble([''], 1).length;
+        const availableForBlock = positiveBudget - overhead;
+        const visibleBlock = availableForBlock > 0
+          ? trimToBudget(block, availableForBlock, '\n[preview truncated]')
+          : '';
+
+        if (visibleBlock.length > 0) {
+          blocks.push(visibleBlock);
+          shown = 1;
+        }
+      }
+
+      break;
+    }
+
+    return trimToBudget(assemble(blocks, shown), positiveBudget);
   }
 
   getTimeline(input: TimelineInput): TimelineResult {
@@ -1268,8 +2053,16 @@ export class Store {
     return { before, focus, after };
   }
 
-  savePrompt(sessionId: string, content: string, project?: string): UserPrompt {
-    this.ensureSession(sessionId, project || 'unknown');
+  savePrompt(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
+    const identity = resolveSaveIdentity({
+      session_id: sessionId,
+      project,
+      requireSessionProject: true,
+      config: this.config,
+    });
+    const identityMetadata = metadataFromResolution(identity);
+    const recordProject = identity.project ?? null;
+    this.ensureSession(identity.session_id!, identity.session_project);
 
     const contentHash = computeHash(content);
     const recentPrompts = this.db.prepare(
@@ -1278,18 +2071,21 @@ export class Store {
        WHERE session_id = ?
          AND created_at > datetime('now', '-30 seconds')
        ORDER BY created_at DESC`
-    ).all(sessionId) as UserPrompt[];
+    ).all(identity.session_id) as UserPrompt[];
 
     const duplicatePrompt = recentPrompts.find((prompt) => computeHash(prompt.content) === contentHash);
 
     if (duplicatePrompt) {
-      return duplicatePrompt;
+      return {
+        ...duplicatePrompt,
+        ...(identityMetadata ? { identity: identityMetadata } : {}),
+      };
     }
 
     const syncId = randomUUID();
     const result = this.db.prepare(
       'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
-    ).run(sessionId, content, project ?? null, syncId);
+    ).run(identity.session_id, content, recordProject, syncId);
 
     const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
 
@@ -1299,7 +2095,10 @@ export class Store {
 
     this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
 
-    return prompt;
+    return {
+      ...prompt,
+      ...(identityMetadata ? { identity: identityMetadata } : {}),
+    };
   }
 
   recentPrompts(limit: number = 10, project?: string, sessionId?: string): UserPrompt[] {
@@ -1335,6 +2134,1376 @@ export class Store {
     };
   }
 
+  private parseJsonArray<T>(value: string | null | undefined): T[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private communityConfigHash(): string {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    return computeHash(JSON.stringify({
+      algorithm: community.algorithm,
+      summaryMaxChars: community.summaryMaxChars,
+      maxCommunitiesPerProject: community.maxCommunitiesPerProject,
+      maxEvidencePerCommunity: community.maxEvidencePerCommunity,
+      sourceObservationLimit: community.sourceObservationLimit,
+      rebuildMaxTriples: community.rebuildMaxTriples,
+      enrichment: {
+        enabled: community.enrichment.enabled,
+        timeoutMs: community.enrichment.timeoutMs,
+        maxCostUsd: community.enrichment.maxCostUsd,
+        maxChars: community.enrichment.maxChars,
+      },
+    }));
+  }
+
+  private selectCommunityGraph(project: string): CommunityGraphTriple[] {
+    return this.db.prepare(
+      `SELECT
+         t.id,
+         t.subject_entity_id,
+         se.entity_key AS subject_key,
+         se.canonical_name AS subject_name,
+         t.relation,
+         t.object_entity_id,
+         oe.entity_key AS object_key,
+         oe.canonical_name AS object_name,
+         t.source_id AS source_observation_id,
+         o.title AS source_title,
+         t.confidence,
+         t.triple_hash,
+         CASE WHEN t.superseded_by_triple_id IS NOT NULL OR t.superseded_at IS NOT NULL THEN 1 ELSE 0 END AS superseded,
+         t.updated_at
+       FROM kg_triples t
+       JOIN kg_entities se ON se.id = t.subject_entity_id
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       LEFT JOIN observations o ON o.id = t.source_id AND o.deleted_at IS NULL
+       WHERE t.project = ?
+         AND (t.source_type != 'observation' OR o.id IS NOT NULL)
+       ORDER BY se.entity_key, t.relation, oe.entity_key, t.triple_hash, t.id`
+    ).all(project) as CommunityGraphTriple[];
+  }
+
+  private computeCommunityGraphSignature(project: string, triples?: CommunityGraphTriple[]): string {
+    const rows = triples ?? this.selectCommunityGraph(project);
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    return computeHash(JSON.stringify({
+      project,
+      config_hash: this.communityConfigHash(),
+      algorithm: community.algorithm,
+      triples: rows.map((row) => [
+        row.id,
+        row.triple_hash,
+        row.subject_entity_id,
+        row.relation,
+        row.object_entity_id,
+        row.source_observation_id,
+        row.superseded,
+        row.updated_at,
+      ]),
+    }));
+  }
+
+  private buildCommunityPlan(project: string): CommunityBuildPlan {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    const triples = this.selectCommunityGraph(project);
+    const graphSignature = this.computeCommunityGraphSignature(project, triples);
+    const degradedReasons: string[] = [];
+
+    if (community.algorithm !== 'connected_components') {
+      degradedReasons.push(`algorithm_fallback:${community.algorithm}`);
+    }
+    if (community.enrichment.enabled) {
+      degradedReasons.push('enrichment_unavailable');
+    }
+
+    if (triples.length > community.rebuildMaxTriples) {
+      throw new Error(`Community rebuild for ${project} exceeds rebuildMaxTriples (${triples.length} > ${community.rebuildMaxTriples})`);
+    }
+
+    const entityById = new Map<number, { id: number; key: string; name: string }>();
+    const adjacency = new Map<number, Set<number>>();
+    for (const triple of triples) {
+      entityById.set(triple.subject_entity_id, {
+        id: triple.subject_entity_id,
+        key: triple.subject_key,
+        name: triple.subject_name,
+      });
+      entityById.set(triple.object_entity_id, {
+        id: triple.object_entity_id,
+        key: triple.object_key,
+        name: triple.object_name,
+      });
+      if (!adjacency.has(triple.subject_entity_id)) adjacency.set(triple.subject_entity_id, new Set());
+      if (!adjacency.has(triple.object_entity_id)) adjacency.set(triple.object_entity_id, new Set());
+      adjacency.get(triple.subject_entity_id)!.add(triple.object_entity_id);
+      adjacency.get(triple.object_entity_id)!.add(triple.subject_entity_id);
+    }
+
+    const entitySortKey = (id: number): string => {
+      const entity = entityById.get(id);
+      return `${entity?.name ?? ''}\u0000${entity?.key ?? ''}\u0000${id}`;
+    };
+    const unvisited = new Set(Array.from(entityById.keys()));
+    const components: number[][] = [];
+
+    while (unvisited.size > 0) {
+      const start = Array.from(unvisited).sort((a, b) => entitySortKey(a).localeCompare(entitySortKey(b)))[0]!;
+      const stack = [start];
+      const component: number[] = [];
+      unvisited.delete(start);
+
+      while (stack.length > 0) {
+        const id = stack.pop()!;
+        component.push(id);
+        const neighbors = Array.from(adjacency.get(id) ?? [])
+          .filter((neighbor) => unvisited.has(neighbor))
+          .sort((a, b) => entitySortKey(b).localeCompare(entitySortKey(a)));
+        for (const neighbor of neighbors) {
+          unvisited.delete(neighbor);
+          stack.push(neighbor);
+        }
+      }
+
+      components.push(component.sort((a, b) => entitySortKey(a).localeCompare(entitySortKey(b))));
+    }
+
+    components.sort((a, b) => entitySortKey(a[0] ?? 0).localeCompare(entitySortKey(b[0] ?? 0)));
+
+    if (components.length === 0) {
+      degradedReasons.push('empty_kg');
+    }
+    if (components.length > community.maxCommunitiesPerProject) {
+      degradedReasons.push('community_limit_truncated');
+    }
+
+    const limitedComponents = components.slice(0, community.maxCommunitiesPerProject);
+    const snapshots: CommunitySummarySnapshot[] = [];
+    const memberRows: CommunityBuildPlan['memberRows'] = [];
+    const evidenceRows: CommunityBuildPlan['evidenceRows'] = [];
+    const sourceObservationIds = new Set(
+      triples
+        .map((triple) => triple.source_observation_id)
+        .filter((id): id is number => id !== null)
+    );
+
+    for (const component of limitedComponents) {
+      const componentSet = new Set(component);
+      const componentTriples = triples
+        .filter((triple) => componentSet.has(triple.subject_entity_id) && componentSet.has(triple.object_entity_id))
+        .sort((a, b) => (
+          a.superseded - b.superseded
+          || b.confidence - a.confidence
+          || a.relation.localeCompare(b.relation)
+          || a.id - b.id
+        ));
+      const evidence = componentTriples.slice(0, community.maxEvidencePerCommunity);
+      const relationNames = Array.from(new Set(componentTriples.map((triple) => triple.relation))).sort();
+      const evidenceCountByEntity = new Map<number, number>();
+      for (const triple of componentTriples) {
+        evidenceCountByEntity.set(triple.subject_entity_id, (evidenceCountByEntity.get(triple.subject_entity_id) ?? 0) + 1);
+        evidenceCountByEntity.set(triple.object_entity_id, (evidenceCountByEntity.get(triple.object_entity_id) ?? 0) + 1);
+      }
+      const rankedEntities = component
+        .map((id) => ({ ...entityById.get(id)!, evidenceCount: evidenceCountByEntity.get(id) ?? 0 }))
+        .sort((a, b) => b.evidenceCount - a.evidenceCount || a.name.localeCompare(b.name) || a.id - b.id);
+      const topEntities = rankedEntities.slice(0, 8).map((entity) => entity.name);
+      const componentSourceIds = Array.from(new Set(
+        componentTriples
+          .map((triple) => triple.source_observation_id)
+          .filter((id): id is number => id !== null)
+      )).sort((a, b) => a - b);
+      const boundedSourceIds = componentSourceIds.slice(0, community.sourceObservationLimit);
+      const communityKey = [
+        project,
+        'connected_components_v1',
+        ...component.map((id) => entityById.get(id)?.key ?? String(id)),
+        ...componentTriples.map((triple) => triple.triple_hash),
+      ].join('|');
+      const communityId = `c_${computeHash(communityKey).slice(0, 16)}`;
+      const evidenceText = evidence.map((triple) => {
+        const historical = triple.superseded ? ' (historical)' : '';
+        return `${triple.subject_name} ${triple.relation} ${triple.object_name}${historical}`;
+      });
+      let summaryText = [
+        `Community ${communityId} connects ${topEntities.join(', ') || 'no entities'}.`,
+        relationNames.length > 0 ? `Relations: ${relationNames.slice(0, 8).join(', ')}.` : '',
+        evidenceText.length > 0 ? `Evidence: ${evidenceText.join('; ')}.` : '',
+      ].filter(Boolean).join(' ');
+      const snapshotReasons: string[] = [...degradedReasons];
+      if (componentTriples.length > evidence.length) {
+        snapshotReasons.push('evidence_limit_truncated');
+      }
+      if (componentSourceIds.length > boundedSourceIds.length) {
+        snapshotReasons.push('source_observation_limit_truncated');
+      }
+      if (summaryText.length > community.summaryMaxChars) {
+        summaryText = trimToBudget(summaryText, community.summaryMaxChars);
+        snapshotReasons.push('summary_truncated');
+      }
+      const confidence = componentTriples.length === 0
+        ? 0
+        : componentTriples.reduce((total, triple) => total + triple.confidence, 0) / componentTriples.length;
+
+      snapshots.push({
+        community_id: communityId,
+        level: 0,
+        summary_text: summaryText,
+        entity_count: component.length,
+        triple_count: componentTriples.length,
+        source_observation_count: componentSourceIds.length,
+        top_entities: topEntities,
+        top_relations: relationNames.slice(0, 8),
+        source_observation_ids: boundedSourceIds,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        degraded: snapshotReasons.length > 0,
+        degraded_reasons: snapshotReasons,
+      });
+
+      rankedEntities.forEach((entity, index) => {
+        memberRows.push({
+          community_id: communityId,
+          entity_id: entity.id,
+          role: index < topEntities.length ? 'top_entity' : 'member',
+          entity_rank: index + 1,
+          evidence_count: entity.evidenceCount,
+        });
+      });
+      evidence.forEach((triple, index) => {
+        evidenceRows.push({
+          community_id: communityId,
+          triple_id: triple.id,
+          source_observation_id: triple.source_observation_id,
+          relation: triple.relation,
+          superseded: triple.superseded,
+          evidence_rank: index + 1,
+          evidence_text: `${triple.subject_name} ${triple.relation} ${triple.object_name}`,
+        });
+      });
+    }
+
+    return {
+      project,
+      graphSignature,
+      snapshots,
+      memberRows,
+      evidenceRows,
+      entitiesScanned: entityById.size,
+      triplesScanned: triples.length,
+      sourceObservationsScanned: sourceObservationIds.size,
+      degradedReasons: Array.from(new Set(degradedReasons)),
+    };
+  }
+
+  private latestCommunityRun(project: string): {
+    id: number;
+    status: 'running' | 'committed' | 'failed';
+    freshness: CommunityState;
+    graph_signature: string | null;
+    communities_count: number;
+    entities_count: number;
+    triples_count: number;
+    source_observations_count: number;
+    degraded: number;
+    degraded_reasons_json: string;
+    error: string | null;
+    updated_at: string;
+  } | null {
+    return this.db.prepare(
+      `SELECT id, status, freshness, graph_signature, communities_count, entities_count,
+              triples_count, source_observations_count, degraded, degraded_reasons_json, error, updated_at
+       FROM kg_community_runs
+       WHERE project = ?
+       ORDER BY id DESC
+       LIMIT 1`
+    ).get(project) as {
+      id: number;
+      status: 'running' | 'committed' | 'failed';
+      freshness: CommunityState;
+      graph_signature: string | null;
+      communities_count: number;
+      entities_count: number;
+      triples_count: number;
+      source_observations_count: number;
+      degraded: number;
+      degraded_reasons_json: string;
+      error: string | null;
+      updated_at: string;
+    } | undefined ?? null;
+  }
+
+  private latestCommittedCommunityRun(project: string): { id: number; graph_signature: string | null } | null {
+    return this.db.prepare(
+      `SELECT id, graph_signature
+       FROM kg_community_runs
+       WHERE project = ? AND status = 'committed'
+       ORDER BY id DESC
+       LIMIT 1`
+    ).get(project) as { id: number; graph_signature: string | null } | undefined ?? null;
+  }
+
+  markCommunitySummariesStale(project: string | null | undefined, reason: string): void {
+    if (!project || this.config.communitySummaries.enabled === false) {
+      return;
+    }
+
+    const rows = this.db.prepare(
+      `SELECT id, degraded_reasons_json
+       FROM kg_community_runs
+       WHERE project = ? AND status = 'committed' AND freshness IN ('fresh','empty','degraded')`
+    ).all(project) as Array<{ id: number; degraded_reasons_json: string }>;
+
+    for (const row of rows) {
+      const reasons = Array.from(new Set([...this.parseJsonArray<string>(row.degraded_reasons_json), reason]));
+      this.db.prepare(
+        `UPDATE kg_community_runs
+         SET freshness = 'stale', degraded = 1, degraded_reasons_json = ?, updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(JSON.stringify(reasons), row.id);
+    }
+
+    if (rows.length > 0) {
+      this.db.prepare(
+        `UPDATE kg_communities
+         SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+         WHERE project = ? AND run_id IN (${rows.map(() => '?').join(',')})`
+      ).run(project, ...rows.map((row) => row.id));
+    }
+  }
+
+  private markAllCommunitySummariesStale(reason: string): void {
+    const projects = this.db.prepare(
+      "SELECT DISTINCT project FROM kg_community_runs WHERE project IS NOT NULL AND status = 'committed'"
+    ).all() as Array<{ project: string }>;
+    for (const row of projects) {
+      this.markCommunitySummariesStale(row.project, reason);
+    }
+  }
+
+  getCommunitySummaryState(input: CommunityStateInput): CommunityStateResult {
+    const project = input.project;
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project,
+        state: 'disabled',
+        run_id: null,
+        latest_committed_run_id: null,
+        graph_signature: null,
+        current_graph_signature: null,
+        communities_count: 0,
+        entities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+        degraded: true,
+        degraded_reasons: ['disabled'],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    const latest = this.latestCommunityRun(project);
+    const committed = this.latestCommittedCommunityRun(project);
+    const currentGraphSignature = this.computeCommunityGraphSignature(project);
+    if (!latest) {
+      return {
+        project,
+        state: 'missing',
+        run_id: null,
+        latest_committed_run_id: null,
+        graph_signature: null,
+        current_graph_signature: currentGraphSignature,
+        communities_count: 0,
+        entities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+        degraded: false,
+        degraded_reasons: [],
+        error: null,
+        updated_at: null,
+      };
+    }
+
+    let state: CommunityState = latest.freshness;
+    let degradedReasons = this.parseJsonArray<string>(latest.degraded_reasons_json);
+    if (latest.status === 'running') {
+      state = 'rebuilding';
+    } else if (latest.status === 'failed') {
+      state = 'failed';
+    } else if (latest.graph_signature !== currentGraphSignature && latest.freshness !== 'stale') {
+      this.markCommunitySummariesStale(project, 'graph_signature_changed');
+      state = 'stale';
+      degradedReasons = Array.from(new Set([...degradedReasons, 'graph_signature_changed']));
+    }
+
+    return {
+      project,
+      state,
+      run_id: latest.id,
+      latest_committed_run_id: committed?.id ?? null,
+      graph_signature: latest.graph_signature,
+      current_graph_signature: currentGraphSignature,
+      communities_count: latest.communities_count,
+      entities_count: latest.entities_count,
+      triples_count: latest.triples_count,
+      source_observations_count: latest.source_observations_count,
+      degraded: latest.degraded === 1 || state === 'failed' || state === 'stale',
+      degraded_reasons: degradedReasons,
+      error: latest.error,
+      updated_at: latest.updated_at,
+    };
+  }
+
+  rebuildCommunitySummaries(input: RebuildCommunitySummariesInput): CommunityRebuildResult {
+    const project = input.project;
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project,
+        run_id: 0,
+        status: 'failed',
+        freshness: 'disabled',
+        algorithm: 'connected_components',
+        graph_signature: null,
+        communities_created: 0,
+        entities_scanned: 0,
+        triples_scanned: 0,
+        source_observations_scanned: 0,
+        degraded_reasons: ['disabled'],
+        error: 'Community summaries are disabled',
+      };
+    }
+
+    let plan: CommunityBuildPlan | null = null;
+    try {
+      plan = this.buildCommunityPlan(project);
+      const previous = this.latestCommittedCommunityRun(project);
+      const commit = this.db.transaction((): CommunityRebuildResult => {
+        const run = this.db.prepare(
+          `INSERT INTO kg_community_runs (
+             run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+             status, freshness, degraded, degraded_reasons_json, coverage_json, communities_count,
+             entities_count, triples_count, source_observations_count, replaced_run_id
+           ) VALUES (?, ?, 'connected_components_v1', '1', 'extractive_v1', ?, ?, 'running', 'rebuilding', ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          `community-${project}-${Date.now()}-${randomUUID()}`,
+          project,
+          this.communityConfigHash(),
+          plan!.graphSignature,
+          plan!.degradedReasons.length > 0 ? 1 : 0,
+          JSON.stringify(plan!.degradedReasons),
+          JSON.stringify({ graph_signature: plan!.graphSignature }),
+          plan!.snapshots.length,
+          plan!.entitiesScanned,
+          plan!.triplesScanned,
+          plan!.sourceObservationsScanned,
+          previous?.id ?? null,
+        );
+        const runId = Number(run.lastInsertRowid);
+
+        this.db.prepare(
+          `UPDATE kg_community_runs
+           SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+           WHERE project = ? AND status = 'committed' AND id != ?`
+        ).run(project, runId);
+        this.db.prepare(
+          `UPDATE kg_communities
+           SET freshness = 'stale', degraded = 1, updated_at = datetime('now')
+           WHERE project = ? AND run_id != ?`
+        ).run(project, runId);
+
+        const communityRowIds = new Map<string, number>();
+        for (const snapshot of plan!.snapshots) {
+          const communityRow = this.db.prepare(
+            `INSERT INTO kg_communities (
+               run_id, project, community_id, level, community_key, summary_generator, summary_text,
+               summary_max_chars, freshness, entity_count, triple_count, source_observation_count,
+               top_entities_json, top_relations_json, source_observation_ids_json, coverage_json,
+               provenance_json, confidence, degraded, degraded_reasons_json
+             ) VALUES (?, ?, ?, ?, ?, 'extractive_v1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            runId,
+            project,
+            snapshot.community_id,
+            snapshot.level,
+            `${project}|${snapshot.community_id}`,
+            snapshot.summary_text,
+            this.config.communitySummaries.summaryMaxChars,
+            snapshot.degraded ? 'degraded' : 'fresh',
+            snapshot.entity_count,
+            snapshot.triple_count,
+            snapshot.source_observation_count,
+            JSON.stringify(snapshot.top_entities),
+            JSON.stringify(snapshot.top_relations),
+            JSON.stringify(snapshot.source_observation_ids),
+            JSON.stringify({ entity_count: snapshot.entity_count, triple_count: snapshot.triple_count }),
+            JSON.stringify({ algorithm: 'connected_components_v1', generator: 'extractive_v1' }),
+            snapshot.confidence,
+            snapshot.degraded ? 1 : 0,
+            JSON.stringify(snapshot.degraded_reasons),
+          );
+          communityRowIds.set(snapshot.community_id, Number(communityRow.lastInsertRowid));
+        }
+
+        for (const member of plan!.memberRows) {
+          this.db.prepare(
+            `INSERT INTO kg_community_members (
+               community_row_id, entity_id, project, run_id, community_id, role, entity_rank, evidence_count, provenance_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`
+          ).run(
+            communityRowIds.get(member.community_id),
+            member.entity_id,
+            project,
+            runId,
+            member.community_id,
+            member.role,
+            member.entity_rank,
+            member.evidence_count,
+          );
+        }
+
+        for (const evidence of plan!.evidenceRows) {
+          this.db.prepare(
+            `INSERT INTO kg_community_evidence (
+               community_row_id, triple_id, project, run_id, community_id, source_observation_id,
+               relation, superseded, evidence_rank, evidence_text, provenance_json, coverage_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}')`
+          ).run(
+            communityRowIds.get(evidence.community_id),
+            evidence.triple_id,
+            project,
+            runId,
+            evidence.community_id,
+            evidence.source_observation_id,
+            evidence.relation,
+            evidence.superseded,
+            evidence.evidence_rank,
+            evidence.evidence_text,
+          );
+        }
+
+        const freshness: CommunityState = plan!.snapshots.length === 0
+          ? 'empty'
+          : plan!.snapshots.some((snapshot) => snapshot.degraded) || plan!.degradedReasons.length > 0
+            ? 'degraded'
+            : 'fresh';
+        this.db.prepare(
+          `UPDATE kg_community_runs
+           SET status = 'committed', freshness = ?, degraded = ?, committed_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`
+        ).run(freshness, freshness === 'fresh' ? 0 : 1, runId);
+
+        return {
+          project,
+          run_id: runId,
+          status: 'committed',
+          freshness,
+          algorithm: 'connected_components',
+          graph_signature: plan!.graphSignature,
+          communities_created: plan!.snapshots.length,
+          entities_scanned: plan!.entitiesScanned,
+          triples_scanned: plan!.triplesScanned,
+          source_observations_scanned: plan!.sourceObservationsScanned,
+          degraded_reasons: plan!.degradedReasons,
+        };
+      });
+
+      return commit();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedRun = this.db.prepare(
+        `INSERT INTO kg_community_runs (
+           run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+           status, freshness, degraded, degraded_reasons_json, coverage_json, communities_count,
+           entities_count, triples_count, source_observations_count, error, failed_at
+         ) VALUES (?, ?, 'connected_components_v1', '1', 'extractive_v1', ?, ?, 'failed', 'failed', 1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+      ).run(
+        `community-failed-${project}-${Date.now()}-${randomUUID()}`,
+        project,
+        this.communityConfigHash(),
+        plan?.graphSignature ?? null,
+        JSON.stringify(['rebuild_failed']),
+        JSON.stringify({ error: message }),
+        plan?.snapshots.length ?? 0,
+        plan?.entitiesScanned ?? 0,
+        plan?.triplesScanned ?? 0,
+        plan?.sourceObservationsScanned ?? 0,
+        message,
+      );
+      return {
+        project,
+        run_id: Number(failedRun.lastInsertRowid),
+        status: 'failed',
+        freshness: 'failed',
+        algorithm: 'connected_components',
+        graph_signature: plan?.graphSignature ?? null,
+        communities_created: 0,
+        entities_scanned: plan?.entitiesScanned ?? 0,
+        triples_scanned: plan?.triplesScanned ?? 0,
+        source_observations_scanned: plan?.sourceObservationsScanned ?? 0,
+        degraded_reasons: ['rebuild_failed'],
+        error: message,
+      };
+    }
+  }
+
+  private mapCommunitySnapshotRow(row: CommunitySummarySnapshotRow, maxChars: number): CommunitySummarySnapshot {
+    return {
+      community_id: row.community_id,
+      level: row.level,
+      summary_text: trimToBudget(row.summary_text, maxChars),
+      entity_count: row.entity_count,
+      triple_count: row.triple_count,
+      source_observation_count: row.source_observation_count,
+      top_entities: this.parseJsonArray<string>(row.top_entities_json),
+      top_relations: this.parseJsonArray<string>(row.top_relations_json),
+      source_observation_ids: this.parseJsonArray<number>(row.source_observation_ids_json),
+      confidence: row.confidence,
+      degraded: row.degraded === 1,
+      degraded_reasons: this.parseJsonArray<string>(row.degraded_reasons_json),
+    };
+  }
+
+  private readCommunitySnapshots(runId: number, limit: number, maxChars: number): CommunitySummarySnapshot[] {
+    const rows = this.db.prepare(
+      `SELECT community_id, level, summary_text, entity_count, triple_count, source_observation_count,
+              top_entities_json, top_relations_json, source_observation_ids_json, confidence,
+              degraded, degraded_reasons_json
+       FROM kg_communities
+       WHERE run_id = ?
+       ORDER BY community_id
+       LIMIT ?`
+    ).all(runId, limit) as CommunitySummarySnapshotRow[];
+
+    return rows.map((row) => this.mapCommunitySnapshotRow(row, maxChars));
+  }
+
+  private readMatchingCommunitySnapshots(
+    runId: number,
+    terms: string[],
+    limit: number,
+    maxChars: number,
+  ): CommunitySummarySnapshot[] {
+    if (limit <= 0 || terms.length === 0) {
+      return [];
+    }
+
+    const rows = this.db.prepare(
+      `SELECT community_id, level, summary_text, entity_count, triple_count, source_observation_count,
+              top_entities_json, top_relations_json, source_observation_ids_json, confidence,
+              degraded, degraded_reasons_json
+       FROM kg_communities
+       WHERE run_id = ?
+       ORDER BY community_id`
+    ).all(runId) as CommunitySummarySnapshotRow[];
+
+    const matches = rows
+      .map((row) => {
+        const searchable = [
+          row.summary_text,
+          ...this.parseJsonArray<string>(row.top_entities_json),
+          ...this.parseJsonArray<string>(row.top_relations_json),
+        ].join(' ').toLowerCase();
+        const matchCount = terms.filter((term) => searchable.includes(term)).length;
+        return { row, matchCount };
+      })
+      .filter((entry) => entry.matchCount > 0)
+      .sort((a, b) => b.matchCount - a.matchCount || a.row.community_id.localeCompare(b.row.community_id))
+      .slice(0, limit);
+
+    return matches.map((entry) => this.mapCommunitySnapshotRow(entry.row, maxChars));
+  }
+
+  previewCommunitySummaries(input: PreviewCommunitySummariesInput): CommunityPreviewResult {
+    const plan = this.buildCommunityPlan(input.project);
+    const limit = Math.max(0, Math.min(input.limit ?? this.config.communitySummaries.maxCommunitiesPerProject, this.config.communitySummaries.maxCommunitiesPerProject));
+    const maxChars = Math.max(1, input.maxChars ?? this.config.communitySummaries.summaryMaxChars);
+    return {
+      project: input.project,
+      state: plan.snapshots.length === 0 ? 'empty' : plan.degradedReasons.length > 0 ? 'degraded' : 'fresh',
+      would_commit: false,
+      graph_signature: plan.graphSignature,
+      communities: plan.snapshots.slice(0, limit).map((snapshot) => ({
+        ...snapshot,
+        summary_text: trimToBudget(snapshot.summary_text, maxChars),
+      })),
+      entities_scanned: plan.entitiesScanned,
+      triples_scanned: plan.triplesScanned,
+      source_observations_scanned: plan.sourceObservationsScanned,
+      truncated: plan.snapshots.length > limit,
+      degraded_reasons: plan.degradedReasons,
+    };
+  }
+
+  getCommunitySummariesForRetrieval(input: CommunityRetrievalInput): CommunityRetrievalResult {
+    if (this.config.communitySummaries.enabled === false) {
+      return {
+        project: input.project,
+        state: 'disabled',
+        run_id: null,
+        graph_signature: null,
+        candidates: [],
+        degraded_reasons: ['disabled'],
+      };
+    }
+
+    const latest = this.latestCommunityRun(input.project);
+    const committed = this.latestCommittedCommunityRun(input.project);
+    let state: CommunityState = latest?.freshness ?? 'missing';
+    if (latest?.status === 'running') {
+      state = 'rebuilding';
+    } else if (latest?.status === 'failed') {
+      state = 'failed';
+    }
+    const shouldReadCommitted = committed !== null && (state === 'fresh' || state === 'degraded' || state === 'failed');
+    const limit = Math.max(0, Math.min(input.limit ?? this.config.communitySummaries.maxRetrievalCommunities, this.config.communitySummaries.maxRetrievalCommunities));
+    const maxChars = Math.max(1, input.maxChars ?? this.config.communitySummaries.summaryMaxChars);
+
+    return {
+      project: input.project,
+      state,
+      run_id: shouldReadCommitted ? committed.id : null,
+      graph_signature: shouldReadCommitted ? committed.graph_signature : null,
+      candidates: shouldReadCommitted ? this.readCommunitySnapshots(committed.id, limit, maxChars) : [],
+      degraded_reasons: latest ? this.parseJsonArray<string>(latest.degraded_reasons_json) : [],
+    };
+  }
+
+  dropCommunitySummaries(input: DropCommunitySummariesInput = {}): DropCommunitySummariesResult {
+    const project = input.project ?? null;
+    const where = project ? 'WHERE project = ?' : '';
+    const params = project ? [project] : [];
+    const evidence = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_evidence ${where}`).get(...params) as { count: number };
+    const members = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_members ${where}`).get(...params) as { count: number };
+    const communities = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_communities ${where}`).get(...params) as { count: number };
+    const runs = this.db.prepare(`SELECT COUNT(*) AS count FROM kg_community_runs ${where}`).get(...params) as { count: number };
+
+    const drop = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM kg_community_evidence ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_community_members ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_communities ${where}`).run(...params);
+      this.db.prepare(`DELETE FROM kg_community_runs ${where}`).run(...params);
+    });
+    drop();
+
+    return {
+      project,
+      runs_deleted: runs.count,
+      communities_deleted: communities.count,
+      members_deleted: members.count,
+      evidence_deleted: evidence.count,
+    };
+  }
+
+  private selectMaintenanceRecords(input: MaintenanceInput = {}, limit?: number): MaintenancePlanningRecord[] {
+    const scope = input.scope ?? { all: true };
+    const sql = [
+      `SELECT id, type, title, content, project, scope, topic_key, normalized_hash, sync_id,
+              duplicate_count, created_at, updated_at, tool_name
+       FROM observations
+       WHERE deleted_at IS NULL`,
+    ];
+    const params: string[] = [];
+
+    if ('project' in scope) {
+      sql.push('AND project = ?');
+      params.push(scope.project);
+    } else if ('topic_key' in scope) {
+      sql.push('AND topic_key = ?');
+      params.push(scope.topic_key);
+    } else if ('topic_prefix' in scope) {
+      sql.push('AND topic_key LIKE ?');
+      params.push(`${scope.topic_prefix}%`);
+    }
+
+    sql.push('ORDER BY id');
+    if (limit !== undefined) {
+      sql.push('LIMIT ?');
+      params.push(String(limit));
+    }
+
+    return this.db.prepare(sql.join(' ')).all(...params) as MaintenancePlanningRecord[];
+  }
+
+  evaluateMaintenance(input: MaintenanceInput = {}): MaintenanceRunPreview {
+    const plan = planMaintenance({
+      records: this.selectMaintenanceRecords(input),
+      config: this.config.maintenance,
+      input,
+    });
+
+    return {
+      dry_run: true,
+      scope: plan.scope,
+      counts: plan.counts,
+      consolidations: plan.consolidations,
+      reflections: plan.reflections,
+      decays: plan.decays,
+      degraded: plan.degraded,
+    };
+  }
+
+  private upsertMaintenanceReflection(
+    runId: number,
+    reflection: MaintenanceRunPreview['reflections'][number],
+  ): { observationId: number; topicKey: string } {
+    const existingByHash = this.db.prepare(
+      `SELECT mr.reflection_observation_id AS id, o.topic_key
+       FROM maintenance_reflections AS mr
+       JOIN observations AS o ON o.id = mr.reflection_observation_id
+       WHERE mr.source_set_hash = ? AND o.deleted_at IS NULL
+       LIMIT 1`
+    ).get(reflection.source_set_hash) as
+      | { id: number; topic_key: string | null }
+      | undefined;
+    if (existingByHash) {
+      return { observationId: existingByHash.id, topicKey: existingByHash.topic_key ?? reflection.topic_key };
+    }
+
+    const sourceProject = this.db.prepare(
+      'SELECT project, session_id FROM observations WHERE id = ? LIMIT 1'
+    ).get(reflection.sources[0]?.id ?? 0) as { project: string | null; session_id: string } | undefined;
+    const project = sourceProject?.project ?? 'unknown';
+    const existingByScope = this.db.prepare(
+      `SELECT id, topic_key FROM observations
+       WHERE project = ? AND tool_name = 'maintenance-reflection' AND deleted_at IS NULL
+         AND (topic_key = ? OR topic_key LIKE ?)
+       ORDER BY id
+       LIMIT 1`
+    ).get(project, reflection.topic_key, `${reflection.topic_key}/%`) as { id: number; topic_key: string } | undefined;
+    const sessionId = sourceProject?.session_id ?? 'maintenance-reflection';
+    const normalizedHash = computeHash(reflection.content);
+
+    this.ensureSession(sessionId, project);
+
+    if (existingByScope) {
+      this.db.prepare(
+        `UPDATE observations
+         SET title = ?, content = ?, type = 'learning', tool_name = 'maintenance-reflection',
+             project = ?, scope = 'project', normalized_hash = ?,
+             revision_count = revision_count + 1, updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(reflection.title, reflection.content, project, normalizedHash, existingByScope.id);
+      this.recordMutation('update', 'observation', existingByScope.id, null, project);
+
+      const observation = this.getObservation(existingByScope.id);
+      if (observation) {
+        this.refreshGraphFacts(observation);
+        this.markCommunitySummariesStale(observation.project, 'saveObservation');
+        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      }
+
+      return { observationId: existingByScope.id, topicKey: existingByScope.topic_key };
+    }
+
+    const topicKey = this.resolveMaintenanceReflectionTopicKey(reflection.topic_key, project);
+    const syncId = randomUUID();
+    const result = this.db.prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id
+       ) VALUES (?, 'learning', ?, ?, 'maintenance-reflection', ?, 'project', ?, ?, ?)`
+    ).run(sessionId, reflection.title, reflection.content, project, topicKey, normalizedHash, syncId);
+    const observationId = Number(result.lastInsertRowid);
+    this.recordMutation('create', 'observation', observationId, syncId, project);
+
+    const observation = this.getObservation(observationId);
+    if (observation) {
+      this.refreshGraphFacts(observation);
+      this.markCommunitySummariesStale(observation.project, 'saveObservation');
+      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+    }
+
+    return { observationId, topicKey };
+  }
+
+  private resolveMaintenanceReflectionTopicKey(baseTopicKey: string, project: string): string {
+    const existing = this.db.prepare(
+      'SELECT tool_name FROM observations WHERE project = ? AND topic_key = ? AND deleted_at IS NULL LIMIT 1'
+    ).get(project, baseTopicKey) as { tool_name: string | null } | undefined;
+    if (!existing || existing.tool_name === 'maintenance-reflection') {
+      return baseTopicKey;
+    }
+
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = `${baseTopicKey}/${suffix}`;
+      const collision = this.db.prepare(
+        'SELECT 1 FROM observations WHERE project = ? AND topic_key = ? AND deleted_at IS NULL LIMIT 1'
+      ).get(project, candidate);
+      if (!collision) {
+        return candidate;
+      }
+    }
+
+    throw new Error(`Unable to allocate maintenance reflection topic key for ${baseTopicKey}`);
+  }
+
+  private applyMaintenancePlan(plan: MaintenancePlan): MaintenanceRunResult {
+    const applyMaintenance = this.db.transaction((): MaintenanceRunResult => {
+      const run = this.db.prepare(
+        `INSERT INTO maintenance_runs (
+           run_key, mode, scope_json, config_json, status, counts_json, degraded_json, completed_at
+         ) VALUES (?, 'apply', ?, ?, 'applied', ?, ?, datetime('now'))
+         ON CONFLICT(run_key) DO UPDATE SET
+           mode = excluded.mode,
+           scope_json = excluded.scope_json,
+           config_json = excluded.config_json,
+           status = excluded.status,
+           counts_json = excluded.counts_json,
+           degraded_json = excluded.degraded_json,
+           completed_at = datetime('now')`
+      ).run(
+        plan.run_key,
+        JSON.stringify(plan.scope),
+        JSON.stringify(this.config.maintenance),
+        JSON.stringify(plan.counts),
+        JSON.stringify(plan.degraded)
+      );
+      const runRow = this.db.prepare('SELECT id FROM maintenance_runs WHERE run_key = ?').get(plan.run_key) as { id: number };
+      const runId = Number(runRow.id);
+      void run;
+
+      for (const consolidation of plan.consolidations) {
+        this.db.prepare(
+          `INSERT INTO maintenance_consolidations (
+             run_id, cluster_key, canonical_kind, canonical_id, reason_class, signal_json, review_required
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cluster_key) DO UPDATE SET
+             run_id = excluded.run_id,
+             canonical_kind = excluded.canonical_kind,
+             canonical_id = excluded.canonical_id,
+             reason_class = excluded.reason_class,
+             signal_json = excluded.signal_json,
+             review_required = excluded.review_required`
+        ).run(
+          runId,
+          consolidation.cluster_key,
+          consolidation.canonical.kind,
+          consolidation.canonical.id,
+          consolidation.reason_class,
+          JSON.stringify(consolidation.signal),
+          consolidation.review_required ? 1 : 0
+        );
+        const consolidationRow = this.db.prepare(
+          'SELECT id FROM maintenance_consolidations WHERE cluster_key = ?'
+        ).get(consolidation.cluster_key) as { id: number };
+        this.db.prepare('DELETE FROM maintenance_consolidation_members WHERE consolidation_id = ?').run(consolidationRow.id);
+        const insertMember = this.db.prepare(
+          `INSERT INTO maintenance_consolidation_members (
+             consolidation_id, source_kind, source_id, role, signal_json
+           ) VALUES (?, ?, ?, ?, ?)`
+        );
+
+        for (const member of consolidation.members) {
+          const role = member.kind === consolidation.canonical.kind && member.id === consolidation.canonical.id
+            ? 'canonical'
+            : 'member';
+          insertMember.run(consolidationRow.id, member.kind, member.id, role, JSON.stringify(consolidation.signal));
+        }
+      }
+
+      this.clearStaleMaintenanceConsolidations(plan);
+
+      const appliedReflections = plan.reflections.map((reflection) => {
+        const upserted = this.upsertMaintenanceReflection(runId, reflection);
+        this.db.prepare(
+          `INSERT INTO maintenance_reflections (
+             run_id, reflection_observation_id, source_set_hash, reason_class, metadata_json
+           ) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(source_set_hash) DO UPDATE SET
+             run_id = excluded.run_id,
+             reflection_observation_id = excluded.reflection_observation_id,
+             reason_class = excluded.reason_class,
+             metadata_json = excluded.metadata_json`
+        ).run(
+          runId,
+          upserted.observationId,
+          reflection.source_set_hash,
+          reflection.reason_class,
+          JSON.stringify({ topic_key: upserted.topicKey, title: reflection.title })
+        );
+        const reflectionRow = this.db.prepare(
+          'SELECT id FROM maintenance_reflections WHERE source_set_hash = ?'
+        ).get(reflection.source_set_hash) as { id: number };
+        this.db.prepare('DELETE FROM maintenance_reflection_sources WHERE reflection_id = ?').run(reflectionRow.id);
+        const insertSource = this.db.prepare(
+          `INSERT INTO maintenance_reflection_sources (reflection_id, source_kind, source_id)
+           VALUES (?, ?, ?)`
+        );
+        for (const source of reflection.sources) {
+          insertSource.run(reflectionRow.id, source.kind, source.id);
+        }
+
+        return { ...reflection, topic_key: upserted.topicKey, planned_observation_id: upserted.observationId };
+      });
+
+      this.clearStaleMaintenanceDecay(plan, runId);
+
+      for (const decay of plan.decays) {
+        this.db.prepare(
+          `INSERT INTO maintenance_decay (
+             source_kind, source_id, score, state, reason_class, policy_json, run_id, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(source_kind, source_id) DO UPDATE SET
+             score = excluded.score,
+             state = excluded.state,
+             reason_class = excluded.reason_class,
+             policy_json = excluded.policy_json,
+             run_id = excluded.run_id,
+             updated_at = datetime('now')`
+        ).run(
+          decay.source.kind,
+          decay.source.id,
+          decay.score,
+          decay.state,
+          decay.reason_class,
+          JSON.stringify(decay.policy),
+          runId
+        );
+      }
+
+      return {
+        dry_run: false,
+        run_id: runId,
+        scope: plan.scope,
+        counts: plan.counts,
+        consolidations: plan.consolidations,
+        reflections: appliedReflections,
+        decays: plan.decays,
+        degraded: plan.degraded,
+      };
+    });
+
+    return applyMaintenance();
+  }
+
+  runMaintenance(input: MaintenanceInput = {}): MaintenanceRunResult {
+    const plan = planMaintenance({
+      records: this.selectMaintenanceRecords(input),
+      config: this.config.maintenance,
+      input: { ...input, mode: 'apply' },
+    });
+
+    return this.applyMaintenancePlan(plan);
+  }
+
+  private clearStaleMaintenanceConsolidations(plan: MaintenancePlan): void {
+    const evaluatedIds = plan.evaluated_observation_ids;
+    if (evaluatedIds.length === 0) {
+      return;
+    }
+
+    const currentClusterKeys = new Set(plan.consolidations.map((consolidation) => consolidation.cluster_key));
+    const evaluatedIdSet = new Set(evaluatedIds);
+    const staleConsolidationIds = new Set<number>();
+    const selectConsolidationMemberIds = this.db.prepare(
+      `SELECT source_id
+       FROM maintenance_consolidation_members
+       WHERE consolidation_id = ?
+         AND source_kind = 'observation'`
+    );
+
+    for (const chunk of chunkIds(evaluatedIds)) {
+      const rows = this.db.prepare(
+        `SELECT DISTINCT c.id, c.cluster_key
+         FROM maintenance_consolidations c
+         JOIN maintenance_consolidation_members m ON m.consolidation_id = c.id
+         WHERE m.source_kind = 'observation'
+           AND m.source_id IN (${placeholders(chunk.length)})`
+      ).all(...chunk) as Array<{ id: number; cluster_key: string }>;
+
+      for (const row of rows) {
+        if (!currentClusterKeys.has(row.cluster_key)) {
+          const memberRows = selectConsolidationMemberIds.all(row.id) as Array<{ source_id: number }>;
+          if (memberRows.every((member) => evaluatedIdSet.has(member.source_id))) {
+            staleConsolidationIds.add(row.id);
+          }
+        }
+      }
+    }
+
+    for (const chunk of chunkIds([...staleConsolidationIds])) {
+      this.db.prepare(
+        `DELETE FROM maintenance_consolidations
+         WHERE id IN (${placeholders(chunk.length)})`
+      ).run(...chunk);
+    }
+  }
+
+  private clearStaleMaintenanceDecay(plan: MaintenancePlan, runId: number): void {
+    const currentObservationIds = new Set(
+      plan.decays
+        .filter((decay) => decay.source.kind === 'observation')
+        .map((decay) => decay.source.id)
+    );
+    const staleIds = plan.evaluated_observation_ids.filter((id) => !currentObservationIds.has(id));
+
+    if (staleIds.length === 0) {
+      return;
+    }
+
+    for (const chunk of chunkIds(staleIds)) {
+      this.db.prepare(
+        `DELETE FROM maintenance_decay
+         WHERE source_kind = 'observation'
+           AND run_id != ?
+           AND source_id IN (${placeholders(chunk.length)})`
+      ).run(runId, ...chunk);
+    }
+  }
+
+  runAutomaticMaintenance(input: MaintenanceInput = {}): MaintenanceRunPreview | MaintenanceRunResult {
+    const maxRecords = Math.max(1, this.config.maintenance.automatic.maxRecordsPerRun);
+    const records = this.selectMaintenanceRecords(input, maxRecords)
+      .filter((record) => record.tool_name !== 'maintenance-reflection');
+    const plan = planMaintenance({
+      records,
+      config: this.config.maintenance,
+      input: { ...input, mode: this.config.maintenance.automatic.enabled ? 'apply' : 'dry-run' },
+    });
+
+    if (!this.config.maintenance.automatic.enabled) {
+      return {
+        dry_run: true,
+        scope: plan.scope,
+        counts: plan.counts,
+        consolidations: plan.consolidations,
+        reflections: plan.reflections,
+        decays: plan.decays,
+        degraded: [
+          ...plan.degraded,
+          'automatic-maintenance-disabled-manual-preview-only',
+          'automatic-scheduler-unavailable-explicit-admin-apply-required',
+        ],
+      };
+    }
+
+    return this.applyMaintenancePlan(plan);
+  }
+
+  getMaintenanceEvidenceForObservations(observationIds: number[]): ObservationMaintenanceEvidence[] {
+    const ids = Array.from(new Set(observationIds)).sort((a, b) => a - b);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const byObservation = new Map<number, ObservationMaintenanceEvidence>();
+    const ensureEvidence = (observationId: number): ObservationMaintenanceEvidence => {
+      const existing = byObservation.get(observationId);
+      if (existing) {
+        return existing;
+      }
+      const evidence: ObservationMaintenanceEvidence = { observationId };
+      byObservation.set(observationId, evidence);
+      return evidence;
+    };
+
+    const placeholders = ids.map(() => '?').join(',');
+    const consolidationRows = this.db.prepare(
+      `SELECT c.cluster_key, c.canonical_id, c.reason_class, m.source_id
+       FROM maintenance_consolidations c
+       JOIN maintenance_consolidation_members m ON m.consolidation_id = c.id
+       WHERE c.canonical_kind = 'observation'
+         AND m.source_kind = 'observation'
+         AND c.id IN (
+           SELECT consolidation_id
+           FROM maintenance_consolidation_members
+           WHERE source_kind = 'observation'
+             AND source_id IN (${placeholders})
+         )
+       ORDER BY c.cluster_key ASC, m.source_id ASC`
+    ).all(...ids) as Array<{
+      cluster_key: string;
+      canonical_id: number;
+      reason_class: string;
+      source_id: number;
+    }>;
+    const consolidations = new Map<string, {
+      clusterKey: string;
+      canonicalId: number;
+      reasonClass: string;
+      memberIds: number[];
+    }>();
+    for (const row of consolidationRows) {
+      const existing = consolidations.get(row.cluster_key) ?? {
+        clusterKey: row.cluster_key,
+        canonicalId: row.canonical_id,
+        reasonClass: row.reason_class,
+        memberIds: [],
+      };
+      existing.memberIds.push(row.source_id);
+      consolidations.set(row.cluster_key, existing);
+    }
+    for (const consolidation of consolidations.values()) {
+      consolidation.memberIds = Array.from(new Set(consolidation.memberIds)).sort((a, b) => a - b);
+      for (const memberId of consolidation.memberIds) {
+        ensureEvidence(memberId).consolidation = consolidation;
+      }
+      ensureEvidence(consolidation.canonicalId).consolidation = consolidation;
+    }
+
+    const reflectionRows = this.db.prepare(
+      `SELECT r.reflection_observation_id, r.reason_class, s.source_id
+       FROM maintenance_reflections r
+       JOIN maintenance_reflection_sources s ON s.reflection_id = r.id
+       WHERE s.source_kind = 'observation'
+         AND (
+           r.reflection_observation_id IN (${placeholders})
+           OR s.source_id IN (${placeholders})
+         )
+       ORDER BY r.reflection_observation_id ASC, s.source_id ASC`
+    ).all(...ids, ...ids) as Array<{
+      reflection_observation_id: number;
+      reason_class: string;
+      source_id: number;
+    }>;
+    const reflections = new Map<number, { sourceIds: number[]; reasonClass: string }>();
+    for (const row of reflectionRows) {
+      const existing = reflections.get(row.reflection_observation_id) ?? {
+        sourceIds: [],
+        reasonClass: row.reason_class,
+      };
+      existing.sourceIds.push(row.source_id);
+      reflections.set(row.reflection_observation_id, existing);
+    }
+    for (const [reflectionObservationId, reflection] of reflections.entries()) {
+      reflection.sourceIds = Array.from(new Set(reflection.sourceIds)).sort((a, b) => a - b);
+      ensureEvidence(reflectionObservationId).reflection = reflection;
+    }
+
+    const decayRows = this.db.prepare(
+      `SELECT source_id, score, state, reason_class
+       FROM maintenance_decay
+       WHERE source_kind = 'observation'
+         AND source_id IN (${placeholders})
+       ORDER BY source_id ASC`
+    ).all(...ids) as Array<{
+      source_id: number;
+      score: number;
+      state: 'active' | 'attenuated' | 'suppressed';
+      reason_class: string;
+    }>;
+    for (const row of decayRows) {
+      ensureEvidence(row.source_id).decay = {
+        scoreMultiplier: row.score,
+        state: row.state,
+        reasonClass: row.reason_class,
+      };
+    }
+
+    return [...byObservation.values()].sort((a, b) => a.observationId - b.observationId);
+  }
+
+  private getMaintenanceRankingMetadata(observationIds: number[]): MaintenanceRankingMetadata | undefined {
+    if (!this.config.maintenance.readPath.enabled) {
+      return undefined;
+    }
+
+    const evidence = this.getMaintenanceEvidenceForObservations(observationIds);
+    if (evidence.length === 0) {
+      return {
+        enabled: true,
+        consolidations: new Map(),
+        reflections: new Map(),
+        decays: new Map(),
+      };
+    }
+
+    return {
+      enabled: true,
+      consolidations: new Map(evidence.flatMap((entry) => (
+        entry.consolidation
+          ? [[entry.observationId, entry.consolidation]]
+          : []
+      ))),
+      reflections: new Map(evidence.flatMap((entry) => (
+        entry.reflection
+          ? [[entry.observationId, { ...entry.reflection, boost: 1.35 }]]
+          : []
+      ))),
+      decays: new Map(evidence.flatMap((entry) => (
+        entry.decay
+          ? [[entry.observationId, entry.decay]]
+          : []
+      ))),
+    };
+  }
+
+  private observationMatchesRetrievalFilters(
+    observation: Observation,
+    filters: RetrievalCandidateFilters,
+  ): boolean {
+    if (filters.project && observation.project !== filters.project) {
+      return false;
+    }
+    if (filters.session_id && observation.session_id !== filters.session_id) {
+      return false;
+    }
+    if (filters.scope && observation.scope !== filters.scope) {
+      return false;
+    }
+    if (filters.topic_key && observation.topic_key !== filters.topic_key) {
+      return false;
+    }
+    if (filters.type && observation.type !== filters.type) {
+      return false;
+    }
+    if (filters.time_from && observation.created_at < filters.time_from) {
+      return false;
+    }
+    if (filters.time_to && observation.created_at > filters.time_to) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private filterMaintenanceRankingMetadata(
+    metadata: MaintenanceRankingMetadata | undefined,
+    filters: RetrievalCandidateFilters,
+  ): MaintenanceRankingMetadata | undefined {
+    if (!metadata || metadata.consolidations.size === 0) {
+      return metadata;
+    }
+
+    const canonicalIds = Array.from(new Set(
+      [...metadata.consolidations.values()].map((consolidation) => consolidation.canonicalId)
+    ));
+    const canonicalRows = canonicalIds.length > 0
+      ? this.db.prepare(
+          `SELECT * FROM observations
+           WHERE deleted_at IS NULL
+             AND id IN (${canonicalIds.map(() => '?').join(',')})`
+        ).all(...canonicalIds) as ObservationRow[]
+      : [];
+    const canonicalById = new Map(canonicalRows.map((row) => [row.id, row]));
+    const allowedClusterKeys = new Set<string>();
+
+    for (const consolidation of metadata.consolidations.values()) {
+      if (allowedClusterKeys.has(consolidation.clusterKey)) {
+        continue;
+      }
+
+      const canonical = canonicalById.get(consolidation.canonicalId);
+      if (canonical && this.observationMatchesRetrievalFilters(canonical, filters)) {
+        allowedClusterKeys.add(consolidation.clusterKey);
+      }
+    }
+
+    const consolidations = new Map(
+      [...metadata.consolidations.entries()].filter(([, consolidation]) => (
+        allowedClusterKeys.has(consolidation.clusterKey)
+      ))
+    );
+
+    return {
+      ...metadata,
+      consolidations,
+    };
+  }
+
   saveObservation(input: SaveObservationInput): SaveResult {
     const strippedTitle = stripPrivateTags(input.title);
     const strippedContent = stripPrivateTags(input.content);
@@ -1344,8 +3513,16 @@ export class Store {
       process.stderr.write(`${validation.warning}\n`);
     }
 
-    const sessionId = input.session_id || `manual-save-${input.project || 'unknown'}`;
-    const project = input.project || 'unknown';
+    const identity = resolveSaveIdentity({
+      session_id: input.session_id,
+      project: input.project,
+      requireSessionProject: true,
+      config: this.config,
+    });
+    const identityMetadata = metadataFromResolution(identity);
+    const sessionId = identity.session_id!;
+    const project = identity.session_project;
+    const recordProject = identity.project ?? null;
     const type = input.type || 'manual';
     const scope = input.scope || 'project';
     const hash = computeHash(strippedContent);
@@ -1355,7 +3532,7 @@ export class Store {
     const duplicate = checkDuplicate(
       this.db,
       hash,
-      input.project ?? null,
+      recordProject,
       scope,
       type,
       strippedTitle,
@@ -1372,7 +3549,7 @@ export class Store {
 
       this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
 
-      return { observation, action: 'deduplicated' };
+      return { observation, action: 'deduplicated', ...(identityMetadata ? { identity: identityMetadata } : {}) };
     }
 
     if (input.topic_key) {
@@ -1385,60 +3562,62 @@ export class Store {
            AND deleted_at IS NULL
          ORDER BY updated_at DESC
           LIMIT 1`
-      ).get(input.topic_key, input.project ?? null, input.project ?? null, scope) as ObservationRow | undefined;
+      ).get(input.topic_key, recordProject, recordProject, scope) as ObservationRow | undefined;
 
       const existing = this.mapObservationRow(existingRow);
 
       if (existing) {
-        this.db.prepare(
-          'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
-        ).run(existing.id, existing.title, existing.content, existing.type, existing.revision_count);
+        return this.db.transaction((): SaveResult => {
+          this.db.prepare(
+            'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
+          ).run(existing.id, existing.title, existing.content, existing.type, existing.revision_count);
 
-        this.db.prepare(
-          "UPDATE observations SET title = ?, content = ?, type = ?, normalized_hash = ?, revision_count = revision_count + 1, updated_at = datetime('now') WHERE id = ?"
-        ).run(strippedTitle, strippedContent, type, hash, existing.id);
+          this.db.prepare(
+            "UPDATE observations SET title = ?, content = ?, type = ?, normalized_hash = ?, revision_count = revision_count + 1, updated_at = datetime('now') WHERE id = ?"
+          ).run(strippedTitle, strippedContent, type, hash, existing.id);
 
-        const observation = this.getObservation(existing.id);
+          const observation = this.getObservation(existing.id);
 
-        if (!observation) {
-          throw new Error(`Failed to load upserted observation ${existing.id}`);
-        }
+          if (!observation) {
+            throw new Error(`Failed to load upserted observation ${existing.id}`);
+          }
 
-        this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-        this.refreshObservationFacts(observation);
-        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+          this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
+          this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
-        return { observation, action: 'upserted' };
+          return { observation, action: 'upserted', ...(identityMetadata ? { identity: identityMetadata } : {}) };
+        })();
       }
     }
 
     const syncId = randomUUID();
-    const result = this.db.prepare(
-      `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash, sync_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      sessionId,
-      type,
-      strippedTitle,
-      strippedContent,
-      input.project ?? null,
-      scope,
-      input.topic_key ?? null,
-      hash,
-      syncId
-    );
+    return this.db.transaction((): SaveResult => {
+      const result = this.db.prepare(
+        `INSERT INTO observations (session_id, type, title, content, project, scope, topic_key, normalized_hash, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        sessionId,
+        type,
+        strippedTitle,
+        strippedContent,
+        recordProject,
+        scope,
+        input.topic_key ?? null,
+        hash,
+        syncId
+      );
 
-    const observation = this.getObservation(Number(result.lastInsertRowid));
+      const observation = this.getObservation(Number(result.lastInsertRowid));
 
-    if (!observation) {
-      throw new Error('Failed to load created observation');
-    }
+      if (!observation) {
+        throw new Error('Failed to load created observation');
+      }
 
-    this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
-    this.refreshObservationFacts(observation);
-    this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
+      this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
-    return { observation, action: 'created' };
+      return { observation, action: 'created', ...(identityMetadata ? { identity: identityMetadata } : {}) };
+    })();
   }
 
   async saveObservationWithIndex(
@@ -1482,6 +3661,7 @@ export class Store {
 
       if (result.changes > 0) {
         this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
+        this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
       }
 
       return result.changes > 0;
@@ -1495,6 +3675,7 @@ export class Store {
 
     if (result.changes > 0) {
       this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
+      this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
     }
 
     return result.changes > 0;
@@ -1507,58 +3688,59 @@ export class Store {
       return null;
     }
 
-    this.db.prepare(
-      'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
-    ).run(current.id, current.title, current.content, current.type, current.revision_count);
+    return this.db.transaction((): Observation | null => {
+      this.db.prepare(
+        'INSERT INTO observation_versions (observation_id, title, content, type, version_number) VALUES (?, ?, ?, ?, ?)'
+      ).run(current.id, current.title, current.content, current.type, current.revision_count);
 
-    const setClauses = ['revision_count = revision_count + 1', "updated_at = datetime('now')"];
-    const params: Array<string | number | null> = [];
+      const setClauses = ['revision_count = revision_count + 1', "updated_at = datetime('now')"];
+      const params: Array<string | number | null> = [];
 
-    if (input.title !== undefined) {
-      setClauses.push('title = ?');
-      params.push(input.title);
-    }
+      if (input.title !== undefined) {
+        setClauses.push('title = ?');
+        params.push(input.title);
+      }
 
-    if (input.content !== undefined) {
-      setClauses.push('content = ?');
-      params.push(input.content);
-      setClauses.push('normalized_hash = ?');
-      params.push(computeHash(input.content));
-    }
+      if (input.content !== undefined) {
+        setClauses.push('content = ?');
+        params.push(input.content);
+        setClauses.push('normalized_hash = ?');
+        params.push(computeHash(input.content));
+      }
 
-    if (input.type !== undefined) {
-      setClauses.push('type = ?');
-      params.push(input.type);
-    }
+      if (input.type !== undefined) {
+        setClauses.push('type = ?');
+        params.push(input.type);
+      }
 
-    if (input.project !== undefined) {
-      setClauses.push('project = ?');
-      params.push(input.project);
-    }
+      if (input.project !== undefined) {
+        setClauses.push('project = ?');
+        params.push(input.project);
+      }
 
-    if (input.scope !== undefined) {
-      setClauses.push('scope = ?');
-      params.push(input.scope);
-    }
+      if (input.scope !== undefined) {
+        setClauses.push('scope = ?');
+        params.push(input.scope);
+      }
 
-    if (input.topic_key !== undefined) {
-      setClauses.push('topic_key = ?');
-      params.push(input.topic_key);
-    }
+      if (input.topic_key !== undefined) {
+        setClauses.push('topic_key = ?');
+        params.push(input.topic_key);
+      }
 
-    params.push(input.id);
+      params.push(input.id);
 
-    this.db.prepare(`UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+      this.db.prepare(`UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
-    const updated = this.getObservation(input.id);
+      const updated = this.getObservation(input.id);
 
-    if (updated) {
-      this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
-      this.refreshObservationFacts(updated);
-      this.planSemanticJobsForObservation({ observationId: updated.id, content: updated.content });
-    }
+      if (updated) {
+        this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
+        this.refreshDerivedStateForObservation(updated, 'updateObservation', current.project);
+      }
 
-    return updated;
+      return updated;
+    })();
   }
 
   private appendObservationFilters(
@@ -1682,8 +3864,21 @@ export class Store {
       filters,
       includeUnmatched: false,
     });
-    const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...lexicalCandidates];
-    const observationIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
+    const communityCandidates = this.queryCommunitySummaryLane({
+      query: input.query,
+      filters,
+      degradedFallback,
+    });
+    const coreCandidates = [...semanticCandidates, ...graphRankingCandidates, ...communityCandidates, ...lexicalCandidates];
+    const coreCandidateIds = Array.from(new Set(coreCandidates.map((candidate) => candidate.observationId)));
+    const coreMaintenance = this.filterMaintenanceRankingMetadata(
+      this.getMaintenanceRankingMetadata(coreCandidateIds),
+      filters,
+    );
+    const observationIds = Array.from(new Set([
+      ...coreCandidateIds,
+      ...[...(coreMaintenance?.consolidations.values() ?? [])].map((entry) => entry.canonicalId),
+    ]));
     const observationRows = observationIds.length > 0
       ? this.db.prepare(
           `SELECT * FROM observations
@@ -1695,22 +3890,74 @@ export class Store {
     const fusionOptions: FusionOptions = {
       laneOrder: input.laneOrder,
       laneWeights: input.laneWeights,
+      maintenance: coreMaintenance,
     };
     const fusedLimit = input.limit ?? defaults.lexicalLimit;
     const fused = fuseCandidates(observations, coreCandidates, fusionOptions).slice(0, fusedLimit);
+    let refused = fused;
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    if (knowledgeGraph.kgMultiHopEnabled && fused.length > 0) {
+      const startedAt = Date.now();
+      try {
+        const multiHopCandidates = this.queryKnowledgeMultiHopLane({
+          seedObservationIds: fused.map((hit) => hit.observation.id),
+          filters,
+          maxDepth: knowledgeGraph.kgMaxDepth,
+          neighborhoodLimit: knowledgeGraph.kgNeighborhoodLimit,
+          relationAllowList: knowledgeGraph.kgRelationAllowList,
+          multiHopWeight: knowledgeGraph.kgMultiHopWeight,
+          depthDecay: knowledgeGraph.kgDepthDecay,
+        });
+        const elapsed = Date.now() - startedAt;
+        const exceededTimeout = multiHopCandidates.length > 0
+          && (knowledgeGraph.kgTraversalTimeoutMs === 0 || elapsed > knowledgeGraph.kgTraversalTimeoutMs);
+        if (exceededTimeout) {
+          degradedFallback.push('kg_multi_hop');
+        } else if (multiHopCandidates.length > 0) {
+          const allCandidateIds = Array.from(new Set(
+            [...coreCandidates, ...multiHopCandidates].map((candidate) => candidate.observationId)
+          ));
+          const multiHopMaintenance = this.filterMaintenanceRankingMetadata(
+            this.getMaintenanceRankingMetadata(allCandidateIds),
+            filters,
+          );
+          const newIds = Array.from(new Set(
+            [
+              ...allCandidateIds,
+              ...[...(multiHopMaintenance?.consolidations.values() ?? [])].map((entry) => entry.canonicalId),
+            ].filter((id) => !observations.has(id))
+          ));
+          if (newIds.length > 0) {
+            const extraRows = this.db.prepare(
+              `SELECT * FROM observations
+               WHERE deleted_at IS NULL
+               AND id IN (${newIds.map(() => '?').join(',')})`
+            ).all(...newIds) as ObservationRow[];
+            for (const row of extraRows) {
+              observations.set(row.id, row);
+            }
+          }
+          refused = fuseCandidates(observations, [...coreCandidates, ...multiHopCandidates], {
+            ...fusionOptions,
+            maintenance: multiHopMaintenance,
+          }).slice(0, fusedLimit);
+        }
+      } catch {
+        degradedFallback.push('kg_multi_hop');
+      }
+    }
     const effectiveLaneOrder = this.resolveEffectiveLaneOrder(input.laneOrder);
     const parentPromotionThreshold = defaults.minSemanticScore;
     const graphEnrichmentCandidates = this.queryKnowledgeLane({
       query: input.query,
       filters,
-      observationIds: fused.map((hit) => hit.observation.id),
+      observationIds: refused.map((hit) => hit.observation.id),
       includeUnmatched: true,
     });
     const graphByObservation = new Map<number, LaneCandidate[]>();
     graphEnrichmentCandidates.sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score;
-      if (a.source !== b.source) return a.source === 'observation_facts' ? -1 : 1;
-      return a.observationId - b.observationId;
+      return b.observationId - a.observationId;
     });
     for (const candidate of graphEnrichmentCandidates) {
       const list = graphByObservation.get(candidate.observationId) ?? [];
@@ -1720,7 +3967,7 @@ export class Store {
       }
     }
 
-    for (const hit of fused) {
+    for (const hit of refused) {
       const graphEvidence = graphByObservation.get(hit.observation.id);
       if (graphEvidence && graphEvidence.length > 0) {
         const existing = hit.evidence.byLane.kg ?? [];
@@ -1759,7 +4006,7 @@ export class Store {
       lexicalQuery,
       scoreFromDistance: (distance: number) => scoreFromDistance(distance, defaults.l2DistanceScale),
       semanticInputs,
-      results: fused,
+      results: refused,
       pending: this.semanticRuntime.pending,
     };
   }
@@ -1944,9 +4191,14 @@ export class Store {
     };
 
     const kgParams: Array<string | number | Buffer> = [];
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const supersedeEnabled = knowledgeGraph.kgSupersedeEnabled;
+    const kgSupersededSelect = supersedeEnabled
+      ? ', t.superseded_by_triple_id, t.superseded_at'
+      : '';
     const kgSql = [
       'SELECT t.source_id as observation_id, t.provenance, t.confidence, t.source_type, se.canonical_name as subject_name,',
-      '       oe.canonical_name as object_name, t.relation',
+      `       oe.canonical_name as object_name, t.relation${kgSupersededSelect}`,
       'FROM kg_triples t',
       'JOIN kg_entities se ON se.id = t.subject_entity_id',
       'JOIN kg_entities oe ON oe.id = t.object_entity_id',
@@ -1961,6 +4213,7 @@ export class Store {
     const rows = this.db.prepare(kgSql.join(' ')).all(...kgParams) as Array<{
       observation_id: number; provenance: string; confidence: number; source_type: string;
       subject_name: string; object_name: string; relation: string;
+      superseded_by_triple_id?: number | null; superseded_at?: string | null;
     }>;
     const tripleCandidates = rows.flatMap((row) => {
       const subjectMatches = entityMatches(row.subject_name);
@@ -1969,18 +4222,29 @@ export class Store {
       const relationMatches = relationTerms.filter((term) => terms.includes(term)).length;
       const matches = subjectMatches + objectMatches + relationMatches;
       if (matches === 0 && !input.includeUnmatched) return [];
-      const score = matches > 0
+      const baseScore = matches > 0
         ? Math.min(1, row.confidence + Math.min(matches / Math.max(terms.length, 1), 1) * 0.5)
         : row.confidence * 0.2;
+      const superseded = supersedeEnabled && (row.superseded_by_triple_id !== null && row.superseded_by_triple_id !== undefined || row.superseded_at !== null && row.superseded_at !== undefined);
+      const score = superseded ? baseScore * knowledgeGraph.kgSupersedeDeprioritizeWeight : baseScore;
       return [{
         lane: 'kg' as const,
         observationId: row.observation_id,
         score,
         source: 'kg_triples' as const,
         text: `${row.subject_name} ${row.relation} ${row.object_name}`,
-        kg: { provenance: row.provenance, confidence: row.confidence, sourceType: row.source_type },
+        kg: {
+          provenance: row.provenance,
+          confidence: row.confidence,
+          sourceType: row.source_type,
+          ...(superseded ? { superseded: true } : {}),
+        },
       }];
     });
+
+    if (this.config.graphFactsSource !== 'legacy') {
+      return tripleCandidates;
+    }
 
     const fallbackParams: Array<string | number | Buffer> = [];
     const fallbackSql = [
@@ -1994,9 +4258,17 @@ export class Store {
       fallbackSql.push(`AND o.id IN (${input.observationIds.map(() => '?').join(',')})`);
       fallbackParams.push(...input.observationIds);
     }
-    const fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
-      observation_id: number; subject: string; relation: string; object: string;
-    }>;
+    let fallbackRows: Array<{ observation_id: number; subject: string; relation: string; object: string }>;
+    try {
+      fallbackRows = this.db.prepare(fallbackSql.join(' ')).all(...fallbackParams) as Array<{
+        observation_id: number; subject: string; relation: string; object: string;
+      }>;
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return tripleCandidates;
+      }
+      throw error;
+    }
     const factCandidates = fallbackRows.flatMap((row) => {
       const factText = `${row.subject} ${row.relation} ${row.object}`.toLowerCase();
       const matches = terms.filter((term) => factText.includes(term)).length;
@@ -2010,6 +4282,265 @@ export class Store {
       }];
     });
     return [...tripleCandidates, ...factCandidates];
+  }
+
+  private queryCommunitySummaryLane(input: {
+    query: string;
+    filters?: RetrievalCandidateFilters;
+    degradedFallback: string[];
+  }): LaneCandidate[] {
+    const community = this.config.communitySummaries ?? DEFAULT_COMMUNITY_SUMMARIES_CONFIG;
+    if (!community.readPath.enabled || !input.filters?.project) {
+      return [];
+    }
+
+    const terms = this.getQueryTerms(sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase());
+    if (terms.length === 0) return [];
+
+    const state = this.getCommunitySummaryState({ project: input.filters.project });
+    const runId = state.run_id;
+    if (runId === null) {
+      const eligibility = evaluateCommunityReadPathEligibility({
+        readPathEnabled: community.readPath.enabled,
+        state,
+        candidates: [],
+      });
+      if (eligibility.degradedFallbackMarker && !input.degradedFallback.includes(eligibility.degradedFallbackMarker)) {
+        input.degradedFallback.push(eligibility.degradedFallbackMarker);
+      }
+      return [];
+    }
+
+    const candidates = this.readMatchingCommunitySnapshots(
+      runId,
+      terms,
+      community.maxRetrievalCommunities,
+      community.summaryMaxChars,
+    );
+    const eligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: community.readPath.enabled,
+      state,
+      candidates,
+    });
+    if (!eligibility.eligible) {
+      if (eligibility.degradedFallbackMarker && !input.degradedFallback.includes(eligibility.degradedFallbackMarker)) {
+        input.degradedFallback.push(eligibility.degradedFallbackMarker);
+      }
+      return [];
+    }
+
+    const scoreScale = community.kgCommunityWeight / DEFAULT_LANE_WEIGHTS.kg;
+
+    return candidates.flatMap((candidate) => {
+      const searchable = [
+        candidate.summary_text,
+        ...candidate.top_entities,
+        ...candidate.top_relations,
+      ].join(' ').toLowerCase();
+      const matches = terms.filter((term) => searchable.includes(term)).length;
+      if (matches === 0) return [];
+      const observationId = candidate.source_observation_ids.find((id) => Number.isInteger(id) && id > 0);
+      if (!observationId) return [];
+      const score = Math.min(
+        1,
+        candidate.confidence + Math.min(matches / Math.max(terms.length, 1), 1) * 0.25,
+      ) * scoreScale;
+      return [{
+        lane: 'kg' as const,
+        observationId,
+        score,
+        source: 'kg_community_summary' as const,
+        text: candidate.summary_text,
+        community: {
+          communityId: candidate.community_id,
+          runId,
+          freshness: 'fresh' as const,
+          degraded: candidate.degraded,
+          sourceObservationIds: candidate.source_observation_ids,
+          entityCount: candidate.entity_count,
+          tripleCount: candidate.triple_count,
+        },
+      }];
+    });
+  }
+
+  private queryKnowledgeMultiHopLane(input: {
+    seedObservationIds: number[];
+    filters?: RetrievalCandidateFilters;
+    maxDepth: number;
+    neighborhoodLimit: number;
+    relationAllowList: string[];
+    multiHopWeight: number;
+    depthDecay: number;
+  }): LaneCandidate[] {
+    const seedObservationIds = Array.from(new Set(input.seedObservationIds.filter((id) => Number.isInteger(id))));
+    const relationAllowList = Array.from(new Set(input.relationAllowList.map((relation) => relation.trim().toUpperCase()).filter(Boolean)));
+    if (seedObservationIds.length === 0 || relationAllowList.length === 0 || input.maxDepth < 1 || input.neighborhoodLimit < 1) {
+      return [];
+    }
+
+    const seedEntityRows = this.db.prepare(
+      `SELECT DISTINCT subject_entity_id AS entity_id
+       FROM kg_triples
+       WHERE source_type = 'observation'
+       AND source_id IN (${seedObservationIds.map(() => '?').join(',')})
+       UNION
+       SELECT DISTINCT object_entity_id AS entity_id
+       FROM kg_triples
+       WHERE source_type = 'observation'
+       AND source_id IN (${seedObservationIds.map(() => '?').join(',')})`
+    ).all(...seedObservationIds, ...seedObservationIds) as Array<{ entity_id: number }>;
+    const seedEntityIds = seedEntityRows.map((row) => row.entity_id);
+    if (seedEntityIds.length === 0) return [];
+
+    const built = this.buildKnowledgeMultiHopTraversalSql({
+      seedEntityIds,
+      seedObservationIds,
+      relationAllowList,
+      maxDepth: Math.floor(input.maxDepth),
+      neighborhoodLimit: Math.floor(input.neighborhoodLimit),
+      filters: input.filters,
+      supersedeEnabled: (this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG).kgSupersedeEnabled,
+      supersedeDeprioritizeWeight: (this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG).kgSupersedeDeprioritizeWeight,
+    });
+    const rows = this.db.prepare(built.sql).all(...built.params) as Array<{
+      observation_id: number;
+      depth: number;
+      provenance: string;
+      confidence: number;
+      source_type: string;
+      seed_name: string;
+      from_name: string;
+      relation: string;
+      to_name: string;
+    }>;
+    const scoreScale = input.multiHopWeight / DEFAULT_LANE_WEIGHTS.kg;
+
+    return rows
+      .map((row) => ({
+        lane: 'kg' as const,
+        observationId: row.observation_id,
+        score: row.confidence * Math.pow(input.depthDecay, Math.max(row.depth - 1, 0)) * scoreScale,
+        source: 'kg_multi_hop' as const,
+        text: `${row.seed_name} -> ... -> ${row.from_name} ->(${row.relation})-> ${row.to_name}`,
+        kg: {
+          provenance: row.provenance,
+          confidence: row.confidence,
+          depth: row.depth,
+          sourceType: row.source_type,
+        },
+      }))
+      .sort((a, b) => {
+        if (a.score !== b.score) return b.score - a.score;
+        return a.observationId - b.observationId;
+      })
+      .slice(0, input.neighborhoodLimit);
+  }
+
+  private buildKnowledgeMultiHopTraversalSql(input: {
+    seedEntityIds: number[];
+    seedObservationIds: number[];
+    relationAllowList: string[];
+    maxDepth: number;
+    neighborhoodLimit: number;
+    filters?: RetrievalCandidateFilters;
+    supersedeEnabled?: boolean;
+    supersedeDeprioritizeWeight?: number;
+  }): { sql: string; params: Array<string | number> } {
+    const seedEntitySelects = input.seedEntityIds
+      .map(() => 'SELECT ? AS entity_id, ? AS seed_entity_id, 0 AS depth, ? AS path')
+      .join(' UNION ALL ');
+    const relationPlaceholders = input.relationAllowList.map(() => '?').join(',');
+    const seedObservationPlaceholders = input.seedObservationIds.map(() => '?').join(',');
+    const expandedLimit = Math.max(input.neighborhoodLimit * 4, input.neighborhoodLimit);
+    const edgeConfidenceExpr = input.supersedeEnabled
+      ? 'CASE WHEN t.superseded_by_triple_id IS NOT NULL OR t.superseded_at IS NOT NULL THEN t.confidence * ? ELSE t.confidence END'
+      : 't.confidence';
+    const params: Array<string | number> = [];
+    for (const id of input.seedEntityIds) {
+      params.push(id, id, `,${id},`);
+    }
+
+    const addTraversalParams = () => {
+      params.push(input.maxDepth, ...input.relationAllowList);
+    };
+    addTraversalParams();
+    addTraversalParams();
+
+    const addCandidateParams = () => {
+      if (input.supersedeEnabled) {
+        params.push(input.supersedeDeprioritizeWeight ?? 1);
+      }
+      params.push(input.maxDepth, ...input.relationAllowList, ...input.seedObservationIds);
+    };
+    addCandidateParams();
+    addCandidateParams();
+
+    const sql = [
+      'WITH RECURSIVE frontier(entity_id, seed_entity_id, depth, path) AS (',
+      seedEntitySelects,
+      'UNION ALL',
+      'SELECT t.object_entity_id, f.seed_entity_id, f.depth + 1, f.path || t.object_entity_id || \',\'',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_subject ON t.subject_entity_id = f.entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      `AND t.relation IN (${relationPlaceholders})`,
+      'AND instr(f.path, \',\' || t.object_entity_id || \',\') = 0',
+      'UNION ALL',
+      'SELECT t.subject_entity_id, f.seed_entity_id, f.depth + 1, f.path || t.subject_entity_id || \',\'',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_object ON t.object_entity_id = f.entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      `AND t.relation IN (${relationPlaceholders})`,
+      'AND instr(f.path, \',\' || t.subject_entity_id || \',\') = 0',
+      '),',
+      'candidate_edges AS (',
+      `SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, ${edgeConfidenceExpr} AS confidence, t.source_type,`,
+      '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_subject ON t.subject_entity_id = f.entity_id',
+      'JOIN kg_entities se ON se.id = f.seed_entity_id',
+      'JOIN kg_entities fe ON fe.id = f.entity_id',
+      'JOIN kg_entities te ON te.id = t.object_entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      'AND t.source_id IS NOT NULL',
+      `AND t.relation IN (${relationPlaceholders})`,
+      `AND t.source_id NOT IN (${seedObservationPlaceholders})`,
+      'UNION ALL',
+      `SELECT t.source_id AS observation_id, f.depth + 1 AS depth, t.provenance, ${edgeConfidenceExpr} AS confidence, t.source_type,`,
+      '       se.canonical_name AS seed_name, fe.canonical_name AS from_name, t.relation, te.canonical_name AS to_name',
+      'FROM frontier f',
+      'JOIN kg_triples t INDEXED BY idx_kg_triples_object ON t.object_entity_id = f.entity_id',
+      'JOIN kg_entities se ON se.id = f.seed_entity_id',
+      'JOIN kg_entities fe ON fe.id = f.entity_id',
+      'JOIN kg_entities te ON te.id = t.subject_entity_id',
+      'WHERE f.depth < ?',
+      'AND t.source_type = \'observation\'',
+      'AND t.source_id IS NOT NULL',
+      `AND t.relation IN (${relationPlaceholders})`,
+      `AND t.source_id NOT IN (${seedObservationPlaceholders})`,
+      '),',
+      'ranked AS (',
+      'SELECT ce.*, ROW_NUMBER() OVER (PARTITION BY ce.observation_id ORDER BY ce.depth ASC, ce.confidence DESC, ce.relation ASC) AS rn',
+      'FROM candidate_edges ce',
+      'JOIN observations o ON o.id = ce.observation_id',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    this.appendObservationFilters(sql, params, input.filters);
+    params.push(expandedLimit);
+    sql.push(
+      ')',
+      'SELECT observation_id, depth, provenance, confidence, source_type, seed_name, from_name, relation, to_name',
+      'FROM ranked',
+      'WHERE rn = 1',
+      'ORDER BY depth ASC, confidence DESC, observation_id ASC',
+      'LIMIT ?',
+    );
+
+    return { sql: sql.join(' '), params };
   }
 
   private resolveEffectiveLaneOrder(laneOrder?: RetrievalLane[]): RetrievalLane[] {
@@ -2422,10 +4953,13 @@ export class Store {
     };
   }
 
-  getObservatoryLedgerDetail(input: { observation_id: number }): ObservatoryLedgerResponse | null {
+  getObservatoryLedgerDetail(input: ObservatoryLedgerDetailInput): ObservatoryLedgerResponse | null {
     const observation = this.getObservation(input.observation_id);
     if (!observation) return null;
-    const facts = this.getObservationFacts({ observation_id: input.observation_id });
+    const facts = this.getObservationFacts({
+      observation_id: input.observation_id,
+      include_superseded: input.include_superseded,
+    });
     const extract = (relation: string) => facts.filter((fact) => fact.relation === relation).map((fact) => stripPrivateTags(fact.object).trim());
     return {
       observation_id: observation.id,
@@ -2588,14 +5122,12 @@ export class Store {
     const sessionRows = this.db.prepare(
       `SELECT DISTINCT session_id FROM observations WHERE deleted_at IS NULL ${input.project ? 'AND project = ?' : ''} ORDER BY session_id ASC LIMIT 500`
     ).all(...(input.project ? [input.project] : [])) as Array<{ session_id: string }>;
-    const relationRows = this.db.prepare(
-      `SELECT DISTINCT f.relation
-       FROM observation_facts f
-       JOIN observations o ON o.id = f.observation_id
-       WHERE o.deleted_at IS NULL
-       ${input.project ? 'AND o.project = ?' : ''}
-       ORDER BY f.relation ASC LIMIT 500`
-    ).all(...(input.project ? [input.project] : [])) as Array<{ relation: string }>;
+    const relationRows = this.config.graphFactsSource === 'legacy'
+      ? this.getLegacyVisualizationRelationRows(input.project)
+      : Array.from(new Set(this.getObservationFactsFromKg({ project: input.project }).map((fact) => fact.relation)))
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 500)
+        .map((relation) => ({ relation }));
     return {
       projects: projectRows.map((row) => row.project).filter((value): value is string => Boolean(value)),
       sessions: sessionRows.map((row) => row.session_id).filter((value): value is string => Boolean(value)),
@@ -2606,6 +5138,47 @@ export class Store {
   }
 
   private getVisualizationRows(input: VizSliceRequest, limit: number): VizEdgeRow[] {
+    if (this.config.graphFactsSource !== 'legacy') {
+      const facts = this.getObservationFactsFromKg({
+        project: input.project,
+        topic_key: input.topic_key,
+      });
+      const observationIds = Array.from(new Set(facts.map((fact) => fact.observation_id)));
+      if (observationIds.length === 0) return [];
+      const observations = this.db.prepare(
+        `SELECT id, session_id, title, type, project, topic_key, content
+         FROM observations
+         WHERE deleted_at IS NULL
+         AND id IN (${observationIds.map(() => '?').join(',')})`
+      ).all(...observationIds) as Array<Omit<VizEdgeRow, 'observation_id' | 'relation' | 'object'> & { id: number }>;
+      const observationsById = new Map(observations.map((row) => [row.id, row]));
+      const query = input.query ? sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase() : '';
+
+      return facts.flatMap((fact): VizEdgeRow[] => {
+        const observation = observationsById.get(fact.observation_id);
+        if (!observation) return [];
+        if (input.type && observation.type !== input.type) return [];
+        if (input.observation_type && observation.type !== input.observation_type) return [];
+        if (input.session_id && observation.session_id !== input.session_id) return [];
+        if (input.relation && fact.relation !== input.relation) return [];
+        if (query) {
+          const haystack = `${observation.title} ${observation.content} ${fact.object}`.toLowerCase();
+          if (!haystack.includes(query)) return [];
+        }
+        return [{
+          observation_id: fact.observation_id,
+          session_id: observation.session_id,
+          title: observation.title,
+          type: observation.type,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          content: observation.content,
+          relation: fact.relation,
+          object: fact.object,
+        }];
+      }).slice(0, limit);
+    }
+
     const params: Array<string | number> = [];
     const sql = [
       'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content, f.relation, f.object',
@@ -2644,7 +5217,32 @@ export class Store {
     }
     sql.push('ORDER BY o.id ASC, f.id ASC LIMIT ?');
     params.push(limit);
-    return this.db.prepare(sql.join(' ')).all(...params) as VizEdgeRow[];
+    try {
+      return this.db.prepare(sql.join(' ')).all(...params) as VizEdgeRow[];
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private getLegacyVisualizationRelationRows(project?: string): Array<{ relation: string }> {
+    try {
+      return this.db.prepare(
+        `SELECT DISTINCT f.relation
+         FROM observation_facts f
+         JOIN observations o ON o.id = f.observation_id
+         WHERE o.deleted_at IS NULL
+         ${project ? 'AND o.project = ?' : ''}
+         ORDER BY f.relation ASC LIMIT 500`
+      ).all(...(project ? [project] : [])) as Array<{ relation: string }>;
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   private buildVisualizationEdges(
@@ -2892,6 +5490,10 @@ export class Store {
   }
 
   getObservationFacts(input: ObservationFactsInput = {}): ObservationFact[] {
+    if (this.config.graphFactsSource !== 'legacy') {
+      return this.getObservationFactsFromKg(input);
+    }
+
     const sql = [
       'SELECT f.*',
       'FROM observation_facts f',
@@ -2917,7 +5519,122 @@ export class Store {
 
     sql.push('ORDER BY f.id ASC');
 
-    return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
+    try {
+      return this.db.prepare(sql.join(' ')).all(...params) as ObservationFact[];
+    } catch (error) {
+      if (this.isMissingLegacyObservationFactsError(error)) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  getObservationFactsFromKg(input: ObservationFactsInput = {}): ObservationFact[] {
+    const params: Array<string | number> = [];
+    const observationSql = [
+      'SELECT * FROM observations',
+      'WHERE deleted_at IS NULL',
+    ];
+
+    if (input.observation_id !== undefined) {
+      observationSql.push('AND id = ?');
+      params.push(input.observation_id);
+    }
+
+    if (input.project) {
+      observationSql.push('AND project = ?');
+      params.push(input.project);
+    }
+
+    if (input.topic_key) {
+      observationSql.push('AND topic_key = ?');
+      params.push(input.topic_key);
+    }
+
+    observationSql.push('ORDER BY id ASC');
+
+    const observations = this.mapObservationRows(
+      this.db.prepare(observationSql.join(' ')).all(...params) as ObservationRow[]
+    );
+    if (observations.length === 0) return [];
+
+    const observationIds = observations.map((observation) => observation.id);
+    const includeSuperseded = input.include_superseded === true;
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const filterSuperseded = knowledgeGraph.kgSupersedeEnabled && !includeSuperseded;
+    const supersededSelect = knowledgeGraph.kgSupersedeEnabled
+      ? ', t.superseded_by_triple_id, t.superseded_at'
+      : '';
+    const supersededFilter = filterSuperseded
+      ? 'AND t.superseded_by_triple_id IS NULL AND t.superseded_at IS NULL'
+      : '';
+    const contentRows = this.db.prepare(
+      `SELECT t.id, t.source_id as observation_id, t.relation, oe.canonical_name as object, t.created_at${supersededSelect}
+       FROM kg_triples t
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       JOIN observations o ON o.id = t.source_id
+       WHERE t.source_type = 'observation'
+       AND o.deleted_at IS NULL
+       AND t.relation IN (${KG_OBSERVATION_FACT_CONTENT_RELATIONS.map(() => '?').join(',')})
+       AND t.source_id IN (${observationIds.map(() => '?').join(',')})
+       ${supersededFilter}
+       ORDER BY t.source_id ASC, t.id ASC`
+    ).all(...KG_OBSERVATION_FACT_CONTENT_RELATIONS, ...observationIds) as Array<{
+      id: number;
+      observation_id: number;
+      relation: string;
+      object: string;
+      created_at: string;
+      superseded_by_triple_id?: number | null;
+      superseded_at?: string | null;
+    }>;
+    const contentRowsByObservation = new Map<number, typeof contentRows>();
+    for (const row of contentRows) {
+      const rows = contentRowsByObservation.get(row.observation_id) ?? [];
+      rows.push(row);
+      contentRowsByObservation.set(row.observation_id, rows);
+    }
+
+    const facts: ObservationFact[] = [];
+    for (const observation of observations) {
+      const metadata = [
+        { relation: 'HAS_TYPE', object: observation.type },
+        ...(observation.project ? [{ relation: 'IN_PROJECT', object: observation.project }] : []),
+        ...(observation.topic_key ? [{ relation: 'HAS_TOPIC_KEY', object: observation.topic_key }] : []),
+      ];
+      metadata.forEach((fact, index) => {
+        facts.push({
+          id: -((observation.id * 10) + index + 1),
+          observation_id: observation.id,
+          subject: observation.title,
+          relation: fact.relation,
+          object: fact.object,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          type: observation.type,
+          created_at: observation.created_at,
+        });
+      });
+      for (const row of contentRowsByObservation.get(observation.id) ?? []) {
+        facts.push({
+          id: row.id,
+          observation_id: observation.id,
+          subject: observation.title,
+          relation: row.relation,
+          object: row.object,
+          project: observation.project,
+          topic_key: observation.topic_key,
+          type: observation.type,
+          created_at: row.created_at,
+          ...(knowledgeGraph.kgSupersedeEnabled
+            && (row.superseded_by_triple_id !== null && row.superseded_by_triple_id !== undefined || row.superseded_at !== null && row.superseded_at !== undefined)
+            ? { superseded: true }
+            : {}),
+        });
+      }
+    }
+
+    return facts;
   }
 
   rebuildObservationFacts(input: RebuildObservationFactsInput = {}): RebuildObservationFactsResult {
@@ -2941,9 +5658,50 @@ export class Store {
     let factsCreated = 0;
 
     for (const observation of observations) {
-      const result = this.replaceObservationFacts(observation);
-      factsDeleted += result.deleted;
-      factsCreated += result.created;
+      if (this.config.graphFactsSource === 'legacy') {
+        const result = this.replaceObservationFacts(observation);
+        factsDeleted += result.deleted;
+        factsCreated += result.created;
+        continue;
+      }
+
+      const existingTriples = this.db.prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(observation.id) as { count: number };
+      const existingSuperseded = this.db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM kg_triples
+         WHERE source_type = 'observation'
+           AND source_id = ?
+           AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+      ).get(observation.id) as { count: number };
+      writeDeterministicKgFacts(this, observation.id);
+      const createdTriples = this.db.prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(observation.id) as { count: number };
+      const createdSuperseded = this.db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM kg_triples
+         WHERE source_type = 'observation'
+           AND source_id = ?
+           AND (superseded_by_triple_id IS NOT NULL OR superseded_at IS NOT NULL)`
+      ).get(observation.id) as { count: number };
+      const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+      if (knowledgeGraph.kgSupersedeEnabled) {
+        factsDeleted += Math.max(0, createdSuperseded.count - existingSuperseded.count);
+        factsCreated += Math.max(0, createdTriples.count - existingTriples.count);
+      } else {
+        factsDeleted += existingTriples.count;
+        factsCreated += createdTriples.count;
+      }
+    }
+
+    if (input.project) {
+      this.markCommunitySummariesStale(input.project, 'rebuildObservationFacts');
+    } else {
+      for (const project of Array.from(new Set(observations.map((observation) => observation.project).filter((project): project is string => project !== null)))) {
+        this.markCommunitySummariesStale(project, 'rebuildObservationFacts');
+      }
     }
 
     return {
@@ -2952,6 +5710,26 @@ export class Store {
       facts_deleted: factsDeleted,
       facts_created: factsCreated,
     };
+  }
+
+  pruneSupersededTriples(input: PruneSupersededTriplesInput = {}): PruneSupersededTriplesResult {
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const prune = this.db.transaction(() => runSupersededPrune(this.db, {
+      keepN: knowledgeGraph.kgSupersededKeepN,
+      project: input.project,
+      dryRun: input.dryRun,
+      orphanCleanup: knowledgeGraph.kgPruneOrphanEntities,
+    }));
+
+    const result = prune();
+    if (!input.dryRun && (result.triples_pruned > 0 || result.entities_pruned > 0 || result.dangling_refs_nulled > 0)) {
+      if (input.project) {
+        this.markCommunitySummariesStale(input.project, 'pruneSupersededTriples');
+      } else {
+        this.markAllCommunitySummariesStale('pruneSupersededTriples');
+      }
+    }
+    return result;
   }
 
   getObservationVersions(observationId: number): ObservationVersion[] {
@@ -2976,6 +5754,10 @@ export class Store {
         'UPDATE user_prompts SET project = ? WHERE project = ?'
       ).run(newProject, oldProject);
 
+      this.db.prepare(
+        "UPDATE kg_triples SET project = ?, updated_at = datetime('now') WHERE project = ?"
+      ).run(newProject, oldProject);
+
       return {
         old_project: oldProject,
         new_project: newProject,
@@ -2985,7 +5767,12 @@ export class Store {
       };
     });
 
-    return migrate();
+    const result = migrate();
+    if (result.sessions_updated > 0 || result.observations_updated > 0 || result.prompts_updated > 0) {
+      this.markCommunitySummariesStale(oldProject, 'migrateProject');
+      this.markCommunitySummariesStale(newProject, 'migrateProject');
+    }
+    return result;
   }
 
   deleteProject(project: string): DeleteProjectResult {
@@ -3053,6 +5840,11 @@ export class Store {
       for (const session of sessions) {
         this.recordMutation('delete', 'session', 0, session.id, targetProject);
       }
+
+      this.db.prepare('DELETE FROM kg_community_evidence WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_community_members WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_communities WHERE project = ?').run(targetProject);
+      this.db.prepare('DELETE FROM kg_community_runs WHERE project = ?').run(targetProject);
 
       const deletedObservations = this.db.prepare(
         'DELETE FROM observations WHERE project = ?'
@@ -3122,15 +5914,28 @@ export class Store {
     let observationsImported = 0;
     let promptsImported = 0;
     let skipped = 0;
+    const identityReports: IdentityMetadata[] = [];
 
     const doImport = this.db.transaction(() => {
       // Import sessions (skip if already exists)
       for (const session of data.sessions) {
+        const identity = resolveSaveIdentity({
+          session_id: session.id,
+          project: session.project,
+          requireSessionProject: true,
+          config: this.config,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+
         const result = this.db.prepare(
           `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
            VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO NOTHING`
-        ).run(session.id, session.project, session.directory, session.started_at, session.ended_at, session.summary);
+        ).run(identity.session_id, identity.session_project, session.directory, session.started_at, session.ended_at, session.summary);
         if (result.changes > 0) sessionsImported++;
       }
 
@@ -3146,18 +5951,37 @@ export class Store {
           }
         }
 
-        this.ensureSession(obs.session_id, obs.project || 'unknown');
+        const identity = resolveSaveIdentity({
+          session_id: obs.session_id,
+          project: obs.project,
+          requireSessionProject: true,
+          config: this.config,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+        const recordProject = normalizeExplicitString(obs.project) ?? null;
 
-        this.db.prepare(
+        this.ensureSession(identity.session_id!, identity.session_project);
+
+        const result = this.db.prepare(
           `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
-          obs.session_id, obs.type, obs.title, obs.content, obs.tool_name,
-          obs.project, obs.scope, obs.topic_key, obs.normalized_hash,
+          identity.session_id, obs.type, obs.title, obs.content, obs.tool_name,
+          recordProject, obs.scope, obs.topic_key, obs.normalized_hash,
           obs.sync_id || randomUUID(),
           obs.revision_count, obs.duplicate_count,
           obs.created_at, obs.updated_at
         );
+        const observation = this.getObservation(Number(result.lastInsertRowid));
+
+        if (observation) {
+          this.refreshDerivedStateForObservation(observation, 'importData');
+        }
+
         observationsImported++;
       }
 
@@ -3173,13 +5997,26 @@ export class Store {
           }
         }
 
-        this.ensureSession(prompt.session_id, prompt.project || 'unknown');
+        const identity = resolveSaveIdentity({
+          session_id: prompt.session_id,
+          project: prompt.project,
+          requireSessionProject: true,
+          config: this.config,
+          source: 'legacy',
+        });
+        const identityMetadata = metadataFromResolution(identity);
+        if (identityMetadata) {
+          identityReports.push(identityMetadata);
+        }
+        const recordProject = normalizeExplicitString(prompt.project) ?? null;
+
+        this.ensureSession(identity.session_id!, identity.session_project);
 
         this.db.prepare(
           `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
            VALUES (?, ?, ?, ?, ?)`
         ).run(
-          prompt.session_id, prompt.content, prompt.project,
+          identity.session_id, prompt.content, recordProject,
           prompt.sync_id || randomUUID(),
           prompt.created_at
         );
@@ -3189,13 +6026,21 @@ export class Store {
 
     doImport();
 
-    return { sessions_imported: sessionsImported, observations_imported: observationsImported, prompts_imported: promptsImported, skipped };
+    const identity = mergeIdentityMetadata(...identityReports);
+    return {
+      sessions_imported: sessionsImported,
+      observations_imported: observationsImported,
+      prompts_imported: promptsImported,
+      skipped,
+      ...(identity ? { identity } : {}),
+    };
   }
 
-  applyV2Chunk(chunk: SyncChunkV2): { applied: number; skipped: number; deleted: number } {
+  applyV2Chunk(chunk: SyncChunkV2): ApplyV2ChunkResult {
     let applied = 0;
     let skipped = 0;
     let deleted = 0;
+    const identityReports: IdentityMetadata[] = [];
 
     const isRecord = (value: unknown): value is Record<string, unknown> => {
       return typeof value === 'object' && value !== null;
@@ -3248,11 +6093,21 @@ export class Store {
             continue;
           }
 
+          const existingObservation = this.db.prepare(
+            'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
+          ).get(syncId) as { id: number; project: string | null } | undefined;
+
+          if (!existingObservation) {
+            skipped++;
+            continue;
+          }
+
           const result = this.db.prepare(
-            "UPDATE observations SET deleted_at = datetime('now') WHERE sync_id = ? AND deleted_at IS NULL"
-          ).run(syncId);
+            "UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL"
+          ).run(existingObservation.id);
 
           if (result.changes > 0) {
+            this.markCommunitySummariesStale(existingObservation.project, 'applyV2Chunk');
             applied++;
             deleted++;
           } else {
@@ -3285,19 +6140,31 @@ export class Store {
             const title = asNullableString(data.title);
             const content = asNullableString(data.content);
 
-            if (!sessionId || !title || !content || !isObservationType(typeValue)) {
+            if (!title || !content || !isObservationType(typeValue)) {
               skipped++;
               continue;
             }
 
             const project = asNullableString(data.project);
+            const identity = resolveSaveIdentity({
+              session_id: sessionId,
+              project,
+              requireSessionProject: true,
+              config: this.config,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const resolvedSessionId = identity.session_id!;
             const scopeValue = data.scope;
             const scope = isObservationScope(scopeValue) ? scopeValue : 'project';
             const normalizedHash = asNullableString(data.normalized_hash) ?? computeHash(content);
 
-            this.ensureSession(sessionId, project || 'unknown');
+            this.ensureSession(resolvedSessionId, identity.session_project);
 
-            this.db.prepare(
+            const result = this.db.prepare(
               `INSERT INTO observations (
                  session_id,
                  type,
@@ -3317,7 +6184,7 @@ export class Store {
                  deleted_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?)`
             ).run(
-              sessionId,
+              resolvedSessionId,
               typeValue,
               title,
               content,
@@ -3334,6 +6201,12 @@ export class Store {
               asNullableString(data.updated_at),
               asNullableString(data.deleted_at)
             );
+
+            const observation = this.getObservation(Number(result.lastInsertRowid));
+
+            if (observation) {
+              this.refreshDerivedStateForObservation(observation, 'applyV2Chunk');
+            }
 
             applied++;
             continue;
@@ -3352,19 +6225,31 @@ export class Store {
             const sessionId = asNullableString(data.session_id);
             const content = asNullableString(data.content);
 
-            if (!sessionId || !content) {
+            if (!content) {
               skipped++;
               continue;
             }
 
             const project = asNullableString(data.project);
-            this.ensureSession(sessionId, project || 'unknown');
+            const identity = resolveSaveIdentity({
+              session_id: sessionId,
+              project,
+              requireSessionProject: true,
+              config: this.config,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const resolvedSessionId = identity.session_id!;
+            this.ensureSession(resolvedSessionId, identity.session_project);
 
             this.db.prepare(
               `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
                VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))`
             ).run(
-              sessionId,
+              resolvedSessionId,
               content,
               project,
               syncId,
@@ -3385,7 +6270,18 @@ export class Store {
               continue;
             }
 
-            const project = asNullableString(data.project) ?? 'unknown';
+            const identity = resolveSaveIdentity({
+              session_id: syncId,
+              project: asNullableString(data.project),
+              requireSessionProject: true,
+              config: this.config,
+              source: 'legacy',
+            });
+            const identityMetadata = metadataFromResolution(identity);
+            if (identityMetadata) {
+              identityReports.push(identityMetadata);
+            }
+            const project = identity.session_project;
 
             this.db.prepare(
               `INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
@@ -3410,8 +6306,8 @@ export class Store {
         if (mutation.operation === 'update') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
-            ).get(syncId) as { id: number } | undefined;
+              'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null } | undefined;
 
             if (!existingObservation) {
               skipped++;
@@ -3424,16 +6320,23 @@ export class Store {
 
             if (has('session_id')) {
               const sessionId = asNullableString(data.session_id);
-              if (!sessionId) {
-                skipped++;
-                continue;
-              }
-
               const projectForSession = has('project') ? asNullableString(data.project) : null;
-              this.ensureSession(sessionId, projectForSession || 'unknown');
+              const identity = resolveSaveIdentity({
+                session_id: sessionId,
+                project: projectForSession,
+                requireSessionProject: true,
+                config: this.config,
+                source: 'legacy',
+              });
+              const identityMetadata = metadataFromResolution(identity);
+              if (identityMetadata) {
+                identityReports.push(identityMetadata);
+              }
+              const resolvedSessionId = identity.session_id!;
+              this.ensureSession(resolvedSessionId, identity.session_project);
 
               setClauses.push('session_id = ?');
-              params.push(sessionId);
+              params.push(resolvedSessionId);
             }
 
             if (has('type')) {
@@ -3549,6 +6452,12 @@ export class Store {
             ).run(...params);
 
             if (result.changes > 0) {
+              const observation = this.getObservation(existingObservation.id);
+
+              if (observation) {
+                this.refreshDerivedStateForObservation(observation, 'applyV2Chunk', existingObservation.project);
+              }
+
               applied++;
             } else {
               skipped++;
@@ -3573,16 +6482,23 @@ export class Store {
 
             if (has('session_id')) {
               const sessionId = asNullableString(data.session_id);
-              if (!sessionId) {
-                skipped++;
-                continue;
-              }
-
               const projectForSession = has('project') ? asNullableString(data.project) : null;
-              this.ensureSession(sessionId, projectForSession || 'unknown');
+              const identity = resolveSaveIdentity({
+                session_id: sessionId,
+                project: projectForSession,
+                requireSessionProject: true,
+                config: this.config,
+                source: 'legacy',
+              });
+              const identityMetadata = metadataFromResolution(identity);
+              if (identityMetadata) {
+                identityReports.push(identityMetadata);
+              }
+              const resolvedSessionId = identity.session_id!;
+              this.ensureSession(resolvedSessionId, identity.session_project);
 
               setClauses.push('session_id = ?');
-              params.push(sessionId);
+              params.push(resolvedSessionId);
             }
 
             if (has('content')) {
@@ -3703,7 +6619,8 @@ export class Store {
 
     applyChunk(chunk.mutations);
 
-    return { applied, skipped, deleted };
+    const identity = mergeIdentityMetadata(...identityReports);
+    return { applied, skipped, deleted, ...(identity ? { identity } : {}) };
   }
 
   isChunkImported(chunkId: string): boolean {

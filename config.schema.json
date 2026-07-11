@@ -17,6 +17,11 @@
       "type": "integer",
       "minimum": 1
     },
+    "maxContextChars": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Output character budget for context and project-summary renders. Set 0 to disable the output cap explicitly."
+    },
     "maxContextResults": {
       "type": "integer",
       "minimum": 1
@@ -46,6 +51,22 @@
           "type": "boolean"
         }
       }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional stable project identity default. THOTH_PROJECT overrides this value at runtime without rewriting the file.",
+      "properties": {
+        "default": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "graphFactsSource": {
+      "type": "string",
+      "enum": ["legacy", "kg"],
+      "description": "Graph-facts source switch used for observation_facts rollback during KG consolidation."
     },
     "retrievalDefaults": {
       "type": "object",
@@ -142,6 +163,360 @@
         "minContentChars": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "knowledgeGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kgMultiHopEnabled": {
+          "type": "boolean"
+        },
+        "kgMaxDepth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kgNeighborhoodLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kgMultiHopWeight": {
+          "type": "number",
+          "minimum": 0
+        },
+        "kgDepthDecay": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "kgTraversalTimeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kgSupersedeEnabled": {
+          "type": "boolean",
+          "description": "Enables KG supersession detection, marking, deprioritization, and current-state graph views."
+        },
+        "kgSupersedeContentPatterns": {
+          "type": "boolean",
+          "description": "Enables optional lower-confidence content-pattern supersession hints."
+        },
+        "kgSupersedeConfidenceThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence for optional content-pattern supersession hints."
+        },
+        "kgSupersedeDeprioritizeWeight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Score multiplier applied to superseded KG evidence during retrieval."
+        },
+        "kgPruneEnabled": {
+          "type": "boolean",
+          "description": "Enables automatic keep-N pruning of old superseded KG triples during supersession writes."
+        },
+        "kgSupersededKeepN": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of most-recent superseded KG triples retained per source/subject/relation slot."
+        },
+        "kgPruneOrphanEntities": {
+          "type": "boolean",
+          "description": "Removes KG entities left with no referencing triples after a superseded-triple prune."
+        },
+        "kgRelationAllowList": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "USES",
+              "DEPENDS_ON",
+              "BELONGS_TO",
+              "PART_OF",
+              "OWNS",
+              "CONFIGURES",
+              "IMPLEMENTS",
+              "RUNS_IN",
+              "DEPLOYS_TO",
+              "CAUSES",
+              "FIXES",
+              "BLOCKS",
+              "UNBLOCKS",
+              "AFFECTS",
+              "REFERENCES",
+              "MENTIONS",
+              "EXTRACTED_FROM",
+              "HAS_TOPIC",
+              "HAS_SCOPE",
+              "PRECEDES",
+              "FOLLOWS",
+              "AUTHENTICATES_WITH",
+              "HAS_WHAT",
+              "HAS_WHY",
+              "HAS_WHERE",
+              "HAS_LEARNED",
+              "SUPERSEDES"
+            ]
+          }
+        }
+      }
+    },
+    "communitySummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Derived KG community-summary settings. Environment variables named THOTH_COMMUNITY_* override these persisted values.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "readPath": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "An explicit opt-in for community-summary read-path evidence. When false, retrieval ignores community summaries while rebuild metadata can still be maintained. Opt-in is necessary but not sufficient: rollout eligibility gates must still pass. Clearing this value returns retrieval to the community-disabled baseline."
+            }
+          }
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": ["connected_components", "louvain", "leiden"],
+          "default": "connected_components"
+        },
+        "advancedAlgorithmFallback": {
+          "type": "string",
+          "enum": ["connected_components", "louvain", "leiden"],
+          "default": "connected_components"
+        },
+        "summaryMaxChars": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 8000,
+          "default": 1200
+        },
+        "maxCommunitiesPerProject": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 200
+        },
+        "maxRetrievalCommunities": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 3
+        },
+        "maxEvidencePerCommunity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 8
+        },
+        "sourceObservationLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 12
+        },
+        "rebuildMaxTriples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 5000
+        },
+        "staleBehavior": {
+          "type": "string",
+          "enum": ["skip", "include-degraded"],
+          "default": "skip"
+        },
+        "kgCommunityWeight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.45
+        },
+        "enrichment": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional non-blocking enrichment bounds. No remote provider fields are required.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60000,
+              "default": 8000
+            },
+            "maxCostUsd": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 0
+            },
+            "maxChars": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 8000,
+              "default": 1200
+            }
+          }
+        }
+      }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Store-owned memory maintenance settings. Environment variables named THOTH_MAINTENANCE_* override these persisted values; unknown keys are rejected for safe rollback.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enables manual maintenance evaluation/apply paths. Turning this off prevents new maintenance outcomes without deleting existing records or metadata."
+        },
+        "defaultMode": {
+          "type": "string",
+          "enum": ["dry-run", "apply"],
+          "default": "dry-run",
+          "description": "Default operator mode for maintenance entry points; dry-run is the conservative rollback default."
+        },
+        "automatic": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Automatic maintenance job controls. Automatic mutating work is disabled by default.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "maxRecordsPerRun": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 500
+            }
+          }
+        },
+        "readPath": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Read-path consumption controls for maintenance ranking/suppression metadata.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "When false, retrieval/context consumers ignore consolidation and decay metadata while stored records remain intact."
+            }
+          }
+        },
+        "consolidation": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Deterministic duplicate consolidation thresholds and review boundaries.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "exactHashThreshold": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "description": "Minimum existing matching source count before an exact-hash group becomes a consolidation candidate."
+            },
+            "lexicalSimilarityThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.92
+            },
+            "reviewSimilarityThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.82
+            }
+          }
+        },
+        "reflection": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Source-linked durable learning generation settings.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "minSourceCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 2
+            },
+            "maxSourceCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 8
+            },
+            "contentBudgetChars": {
+              "type": "integer",
+              "minimum": 200,
+              "default": 1200
+            },
+            "modelAssisted": {
+              "type": "boolean",
+              "default": false,
+              "description": "Optional model-assisted wording switch; deterministic reflection remains the baseline fallback."
+            }
+          }
+        },
+        "decay": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Reversible ranking metadata policy. The default policy never archives, soft-deletes, hard-deletes, or prunes records.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "defaultState": {
+              "type": "string",
+              "enum": ["active", "attenuated", "suppressed"],
+              "default": "attenuated"
+            },
+            "staleAfterDays": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 180
+            },
+            "redundantDuplicateCount": {
+              "type": "integer",
+              "minimum": 2,
+              "default": 2
+            },
+            "lowValueTypes": {
+              "type": "array",
+              "uniqueItems": true,
+              "default": ["discovery", "manual"],
+              "items": {
+                "type": "string",
+                "enum": ["decision", "architecture", "bugfix", "pattern", "config", "discovery", "learning", "session_summary", "manual"]
+              }
+            },
+            "scoreMultiplier": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.6,
+              "description": "Ranking multiplier to apply when decay metadata is consumed by read paths."
+            }
+          }
         }
       }
     }

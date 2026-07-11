@@ -14,6 +14,40 @@ export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
 export type OperationTraceStatus = 'ok' | 'error';
+export type IdentityField = 'session_id' | 'project';
+export type IdentitySource = 'explicit' | 'config' | 'cwd' | 'git' | 'package' | 'fallback' | 'import' | 'legacy';
+export type IdentityReason =
+  | 'missing'
+  | 'blank'
+  | 'placeholder'
+  | 'schema-required'
+  | 'synthesized'
+  | 'compatibility-default'
+  | 'metadata-unavailable';
+
+export interface DegradedIdentityEntry {
+  field: IdentityField;
+  reason: IdentityReason;
+  source: IdentitySource;
+  value: string | null;
+  fallback_value?: string | null;
+}
+
+export interface IdentityResolution {
+  session_id?: string;
+  project?: string | null;
+  session_project: string;
+  project_id?: string | null;
+  project_source?: IdentitySource;
+  session_source?: 'explicit' | 'placeholder' | 'fallback';
+  degraded: DegradedIdentityEntry[];
+}
+
+export interface IdentityMetadata {
+  degraded: DegradedIdentityEntry[];
+  synthesized_session_id?: string;
+  synthesized_project?: string;
+}
 
 // ── Database Entities ──
 
@@ -65,6 +99,10 @@ export interface UserPrompt {
   created_at: string;
 }
 
+export type SavePromptResult = UserPrompt & {
+  identity?: IdentityMetadata;
+};
+
 export interface OperationTrace {
   id: number;
   trace_id: string;
@@ -79,9 +117,57 @@ export interface OperationTrace {
   request_json: string;
   response_json: string | null;
   error: string | null;
+  correlation_id: string | null;
+  metrics_json: string | null;
   request_truncated: boolean;
   response_truncated: boolean;
   created_at: string;
+}
+
+export interface OperationTraceMetrics {
+  schema_version: 1;
+  request_chars: number;
+  response_chars: number;
+  returned_chars: number;
+  full_chars?: number;
+  evidence_chars?: number;
+  saved_chars?: number;
+  compression_ratio?: number;
+  token_basis: 'estimated_chars_div_4' | 'exact';
+  estimated_tokens: {
+    request?: number;
+    response?: number;
+    full?: number;
+    evidence?: number;
+    returned?: number;
+  };
+  exact_tokens?: {
+    request?: number;
+    response?: number;
+    full?: number;
+    evidence?: number;
+    returned?: number;
+  };
+  evidence_observation_ids?: number[];
+  fetched_observation_id?: number;
+  fetched_prompt_id?: number;
+  retrieval_mode?: 'compact' | 'context';
+}
+
+export interface OperationTraceTelemetry {
+  average_payload_chars_by_tool: Record<string, {
+    count: number;
+    request_chars: number;
+    response_chars: number;
+    returned_chars: number;
+    full_chars: number;
+    evidence_chars: number;
+  }>;
+  mem_get_avoided_count: number;
+  mem_get_escalated_count: number;
+  mem_get_pending_count: number;
+  correlation_window_minutes: number;
+  token_basis: OperationTraceMetrics['token_basis'];
 }
 
 export interface SearchResult extends Observation {
@@ -99,6 +185,7 @@ export interface ObservationFact {
   topic_key: string | null;
   type: ObservationType;
   created_at: string;
+  superseded?: boolean;
 }
 
 export interface TopicKeySummary {
@@ -138,6 +225,12 @@ export interface ObservationFactsInput {
   observation_id?: number;
   project?: string;
   topic_key?: string;
+  include_superseded?: boolean;
+}
+
+export interface ObservatoryLedgerDetailInput {
+  observation_id: number;
+  include_superseded?: boolean;
 }
 
 export interface RebuildObservationFactsInput {
@@ -149,6 +242,7 @@ export interface ContextInput {
   session_id?: string;
   scope?: ObservationScope;
   limit?: number;
+  maxOutputChars?: number;
 }
 
 export interface TimelineInput {
@@ -180,6 +274,8 @@ export interface SaveOperationTraceInput {
   request: unknown;
   response?: unknown;
   error?: string | null;
+  correlation_id?: string | null;
+  metrics?: OperationTraceMetrics | null;
   max_payload_chars?: number;
 }
 
@@ -258,6 +354,7 @@ export type SyncChunk = SyncChunkV1 | SyncChunkV2;
 export interface SaveResult {
   observation: Observation;
   action: 'created' | 'deduplicated' | 'upserted';
+  identity?: IdentityMetadata;
 }
 
 export interface PaginatedContent {
@@ -308,6 +405,14 @@ export interface ImportResult {
   observations_imported: number;
   prompts_imported: number;
   skipped: number;
+  identity?: IdentityMetadata;
+}
+
+export interface ApplyV2ChunkResult {
+  applied: number;
+  skipped: number;
+  deleted: number;
+  identity?: IdentityMetadata;
 }
 
 export interface MigrateProjectResult {
@@ -331,6 +436,224 @@ export interface RebuildObservationFactsResult {
   observations_scanned: number;
   facts_deleted: number;
   facts_created: number;
+}
+
+export interface PruneSupersededTriplesInput {
+  project?: string;
+  dryRun?: boolean;
+}
+
+export interface PruneSupersededTriplesResult {
+  project: string | null;
+  dry_run: boolean;
+  slots_scanned: number;
+  triples_pruned: number;
+  entities_pruned: number;
+  dangling_refs_nulled: number;
+  superseded_before: number;
+  superseded_after: number;
+}
+
+export type CommunityState = 'disabled' | 'missing' | 'fresh' | 'stale' | 'rebuilding' | 'failed' | 'empty' | 'degraded';
+export type CommunityHealthState = Exclude<CommunityState, 'empty'>;
+export type CommunityRunStatus = 'running' | 'committed' | 'failed';
+export type CommunityAlgorithmName = 'connected_components';
+
+export interface RebuildCommunitySummariesInput {
+  project: string;
+}
+
+export interface PreviewCommunitySummariesInput {
+  project: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface CommunityStateInput {
+  project: string;
+}
+
+export interface CommunityRetrievalInput {
+  project: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface DropCommunitySummariesInput {
+  project?: string;
+}
+
+export interface CommunitySummarySnapshot {
+  community_id: string;
+  level: number;
+  summary_text: string;
+  entity_count: number;
+  triple_count: number;
+  source_observation_count: number;
+  top_entities: string[];
+  top_relations: string[];
+  source_observation_ids: number[];
+  confidence: number;
+  degraded: boolean;
+  degraded_reasons: string[];
+}
+
+export interface CommunityRebuildResult {
+  project: string | null;
+  run_id: number;
+  status: CommunityRunStatus;
+  freshness: CommunityState;
+  algorithm: CommunityAlgorithmName;
+  graph_signature: string | null;
+  communities_created: number;
+  entities_scanned: number;
+  triples_scanned: number;
+  source_observations_scanned: number;
+  degraded_reasons: string[];
+  error?: string;
+}
+
+export interface CommunityPreviewResult {
+  project: string | null;
+  state: CommunityState;
+  would_commit: false;
+  graph_signature: string | null;
+  communities: CommunitySummarySnapshot[];
+  entities_scanned: number;
+  triples_scanned: number;
+  source_observations_scanned: number;
+  truncated: boolean;
+  degraded_reasons: string[];
+}
+
+export interface CommunityStateResult {
+  project: string | null;
+  state: CommunityState;
+  run_id: number | null;
+  latest_committed_run_id: number | null;
+  graph_signature: string | null;
+  current_graph_signature: string | null;
+  communities_count: number;
+  entities_count: number;
+  triples_count: number;
+  source_observations_count: number;
+  degraded: boolean;
+  degraded_reasons: string[];
+  error: string | null;
+  updated_at: string | null;
+}
+
+export interface CommunityHealthReadModel {
+  state: CommunityHealthState;
+  run_id: number | null;
+  latest_committed_run_id: number | null;
+  latest_job_status: 'running' | 'committed' | 'failed' | 'none';
+  graph_signature: string | null;
+  current_graph_signature: string | null;
+  freshness_basis: 'graph_signature' | 'config_disabled' | 'missing_run';
+  coverage: {
+    communities: number;
+    entities: number;
+    triples: number;
+    source_observations: number;
+  };
+  degraded_reasons: string[];
+  error: string | null;
+  updated_at: string | null;
+}
+
+export interface CommunityRetrievalResult {
+  project: string | null;
+  state: CommunityState;
+  run_id: number | null;
+  graph_signature: string | null;
+  candidates: CommunitySummarySnapshot[];
+  degraded_reasons: string[];
+}
+
+export interface DropCommunitySummariesResult {
+  project: string | null;
+  runs_deleted: number;
+  communities_deleted: number;
+  members_deleted: number;
+  evidence_deleted: number;
+}
+
+export type MaintenanceMode = 'dry-run' | 'apply';
+export type MaintenanceSourceKind = 'observation' | 'prompt' | 'session_summary';
+export type MaintenanceDecayState = 'active' | 'attenuated' | 'suppressed';
+
+export type MaintenanceScope =
+  | { all: true }
+  | { project: string }
+  | { topic_key: string }
+  | { topic_prefix: string };
+
+export interface MaintenanceInput {
+  scope?: MaintenanceScope;
+  mode?: MaintenanceMode;
+}
+
+export interface MaintenanceSourceRef {
+  kind: MaintenanceSourceKind;
+  id: number;
+}
+
+export interface MaintenanceConsolidationCandidate {
+  cluster_key: string;
+  canonical: MaintenanceSourceRef;
+  members: MaintenanceSourceRef[];
+  reason_class: string;
+  review_required: boolean;
+  signal: Record<string, unknown>;
+}
+
+export interface MaintenanceReflectionCandidate {
+  source_set_hash: string;
+  topic_key: string;
+  title: string;
+  content: string;
+  sources: MaintenanceSourceRef[];
+  reason_class: string;
+  existing_observation_id: number | null;
+  planned_observation_id?: number;
+}
+
+export interface MaintenanceDecayCandidate {
+  source: MaintenanceSourceRef;
+  score: number;
+  state: MaintenanceDecayState;
+  reason_class: string;
+  policy: Record<string, unknown>;
+}
+
+export interface MaintenanceCounts {
+  records_scanned: number;
+  consolidation_candidates: number;
+  reflection_candidates: number;
+  decay_candidates: number;
+  review_required: number;
+}
+
+export interface MaintenanceRunPreview {
+  dry_run: true;
+  scope: MaintenanceScope;
+  counts: MaintenanceCounts;
+  consolidations: MaintenanceConsolidationCandidate[];
+  reflections: MaintenanceReflectionCandidate[];
+  decays: MaintenanceDecayCandidate[];
+  degraded: string[];
+}
+
+export interface MaintenanceRunResult {
+  dry_run: false;
+  run_id: number;
+  scope: MaintenanceScope;
+  counts: MaintenanceCounts;
+  consolidations: MaintenanceConsolidationCandidate[];
+  reflections: MaintenanceReflectionCandidate[];
+  decays: MaintenanceDecayCandidate[];
+  degraded: string[];
 }
 
 export interface VizSliceRequest {

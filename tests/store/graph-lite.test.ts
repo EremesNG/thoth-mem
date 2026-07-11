@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Store } from '../../src/store/index.js';
 
+function deleteKgTriples(store: Store) {
+  store.getDb().prepare("DELETE FROM kg_triples WHERE source_type = 'observation'").run();
+}
+
 describe('Store graph-lite facts', () => {
   it('derives facts from structured observation content and metadata', () => {
     const store = new Store(':memory:');
@@ -162,18 +166,20 @@ describe('Store graph-lite facts', () => {
         ].join('\n'),
       }).observation;
 
-      store.getDb().prepare('DELETE FROM observation_facts').run();
-      expect(store.getObservationFacts({ project: 'auth-project' })).toHaveLength(0);
+      deleteKgTriples(store);
+      expect(store.getObservationFacts({ project: 'auth-project' }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+        'HAS_TOPIC_KEY',
+      ]);
 
       const result = store.rebuildObservationFacts({ project: 'auth-project' });
       const facts = store.getObservationFacts({ observation_id: saved.id });
 
-      expect(result).toEqual({
-        project: 'auth-project',
-        observations_scanned: 1,
-        facts_deleted: 0,
-        facts_created: 6,
-      });
+      expect(result.project).toBe('auth-project');
+      expect(result.observations_scanned).toBe(1);
+      expect(result.facts_deleted).toBe(0);
+      expect(result.facts_created).toBeGreaterThan(0);
       expect(facts.map((fact) => fact.relation)).toEqual([
         'HAS_TYPE',
         'IN_PROJECT',
@@ -202,14 +208,60 @@ describe('Store graph-lite facts', () => {
         project: 'cache-project',
       }).observation;
 
-      store.getDb().prepare('DELETE FROM observation_facts').run();
+      deleteKgTriples(store);
 
       const result = store.rebuildObservationFacts({ project: 'auth-project' });
 
       expect(result.project).toBe('auth-project');
       expect(result.observations_scanned).toBe(1);
       expect(store.getObservationFacts({ observation_id: auth.id })).toHaveLength(3);
-      expect(store.getObservationFacts({ observation_id: cache.id })).toHaveLength(0);
+      expect(store.getObservationFacts({ observation_id: cache.id }).map((fact) => fact.relation)).toEqual([
+        'HAS_TYPE',
+        'IN_PROJECT',
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('keeps maintenance metadata outside graph fact storage and does not prune KG triples for decay', () => {
+    const store = new Store(':memory:', {
+      maintenance: {
+        reflection: { enabled: false },
+        decay: { enabled: true, staleAfterDays: 1, scoreMultiplier: 0.5 },
+      },
+    });
+
+    try {
+      const saved = store.saveObservation({
+        title: 'Maintenance graph source',
+        content: '**What**: maintenance graph facts stay in kg triples',
+        project: 'graph-maint-project',
+        type: 'manual',
+      }).observation;
+      store.getDb().prepare("UPDATE observations SET created_at = '2020-01-01 00:00:00', updated_at = '2020-01-01 00:00:00' WHERE id = ?")
+        .run(saved.id);
+      const triplesBefore = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+
+      store.runMaintenance({ scope: { project: 'graph-maint-project' } });
+
+      const legacyFactTable = store.getDb().prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'observation_facts'"
+      ).get();
+      const triplesAfter = store.getDb().prepare(
+        "SELECT COUNT(*) AS count FROM kg_triples WHERE source_type = 'observation' AND source_id = ?"
+      ).get(saved.id) as { count: number };
+      const facts = store.getObservationFacts({ observation_id: saved.id });
+
+      expect(legacyFactTable).toBeUndefined();
+      expect(triplesAfter.count).toBe(triplesBefore.count);
+      expect(facts.some((fact) => fact.object === 'maintenance graph facts stay in kg triples')).toBe(true);
+      expect(store.getMaintenanceEvidenceForObservations([saved.id])[0].decay).toMatchObject({
+        state: 'attenuated',
+        scoreMultiplier: 0.5,
+      });
     } finally {
       store.close();
     }

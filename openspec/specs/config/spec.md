@@ -32,6 +32,673 @@ The system MUST derive stable metadata for active embedding configuration, inclu
 - WHEN metadata is recomputed
 - THEN the derived config hash MUST change
 
+### Requirement: Context Output Budget MUST Be Configurable With Deterministic Resolution
+The system MUST provide a context/summary OUTPUT character-budget setting
+(working name `maxContextChars`) and MUST resolve it in this precedence order:
+explicit `THOTH_*` environment override (working name `THOTH_MAX_CONTEXT_CHARS`),
+then persisted config in the resolved data dir
+(`{THOTH_DATA_DIR|~/.thoth}/config.json`), then a built-in default. The resolved
+value MUST govern the bound enforced by `Store.getContext` and therefore by
+`mem_context`, `mem_project action=summary`, and the HTTP/CLI summary surfaces.
+The built-in default `maxContextChars` MUST be `8000`: a finite, positive
+character count aligned with the existing capped retrieval patterns (`mem_recall`
+`MAX_CONTEXT_CHARS=6000`; `formatContextResults` `maxChars=4000`;
+`formatProjectGraph` `maxChars=6000`) and set modestly above `mem_recall`'s
+`6000` because context/summary output aggregates multiple recent observations
+(recent sessions, prompts, observation previews, and memory stats) in one render.
+The default MUST be a single documented value; per-surface default divergence
+MUST NOT be introduced (per-call override is provided separately below).
+
+#### Scenario: Environment override wins for the output budget
+- GIVEN both a persisted `maxContextChars` and the `THOTH_MAX_CONTEXT_CHARS`
+  environment variable are set
+- WHEN the effective output budget is computed
+- THEN the environment value MUST take precedence
+
+#### Scenario: Persisted value is used when environment is unset
+- GIVEN no `THOTH_MAX_CONTEXT_CHARS` environment override is set
+- WHEN persisted config contains a `maxContextChars` value
+- THEN the effective output budget MUST match the persisted value
+
+#### Scenario: Built-in default applies when unset everywhere
+- GIVEN neither an environment override nor a persisted value is present
+- WHEN the effective output budget is computed
+- THEN the finite, positive built-in default of `8000` MUST be applied
+
+#### Scenario: Per-call override supersedes the resolved default without persisting
+- GIVEN a resolved default `maxContextChars` (from env, persisted config, or the
+  built-in default)
+- WHEN a caller supplies an explicit per-call output budget to `mem_context` or
+  `mem_project action=summary`
+- THEN that per-call value MUST govern the bound for that invocation only
+- AND the resolved default MUST be unchanged for subsequent calls (the override
+  MUST NOT mutate persisted configuration)
+
+### Requirement: Context Output Budget MUST Support An Unbounded Sentinel
+The output-budget configuration MUST support the explicit, documented sentinel
+value `0`, meaning "no output cap", that disables the bound (restoring full-dump
+output) for rollback and debugging. The sentinel `0` MUST be selectable only by
+an explicit configured value (via `THOTH_MAX_CONTEXT_CHARS` or persisted config)
+and MUST NOT be the default; because the default is finite and positive (`8000`),
+the sentinel is never reached by default. When `0` is resolved, `Store.getContext`
+MUST NOT truncate output by the budget.
+
+#### Scenario: Sentinel disables the output bound
+- GIVEN the unbounded sentinel `0` is configured (via environment or persisted
+  config)
+- WHEN the effective output budget is resolved and applied
+- THEN context/summary output MUST NOT be truncated by `maxContextChars`
+- AND WHEN the sentinel is absent
+- THEN the finite resolved budget MUST be enforced
+
+### Requirement: maxContentLength MUST Be Input-Validation Warn-Only And Distinct From The Output Cap
+The existing `maxContentLength` setting (default 100000) MUST be defined at the
+spec level as an INPUT-validation, save-time concern that WARNS and MUST NOT
+silently truncate written content (the behavior already implemented by
+`validateContentLength`, `src/utils/content.ts:14-26`, surfaced through
+`src/config.ts`). `maxContentLength` MUST remain conceptually and operationally
+DISTINCT from `maxContextChars`: `maxContentLength` governs the size of content
+on the way IN (write/save validation), while `maxContextChars` governs the size
+of rendered context on the way OUT (read/retrieval). The two MUST NOT be
+conflated, and changing one MUST NOT change the behavior governed by the other.
+
+#### Scenario: Oversized save warns without truncation
+- GIVEN content longer than `maxContentLength` is saved
+- WHEN the content is validated at save time
+- THEN a warning MUST be produced advising the content is large
+- AND the stored content MUST NOT be silently truncated
+
+#### Scenario: Input and output knobs are independent
+- GIVEN `maxContextChars` is changed
+- WHEN content is saved
+- THEN save-time `maxContentLength` validation behavior MUST be unchanged
+- AND GIVEN `maxContentLength` is changed
+- WHEN context/summary output is rendered
+- THEN the `maxContextChars` output bound MUST be unchanged
+
 ## MODIFIED Requirements
 
 ## REMOVED Requirements
+
+## ADDED Requirements (kg-multi-hop-recall, B2)
+
+### Requirement: Multi-Hop Traversal Knobs MUST Resolve Deterministically With Env Overrides
+The system MUST provide configuration knobs governing entity-anchored multi-hop KG traversal and MUST resolve each in the established precedence order: explicit `THOTH_*` environment override, then persisted config in the resolved data dir (`{THOTH_DATA_DIR|~/.thoth}/config.json`), then a built-in default — mirroring the existing `graphFactsSource` and embedding resolution patterns. The knobs and their defaults are:
+
+| Knob | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `kgMultiHopEnabled` | boolean | `true` | `THOTH_KG_MULTI_HOP_ENABLED` |
+| `kgMaxDepth` | integer | `2` | `THOTH_KG_MAX_DEPTH` |
+| `kgNeighborhoodLimit` | integer | `50` | `THOTH_KG_NEIGHBORHOOD_LIMIT` |
+| `kgMultiHopWeight` | number | `0.7` | `THOTH_KG_MULTI_HOP_WEIGHT` |
+| `kgDepthDecay` | number | `0.5` | `THOTH_KG_DEPTH_DECAY` |
+| `kgTraversalTimeoutMs` | integer | `50` | `THOTH_KG_TRAVERSAL_TIMEOUT_MS` |
+| `kgRelationAllowList` | string[] | 18 structural relations | `THOTH_KG_RELATION_ALLOW_LIST` |
+
+Boolean env values MUST be parsed via the existing `parseBoolean` helper and numeric env values via `parseNumber`. The resolved knobs MUST govern whether traversal runs, recursion depth, neighborhood cap, effective sub-source weight, per-hop decay, and coarse elapsed guard behavior in the retrieval layer.
+
+#### Scenario: Environment override wins for a multi-hop knob
+- GIVEN both a persisted multi-hop knob value and its matching `THOTH_*` environment variable are set to different values
+- WHEN the effective config is computed
+- THEN the environment value MUST take precedence
+
+#### Scenario: Persisted value is used when environment is unset
+- GIVEN no environment override for a knob is set
+- WHEN persisted config contains a value
+- THEN the effective config MUST match the persisted value
+
+#### Scenario: Built-in defaults apply when unset everywhere
+- GIVEN neither an environment override nor a persisted value is present
+- WHEN the effective config is computed
+- THEN `kgMultiHopEnabled` MUST be `true`, `kgMaxDepth` MUST be `2`, `kgNeighborhoodLimit` MUST be `50`, `kgMultiHopWeight` MUST be `0.7`, `kgDepthDecay` MUST be `0.5`, `kgTraversalTimeoutMs` MUST be `50`, and `kgRelationAllowList` MUST default to the 18 structural relations
+
+#### Scenario: Empty or invalid configured allow-list fails safe
+- GIVEN a configured relation allow-list that is empty or contains no recognized relation
+- WHEN the effective allow-list is resolved
+- THEN traversal MUST NOT fall back to excluded metadata/synthetic relations
+
+### Requirement: Multi-Hop Relation Allow-List MUST Be Configurable and Default to the Structural Set
+The system MUST provide a configurable allow-list for traversal relations, parsed with the same env>persisted>default precedence. The default MUST be the 18 structural relations (`USES`, `DEPENDS_ON`, `BELONGS_TO`, `PART_OF`, `OWNS`, `CONFIGURES`, `IMPLEMENTS`, `RUNS_IN`, `DEPLOYS_TO`, `CAUSES`, `FIXES`, `BLOCKS`, `UNBLOCKS`, `AFFECTS`, `REFERENCES`, `AUTHENTICATES_WITH`, `PRECEDES`, `FOLLOWS`) and MUST exclude the 8 metadata/synthetic relations.
+
+#### Scenario: Default allow-list follows only structural relations
+- GIVEN no relation-allow-list override is configured
+- WHEN the effective allow-list is resolved
+- THEN it MUST contain exactly the 18 structural relations and MUST NOT contain excluded relations
+
+#### Scenario: Configured allow-list overrides the default
+- GIVEN a persisted or environment relation allow-list differs from the default
+- WHEN the effective allow-list is resolved
+- THEN it MUST match the configured set rather than the built-in default
+
+
+## ADDED Requirements (kg-supersedes-edges, B3)
+
+
+> Sub-change **B3** (`kg-supersedes-edges`). Adds supersession knobs to the
+> `KnowledgeGraphConfig` block (`src/config.ts:39-47`), resolved with the
+> established env > persisted > default precedence (the B2 pattern,
+> `resolveKnowledgeGraphConfig`, `src/config.ts:447-474`), and mirrored in
+> `config.schema.json`.
+
+## ADDED Requirements
+
+### Requirement: Supersession Knobs MUST Resolve Deterministically With Env Overrides
+The system MUST provide configuration knobs governing KG supersession on the
+`KnowledgeGraphConfig` block and MUST resolve each in the established precedence
+order: explicit `THOTH_*` environment override, then persisted config in the
+resolved data dir (`{THOTH_DATA_DIR|~/.thoth}/config.json`), then a built-in
+default — mirroring the existing multi-hop and embedding resolution patterns.
+Boolean env values MUST be parsed via the existing `parseBoolean` helper and
+numeric env values via `parseNumber`. The knobs and their defaults are:
+
+| Knob | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `kgSupersedeEnabled` | boolean | `true` | `THOTH_KG_SUPERSEDE_ENABLED` |
+| `kgSupersedeContentPatterns` | boolean | `false` | `THOTH_KG_SUPERSEDE_CONTENT_PATTERNS` |
+| `kgSupersedeConfidenceThreshold` | number | `0.8` | `THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD` |
+| `kgSupersedeDeprioritizeWeight` | number | `0.5` | `THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT` |
+
+`kgSupersedeEnabled` is the master flag: when false, NO supersession detection,
+write, deprioritization, or current-state view applies, and behavior is
+byte-identical to pre-B3. `kgSupersedeContentPatterns` gates the optional
+lower-confidence content-pattern detector (the primary per-observation diff
+signal is unaffected by it). `kgSupersedeConfidenceThreshold` is the minimum
+confidence at or above which a content-pattern hint contributes a supersession
+marking. Because content-pattern hints rely on substring/phrase matches rather
+than deterministic same-source graph diffs, `kgSupersedeContentPatterns` MUST
+remain opt-in/default false, and operators SHOULD validate their project corpus
+against false positives before enabling it.
+`kgSupersedeDeprioritizeWeight` is the retrieval down-weight applied to superseded
+KG evidence (a multiplier in `[0,1)` so superseded facts rank below current
+facts).
+
+#### Scenario: Environment override wins for a supersession knob
+- GIVEN both a persisted supersession knob value and its matching `THOTH_*`
+  environment variable are set to different values
+- WHEN the effective config is computed
+- THEN the environment value MUST take precedence
+
+#### Scenario: Persisted value is used when environment is unset
+- GIVEN no environment override for a knob is set
+- WHEN persisted config contains a value
+- THEN the effective config MUST match the persisted value
+
+#### Scenario: Built-in defaults apply when unset everywhere
+- GIVEN neither an environment override nor a persisted value is present
+- WHEN the effective config is computed
+- THEN `kgSupersedeEnabled` MUST be `true`, `kgSupersedeContentPatterns` MUST be
+  `false`, `kgSupersedeConfidenceThreshold` MUST be `0.8`, and
+  `kgSupersedeDeprioritizeWeight` MUST be `0.5`
+
+### Requirement: Supersession Master Flag MUST Gate All B3 Behavior
+The `kgSupersedeEnabled` master flag MUST gate ALL B3 behavior end to end:
+detection on save, the supersession write, retrieval deprioritization (direct and
+multi-hop), and the `mem_project action=graph` current-state default. When the
+flag resolves to false, every B3 behavior MUST be inert and observable output
+MUST be byte-identical to pre-B3.
+
+#### Scenario: Master flag off makes all B3 behavior inert
+- GIVEN `kgSupersedeEnabled` resolves to false
+- WHEN observations are saved and retrieval/graph reads run
+- THEN no supersession is detected, written, or applied anywhere
+- AND observable output MUST be byte-identical to pre-B3
+
+#### Scenario: Content-pattern flag is independent of the master flag
+- GIVEN `kgSupersedeEnabled` is true and `kgSupersedeContentPatterns` is false
+- WHEN an observation with a supersession phrase is saved
+- THEN deterministic per-observation diff supersession MUST still apply
+- AND no content-pattern supersession marking MUST be created
+
+### Requirement: `config.schema.json` MUST Document the Supersession Knobs
+The persisted-config JSON schema (`config.schema.json`) MUST document the four
+supersession knobs under the `knowledgeGraph` object with their types and
+defaults, consistent with how the B2 multi-hop knobs are documented, so persisted
+configuration validates and is discoverable.
+
+#### Scenario: Schema validates a config carrying supersession knobs
+- GIVEN a persisted config that sets the supersession knobs under `knowledgeGraph`
+- WHEN the config is validated against `config.schema.json`
+- THEN validation MUST succeed and the knobs MUST be recognized properties
+
+## MODIFIED Requirements
+
+## REMOVED Requirements
+
+## Assumptions
+- **CL-3 / CL-7 (RESOLVED — threshold + version):** The default confidence
+  threshold for content-pattern supersession is `0.8` (HIGH, conservative, below
+  the primary per-observation diff signal). B3 is a MINOR, additive,
+  backward-compatible config addition (new optional knobs; absent knobs fall back
+  to defaults).
+- **FLAG-GATING (RESOLVED — default ON, eval-gated):** `kgSupersedeEnabled`
+  defaults to `true`, gated by the eval no-regression gate (the same discipline
+  B2 used for `kgMultiHopEnabled`). If the no-regression gate fails with
+  supersession ON, the documented default flips to `false`.
+- **Knob naming (working names):** `kgSupersedeEnabled`,
+  `kgSupersedeContentPatterns`, `kgSupersedeConfidenceThreshold`, and
+  `kgSupersedeDeprioritizeWeight` are working names placed on the existing
+  `KnowledgeGraphConfig` block (`src/config.ts:39-47`); precise field names are a
+  design decision. The spec requires only the four knobs, their semantics, their
+  defaults, and env > persisted > default resolution via `resolveKnowledgeGraphConfig`
+  (`src/config.ts:447-474`).
+- **Deprioritize-weight semantics:** `kgSupersedeDeprioritizeWeight` is the
+  retrieval down-weight feeding the store/retrieval deltas (multiplier in `[0,1)`).
+  Setting it to a neutral value (per the proposal's "detection-only kill switch"
+  rollback note) restores legacy ranking even when supersession edges exist.
+
+## Delta from kg-superseded-pruning
+
+# Delta for Config
+
+> Change **C1** (`kg-superseded-pruning`). Adds bounded-retention knobs to the
+> `KnowledgeGraphConfig` block (`src/config.ts:39-51`), resolved with the
+> established env > persisted > default precedence (the B2/B3 pattern,
+> `resolveKnowledgeGraphConfig`, `src/config.ts:455-498`), and mirrored in
+> `config.schema.json` (`knowledgeGraph`, `additionalProperties: false`, so the
+> schema MUST be extended). C1 bounds the growth of the superseded rows B3 began
+> retaining; every C1 knob is inert unless BOTH the C1 master flag AND B3's
+> `kgSupersedeEnabled` are on.
+
+## ADDED Requirements
+
+### Requirement: Pruning Knobs MUST Resolve Deterministically With Env Overrides
+The system MUST provide configuration knobs governing bounded retention (pruning)
+of superseded KG triples on the `KnowledgeGraphConfig` block and MUST resolve each
+in the established precedence order: explicit `THOTH_*` environment override, then
+persisted config in the resolved data dir (`{THOTH_DATA_DIR|~/.thoth}/config.json`),
+then a built-in default — mirroring the existing supersession (B3) and multi-hop
+(B2) resolution patterns. Boolean env values MUST be parsed via the existing
+`parseBoolean` helper and numeric env values via `parseNumber`. The knobs and
+their defaults are:
+
+| Knob | Type | Default | Env override |
+| --- | --- | --- | --- |
+| `kgPruneEnabled` | boolean | `true` | `THOTH_KG_PRUNE_ENABLED` |
+| `kgSupersededKeepN` | integer | `10` | `THOTH_KG_SUPERSEDED_KEEP_N` |
+| `kgPruneOrphanEntities` | boolean | `true` | `THOTH_KG_PRUNE_ORPHAN_ENTITIES` |
+
+`kgPruneEnabled` is the C1 master flag that gates the AUTOMATIC incremental
+enforcement path (see the knowledge-graph and store deltas). It defaults to `true`,
+mirroring B3's default-ON-gated-by-eval precedent (`kgSupersedeEnabled: true`,
+`src/config.ts:169`): shipping ON is CONDITIONAL on the eval no-regression gate
+passing (0% regression on the existing + B2 multi-hop + B3 supersession fixtures —
+see the evals delta). If that gate regresses, the feature MUST ship with
+`kgPruneEnabled` default `false` and the decision MUST be documented; the manual
+`prune-graph` op remains available regardless of the flag. `kgSupersededKeepN`
+is the number of most-recent superseded triples retained per fact slot; it MUST be
+a non-negative integer, has a GLOBAL default of `10` that is OVERRIDABLE PER
+PROJECT via persisted config (the same env > persisted > default mechanism as the
+other KG knobs), and governs BOTH the automatic path and the manual `prune-graph`
+op. `kgPruneOrphanEntities` gates the explicit orphaned-`kg_entities`
+cleanup that accompanies a prune (the FK cascade is entity→triple only, not
+triple→entity — `src/store/schema.ts:213-214` — so orphan cleanup is not
+automatic); when disabled, triple pruning still occurs but orphaned entity rows
+are left in place.
+
+#### Scenario: Environment override wins for a pruning knob
+- GIVEN both a persisted pruning knob value and its matching `THOTH_*` environment
+  variable are set to different values
+- WHEN the effective config is computed
+- THEN the environment value MUST take precedence
+
+#### Scenario: Persisted value is used when environment is unset
+- GIVEN no environment override for a knob is set
+- WHEN persisted config contains a value
+- THEN the effective config MUST match the persisted value
+
+#### Scenario: Built-in defaults apply when unset everywhere
+- GIVEN neither an environment override nor a persisted value is present
+- WHEN the effective config is computed
+- THEN `kgPruneEnabled` MUST be `true`, `kgSupersededKeepN` MUST be `10`, and
+  `kgPruneOrphanEntities` MUST be `true`
+
+#### Scenario: keep-N default is overridable per project
+- GIVEN the global built-in default for `kgSupersededKeepN` is `10`
+- AND a specific project's persisted config sets `kgSupersededKeepN` to a different
+  value
+- WHEN the effective config is computed for that project
+- THEN the resolved `kgSupersededKeepN` MUST match the project's persisted value
+- AND projects without a persisted override MUST resolve to the global default `10`
+
+#### Scenario: keep-N of zero is a valid configured value
+- GIVEN `kgSupersededKeepN` is configured to `0`
+- WHEN the effective config is computed
+- THEN the resolved value MUST be `0` (retain no superseded history per slot;
+  current facts are still never pruned — see the knowledge-graph delta)
+- AND resolution MUST NOT silently substitute a different default
+
+### Requirement: Pruning Master Flag MUST Gate Only the Automatic Path and Compose With B3
+The `kgPruneEnabled` master flag MUST gate the AUTOMATIC incremental enforcement
+path end to end: when it resolves to false, no incremental keep-N enforcement runs
+during normal supersession, no orphan cleanup runs on the write path, no extra
+query is issued on the hot supersession path, and behavior is byte-identical to
+pre-C1. Because C1 only bounds rows that B3 creates, the automatic path MUST be
+inert when EITHER `kgPruneEnabled` is false OR B3's `kgSupersedeEnabled`
+(`src/config.ts:169`) is false. The manual `prune-graph` admin op (see the
+indexing delta) is an explicit operator action and MUST remain available for
+inspection/dry-run regardless of `kgPruneEnabled`, but it MUST still perform no
+deletion when `kgSupersedeEnabled` is off (there is no supersession lifecycle to
+bound).
+
+#### Scenario: Automatic path off is byte-identical to pre-C1
+- GIVEN `kgPruneEnabled` resolves to false
+- WHEN observations are saved, updated, upserted, or rebuilt
+- THEN no incremental keep-N enforcement or orphan cleanup MUST run
+- AND no extra query MUST be issued on the supersession write path
+- AND observable behavior MUST be byte-identical to pre-C1
+
+#### Scenario: Automatic path is inert when supersession is disabled
+- GIVEN `kgPruneEnabled` is true but B3's `kgSupersedeEnabled` is false
+- WHEN observations are saved or rebuilt
+- THEN no automatic pruning MUST occur (there are no superseded rows to bound)
+- AND behavior MUST be byte-identical to pre-C1
+
+### Requirement: The Shipped Master-Flag Default MUST Be Gated by the Eval No-Regression Gate
+The shipped default of `kgPruneEnabled` MUST be `true` (feature ON by default),
+CONDITIONAL on the eval no-regression gate passing. The no-regression gate is 0%
+regression on the existing retrieval fixtures plus the B2 multi-hop and B3
+supersession fixtures with pruning ON versus OFF (see the evals delta). If the gate
+passes, the feature MUST ship with `kgPruneEnabled` default `true`. If the gate
+regresses, the feature MUST ship with `kgPruneEnabled` default `false` and the
+fallback decision MUST be documented. The manual `prune-graph` op MUST remain
+available regardless of the resolved default.
+
+#### Scenario: Default ships ON when the eval gate passes
+- GIVEN the eval no-regression gate reports 0% regression with pruning ON versus OFF
+- WHEN the shipped built-in default for `kgPruneEnabled` is set
+- THEN `kgPruneEnabled` MUST default to `true`
+
+#### Scenario: Default falls back to OFF when the eval gate regresses
+- GIVEN the eval no-regression gate reports any regression with pruning ON
+- WHEN the shipped built-in default for `kgPruneEnabled` is set
+- THEN `kgPruneEnabled` MUST default to `false`
+- AND the fallback decision MUST be documented
+- AND the manual `prune-graph` op MUST remain available
+
+### Requirement: `config.schema.json` MUST Document the Pruning Knobs
+The persisted-config JSON schema (`config.schema.json`, `knowledgeGraph` object,
+`additionalProperties: false`) MUST document the three pruning knobs with their
+types and defaults, consistent with how the B2 multi-hop and B3 supersession knobs
+are documented, so persisted configuration that sets them validates and is
+discoverable.
+
+#### Scenario: Schema validates a config carrying pruning knobs
+- GIVEN a persisted config that sets the pruning knobs under `knowledgeGraph`
+- WHEN the config is validated against `config.schema.json`
+- THEN validation MUST succeed and the knobs MUST be recognized properties
+
+#### Scenario: Schema still rejects unknown knowledgeGraph properties
+- GIVEN `knowledgeGraph` declares `additionalProperties: false`
+- WHEN a persisted config sets an unrecognized property under `knowledgeGraph`
+- THEN validation MUST fail, confirming the pruning knobs were added as explicit
+  properties rather than by relaxing the schema
+
+## MODIFIED Requirements
+
+## REMOVED Requirements
+
+## Assumptions
+- **Knob naming (working names):** `kgPruneEnabled`, `kgSupersededKeepN`, and
+  `kgPruneOrphanEntities` are working names placed on the existing
+  `KnowledgeGraphConfig` block (`src/config.ts:39-51`); precise field names are a
+  design decision. The spec requires only the three knobs, their semantics, their
+  defaults, and env > persisted > default resolution via
+  `resolveKnowledgeGraphConfig` (`src/config.ts:455-498`) with the new
+  `THOTH_KG_*` env names.
+- **Decision — master-flag default ON, gated by eval (clarify):** `kgPruneEnabled`
+  defaults to `true`, gated by the eval no-regression gate, mirroring B3's
+  default-ON-gated-by-eval precedent. Although C1 DELETES rows (B3 only MARKED),
+  the retained keep-N window plus the transactional, deterministic, dry-run-backed
+  prune make shipping ON acceptable once the eval gate confirms 0% regression.
+  Fallback: if the eval gate regresses, ship `kgPruneEnabled` default `false` and
+  document the decision; the manual `prune-graph` op is available either way. This
+  resolves the former master-flag-default fork.
+- **Decision — keep-N default `10`, global default overridable per project
+  (clarify):** `kgSupersededKeepN` defaults to `10` — a window large enough to
+  retain useful recent supersession history while bounding growth — resolved as a
+  GLOBAL default that is OVERRIDABLE PER PROJECT through persisted config, using the
+  same env > persisted > default mechanism as the other KG knobs. This resolves the
+  former keep-N default + scope fork.
+- **Orphan-cleanup default ON:** `kgPruneOrphanEntities` defaults ON because
+  leaving `kg_entities` rows with zero referencing triples after a prune would
+  contradict Success Criterion 3 (post-prune referential integrity). It is exposed
+  as a knob only so operators can disable the extra cleanup query if desired;
+  disabling it is not the default and does not affect triple pruning correctness.
+- **Neutral kill switch:** Setting `kgPruneEnabled` off is a complete, config-only
+  rollback of the automatic path with no migration (Success Criterion 4); the
+  manual op remains for explicit, operator-initiated pruning.
+
+## Decisions (resolved in clarify)
+- **C1 master-flag default (was: default-OFF vs default-ON-gated-by-eval fork) —
+  RESOLVED:** `kgPruneEnabled` ships default `true`, gated by the eval no-regression
+  gate (0% regression on existing + B2 multi-hop + B3 supersession fixtures),
+  mirroring B3's default-ON-gated-by-eval pattern. Fallback: if the gate regresses,
+  ship default `false` and document the decision. The manual `prune-graph` op is
+  available regardless. Encoded above in the knobs table, the "Built-in defaults"
+  scenario, and the "Shipped Master-Flag Default MUST Be Gated by the Eval
+  No-Regression Gate" requirement.
+- **`kgSupersededKeepN` default + scope (was: N default + global-vs-per-project
+  fork) — RESOLVED:** default `10`, resolved as a GLOBAL default OVERRIDABLE PER
+  PROJECT via persisted config (env > persisted > default). Encoded above in the
+  knobs table, the resolution narrative, and the "keep-N default is overridable per
+  project" scenario.
+
+
+
+# Delta for Community Summaries LazyGraphRAG
+
+## ADDED Requirements
+
+### Requirement: Community Summary Knobs MUST Resolve Deterministically
+If community-summary behavior is configurable, the system MUST resolve each knob using the established precedence order: explicit `THOTH_*` environment override, then persisted config in the resolved data dir, then a built-in default. Knobs MUST cover enablement, algorithm selection, output budgets, maximum communities/results, stale-state behavior, optional enrichment enablement, and rebuild/admin limits as needed by design.
+
+#### Scenario: Environment override wins for community config
+- GIVEN a persisted community-summary setting and a matching environment override differ
+- WHEN effective configuration is computed
+- THEN the environment override MUST take precedence
+
+### Requirement: Algorithm Configuration MUST Include a Deterministic Fallback
+Community algorithm configuration MUST include a deterministic connected-components fallback and MAY allow Louvain-style or Leiden-style choices only when validated by design. Exact Leiden MUST NOT be the only supported or default path for MVP.
+
+#### Scenario: Invalid algorithm falls back safely
+- GIVEN an unsupported or unavailable community algorithm is configured
+- WHEN community rebuild runs
+- THEN the system MUST fail safe to the deterministic fallback or record explicit degraded state
+- AND it MUST NOT require exact Leiden for MVP operation
+
+### Requirement: Community Budgets MUST Be Finite by Default
+Community summary text, community count, evidence count, rebuild work, and optional enrichment cost/time budgets MUST be finite by default. An explicit unbounded sentinel MAY be offered only where existing project conventions support it and where design documents safe rollback/debug use.
+
+#### Scenario: Default summary budget is finite
+- GIVEN default configuration
+- WHEN community summaries are generated or rendered
+- THEN summary text and evidence output MUST be bounded by finite defaults
+- AND omitted evidence MUST be measurable through counts or truncation metadata
+
+### Requirement: Optional LLM Enrichment Configuration MUST Be Non-Load-Bearing
+Any configuration for LLM enrichment MUST default to a fallback-safe behavior and MUST NOT make LLM availability required for community construction, deterministic summaries, rebuild success, or recall availability. Enrichment settings MUST include timeout/cost limits and explicit degraded-state reporting.
+
+#### Scenario: Enrichment disabled preserves baseline
+- GIVEN optional enrichment is disabled
+- WHEN community summaries are rebuilt and retrieved
+- THEN deterministic extractive summaries MUST remain available
+- AND no remote service MUST be required
+## Sync and Resilience Requirements
+
+### Requirement: Runtime Version Source MUST Be Unified
+The system MUST treat `package.json` version metadata as the single source of truth for runtime-facing version reporting.
+
+#### Scenario: Version is resolved from package metadata
+- GIVEN a valid package metadata version value
+- WHEN runtime version information is requested
+- THEN the reported version MUST equal the package metadata version
+
+### Requirement: Public Version Surfaces MUST Stay Consistent
+All public version surfaces (CLI, MCP server identity, and OpenAPI info) MUST report the same version value.
+
+#### Scenario: CLI version output
+- GIVEN the CLI `version` command is executed
+- WHEN output is produced
+- THEN the value SHALL match package metadata exactly
+
+#### Scenario: MCP server identity version
+- GIVEN MCP server initialization metadata is exposed to a client
+- WHEN the server identity is read
+- THEN the identity version SHALL match package metadata exactly
+
+#### Scenario: OpenAPI info version
+- GIVEN the OpenAPI document is requested
+- WHEN `info.version` is emitted
+- THEN the value SHALL match package metadata exactly
+
+### Requirement: Hardcoded Runtime Version Literals MUST NOT Drift
+The system SHOULD avoid independent hardcoded semantic version literals in runtime version surfaces to prevent drift between interfaces.
+
+#### Scenario: Package version changes
+- GIVEN package metadata version is updated for a release
+- WHEN runtime components start without additional manual version edits
+- THEN CLI, MCP, and OpenAPI version surfaces MUST remain aligned with the updated package version
+
+
+## Merge: stable-memory-identity-bootstrap/config
+
+# Delta for Config
+
+## ADDED Requirements
+### Requirement: Data-Dir Bootstrap MUST Remain Centralized and Semantics-Preserving
+Stable memory identity bootstrap MUST preserve the existing centralized data-directory resolution contract. `THOTH_DATA_DIR`, CLI data-dir input, persisted config in the resolved data dir, and built-in defaults MUST continue to resolve according to the existing `getConfig`/data-dir bootstrap semantics; this change MUST NOT introduce a second data-dir resolver or change `THOTH_DATA_DIR` meaning.
+
+#### Scenario: THOTH_DATA_DIR semantics are preserved
+- GIVEN `THOTH_DATA_DIR` is configured
+- WHEN runtime configuration is resolved
+- THEN the resolved data directory MUST continue to follow existing `THOTH_DATA_DIR` semantics
+- AND identity-bootstrap behavior MUST NOT redirect storage to a different directory
+
+#### Scenario: Server and CLI continue using centralized config
+- GIVEN the server or CLI initializes the Store
+- WHEN configuration is resolved
+- THEN data-directory identity MUST come from the centralized config path
+- AND no per-surface data-dir bootstrap logic MUST be introduced
+
+### Requirement: Identity Bootstrap Defaults MUST Resolve Deterministically Without New Required Configuration
+Any identity-bootstrap defaults introduced by this change MUST resolve deterministically from explicit caller input first, then centralized runtime configuration where applicable, then backward-compatible fallback behavior. The system MUST NOT require new environment variables or persisted config keys for existing callers to save, recall, import, export, or start sessions.
+
+#### Scenario: Explicit caller identity wins
+- GIVEN a caller supplies session id and project identity
+- WHEN identity-bootstrap logic resolves effective identity
+- THEN the explicit caller identity MUST take precedence over configured defaults and compatibility fallbacks
+
+#### Scenario: Existing callers continue without new config
+- GIVEN no new identity-bootstrap configuration is present
+- WHEN existing save, session, import, export, or sync flows run
+- THEN the flows MUST remain operational
+- AND any missing identity MUST be handled through deterministic visible compatibility fallback rather than a configuration error
+
+#### Scenario: Config-derived identity does not override explicit identity
+- GIVEN centralized config can provide a default project or runtime identity hint
+- WHEN a caller supplies an explicit project
+- THEN the supplied project MUST be used for that operation
+- AND the config-derived value MUST NOT overwrite it
+
+## MODIFIED Requirements
+
+## REMOVED Requirements
+
+## Assumptions
+- Existing project/data-dir identity in `src/config.ts` is a foundation, not the broken behavior targeted by this change.
+- No new mandatory config key is required; if design introduces optional identity defaults, they must follow explicit input > centralized config > compatibility fallback precedence.
+- Config-derived identity is available only from existing centralized runtime/config values or additive optional defaults; absence of such a value is not an error and falls through to visible compatibility fallback behavior.
+- CLI sync-dir compatibility is specified in the sync delta rather than by changing data-dir semantics here.
+
+## Handoff Hints
+- Design should verify `getConfig` remains the single data-dir bootstrap source for server and CLI.
+- Any optional identity default should be additive, documented, and tested without changing `THOTH_DATA_DIR`.
+- Tests should cover existing data-dir resolution plus explicit identity precedence over any config-derived default.
+
+
+## Merged change: pre-multiharness-foundations (config)
+
+# Delta for Config
+
+## ADDED Requirements
+### Requirement: Project Identity Resolver v2 MUST Resolve Stable Project Identity Deterministically
+The system MUST provide a shared project identity resolver v2 that derives the effective project identity in this precedence order: explicit caller input, centralized configured project default when present, current working directory workspace identity, git worktree or remote identity, package/workspace metadata when available, then a deterministic compatibility default. Explicit caller input MUST always win and MUST NOT be replaced by a derived value. Derived or compatibility identities MUST expose the selected source and any degraded reason.
+
+#### Scenario: Explicit project identity wins
+- GIVEN a caller supplies a non-empty explicit project identity
+- WHEN project identity is resolved
+- THEN the explicit value MUST be used as the effective project identity
+- AND no configured, cwd, git, package, or compatibility value MUST replace it
+
+#### Scenario: Configured project identity precedes workspace inference
+- GIVEN no explicit project identity is supplied
+- AND centralized configuration provides a project identity
+- AND cwd or git metadata would produce a different project identity
+- WHEN project identity is resolved
+- THEN the configured project identity MUST be used
+- AND the resolution metadata MUST identify configuration as the source
+
+#### Scenario: Workspace and git inference are deterministic
+- GIVEN no explicit or configured project identity is available
+- AND equivalent cwd and git metadata are observed across repeated resolver calls
+- WHEN project identity is resolved
+- THEN the same normalized project identity MUST be returned each time
+- AND the resolution metadata MUST identify the selected workspace or git source
+
+#### Scenario: Compatibility default is visible and degraded
+- GIVEN no explicit, configured, cwd, git, or package metadata can produce a stable project identity
+- WHEN project identity is resolved
+- THEN a deterministic compatibility default MUST be returned or preserved according to the existing storage contract
+- AND degraded metadata MUST identify the missing project identity and the fallback value
+
+### Requirement: Session Identity Normalization MUST Distinguish Explicit Stable IDs From Missing or Placeholder IDs
+The identity resolver MUST normalize incoming `session_id` values enough to distinguish stable explicit IDs from missing, blank, known placeholder, and synthesized compatibility IDs. The resolver MUST preserve stable explicit IDs, MUST synthesize deterministic compatibility IDs only when required for existing storage behavior, and MUST report degraded metadata for missing, blank, placeholder, or synthesized session identities.
+
+#### Scenario: Explicit session id is preserved
+- GIVEN a caller supplies a non-empty session id that is not recognized as a compatibility placeholder
+- WHEN session identity is resolved
+- THEN the supplied session id MUST be used unchanged
+- AND no degraded session warning MUST be emitted
+
+#### Scenario: Blank session id is degraded
+- GIVEN a caller supplies a blank session id
+- WHEN session identity is resolved for a path that requires a session id
+- THEN a deterministic compatibility session id MUST be synthesized
+- AND degraded metadata MUST report that the submitted value was blank
+
+#### Scenario: Placeholder session id remains query-stable
+- GIVEN a caller or historical row uses a known placeholder session id such as `manual-save-*`
+- WHEN identity normalization or reads run
+- THEN the placeholder value MUST remain query-stable
+- AND the system MUST report placeholder/degraded status where the current operation surfaces identity metadata
+
+### Requirement: Identity Resolver v2 MUST Preserve Historical Data Without Silent Repair
+Project/session identity resolver v2 MUST NOT silently rewrite historical placeholder records. Historical records containing placeholders such as `manual-save-*` or `unknown` MUST remain filterable by their stored values unless a separately specified, opt-in repair operation is introduced.
+
+#### Scenario: Historical placeholder project is not repaired implicitly
+- GIVEN existing records are stored under project `unknown`
+- WHEN the resolver, Store reads, imports, sync, recall, or project views run
+- THEN those records MUST NOT be reassigned to a derived project identity
+- AND filters targeting `unknown` MUST continue to find those records
+
+#### Scenario: New derived identity does not mutate old sessions
+- GIVEN a database contains historical `manual-save-*` sessions
+- AND resolver v2 can now derive a stable project identity from cwd or git
+- WHEN a new save or session operation runs
+- THEN the new operation MAY use the newly resolved identity according to precedence
+- AND existing historical session ids MUST remain unchanged
+
+## MODIFIED Requirements
+
+## REMOVED Requirements
+
+## Assumptions
+- `project_id` is specified behaviorally as the stable project identity; design may represent it as the existing `project` string plus source/degraded metadata or as an additive field if schema evidence justifies it.
+- Cwd/git/package derivation order is fixed here to avoid a clarification fork: cwd/workspace identity precedes git identity, and git precedes package metadata because local workspace naming is the closest adapter-independent signal after explicit/config values.
+- Git-derived identity should use normalized repository/worktree metadata and should not include credentials, tokens, or user-specific path fragments.
+
+## Handoff Hints
+- Design must keep `getConfig` as the centralized configuration source and must avoid a second data-dir bootstrap path.
+- Design must define the concrete normalization rules for cwd/git/package strings and the exact degraded metadata fields shared by MCP, HTTP, CLI, import, and sync paths.
+- Tests should cover explicit/config/cwd/git/default precedence, blank and placeholder session ids, deterministic repeated resolution, and no historical repair.
+

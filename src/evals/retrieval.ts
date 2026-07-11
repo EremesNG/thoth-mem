@@ -1,7 +1,17 @@
 import { pathToFileURL } from 'node:url';
+import {
+  DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+  DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+} from '../config.js';
+import {
+  buildCommunityRolloutEvalGates,
+  evaluateCommunityReadPathEligibility,
+  type CommunityRolloutEvalGate,
+} from '../retrieval/community-rollout.js';
 import { Store } from '../store/index.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import type { SaveObservationInput } from '../store/types.js';
+import { estimateTokensFromChars } from '../utils/token-metrics.js';
 
 interface EvalFixture {
   key: string;
@@ -36,6 +46,61 @@ export interface RetrievalEvalCaseResult {
   full_content_chars: number;
   primary_evidence_chars: number;
   promoted_context_chars: number;
+}
+
+export const TOKEN_SAVINGS_COMPRESSION_BASIS = 'returned_chars';
+export const TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL = 'retrieval_eval';
+
+export interface RetrievalTokenSavingsMetricsEnvelope {
+  source: typeof TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL;
+  measurement: 'aggregate';
+  full_chars: number;
+  evidence_chars: number;
+  returned_chars: number;
+  saved_chars: number;
+  compression_ratio: number;
+  compression_basis: typeof TOKEN_SAVINGS_COMPRESSION_BASIS;
+  token_basis: 'estimated_chars_div_4';
+  full_tokens_estimated: number;
+  evidence_tokens_estimated: number;
+  returned_tokens_estimated: number;
+  average_payload_chars_by_tool: Record<'mem_recall' | 'mem_context' | 'mem_get', number>;
+  mem_get_avoided_count: number;
+  mem_get_escalated_count: number;
+  recall_after_compaction_cases: number;
+  recall_after_compaction_recovered_count: number;
+  recall_after_compaction_payload_savings: number;
+  recall_at_1: number;
+  recall_at_k: number;
+  mean_reciprocal_rank: number;
+  context_compression: number;
+  surgical_compression: number;
+  pending_rate: number;
+  degraded_rate: number;
+  lexical_prefix_hit_rate: number;
+  raw_semantic_hit_rate: number;
+  hyde_semantic_hit_rate: number;
+  sentence_primary_rate: number;
+  promoted_parent_rate: number;
+  kg_hit_rate: number;
+  kg_primary_rate: number;
+  evidence_lineage_coverage: number;
+  stale_result_rate: number;
+  kg_provenance_rate: number;
+  lane_truth_rate: number;
+  facts_source_rate: number;
+  hyde_lift_rate: number;
+  hybrid_rank_source_rate: number;
+  community_read_path_default_off_rate: number;
+  community_disabled_no_regression_rate: number;
+  community_enabled_no_regression_rate: number;
+  community_fallback_rate: number;
+  community_no_fifth_lane_rate: number;
+  community_direct_kg_no_regression_rate: number;
+  community_multi_hop_no_regression_rate: number;
+  community_summary_bounds_rate: number;
+  community_coverage_bounds_rate: number;
+  community_enrichment_unavailable_fallback_rate: number;
 }
 
 export interface RetrievalEvalSummary {
@@ -81,8 +146,36 @@ export interface RetrievalEvalSummary {
     surgical_compression: number;
     hyde_lift_rate: number;
     hybrid_rank_source_rate: number;
+    supersession_no_regression_rate: number;
+    supersession_flag_off_rate: number;
+    kg_prune_retention_rate: number;
+    kg_prune_no_regression_rate: number;
+    maintenance_duplicate_suppression_rate: number;
+    maintenance_source_reachability_rate: number;
+    maintenance_reflection_quality_rate: number;
+    maintenance_reflection_idempotency_rate: number;
+    maintenance_decay_current_fact_rate: number;
+    maintenance_decay_reachability_rate: number;
+    maintenance_no_regression_rate: number;
+    maintenance_export_import_regeneration_rate: number;
+    community_read_path_default_off_rate: number;
+    community_disabled_no_regression_rate: number;
+    community_enabled_no_regression_rate: number;
+    community_fallback_rate: number;
+    community_no_fifth_lane_rate: number;
+    community_direct_kg_no_regression_rate: number;
+    community_multi_hop_no_regression_rate: number;
+    community_summary_bounds_rate: number;
+    community_coverage_bounds_rate: number;
+    community_enrichment_unavailable_fallback_rate: number;
   };
+  community_rollout_gates: CommunityRolloutEvalGate[];
+  token_savings_metrics: RetrievalTokenSavingsMetricsEnvelope;
 }
+
+type RetrievalEvalSummaryForEnvelope = Omit<RetrievalEvalSummary, 'token_savings_metrics'> & {
+  token_savings_metrics?: RetrievalTokenSavingsMetricsEnvelope;
+};
 
 export interface RetrievalEvalReport {
   summary: RetrievalEvalSummary;
@@ -90,8 +183,12 @@ export interface RetrievalEvalReport {
   markdown: string;
 }
 
+export const RETRIEVAL_EVAL_MIN_RECALL_AT_1 = 0.95;
+export const RETRIEVAL_EVAL_MIN_RECALL_AT_K = 0.9;
+
 const TOP_K = 5;
 const DEFAULT_NOISE_OBSERVATION_COUNT = 96;
+const SUPERSESSION_SIGNAL_OBSERVATIONS = 1;
 const EVAL_STOP_WORDS = new Set([
   'a',
   'an',
@@ -233,6 +330,26 @@ const FIXTURES: EvalFixture[] = [
       content: 'Archived operational note. Supporting context is intentionally sparse.',
     },
   },
+  {
+    key: 'kg-multi-hop',
+    observation: {
+      title: 'Shared entity downstream finding',
+      type: 'discovery',
+      project: 'graph-project',
+      topic_key: 'retrieval/kg-multi-hop',
+      content: 'Downstream finding deliberately avoids the direct graph query terms and is reachable only through a structural entity bridge.',
+    },
+  },
+  {
+    key: 'kg-multi-hop-distractor',
+    observation: {
+      title: 'Metadata-only graph distractor',
+      type: 'manual',
+      project: 'graph-project',
+      topic_key: 'retrieval/kg-multi-hop-distractor',
+      content: 'Metadata-only distractor should not be reached by structural traversal.',
+    },
+  },
 ];
 
 const NON_SYNTHETIC_FIXTURES: EvalFixture[] = [
@@ -320,6 +437,66 @@ function buildNoiseFixtures(noiseCount: number): EvalFixture[] {
       },
     };
   });
+}
+
+function seedGraphFactTriple(input: {
+  store: Store;
+  observationId: number;
+  subject: string;
+  relation: string;
+  object: string;
+  project: string;
+  topicKey: string;
+  provenance: string;
+  tripleHash: string;
+  confidence?: number;
+  extractorVersion?: string;
+}): void {
+  const db = input.store.getDb();
+  const upsertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'observation', ?, '[]', '{}', datetime('now'))
+     ON CONFLICT(entity_key) DO UPDATE SET
+      entity_type = excluded.entity_type,
+      canonical_name = excluded.canonical_name,
+      aliases_json = excluded.aliases_json,
+      metadata_json = excluded.metadata_json,
+      updated_at = datetime('now')
+     RETURNING id`
+  );
+
+  const insertTriple = db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id, source_sync_id,
+       project, topic_key, provenance, confidence, triple_hash, extractor_version, updated_at
+     ) VALUES (?, ?, ?, 'observation', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(triple_hash) DO UPDATE SET
+      source_id = excluded.source_id,
+      source_sync_id = excluded.source_sync_id,
+      project = excluded.project,
+      topic_key = excluded.topic_key,
+      provenance = excluded.provenance,
+      confidence = excluded.confidence,
+      extractor_version = excluded.extractor_version,
+      updated_at = datetime('now')`
+  );
+
+  const subjectEntity = upsertEntity.get(`fixture:${input.observationId}:${input.subject}`, input.subject) as { id: number };
+  const objectEntity = upsertEntity.get(`fixture:${input.observationId}:${input.object}`, input.object) as { id: number };
+
+  insertTriple.run(
+    subjectEntity.id,
+    input.relation,
+    objectEntity.id,
+    input.observationId,
+    null,
+    input.project,
+    input.topicKey,
+    input.provenance,
+    input.confidence ?? 0.85,
+    input.tripleHash,
+    input.extractorVersion ?? 'eval'
+  );
 }
 
 const CASES: EvalCase[] = [
@@ -443,6 +620,18 @@ const CASES: EvalCase[] = [
     expectedKey: 'graph-rank',
   },
   {
+    name: 'kg multi-hop shared entity recall',
+    query: 'xylophonic',
+    project: 'graph-project',
+    expectedKey: 'kg-multi-hop',
+  },
+  {
+    name: 'supersession current fact wins',
+    query: 'cache',
+    project: 'supersession-project',
+    expectedKey: 'kg-supersession',
+  },
+  {
     name: 'non-synthetic README filter recall',
     query: 'precision filters session scope topic key time range',
     kind: 'non-synthetic',
@@ -480,11 +669,48 @@ function seedEvalStore(store: Store, noiseCount: number): Map<string, number> {
     idsByKey.set(fixture.key, result.observation.id);
   }
 
+  store.saveObservation({
+    title: 'Supersession cache decision',
+    type: 'decision',
+    project: 'supersession-project',
+    topic_key: 'eval/supersession-cache',
+    content: '**What**: Redis cache',
+  });
+  const current = store.saveObservation({
+    title: 'Supersession cache decision',
+    type: 'decision',
+    project: 'supersession-project',
+    topic_key: 'eval/supersession-cache',
+    content: '**What**: Valkey cache',
+  });
+  idsByKey.set('kg-supersession', current.observation.id);
+
   return idsByKey;
 }
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : Number((numerator / denominator).toFixed(3));
+}
+
+export function assertRetrievalEvalGate(report: Pick<RetrievalEvalReport, 'summary'>): void {
+  const failures: string[] = [];
+  if (report.summary.recall_at_1 < RETRIEVAL_EVAL_MIN_RECALL_AT_1) {
+    failures.push(`Recall@1 ${report.summary.recall_at_1} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_1}`);
+  }
+  if (report.summary.recall_at_k < RETRIEVAL_EVAL_MIN_RECALL_AT_K) {
+    failures.push(`Recall@K ${report.summary.recall_at_k} is below required ${RETRIEVAL_EVAL_MIN_RECALL_AT_K}`);
+  }
+  for (const gate of report.summary.community_rollout_gates) {
+    if (!gate.passed) {
+      const observed = gate.observed_disabled === undefined
+        ? `observed ${gate.observed_enabled}`
+        : `observed disabled ${gate.observed_disabled}, enabled ${gate.observed_enabled}`;
+      failures.push(`Community rollout gate ${gate.name} failed (${observed}; threshold ${gate.threshold})`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Retrieval eval gate failed: ${failures.join('; ')}`);
+  }
 }
 
 function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdapter {
@@ -520,6 +746,75 @@ function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdap
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatGateStatus(value: number): 'PASS' | 'FAIL' {
+  return value >= 1 ? 'PASS' : 'FAIL';
+}
+
+export function buildRetrievalTokenSavingsEnvelope(
+  summary: RetrievalEvalSummaryForEnvelope,
+  cases: RetrievalEvalCaseResult[],
+): RetrievalTokenSavingsMetricsEnvelope {
+  const fullChars = cases.reduce((sum, result) => sum + result.full_content_chars, 0);
+  const returnedChars = cases.reduce((sum, result) => sum + result.context_chars, 0);
+  const evidenceChars = cases.reduce((sum, result) => sum + result.primary_evidence_chars, 0);
+
+  return {
+    source: TOKEN_SAVINGS_SOURCE_RETRIEVAL_EVAL,
+    measurement: 'aggregate',
+    full_chars: fullChars,
+    evidence_chars: evidenceChars,
+    returned_chars: returnedChars,
+    saved_chars: Math.max(0, fullChars - returnedChars),
+    compression_ratio: summary.context_compression,
+    compression_basis: TOKEN_SAVINGS_COMPRESSION_BASIS,
+    token_basis: 'estimated_chars_div_4',
+    full_tokens_estimated: estimateTokensFromChars(fullChars),
+    evidence_tokens_estimated: estimateTokensFromChars(evidenceChars),
+    returned_tokens_estimated: estimateTokensFromChars(returnedChars),
+    average_payload_chars_by_tool: {
+      mem_recall: cases.length === 0 ? 0 : Math.round(evidenceChars / cases.length),
+      mem_context: cases.length === 0 ? 0 : Math.round(returnedChars / cases.length),
+      mem_get: cases.length === 0 ? 0 : Math.round(fullChars / cases.length),
+    },
+    mem_get_avoided_count: cases.filter((result) => result.found && result.promoted_context_chars > 0).length,
+    mem_get_escalated_count: cases.filter((result) => result.found && result.primary_evidence_chars < result.full_content_chars).length,
+    recall_after_compaction_cases: cases.filter((result) => result.kind === 'non-synthetic').length,
+    recall_after_compaction_recovered_count: cases.filter((result) => result.kind === 'non-synthetic' && result.found).length,
+    recall_after_compaction_payload_savings: Math.max(0, fullChars - evidenceChars),
+    recall_at_1: summary.recall_at_1,
+    recall_at_k: summary.recall_at_k,
+    mean_reciprocal_rank: summary.mean_reciprocal_rank,
+    context_compression: summary.context_compression,
+    surgical_compression: summary.hybrid.surgical_compression,
+    pending_rate: summary.hybrid.pending_rate,
+    degraded_rate: summary.hybrid.degraded_rate,
+    lexical_prefix_hit_rate: summary.hybrid.lexical_prefix_hit_rate,
+    raw_semantic_hit_rate: summary.hybrid.raw_semantic_hit_rate,
+    hyde_semantic_hit_rate: summary.hybrid.hyde_semantic_hit_rate,
+    sentence_primary_rate: summary.hybrid.sentence_primary_rate,
+    promoted_parent_rate: summary.hybrid.promoted_parent_rate,
+    kg_hit_rate: summary.hybrid.kg_hit_rate,
+    kg_primary_rate: summary.hybrid.kg_primary_rate,
+    evidence_lineage_coverage: summary.hybrid.evidence_lineage_coverage,
+    stale_result_rate: summary.hybrid.stale_result_rate,
+    kg_provenance_rate: summary.hybrid.kg_provenance_rate,
+    lane_truth_rate: summary.hybrid.lane_truth_rate,
+    facts_source_rate: summary.hybrid.facts_source_rate,
+    hyde_lift_rate: summary.hybrid.hyde_lift_rate,
+    hybrid_rank_source_rate: summary.hybrid.hybrid_rank_source_rate,
+    community_read_path_default_off_rate: summary.hybrid.community_read_path_default_off_rate,
+    community_disabled_no_regression_rate: summary.hybrid.community_disabled_no_regression_rate,
+    community_enabled_no_regression_rate: summary.hybrid.community_enabled_no_regression_rate,
+    community_fallback_rate: summary.hybrid.community_fallback_rate,
+    community_no_fifth_lane_rate: summary.hybrid.community_no_fifth_lane_rate,
+    community_direct_kg_no_regression_rate: summary.hybrid.community_direct_kg_no_regression_rate,
+    community_multi_hop_no_regression_rate: summary.hybrid.community_multi_hop_no_regression_rate,
+    community_summary_bounds_rate: summary.hybrid.community_summary_bounds_rate,
+    community_coverage_bounds_rate: summary.hybrid.community_coverage_bounds_rate,
+    community_enrichment_unavailable_fallback_rate: summary.hybrid.community_enrichment_unavailable_fallback_rate,
+  };
 }
 
 function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseResult[]): string {
@@ -564,6 +859,59 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
     `| Surgical Compression | ${formatPercent(summary.hybrid.surgical_compression)} |`,
     `| HyDE Lift Rate | ${formatPercent(summary.hybrid.hyde_lift_rate)} |`,
     `| Hybrid Rank Source Rate | ${formatPercent(summary.hybrid.hybrid_rank_source_rate)} |`,
+    `| Supersession OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.supersession_no_regression_rate)} |`,
+    `| Supersession Flag-Off Behavior Rate | ${formatPercent(summary.hybrid.supersession_flag_off_rate)} |`,
+    `| KG Prune Retention Rate | ${formatPercent(summary.hybrid.kg_prune_retention_rate)} |`,
+    `| KG Prune OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.kg_prune_no_regression_rate)} |`,
+    `| Maintenance Duplicate Suppression Rate | ${formatPercent(summary.hybrid.maintenance_duplicate_suppression_rate)} |`,
+    `| Maintenance Source Reachability Rate | ${formatPercent(summary.hybrid.maintenance_source_reachability_rate)} |`,
+    `| Maintenance Reflection Quality Rate | ${formatPercent(summary.hybrid.maintenance_reflection_quality_rate)} |`,
+    `| Maintenance Reflection Idempotency Rate | ${formatPercent(summary.hybrid.maintenance_reflection_idempotency_rate)} |`,
+    `| Maintenance Decay Current Fact Rate | ${formatPercent(summary.hybrid.maintenance_decay_current_fact_rate)} |`,
+    `| Maintenance Decay Reachability Rate | ${formatPercent(summary.hybrid.maintenance_decay_reachability_rate)} |`,
+    `| Maintenance OFF/ON No-Regression Rate | ${formatPercent(summary.hybrid.maintenance_no_regression_rate)} |`,
+    `| Maintenance Export/Import Regeneration Rate | ${formatPercent(summary.hybrid.maintenance_export_import_regeneration_rate)} |`,
+    `| Community Read Path Default-Off Rate | ${formatPercent(summary.hybrid.community_read_path_default_off_rate)} |`,
+    `| Community Disabled No-Regression Rate | ${formatPercent(summary.hybrid.community_disabled_no_regression_rate)} |`,
+    `| Community Enabled No-Regression Rate | ${formatPercent(summary.hybrid.community_enabled_no_regression_rate)} |`,
+    `| Community Fallback Rate | ${formatPercent(summary.hybrid.community_fallback_rate)} |`,
+    `| Community No Fifth Lane Rate | ${formatPercent(summary.hybrid.community_no_fifth_lane_rate)} |`,
+    `| Community Direct KG No-Regression Rate | ${formatPercent(summary.hybrid.community_direct_kg_no_regression_rate)} |`,
+    `| Community Multi-Hop No-Regression Rate | ${formatPercent(summary.hybrid.community_multi_hop_no_regression_rate)} |`,
+    `| Community Summary Bounds Rate | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
+    `| Community Coverage Bounds Rate | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
+    `| Community Enrichment Unavailable Fallback Rate | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
+    `| Token Basis | ${summary.token_savings_metrics.token_basis} |`,
+    `| Full Tokens Estimated | ${summary.token_savings_metrics.full_tokens_estimated} |`,
+    `| Evidence Tokens Estimated | ${summary.token_savings_metrics.evidence_tokens_estimated} |`,
+    `| Returned Tokens Estimated | ${summary.token_savings_metrics.returned_tokens_estimated} |`,
+    `| mem_get Avoided | ${summary.token_savings_metrics.mem_get_avoided_count} |`,
+    `| mem_get Escalated | ${summary.token_savings_metrics.mem_get_escalated_count} |`,
+    `| Recall-after-compaction Cases | ${summary.token_savings_metrics.recall_after_compaction_cases} |`,
+    `| Recall-after-compaction Recovered | ${summary.token_savings_metrics.recall_after_compaction_recovered_count} |`,
+    '',
+    '## Community Read Path Readiness',
+    '',
+    '| Gate | Status | Rate |',
+    '| --- | --- | ---: |',
+    `| Default-off preserved | ${formatGateStatus(summary.hybrid.community_read_path_default_off_rate)} | ${formatPercent(summary.hybrid.community_read_path_default_off_rate)} |`,
+    `| Disabled no-regression | ${formatGateStatus(summary.hybrid.community_disabled_no_regression_rate)} | ${formatPercent(summary.hybrid.community_disabled_no_regression_rate)} |`,
+    `| Enabled no-regression | ${formatGateStatus(summary.hybrid.community_enabled_no_regression_rate)} | ${formatPercent(summary.hybrid.community_enabled_no_regression_rate)} |`,
+    `| Missing/stale/degraded/rebuilding/failed fallback | ${formatGateStatus(summary.hybrid.community_fallback_rate)} | ${formatPercent(summary.hybrid.community_fallback_rate)} |`,
+    `| No fifth lane | ${formatGateStatus(summary.hybrid.community_no_fifth_lane_rate)} | ${formatPercent(summary.hybrid.community_no_fifth_lane_rate)} |`,
+    `| Direct KG no-regression | ${formatGateStatus(summary.hybrid.community_direct_kg_no_regression_rate)} | ${formatPercent(summary.hybrid.community_direct_kg_no_regression_rate)} |`,
+    `| Multi-hop no-regression | ${formatGateStatus(summary.hybrid.community_multi_hop_no_regression_rate)} | ${formatPercent(summary.hybrid.community_multi_hop_no_regression_rate)} |`,
+    `| Summary bounds | ${formatGateStatus(summary.hybrid.community_summary_bounds_rate)} | ${formatPercent(summary.hybrid.community_summary_bounds_rate)} |`,
+    `| Coverage bounds | ${formatGateStatus(summary.hybrid.community_coverage_bounds_rate)} | ${formatPercent(summary.hybrid.community_coverage_bounds_rate)} |`,
+    `| Enrichment-unavailable fallback | ${formatGateStatus(summary.hybrid.community_enrichment_unavailable_fallback_rate)} | ${formatPercent(summary.hybrid.community_enrichment_unavailable_fallback_rate)} |`,
+    '',
+    '## Community Rollout Thresholds',
+    '',
+    '| Gate | Status | Threshold | Disabled observed | Enabled observed |',
+    '| --- | --- | ---: | ---: | ---: |',
+    ...summary.community_rollout_gates.map((gate) => (
+      `| ${gate.name} | ${gate.passed ? 'PASS' : 'FAIL'} | ${gate.threshold} | ${gate.observed_disabled ?? '-'} | ${gate.observed_enabled} |`
+    )),
     '',
     '## Corpus',
     '',
@@ -596,6 +944,990 @@ function formatMarkdown(summary: RetrievalEvalSummary, cases: RetrievalEvalCaseR
   ].join('\n');
 }
 
+async function validateSupersessionFlagOffBehavior(): Promise<boolean> {
+  const controlStore = new Store(':memory:');
+  try {
+    if (controlStore.config.knowledgeGraph) {
+      controlStore.config.knowledgeGraph.kgSupersedeEnabled = false;
+    }
+    controlStore.saveObservation({
+      title: 'Supersession flag-off control',
+      type: 'decision',
+      project: 'supersession-off-project',
+      topic_key: 'eval/supersession-flag-off-control',
+      content: '**What**: Redis cache',
+    });
+    const current = controlStore.saveObservation({
+      title: 'Supersession flag-off control',
+      type: 'decision',
+      project: 'supersession-off-project',
+      topic_key: 'eval/supersession-flag-off-control',
+      content: '**What**: Valkey cache',
+    });
+    const runtime = controlStore as Store & {
+      processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+      hybridRetrieve: (input: {
+        query: string;
+        limit?: number;
+        project?: string;
+        embeddingProvider?: EmbeddingProviderAdapter | null;
+        hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+      }) => Promise<{
+        results: Array<{
+          observation: { id: number };
+          evidence: {
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; text?: string; kg?: { superseded?: boolean } }>>>;
+          };
+        }>;
+      }>;
+    };
+    const embeddingProvider = makeDeterministicEmbeddingProvider(controlStore);
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    const kgRows = controlStore.getDb().prepare(
+      `SELECT
+         oe.canonical_name AS object,
+         t.superseded_by_triple_id AS supersededByTripleId,
+         t.superseded_at AS supersededAt
+       FROM kg_triples t
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       WHERE t.source_type = 'observation' AND t.source_id = ?`
+    ).all(current.observation.id) as Array<{ object: string; supersededByTripleId: number | null; supersededAt: string | null }>;
+    const retrieval = await runtime.hybridRetrieve({
+      query: 'cache',
+      project: 'supersession-off-project',
+      limit: TOP_K,
+      embeddingProvider,
+      hyde: { enabled: true, mode: 'success', answer: 'Valkey cache is the current cache decision.' },
+    });
+    const kgCandidates = retrieval.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
+    return (
+      retrieval.results.some((hit) => hit.observation.id === current.observation.id)
+      && kgRows.some((row) => row.object === 'Valkey cache')
+      && !kgRows.some((row) => row.object === 'Redis cache')
+      && kgRows.every((row) => row.supersededByTripleId === null && row.supersededAt === null)
+      && kgCandidates.every((candidate) => !candidate.kg?.superseded && !String(candidate.text ?? '').includes('Redis cache'))
+    );
+  } finally {
+    controlStore.close();
+  }
+}
+
+type EvalHybridRuntime = Store & {
+  processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+  hybridRetrieve: (input: {
+    query: string;
+    limit?: number;
+    project?: string;
+    embeddingProvider?: EmbeddingProviderAdapter | null;
+    hyde?: { enabled?: boolean; mode?: 'success' | 'timeout' | 'failure'; answer?: string };
+  }) => Promise<{
+    results: Array<{
+      observation: { id: number; content: string; tool_name?: string | null };
+      evidence: {
+        maintenance?: {
+          consolidation?: { canonicalId: number; memberIds: number[]; suppressedSourceIds: number[] };
+          reflection?: { sourceIds: number[]; reasonClass: string; boost: number };
+          decay?: { scoreMultiplier: number; state: string; reasonClass: string };
+        };
+      };
+    }>;
+  }>;
+};
+
+async function validateMaintenanceDuplicateSuppression(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ suppression: boolean; sourceReachability: boolean }> {
+  const canonical = store.saveObservation({
+    title: 'Maintenance eval duplicate canonical',
+    content: 'maint-duplicate-signal source reachability duplicate cluster',
+    type: 'decision',
+    project: 'maintenance-duplicate-eval',
+  }).observation;
+  const duplicateId = Number(store.getDb().prepare(
+    `INSERT INTO observations (
+       session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+  ).run(
+    canonical.session_id,
+    canonical.type,
+    'Maintenance eval duplicate member',
+    canonical.content,
+    canonical.project,
+    canonical.scope,
+    canonical.normalized_hash,
+    '44444444-4444-4444-8444-444444444444'
+  ).lastInsertRowid);
+
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  const before = await runtime.hybridRetrieve({
+    query: 'maint-duplicate-signal source reachability',
+    project: 'maintenance-duplicate-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const duplicateHitsBefore = before.results.filter((hit) =>
+    hit.observation.id === canonical.id || hit.observation.id === duplicateId
+  ).length;
+
+  store.runMaintenance({ scope: { project: 'maintenance-duplicate-eval' } });
+  const after = await runtime.hybridRetrieve({
+    query: 'maint-duplicate-signal source reachability',
+    project: 'maintenance-duplicate-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const duplicateHitsAfter = after.results.filter((hit) =>
+    hit.observation.id === canonical.id || hit.observation.id === duplicateId
+  );
+  const consolidation = duplicateHitsAfter[0]?.evidence.maintenance?.consolidation;
+
+  return {
+    suppression: duplicateHitsBefore >= 2
+      && duplicateHitsAfter.length === 1
+      && Boolean(consolidation)
+      && consolidation!.memberIds.includes(canonical.id)
+      && consolidation!.memberIds.includes(duplicateId)
+      && consolidation!.suppressedSourceIds.length >= 1,
+    sourceReachability: store.getObservation(duplicateId)?.content === canonical.content,
+  };
+}
+
+async function validateMaintenanceReflection(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ quality: boolean; idempotency: boolean }> {
+  store.saveObservation({
+    title: 'Reflection quality source A',
+    content: 'Deterministic reflection source A records durable learning inputs.',
+    type: 'architecture',
+    project: 'maintenance-reflection-eval',
+  });
+  store.saveObservation({
+    title: 'Reflection quality source B',
+    content: 'Deterministic reflection source B records durable learning inputs.',
+    type: 'architecture',
+    project: 'maintenance-reflection-eval',
+  });
+
+  const first = store.runMaintenance({ scope: { project: 'maintenance-reflection-eval' } });
+  const second = store.runMaintenance({ scope: { project: 'maintenance-reflection-eval' } });
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  const reflectedId = second.reflections[0]?.planned_observation_id ?? first.reflections[0]?.planned_observation_id;
+  const retrieval = await runtime.hybridRetrieve({
+    query: 'maintenance reflection synthesized related source memories',
+    project: 'maintenance-reflection-eval',
+    limit: TOP_K,
+    embeddingProvider,
+  });
+  const reflectionRank = retrieval.results.findIndex((hit) => hit.observation.id === reflectedId);
+  const sourceRanks = second.reflections[0]?.sources.map((source) =>
+    retrieval.results.findIndex((hit) => hit.observation.id === source.id)
+  ).filter((rank) => rank >= 0) ?? [];
+  const reflectionHit = reflectionRank >= 0 ? retrieval.results[reflectionRank] : undefined;
+  const reflectedRows = store.getDb().prepare(
+    "SELECT COUNT(*) AS count FROM observations WHERE tool_name = 'maintenance-reflection' AND project = 'maintenance-reflection-eval'"
+  ).get() as { count: number };
+
+  return {
+    quality: reflectionRank >= 0
+      && sourceRanks.every((rank) => reflectionRank <= rank)
+      && (reflectionHit?.evidence.maintenance?.reflection?.sourceIds.length ?? 0) >= 2,
+    idempotency: first.reflections.length === 1
+      && second.reflections.length === 1
+      && reflectedRows.count === 1
+      && first.reflections[0]?.planned_observation_id === second.reflections[0]?.planned_observation_id,
+  };
+}
+
+async function validateMaintenanceDecay(
+  store: Store,
+  runtime: EvalHybridRuntime,
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<{ currentFact: boolean; reachability: boolean }> {
+  const stale = store.saveObservation({
+    title: 'Stale low-value maintenance eval',
+    content: 'caldera endpoint policy chooses legacy polling for workers',
+    type: 'discovery',
+    project: 'maintenance-decay-eval',
+  }).observation;
+  store.getDb().prepare(
+    "UPDATE observations SET updated_at = datetime('now', '-365 days'), created_at = datetime('now', '-365 days') WHERE id = ?"
+  ).run(stale.id);
+  const current = store.saveObservation({
+    title: 'Current high-signal maintenance eval',
+    content: 'caldera endpoint policy chooses streaming for workers',
+    type: 'decision',
+    project: 'maintenance-decay-eval',
+  }).observation;
+
+  await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+  store.runMaintenance({ scope: { project: 'maintenance-decay-eval' } });
+  const retrieval = await runtime.hybridRetrieve({
+    query: 'caldera endpoint policy workers',
+    project: 'maintenance-decay-eval',
+    limit: 10,
+    embeddingProvider,
+  });
+  const currentRank = retrieval.results.findIndex((hit) => hit.observation.id === current.id);
+  const staleRank = retrieval.results.findIndex((hit) => hit.observation.id === stale.id);
+  const staleHit = staleRank >= 0 ? retrieval.results[staleRank] : undefined;
+
+  return {
+    currentFact: currentRank >= 0
+      && staleRank >= 0
+      && currentRank < staleRank
+      && Boolean(staleHit?.evidence.maintenance?.decay),
+    reachability: store.getObservation(stale.id)?.content === stale.content,
+  };
+}
+
+async function validateMaintenanceExportImportRegeneration(): Promise<boolean> {
+  const sourceStore = new Store(':memory:');
+  const targetStore = new Store(':memory:');
+  try {
+    const source = sourceStore.saveObservation({
+      title: 'Portable maintenance duplicate A',
+      content: 'portable maintenance duplicate signal',
+      type: 'decision',
+      project: 'maintenance-portable-eval',
+    }).observation;
+    sourceStore.getDb().prepare(
+      `INSERT INTO observations (
+         session_id, type, title, content, project, scope, normalized_hash, sync_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 day'), datetime('now', '-1 day'))`
+    ).run(
+      source.session_id,
+      source.type,
+      'Portable maintenance duplicate B',
+      source.content,
+      source.project,
+      source.scope,
+      source.normalized_hash,
+      '55555555-5555-4555-8555-555555555555'
+    );
+    sourceStore.saveObservation({
+      title: 'Portable reflection source A',
+      content: 'portable reflection source one',
+      type: 'architecture',
+      project: 'maintenance-portable-eval',
+    });
+    sourceStore.saveObservation({
+      title: 'Portable reflection source B',
+      content: 'portable reflection source two',
+      type: 'architecture',
+      project: 'maintenance-portable-eval',
+    });
+    sourceStore.runMaintenance({ scope: { project: 'maintenance-portable-eval' } });
+
+    const exported = sourceStore.exportData('maintenance-portable-eval');
+    const portableJson = JSON.stringify(exported);
+    targetStore.importData(exported);
+    const metadataBefore = targetStore.getDb().prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM maintenance_consolidations) AS consolidations,
+         (SELECT COUNT(*) FROM maintenance_decay) AS decays`
+    ).get() as { consolidations: number; decays: number };
+    const regenerated = targetStore.runMaintenance({ scope: { project: 'maintenance-portable-eval' } });
+
+    return exported.observations.some((observation) => observation.tool_name === 'maintenance-reflection')
+      && !portableJson.includes('maintenance_consolidations')
+      && !portableJson.includes('maintenance_decay')
+      && metadataBefore.consolidations === 0
+      && metadataBefore.decays === 0
+      && regenerated.counts.consolidation_candidates > 0
+      && regenerated.counts.decay_candidates >= 0;
+  } finally {
+    sourceStore.close();
+    targetStore.close();
+  }
+}
+
+async function validateKgPruneRetentionCase(
+  store: Store,
+  runtime: Store & {
+    processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+    hybridRetrieve: (input: {
+      query: string;
+      limit?: number;
+      project?: string;
+      embeddingProvider?: EmbeddingProviderAdapter | null;
+    }) => Promise<{ results: Array<{ observation: { id: number } }> }>;
+  },
+  embeddingProvider: EmbeddingProviderAdapter,
+): Promise<boolean> {
+  const knowledgeGraph = store.config.knowledgeGraph;
+  if (!knowledgeGraph) return false;
+
+  const previousPruneEnabled = knowledgeGraph.kgPruneEnabled;
+  const previousKeepN = knowledgeGraph.kgSupersededKeepN;
+
+  try {
+    knowledgeGraph.kgPruneEnabled = false;
+    knowledgeGraph.kgSupersededKeepN = 1;
+
+    const saved = store.saveObservation({
+      title: 'KG prune retention eval',
+      type: 'decision',
+      project: 'kg-prune-eval',
+      topic_key: 'eval/kg-prune-retention',
+      content: '**What**: Retention cache uses Redis',
+    }).observation;
+
+    for (const value of ['Retention cache uses Valkey', 'Retention cache uses Dragonfly', 'Retention cache uses Garnet']) {
+      store.updateObservation({
+        id: saved.id,
+        content: `**What**: ${value}`,
+      });
+    }
+
+    const supersededBefore = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND (superseded_at IS NOT NULL OR superseded_by_triple_id IS NOT NULL)`
+    ).get(saved.id) as { count: number }).count;
+    const dryRun = store.pruneSupersededTriples({ project: 'kg-prune-eval', dryRun: true });
+    const real = store.pruneSupersededTriples({ project: 'kg-prune-eval' });
+    const supersededAfter = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND (superseded_at IS NOT NULL OR superseded_by_triple_id IS NOT NULL)`
+    ).get(saved.id) as { count: number }).count;
+    const currentAfter = (store.getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM kg_triples
+       WHERE source_id = ? AND relation = 'HAS_WHAT'
+         AND superseded_at IS NULL AND superseded_by_triple_id IS NULL`
+    ).get(saved.id) as { count: number }).count;
+
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    const retrieval = await runtime.hybridRetrieve({
+      query: 'Garnet retention cache',
+      project: 'kg-prune-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+
+    return (
+      supersededBefore === 3
+      && dryRun.triples_pruned > 0
+      && real.triples_pruned === dryRun.triples_pruned
+      && supersededAfter === 1
+      && currentAfter === 1
+      && retrieval.results.some((hit) => hit.observation.id === saved.id)
+    );
+  } finally {
+    knowledgeGraph.kgPruneEnabled = previousPruneEnabled;
+    knowledgeGraph.kgSupersededKeepN = previousKeepN;
+  }
+}
+
+async function validateCommunityReadPathEval(): Promise<{
+  defaultOff: boolean;
+  disabledNoRegression: boolean;
+  enabledNoRegression: boolean;
+  fallback: boolean;
+  noFifthLane: boolean;
+  directKgNoRegression: boolean;
+  multiHopNoRegression: boolean;
+  summaryBounds: boolean;
+  coverageBounds: boolean;
+  enrichmentUnavailableFallback: boolean;
+  rolloutGates: CommunityRolloutEvalGate[];
+}> {
+  const store = new Store(':memory:', {
+    communitySummaries: {
+      ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG,
+      enabled: true,
+      readPath: {
+        ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG.readPath,
+        enabled: false,
+      },
+      summaryMaxChars: 1200,
+      maxRetrievalCommunities: 1,
+    },
+    knowledgeGraph: {
+      ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
+      kgMultiHopEnabled: true,
+    },
+  });
+
+  try {
+    const runtime = store as Store & {
+      processSemanticJobs: (input?: { embeddingProvider?: EmbeddingProviderAdapter | null; limit?: number }) => Promise<number>;
+      hybridRetrieve: (input: {
+        query: string;
+        limit?: number;
+        project?: string;
+        embeddingProvider?: EmbeddingProviderAdapter | null;
+      }) => Promise<{
+        laneOrder: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+        degradedFallback: string[];
+        results: Array<{
+          observation: { id: number };
+          lanes: Array<'sentence' | 'chunk' | 'lexical' | 'kg'>;
+          evidence: {
+            primary: {
+              lane: 'sentence' | 'chunk' | 'lexical' | 'kg';
+              source: string;
+              text: string;
+              chunkKey?: string | null;
+              sentenceKey?: string | null;
+              kg?: { provenance?: string };
+            };
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{
+              source: string;
+              text?: string;
+              community?: { sourceObservationIds: number[]; entityCount: number; tripleCount: number };
+            }>>>;
+          };
+        }>;
+      }>;
+    };
+    const embeddingProvider = makeDeterministicEmbeddingProvider(store);
+    const rolloutMetadata = {
+      scope: 'same_corpus_ab' as const,
+      project: 'community-eval',
+      corpus: 'community-rollout-fixture',
+      query_set: 'community-read-path-rollout',
+      retrieval_limit: TOP_K,
+      community_budget: store.config.communitySummaries.maxRetrievalCommunities,
+    };
+    const returnedChars = (result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>): number =>
+      result.results.reduce((sum, hit) => sum + hit.evidence.primary.text.length, 0);
+    const evidenceChars = returnedChars;
+    const sourceAttributedHitCount = (result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>): number =>
+      result.results.filter((hit) => Boolean(
+        hit.evidence.primary.chunkKey
+        || hit.evidence.primary.sentenceKey
+        || hit.evidence.primary.kg?.provenance
+        || hit.evidence.primary.source
+      )).length;
+    const rankOf = (
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      observationId: number,
+    ): number | null => {
+      const index = result.results.findIndex((hit) => hit.observation.id === observationId);
+      return index >= 0 ? index + 1 : null;
+    };
+    const regressionPassed = (disabledObserved: number, enabledObserved: number): boolean =>
+      enabledObserved >= disabledObserved;
+    const noRankRegressionPassed = (disabledRank: number | null, enabledRank: number | null): boolean =>
+      disabledRank !== null && enabledRank !== null && enabledRank <= disabledRank;
+    const scopedGate = (gate: CommunityRolloutEvalGate): CommunityRolloutEvalGate => ({
+      ...rolloutMetadata,
+      ...gate,
+    });
+    const direct = store.saveObservation({
+      title: 'Community eval direct KG source',
+      type: 'decision',
+      project: 'community-eval',
+      topic_key: 'eval/community/direct',
+      content: 'Sparse source for community read-path no-regression.',
+    });
+    const downstream = store.saveObservation({
+      title: 'Community eval multi-hop downstream',
+      type: 'discovery',
+      project: 'community-eval',
+      topic_key: 'eval/community/multi-hop',
+      content: 'Downstream source intentionally relies on structural reachability.',
+    });
+    const missingFallback = store.saveObservation({
+      title: 'Community eval missing fallback source',
+      type: 'decision',
+      project: 'community-missing-eval',
+      topic_key: 'eval/community/missing-fallback',
+      content: 'Missing community summaries still fall back to baseline orion-service nebula-cache retrieval.',
+    });
+    const db = store.getDb();
+    const orion = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:orion-service', 'concept', 'orion-service').lastInsertRowid as number;
+    const nebula = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:nebula-cache', 'concept', 'nebula-cache').lastInsertRowid as number;
+    const archive = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-eval:archive-vault', 'concept', 'archive-vault').lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-eval', 'eval/community/direct', 'eval-community:direct', 0.9, ?)`
+    ).run(orion, nebula, direct.observation.id, `community-direct:${direct.observation.id}`);
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-eval', 'eval/community/multi-hop', 'eval-community:multi-hop', 0.9, ?)`
+    ).run(nebula, archive, downstream.observation.id, `community-multi-hop:${downstream.observation.id}`);
+    const missingOrion = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-missing-eval:orion-service', 'concept', 'orion-service').lastInsertRowid as number;
+    const missingNebula = db.prepare(
+      'INSERT INTO kg_entities (entity_key, entity_type, canonical_name) VALUES (?, ?, ?)'
+    ).run('community-missing-eval:nebula-cache', 'concept', 'nebula-cache').lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO kg_triples (
+         subject_entity_id, relation, object_entity_id, source_type, source_id,
+         project, topic_key, provenance, confidence, triple_hash
+       ) VALUES (?, 'DEPENDS_ON', ?, 'observation', ?, 'community-missing-eval', 'eval/community/missing-fallback', 'eval-community:missing-fallback', 0.9, ?)`
+    ).run(missingOrion, missingNebula, missingFallback.observation.id, `community-missing:${missingFallback.observation.id}`);
+    await runtime.processSemanticJobs({ limit: 20, embeddingProvider });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+
+    const disabled = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const defaultOff = store.config.communitySummaries.readPath.enabled === false
+      && disabled.results.some((hit) => hit.observation.id === direct.observation.id)
+      && disabled.degradedFallback.every((marker) => !marker.startsWith('kg_communities_'))
+      && disabled.results.every((hit) =>
+        !(hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_community_summary')
+      );
+
+    store.config.communitySummaries.readPath.enabled = true;
+    const enabled = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const directDisabledRank = disabled.results.findIndex((hit) => hit.observation.id === direct.observation.id);
+    const directEnabledRank = enabled.results.findIndex((hit) => hit.observation.id === direct.observation.id);
+    const enabledKgCandidates = enabled.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
+    const communityCandidates = enabledKgCandidates.filter((candidate) => candidate.source === 'kg_community_summary');
+    const directKgNoRegression = enabledKgCandidates.some((candidate) => candidate.source === 'kg_triples');
+    const enabledNoRegression = directEnabledRank >= 0 && directDisabledRank >= 0 && directEnabledRank <= directDisabledRank;
+    const disabledNoRegression = directDisabledRank >= 0;
+    const noFifthLane = enabled.laneOrder.join('|') === 'sentence|kg|chunk|lexical'
+      && enabled.results.every((hit) => !hit.lanes.map(String).includes('community'));
+
+    store.config.communitySummaries.readPath.enabled = false;
+    const multiHopBaseline = await runtime.hybridRetrieve({
+      query: 'orion-service',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.config.communitySummaries.readPath.enabled = true;
+    const multiHopEnabled = await runtime.hybridRetrieve({
+      query: 'orion-service',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const baselineMultiHop = multiHopBaseline.results.some((hit) => hit.observation.id === downstream.observation.id)
+      && multiHopBaseline.results.some((hit) =>
+        (hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_multi_hop')
+      );
+    const enabledMultiHop = multiHopEnabled.results.some((hit) => hit.observation.id === downstream.observation.id)
+      && multiHopEnabled.results.some((hit) =>
+        (hit.evidence.byLane.kg ?? []).some((candidate) => candidate.source === 'kg_multi_hop')
+      );
+    const multiHopNoRegression = baselineMultiHop && enabledMultiHop;
+
+    const bounded = store.getCommunitySummariesForRetrieval({
+      project: 'community-eval',
+      limit: 99,
+      maxChars: 80,
+    });
+    const summaryBounds = bounded.candidates.length <= 1
+      && bounded.candidates.every((candidate) => candidate.summary_text.length <= 80)
+      && communityCandidates.every((candidate) => (candidate.text?.length ?? 0) <= 1200);
+    const coverageBounds = bounded.candidates.every((candidate) => candidate.source_observation_ids.length <= 12)
+      && communityCandidates.every((candidate) => (candidate.community?.sourceObservationIds.length ?? 0) <= 12)
+      && communityCandidates.every((candidate) =>
+        (candidate.community?.entityCount ?? 0) > 0 && (candidate.community?.tripleCount ?? 0) > 0
+      );
+    const disabledEvidenceChars = evidenceChars(disabled);
+    const enabledEvidenceChars = evidenceChars(enabled);
+    const disabledReturnedChars = returnedChars(disabled);
+    const enabledReturnedChars = returnedChars(enabled);
+    const disabledFullChars = direct.observation.content.length + downstream.observation.content.length;
+    const enabledFullChars = disabledFullChars;
+    const disabledSavedChars = Math.max(0, disabledFullChars - disabledReturnedChars);
+    const enabledSavedChars = Math.max(0, enabledFullChars - enabledReturnedChars);
+    const disabledCompression = disabledFullChars === 0
+      ? 0
+      : Number((1 - disabledReturnedChars / disabledFullChars).toFixed(3));
+    const enabledCompression = enabledFullChars === 0
+      ? 0
+      : Number((1 - enabledReturnedChars / enabledFullChars).toFixed(3));
+    const disabledRecall = directDisabledRank >= 0 ? 1 : 0;
+    const enabledRecall = directEnabledRank >= 0 ? 1 : 0;
+    const disabledRankQuality = directDisabledRank >= 0 ? 1 / (directDisabledRank + 1) : 0;
+    const enabledRankQuality = directEnabledRank >= 0 ? 1 / (directEnabledRank + 1) : 0;
+    const disabledLaneTruth = disabled.results.every((hit) =>
+      (hit.evidence.byLane[hit.evidence.primary.lane] ?? [])
+        .some((candidate) => candidate.source === hit.evidence.primary.source)
+    ) ? 1 : 0;
+    const enabledLaneTruth = enabled.results.every((hit) =>
+      (hit.evidence.byLane[hit.evidence.primary.lane] ?? [])
+        .some((candidate) => candidate.source === hit.evidence.primary.source)
+    ) ? 1 : 0;
+    const disabledCommunitySafety = noFifthLane ? 1 : 0;
+    const multiHopRankSafe = noRankRegressionPassed(
+      rankOf(multiHopBaseline, downstream.observation.id),
+      rankOf(multiHopEnabled, downstream.observation.id),
+    );
+    const enabledCommunitySafety = noFifthLane && enabledNoRegression && directKgNoRegression && multiHopRankSafe ? 1 : 0;
+    const rolloutGates = buildCommunityRolloutEvalGates({
+      communities: bounded.candidates.length,
+      kgTriples: bounded.candidates.reduce((sum, candidate) => sum + candidate.triple_count, 0),
+      sourceObservations: bounded.candidates.reduce((sum, candidate) => sum + candidate.source_observation_ids.length, 0),
+      communitySourceObservations: bounded.candidates.reduce(
+        (sum, candidate) => sum + candidate.source_observation_count,
+        0,
+      ),
+      communityEntityCount: bounded.candidates.reduce((sum, candidate) => sum + candidate.entity_count, 0),
+      communityTripleCount: bounded.candidates.reduce((sum, candidate) => sum + candidate.triple_count, 0),
+      sourceAttributionRate: bounded.candidates.length === 0
+        ? 0
+        : bounded.candidates.filter((candidate) => candidate.source_observation_ids.length > 0).length / bounded.candidates.length,
+      disabledReturnedChars,
+      enabledReturnedChars,
+      disabledEvidenceChars,
+      enabledEvidenceChars,
+      metadata: rolloutMetadata,
+    });
+    const readinessState = store.getCommunitySummaryState({ project: 'community-eval' });
+    const readinessEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: readinessState,
+      candidates: bounded.candidates,
+    });
+    const sparseEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: {
+        ...readinessState,
+        communities_count: 0,
+        triples_count: 0,
+        source_observations_count: 0,
+      },
+      candidates: [],
+    });
+    const readinessGates: CommunityRolloutEvalGate[] = [
+      ...readinessEligibility.gates.map((gate) => scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: gate.name,
+        threshold: gate.threshold,
+        observed_enabled: gate.observed,
+        passed: gate.passed,
+      })),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_summary_max_chars_bound',
+        threshold: store.config.communitySummaries.summaryMaxChars,
+        observed_enabled: Math.max(0, ...bounded.candidates.map((candidate) => candidate.summary_text.length)),
+        passed: summaryBounds,
+      }),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_source_observation_limit_bound',
+        threshold: store.config.communitySummaries.sourceObservationLimit,
+        observed_enabled: Math.max(0, ...bounded.candidates.map((candidate) => candidate.source_observation_ids.length)),
+        passed: bounded.candidates.every((candidate) =>
+          candidate.source_observation_ids.length <= store.config.communitySummaries.sourceObservationLimit
+        ),
+      }),
+      scopedGate({
+        category: 'readiness',
+        scope: 'project_readiness',
+        name: 'community_sparse_coverage_blocks_eligibility',
+        threshold: false,
+        observed_enabled: sparseEligibility.eligible,
+        passed: !sparseEligibility.eligible,
+      }),
+    ];
+    const abGates: CommunityRolloutEvalGate[] = [
+      scopedGate({
+        category: 'same_corpus_ab',
+        name: 'community_ab_recall_at_k_no_regression',
+        threshold: 0,
+        observed_disabled: disabledRecall,
+        observed_enabled: enabledRecall,
+        passed: regressionPassed(disabledRecall, enabledRecall),
+      }),
+      scopedGate({
+        category: 'same_corpus_ab',
+        name: 'community_ab_rank_no_regression',
+        threshold: 0,
+        observed_disabled: directDisabledRank >= 0 ? directDisabledRank + 1 : null,
+        observed_enabled: directEnabledRank >= 0 ? directEnabledRank + 1 : null,
+        passed: enabledNoRegression,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_full_chars',
+        threshold: disabledFullChars,
+        observed_disabled: disabledFullChars,
+        observed_enabled: enabledFullChars,
+        passed: enabledFullChars === disabledFullChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_evidence_chars_no_regression',
+        threshold: 0,
+        observed_disabled: disabledEvidenceChars,
+        observed_enabled: enabledEvidenceChars,
+        passed: enabledEvidenceChars <= disabledEvidenceChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_returned_chars_no_regression',
+        threshold: 0,
+        observed_disabled: disabledReturnedChars,
+        observed_enabled: enabledReturnedChars,
+        passed: enabledReturnedChars <= disabledReturnedChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_saved_chars_preserved',
+        threshold: 0,
+        observed_disabled: disabledSavedChars,
+        observed_enabled: enabledSavedChars,
+        passed: enabledSavedChars >= disabledSavedChars,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_compression_ratio_preserved',
+        threshold: 0,
+        observed_disabled: disabledCompression,
+        observed_enabled: enabledCompression,
+        passed: enabledCompression >= disabledCompression,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_recall_quality_preserved',
+        threshold: 0,
+        observed_disabled: disabledRecall,
+        observed_enabled: enabledRecall,
+        passed: regressionPassed(disabledRecall, enabledRecall),
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_rank_quality_preserved',
+        threshold: 0,
+        observed_disabled: disabledRankQuality,
+        observed_enabled: enabledRankQuality,
+        passed: enabledRankQuality >= disabledRankQuality,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_lane_truth_preserved',
+        threshold: 0,
+        observed_disabled: disabledLaneTruth,
+        observed_enabled: enabledLaneTruth,
+        passed: enabledLaneTruth >= disabledLaneTruth,
+      }),
+      scopedGate({
+        category: 'p4_token_savings',
+        name: 'community_p4_safety_no_regression',
+        threshold: 0,
+        observed_disabled: disabledCommunitySafety,
+        observed_enabled: enabledCommunitySafety,
+        passed: enabledCommunitySafety >= disabledCommunitySafety,
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_no_fifth_lane_zero_regression',
+        threshold: 0,
+        observed_disabled: 0,
+        observed_enabled: noFifthLane ? 0 : 1,
+        passed: noFifthLane,
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_direct_kg_rank_zero_regression',
+        threshold: 0,
+        observed_disabled: directDisabledRank >= 0 ? directDisabledRank + 1 : null,
+        observed_enabled: directEnabledRank >= 0 ? directEnabledRank + 1 : null,
+        passed: noRankRegressionPassed(rankOf(disabled, direct.observation.id), rankOf(enabled, direct.observation.id)),
+      }),
+      scopedGate({
+        category: 'lane_ranking',
+        scope: 'zero_regression',
+        name: 'community_b2_multi_hop_rank_zero_regression',
+        threshold: 0,
+        observed_disabled: rankOf(multiHopBaseline, downstream.observation.id),
+        observed_enabled: rankOf(multiHopEnabled, downstream.observation.id),
+        passed: multiHopRankSafe,
+      }),
+    ];
+
+    const missing = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-missing-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.markCommunitySummariesStale('community-eval', 'eval_stale');
+    const stale = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.config.communitySummaries.algorithm = 'louvain';
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const degraded = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const degradedState = store.getCommunitySummaryState({ project: 'community-eval' });
+    store.config.communitySummaries.algorithm = 'connected_components';
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.getDb().prepare(
+      `INSERT INTO kg_community_runs (
+         run_key, project, algorithm, algorithm_version, summary_generator, config_hash, graph_signature,
+         status, freshness, degraded, degraded_reasons_json, coverage_json
+       ) VALUES (
+         'eval-running-community', 'community-eval', 'connected_components_v1', '1', 'extractive_v1',
+         'eval-cfg', 'eval-running-graph', 'running', 'fresh', 1, '["eval_rebuilding"]', '{}'
+       )`
+    ).run();
+    const rebuilding = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    store.getDb().exec(`
+      CREATE TRIGGER community_eval_fail
+      BEFORE INSERT ON kg_communities
+      BEGIN
+        SELECT RAISE(FAIL, 'forced community eval failure');
+      END;
+    `);
+    store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const failed = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const fallbackResultHasBaseline = (
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      marker: string,
+      expectedObservationId: number,
+    ): boolean => result.degradedFallback.includes(marker)
+      && result.results.length > 0
+      && result.results.some((hit) => hit.observation.id === expectedObservationId);
+    const fallback = fallbackResultHasBaseline(missing, 'kg_communities_missing', missingFallback.observation.id)
+      && fallbackResultHasBaseline(stale, 'kg_communities_stale', direct.observation.id)
+      && fallbackResultHasBaseline(degraded, 'kg_communities_degraded', direct.observation.id)
+      && fallbackResultHasBaseline(rebuilding, 'kg_communities_rebuilding', direct.observation.id)
+      && fallbackResultHasBaseline(failed, 'kg_communities_failed', direct.observation.id);
+
+    store.getDb().exec('DROP TRIGGER community_eval_fail');
+    store.config.communitySummaries.enrichment.enabled = true;
+    const enrichedUnavailableRebuild = store.rebuildCommunitySummaries({ project: 'community-eval' });
+    const enrichmentUnavailableRetrieval = store.getCommunitySummariesForRetrieval({
+      project: 'community-eval',
+      limit: 1,
+      maxChars: 1200,
+    });
+    const enrichmentUnavailableHybrid = await runtime.hybridRetrieve({
+      query: 'orion-service nebula-cache',
+      project: 'community-eval',
+      limit: TOP_K,
+      embeddingProvider,
+    });
+    const enrichmentUnavailableFallback = enrichedUnavailableRebuild.status === 'committed'
+      && enrichedUnavailableRebuild.freshness === 'degraded'
+      && enrichedUnavailableRebuild.degraded_reasons.includes('enrichment_unavailable')
+      && enrichmentUnavailableRetrieval.state === 'degraded'
+      && enrichmentUnavailableRetrieval.degraded_reasons.includes('enrichment_unavailable')
+      && enrichmentUnavailableRetrieval.candidates.length > 0
+      && enrichmentUnavailableRetrieval.candidates.every((candidate) =>
+        candidate.summary_text.length > 0
+        && candidate.degraded
+        && candidate.degraded_reasons.includes('enrichment_unavailable')
+      )
+      && fallbackResultHasBaseline(enrichmentUnavailableHybrid, 'kg_communities_degraded', direct.observation.id);
+    const degradedEligibility = evaluateCommunityReadPathEligibility({
+      readPathEnabled: store.config.communitySummaries.readPath.enabled,
+      state: degradedState,
+      candidates: bounded.candidates.map((candidate) => ({
+        ...candidate,
+        degraded: true,
+        degraded_reasons: ['eval_degraded'],
+      })),
+    });
+    readinessGates.push(scopedGate({
+      category: 'readiness',
+      scope: 'project_readiness',
+      name: 'community_degraded_state_ineligible',
+      threshold: false,
+      observed_enabled: degradedEligibility.eligible,
+      passed: !degradedEligibility.eligible,
+    }));
+    const fallbackGate = (
+      name: string,
+      result: Awaited<ReturnType<typeof runtime.hybridRetrieve>>,
+      marker: string,
+      passed: boolean,
+    ): CommunityRolloutEvalGate => scopedGate({
+      category: 'fallback_state',
+      scope: 'fallback_proof',
+      name,
+      threshold: 'non_empty_source_attributed_baseline',
+      observed_disabled: sourceAttributedHitCount(disabled),
+      observed_enabled: marker,
+      passed,
+      baseline_hit_count: result.results.length,
+      source_attributed_baseline_hit_count: sourceAttributedHitCount(result),
+    });
+    const fallbackGates: CommunityRolloutEvalGate[] = [
+      fallbackGate('community_fallback_disabled', disabled, 'disabled', disabled.results.length > 0 && sourceAttributedHitCount(disabled) > 0),
+      fallbackGate('community_fallback_missing', missing, 'kg_communities_missing', fallbackResultHasBaseline(missing, 'kg_communities_missing', missingFallback.observation.id)),
+      fallbackGate('community_fallback_stale', stale, 'kg_communities_stale', fallbackResultHasBaseline(stale, 'kg_communities_stale', direct.observation.id)),
+      fallbackGate('community_fallback_rebuilding', rebuilding, 'kg_communities_rebuilding', fallbackResultHasBaseline(rebuilding, 'kg_communities_rebuilding', direct.observation.id)),
+      fallbackGate('community_fallback_failed', failed, 'kg_communities_failed', fallbackResultHasBaseline(failed, 'kg_communities_failed', direct.observation.id)),
+      fallbackGate('community_fallback_degraded', degraded, 'kg_communities_degraded', fallbackResultHasBaseline(degraded, 'kg_communities_degraded', direct.observation.id)),
+      fallbackGate('community_fallback_enrichment_unavailable', enrichmentUnavailableHybrid, 'kg_communities_degraded', enrichmentUnavailableFallback),
+    ];
+
+    return {
+      defaultOff,
+      disabledNoRegression,
+      enabledNoRegression,
+      fallback,
+      noFifthLane,
+      directKgNoRegression,
+      multiHopNoRegression,
+      summaryBounds,
+      coverageBounds,
+      enrichmentUnavailableFallback,
+      rolloutGates: [
+        ...rolloutGates,
+        ...abGates,
+        ...readinessGates,
+        ...fallbackGates,
+      ],
+    };
+  } finally {
+    store.close();
+  }
+}
+
 export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Promise<RetrievalEvalReport> {
   const store = new Store(':memory:');
 
@@ -625,17 +1957,23 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         results: Array<{
           observation: { id: number; content: string };
           evidence: {
-            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; text: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string } };
+            primary: { lane: 'sentence' | 'chunk' | 'lexical' | 'kg'; source: string; text: string; chunkKey?: string | null; sentenceKey?: string | null; kg?: { provenance: string; superseded?: boolean } };
             promotedParent?: { chunkKey: string; text?: string };
-            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; kg?: { provenance?: string } }>>>;
+            byLane: Partial<Record<'sentence' | 'chunk' | 'lexical' | 'kg', Array<{ source: string; text?: string; kg?: { provenance?: string; superseded?: boolean } }>>>;
           };
         }>;
         pending: boolean;
         semanticInputs: Array<{ source: 'raw_query' | 'hyde_answer'; text: string }>;
       }>;
     };
-    const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + noiseCount;
+    const seededObservationCount = FIXTURES.length + NON_SYNTHETIC_FIXTURES.length + SUPERSESSION_SIGNAL_OBSERVATIONS + noiseCount;
     await runtime.processSemanticJobs({ limit: seededObservationCount * 4 + 20, embeddingProvider });
+
+    const maintenanceDuplicate = await validateMaintenanceDuplicateSuppression(store, runtime, embeddingProvider);
+    const maintenanceReflection = await validateMaintenanceReflection(store, runtime, embeddingProvider);
+    const maintenanceDecay = await validateMaintenanceDecay(store, runtime, embeddingProvider);
+    const maintenanceExportImportRegeneration = await validateMaintenanceExportImportRegeneration();
+    const communityReadPath = await validateCommunityReadPathEval();
 
     const staleSeed = store.saveObservation({
       title: 'stale eval sentinel',
@@ -673,15 +2011,59 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
 
     const graphLiteId = idsByKey.get('graph-lite');
     if (graphLiteId) {
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(graphLiteId, 'graph lite facts', 'supports', 'structured facts before vector embeddings', 'memory-project', 'retrieval/graph-lite-derived-facts', 'discovery');
+      seedGraphFactTriple({
+        store,
+        observationId: graphLiteId,
+        subject: 'graph lite facts',
+        relation: 'supports',
+        object: 'structured facts before vector embeddings',
+        project: 'memory-project',
+        topicKey: 'retrieval/graph-lite-derived-facts',
+        provenance: 'eval-fixture:graph-lite',
+        tripleHash: `graph-lite:${graphLiteId}:supports:1`,
+      });
     }
     const graphRankId = idsByKey.get('graph-rank');
     if (graphRankId) {
-      store.getDb().prepare(
-        'INSERT INTO observation_facts (observation_id, subject, relation, object, project, topic_key, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(graphRankId, 'xylophonic', 'DEPENDS_ON', 'zephyrcache', 'graph-project', 'retrieval/graph-only-ranking', 'decision');
+      seedGraphFactTriple({
+        store,
+        observationId: graphRankId,
+        subject: 'xylophonic',
+        relation: 'DEPENDS_ON',
+        object: 'zephyrcache',
+        project: 'graph-project',
+        topicKey: 'retrieval/graph-only-ranking',
+        provenance: 'eval-fixture:graph-rank',
+        tripleHash: `graph-rank:${graphRankId}:DEPENDS_ON:1`,
+      });
+    }
+    const multiHopId = idsByKey.get('kg-multi-hop');
+    if (multiHopId) {
+      seedGraphFactTriple({
+        store,
+        observationId: multiHopId,
+        subject: 'zephyrcache',
+        relation: 'DEPENDS_ON',
+        object: 'quiet-bridge-store',
+        project: 'graph-project',
+        topicKey: 'retrieval/kg-multi-hop',
+        provenance: 'eval-fixture:kg-multi-hop',
+        tripleHash: `kg-multi-hop:${multiHopId}:DEPENDS_ON:1`,
+      });
+    }
+    const multiHopDistractorId = idsByKey.get('kg-multi-hop-distractor');
+    if (multiHopDistractorId) {
+      seedGraphFactTriple({
+        store,
+        observationId: multiHopDistractorId,
+        subject: 'zephyrcache',
+        relation: 'MENTIONS',
+        object: 'metadata-only-distractor',
+        project: 'graph-project',
+        topicKey: 'retrieval/kg-multi-hop-distractor',
+        provenance: 'eval-fixture:kg-multi-hop-distractor',
+        tripleHash: `kg-multi-hop-distractor:${multiHopDistractorId}:MENTIONS:1`,
+      });
     }
 
     const pendingCases: boolean[] = [];
@@ -699,12 +2081,73 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const factsSourceChecks: boolean[] = [];
     const hybridRankSourceChecks: boolean[] = [];
     const hydeLiftChecks: boolean[] = [];
+    const supersessionNoRegressionChecks: boolean[] = [];
+    const supersessionFlagOffChecks: boolean[] = [];
+    const kgPruneRetentionChecks: boolean[] = [];
+    const kgPruneNoRegressionChecks: boolean[] = [];
+    const maintenanceNoRegressionChecks: boolean[] = [];
+    const communityMultiHopNoRegressionChecks: boolean[] = [];
     let defaultsCapture: RetrievalEvalSummary['retrieval_defaults'] | null = null;
 
     const cases: RetrievalEvalCaseResult[] = [];
+    const setKgMultiHopEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgMultiHopEnabled = enabled;
+      }
+    };
+    const setKgSupersedeEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgSupersedeEnabled = enabled;
+      }
+    };
+    const setKgPruneEnabled = (enabled: boolean): void => {
+      if (store.config.knowledgeGraph) {
+        store.config.knowledgeGraph.kgPruneEnabled = enabled;
+      }
+    };
+    const setMaintenanceReadPathEnabled = (enabled: boolean): void => {
+      store.config.maintenance.readPath.enabled = enabled;
+    };
     for (const evalCase of CASES) {
       const expectedId = idsByKey.get(evalCase.expectedKey);
       const expected = [...FIXTURES, ...NON_SYNTHETIC_FIXTURES].find((fixture) => fixture.key === evalCase.expectedKey);
+      setKgSupersedeEnabled(true);
+      setKgMultiHopEnabled(false);
+      setMaintenanceReadPathEnabled(false);
+      const rawBaseline = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+      });
+      const hydeBaseline = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setMaintenanceReadPathEnabled(true);
+      setKgSupersedeEnabled(false);
+      setKgMultiHopEnabled(true);
+      const supersedeOffHyde = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setKgSupersedeEnabled(true);
+      setKgMultiHopEnabled(true);
+      setKgPruneEnabled(false);
+      const pruneOffHyde = await runtime.hybridRetrieve({
+        query: evalCase.query,
+        project: evalCase.project,
+        limit: evalCase.limit ?? TOP_K,
+        embeddingProvider,
+        hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+      });
+      setKgPruneEnabled(true);
       const raw = await runtime.hybridRetrieve({
         query: evalCase.query,
         project: evalCase.project,
@@ -718,8 +2161,86 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         embeddingProvider,
         hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
       });
+      let communityEnabledHyde: Awaited<ReturnType<typeof runtime.hybridRetrieve>> | null = null;
+      if (evalCase.expectedKey === 'kg-multi-hop') {
+        const previousCommunityReadPath = store.config.communitySummaries.readPath.enabled;
+        store.config.communitySummaries.readPath.enabled = true;
+        communityEnabledHyde = await runtime.hybridRetrieve({
+          query: evalCase.query,
+          project: evalCase.project,
+          limit: evalCase.limit ?? TOP_K,
+          embeddingProvider,
+          hyde: { enabled: true, mode: 'success', answer: evalCase.hydeAnswer ?? `Hypothetical answer for ${evalCase.query}` },
+        });
+        store.config.communitySummaries.readPath.enabled = previousCommunityReadPath;
+      }
       const rawRankIndex = raw.results.findIndex((hit) => hit.observation.id === expectedId);
       const hydeRankIndex = hyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      const baselineHydeRankIndex = hydeBaseline.results.findIndex((hit) => hit.observation.id === expectedId);
+      const supersedeOffHydeRankIndex = supersedeOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      const pruneOffHydeRankIndex = pruneOffHyde.results.findIndex((hit) => hit.observation.id === expectedId);
+      if (pruneOffHydeRankIndex === -1) {
+        throw new Error(`kg pruning OFF eval failed in case "${evalCase.name}"`);
+      }
+      if (evalCase.expectedKey !== 'kg-multi-hop') {
+        if (baselineHydeRankIndex === -1) {
+          throw new Error(`maintenance disabled baseline eval failed in case "${evalCase.name}"`);
+        }
+        if (hydeRankIndex === -1 || hydeRankIndex > baselineHydeRankIndex) {
+          throw new Error(`maintenance enabled regression in eval case "${evalCase.name}"`);
+        }
+        maintenanceNoRegressionChecks.push(true);
+      }
+      if (hydeRankIndex === -1 || hydeRankIndex > pruneOffHydeRankIndex) {
+        throw new Error(`kg pruning ON regression in eval case "${evalCase.name}"`);
+      }
+      kgPruneNoRegressionChecks.push(true);
+      if (evalCase.expectedKey !== 'kg-supersession') {
+        if (supersedeOffHydeRankIndex === -1) {
+          throw new Error(`kg supersession OFF eval failed in case "${evalCase.name}"`);
+        }
+        if (hydeRankIndex === -1 || hydeRankIndex > supersedeOffHydeRankIndex) {
+          throw new Error(`kg supersession ON regression in eval case "${evalCase.name}"`);
+        }
+        supersessionNoRegressionChecks.push(true);
+      }
+      if (evalCase.expectedKey !== 'kg-multi-hop' && baselineHydeRankIndex >= 0) {
+        if (hydeRankIndex === -1 || hydeRankIndex > baselineHydeRankIndex) {
+          throw new Error(`kg multi-hop regression in eval case "${evalCase.name}"`);
+        }
+      }
+      if (evalCase.expectedKey === 'kg-multi-hop') {
+        const baselineMultiHop = hydeBaseline.results.some((hit) =>
+          hit.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop')
+        );
+        const onHit = hydeRankIndex >= 0 ? hyde.results[hydeRankIndex] : undefined;
+        const hasMultiHopEvidence = onHit?.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop') ?? false;
+        if (baselineMultiHop || !hasMultiHopEvidence) {
+          throw new Error('kg multi-hop eval did not isolate ON-only multi-hop evidence');
+        }
+        const communityEnabledRankIndex = communityEnabledHyde?.results.findIndex((hit) => hit.observation.id === expectedId) ?? -1;
+        const communityEnabledHit = communityEnabledRankIndex >= 0
+          ? communityEnabledHyde?.results[communityEnabledRankIndex]
+          : undefined;
+        communityMultiHopNoRegressionChecks.push(
+          communityEnabledRankIndex >= 0
+          && communityEnabledRankIndex <= hydeRankIndex
+          && (communityEnabledHit?.evidence.byLane.kg?.some((candidate) => candidate.source === 'kg_multi_hop') ?? false)
+        );
+      }
+      if (evalCase.expectedKey === 'kg-supersession') {
+        const supersessionHit = hydeRankIndex >= 0 ? hyde.results[hydeRankIndex] : undefined;
+        const kgCandidates = supersessionHit?.evidence.byLane.kg ?? [];
+        const currentCandidate = kgCandidates.find((candidate) =>
+          candidate.source === 'kg_triples' && 'text' in candidate && String(candidate.text).includes('Valkey cache')
+        );
+        const supersededCandidate = kgCandidates.find((candidate) =>
+          candidate.source === 'kg_triples' && 'text' in candidate && String(candidate.text).includes('Redis cache')
+        );
+        if (!currentCandidate || !supersededCandidate || !supersededCandidate.kg?.superseded) {
+          throw new Error('supersession eval did not retain and flag the superseded KG fact');
+        }
+      }
       const rankIndex = hydeRankIndex;
       const expectedHit = rankIndex >= 0 ? hyde.results[rankIndex] : undefined;
       const primaryEvidenceChars = expectedHit?.evidence.primary.text.length ?? 0;
@@ -764,9 +2285,16 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       }));
       const kgCandidates = raw.results.flatMap((hit) => hit.evidence.byLane.kg ?? []);
       const tripleCandidates = kgCandidates.filter((candidate) => candidate.source === 'kg_triples');
-      const factCandidates = kgCandidates.filter((candidate) => candidate.source === 'observation_facts');
-      kgProvenanceChecks.push(tripleCandidates.length > 0 && tripleCandidates.every((candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0));
-      factsSourceChecks.push(tripleCandidates.length > 0 && factCandidates.length > 0);
+      kgProvenanceChecks.push(
+        tripleCandidates.length > 0 && tripleCandidates.every(
+          (candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0
+        )
+      );
+      factsSourceChecks.push(
+        tripleCandidates.length > 0 && tripleCandidates.every(
+          (candidate) => typeof candidate.kg?.provenance === 'string' && candidate.kg.provenance.length > 0
+        )
+      );
       lineageCoverageHits.push(raw.results.some((hit) => {
         const primary = hit.evidence.primary;
         return Boolean(primary.chunkKey || primary.sentenceKey || primary.kg?.provenance || primary.source);
@@ -788,6 +2316,12 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         promoted_context_chars: promotedContextChars,
       });
     }
+    const flagOffBehaviorOk = await validateSupersessionFlagOffBehavior();
+    if (!flagOffBehaviorOk) {
+      throw new Error('kg supersession flag-off eval retained or flagged stale superseded history');
+    }
+    supersessionFlagOffChecks.push(flagOffBehaviorOk);
+    kgPruneRetentionChecks.push(await validateKgPruneRetentionCase(store, runtime, embeddingProvider));
 
     const found = cases.filter((result) => result.found);
     const reciprocalRankSum = cases.reduce((sum, result) => sum + (result.rank ? 1 / result.rank : 0), 0);
@@ -797,7 +2331,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
     const countTrue = (items: Array<boolean | number>): number => items.filter(Boolean).length;
     const totalHybridCases = pendingCases.length === 0 ? cases.length : pendingCases.length;
     const corpusTotal = (store.getDb().prepare('SELECT COUNT(*) AS count FROM observations WHERE deleted_at IS NULL').get() as { count: number }).count;
-    const summary: RetrievalEvalSummary = {
+    const summaryWithoutEnvelope: RetrievalEvalSummaryForEnvelope = {
       total_cases: cases.length,
       recall_at_1: ratio(cases.filter((result) => result.rank === 1).length, cases.length),
       recall_at_k: ratio(found.length, cases.length),
@@ -805,7 +2339,7 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
       context_compression: fullChars === 0 ? 0 : Number((1 - contextChars / fullChars).toFixed(3)),
       corpus: {
         total_observations: corpusTotal,
-        signal_observations: FIXTURES.length,
+        signal_observations: FIXTURES.length + SUPERSESSION_SIGNAL_OBSERVATIONS,
         noise_observations: noiseCount,
         non_synthetic_observations: NON_SYNTHETIC_FIXTURES.length,
       },
@@ -840,7 +2374,34 @@ export async function runRetrievalEval(options: RetrievalEvalOptions = {}): Prom
         surgical_compression: fullChars === 0 ? 0 : Number((1 - primaryEvidenceChars / fullChars).toFixed(3)),
         hyde_lift_rate: ratio(countTrue(hydeLiftChecks), totalHybridCases),
         hybrid_rank_source_rate: ratio(countTrue(hybridRankSourceChecks), totalHybridCases),
+        supersession_no_regression_rate: ratio(countTrue(supersessionNoRegressionChecks), supersessionNoRegressionChecks.length),
+        supersession_flag_off_rate: ratio(countTrue(supersessionFlagOffChecks), supersessionFlagOffChecks.length),
+        kg_prune_retention_rate: ratio(countTrue(kgPruneRetentionChecks), kgPruneRetentionChecks.length),
+        kg_prune_no_regression_rate: ratio(countTrue(kgPruneNoRegressionChecks), kgPruneNoRegressionChecks.length),
+        maintenance_duplicate_suppression_rate: maintenanceDuplicate.suppression ? 1 : 0,
+        maintenance_source_reachability_rate: maintenanceDuplicate.sourceReachability ? 1 : 0,
+        maintenance_reflection_quality_rate: maintenanceReflection.quality ? 1 : 0,
+        maintenance_reflection_idempotency_rate: maintenanceReflection.idempotency ? 1 : 0,
+        maintenance_decay_current_fact_rate: maintenanceDecay.currentFact ? 1 : 0,
+        maintenance_decay_reachability_rate: maintenanceDecay.reachability ? 1 : 0,
+        maintenance_no_regression_rate: ratio(countTrue(maintenanceNoRegressionChecks), maintenanceNoRegressionChecks.length),
+        maintenance_export_import_regeneration_rate: maintenanceExportImportRegeneration ? 1 : 0,
+        community_read_path_default_off_rate: communityReadPath.defaultOff ? 1 : 0,
+        community_disabled_no_regression_rate: communityReadPath.disabledNoRegression ? 1 : 0,
+        community_enabled_no_regression_rate: communityReadPath.enabledNoRegression ? 1 : 0,
+        community_fallback_rate: communityReadPath.fallback ? 1 : 0,
+        community_no_fifth_lane_rate: communityReadPath.noFifthLane ? 1 : 0,
+        community_direct_kg_no_regression_rate: communityReadPath.directKgNoRegression ? 1 : 0,
+        community_multi_hop_no_regression_rate: ratio(countTrue(communityMultiHopNoRegressionChecks), communityMultiHopNoRegressionChecks.length),
+        community_summary_bounds_rate: communityReadPath.summaryBounds ? 1 : 0,
+        community_coverage_bounds_rate: communityReadPath.coverageBounds ? 1 : 0,
+        community_enrichment_unavailable_fallback_rate: communityReadPath.enrichmentUnavailableFallback ? 1 : 0,
       },
+      community_rollout_gates: communityReadPath.rolloutGates,
+    };
+    const summary: RetrievalEvalSummary = {
+      ...summaryWithoutEnvelope,
+      token_savings_metrics: buildRetrievalTokenSavingsEnvelope(summaryWithoutEnvelope, cases),
     };
 
     return {
@@ -857,6 +2418,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   runRetrievalEval()
     .then((report) => {
       process.stdout.write(`${report.markdown}\n`);
+      assertRetrievalEvalGate(report);
     })
     .catch((error) => {
       process.stderr.write(`[retrieval-eval] failed: ${error instanceof Error ? error.message : String(error)}\n`);

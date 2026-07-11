@@ -79,3 +79,25 @@ The API MUST provide neighbor expansion operations that accept a selected entity
 - GIVEN a traversal step exceeds configured bounds
 - WHEN the API returns that step result
 - THEN the response MUST enforce bounds and signal continuation/frontier status compatible with progressive exploration
+
+## ADDED for graph-navigation-v2
+
+### Requirement: Observatory Contracts MUST Provide MCP-Compatible Navigation Primitives
+The observatory contracts MUST support neighborhood, ledger, timeline, and community reads with bounded continuation/omission metadata suitable for MCP graph navigation without a dedicated MCP reader tool.
+
+### Requirement: Observatory Ledger History MUST Remain Current-State By Default
+Structured ledger/detail contracts MUST return current-state output by default and include retained superseded facts only via explicit history-inclusive input.
+
+### Requirement: Frontier Navigation MUST Report Incremental State
+Map/neighborhood expansion contracts MUST return frontier state that separates newly added nodes, already-visible nodes, and continuation/exhaustion for bounded progressive navigation.
+
+### Requirement: Community Summary Reads MUST Remain Inspection-Oriented
+Community summary APIs MUST expose bounded status and committed-summary inspection metadata and must not claim global-answer capabilities.
+
+## MODIFIED for graph-navigation-v2
+
+### Requirement: Visualization API MUST Provide an Observatory Query Model
+Dashboard-facing and MCP-consumed observatory reads MUST share compatible scope controls for pivoting across recall, map, timeline, ledger, and related surfaces.
+
+### Requirement: Visualization API MUST Return Provenance-Rich, Structured Memory Semantics
+Visualization and observatory payloads MUST expose observable provenance, topic keys, session/project identities, and distinguish current facts from historical data.

@@ -87,6 +87,103 @@ function createDashboardFixture(): string {
   return directory;
 }
 
+function seedPrunableGraphRows(store: Store, project = 'ops-project'): void {
+  const db = store.getDb();
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(`http-prune:${project}:subject`, 'HTTP prune subject') as { id: number };
+  db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')`
+  ).run(`http-prune:${project}:unrelated-orphan`, 'HTTP unrelated prune orphan');
+
+  for (let index = 1; index <= 3; index++) {
+    const object = db.prepare(
+      `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+       VALUES (?, 'concept', ?)
+       ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+       RETURNING id`
+    ).get(`http-prune:${project}:object:${index}`, `HTTP prune object ${index}`) as { id: number };
+    db.prepare(
+      `INSERT INTO kg_triples (
+        subject_entity_id, relation, object_entity_id, source_type, source_id,
+        project, provenance, confidence, triple_hash, extractor_version, superseded_at
+      ) VALUES (?, 'HAS_WHAT', ?, 'observation', 9101, ?, 'test', 0.9, ?, 'test', ?)`
+    ).run(subject.id, object.id, project, `http-prune:${project}:${index}`, `2026-01-0${index} 00:00:00`);
+  }
+}
+
+function seedCommunityGraphRows(store: Store, project = 'http-community-project'): void {
+  const db = store.getDb();
+  db.prepare('INSERT INTO sessions (id, project) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+    .run(`${project}-session`, project);
+  const source = db.prepare(
+    `INSERT INTO observations (session_id, type, title, content, project, scope, normalized_hash, sync_id)
+     VALUES (?, 'manual', ?, 'http community source body', ?, 'project', ?, ?)`
+  ).run(
+    `${project}-session`,
+    `${project} community source`,
+    project,
+    `${project}-community-hash`,
+    `${project}-community-sync`,
+  ).lastInsertRowid as number;
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?) RETURNING id`
+  ).get(`${project}:subject`, `${project} Subject`) as { id: number };
+  const object = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?) RETURNING id`
+  ).get(`${project}:object`, `${project} Object`) as { id: number };
+  db.prepare(
+    `INSERT INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, provenance, confidence, triple_hash
+    ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, '{}', 0.9, ?)`
+  ).run(subject.id, object.id, source, project, `${project}:community-triple`);
+}
+
+function seedHttpSupersededFact(store: Store, input: {
+  observationId: number;
+  project: string;
+  subjectKey: string;
+  objectKey: string;
+  objectName: string;
+  superseded?: boolean;
+}): void {
+  const db = store.getDb();
+  const subject = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.subjectKey, input.subjectKey) as { id: number };
+  const object = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?)
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`
+  ).get(input.objectKey, input.objectName) as { id: number };
+
+  db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id,
+       project, provenance, confidence, triple_hash, extractor_version, superseded_at
+     ) VALUES (?, 'HAS_WHAT', ?, 'observation', ?, ?, 'test', 0.9, ?, 'test', ?)`
+  ).run(
+    subject.id,
+    object.id,
+    input.observationId,
+    input.project,
+    `${input.project}:${input.objectKey}`,
+    input.superseded ? '2026-01-01 00:00:00' : null,
+  );
+}
+
 function getUrl(port: number, path: string): string {
   return `http://127.0.0.1:${port}${path}`;
 }
@@ -397,6 +494,12 @@ describe('createHttpBridge', () => {
       expect.objectContaining({ id: 'mcp-mem-recall', origin: 'mcp', target: 'mem_recall' }),
       expect.objectContaining({ id: 'rebuild-index', origin: 'http', method: 'POST', path: '/index/rebuild' }),
       expect.objectContaining({ id: 'rebuild-graph', origin: 'http', method: 'POST', path: '/graph/rebuild' }),
+      expect.objectContaining({ id: 'prune-graph', origin: 'http', method: 'POST', path: '/graph/prune' }),
+      expect.objectContaining({ id: 'maintenance-preview', origin: 'http', method: 'POST', path: '/maintenance/preview' }),
+      expect.objectContaining({ id: 'maintenance-apply', origin: 'http', method: 'POST', path: '/maintenance/apply' }),
+    ]));
+    expect(operations.body.operations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ origin: 'mcp', target: expect.stringMatching(/maint/i) }),
     ]));
 
     const version = await fetchJson('/version', undefined, bridge.port);
@@ -412,6 +515,9 @@ describe('createHttpBridge', () => {
     expect(openapi.body.paths['/index/status']).toBeDefined();
     expect(openapi.body.paths['/index/rebuild']).toBeDefined();
     expect(openapi.body.paths['/graph/rebuild']).toBeDefined();
+    expect(openapi.body.paths['/graph/prune']).toBeDefined();
+    expect(openapi.body.paths['/maintenance/preview']).toBeDefined();
+    expect(openapi.body.paths['/maintenance/apply']).toBeDefined();
     expect(openapi.body.components.schemas.OperationTrace).toBeDefined();
 
     const indexRebuild = await fetchJson(
@@ -451,7 +557,272 @@ describe('createHttpBridge', () => {
       project: 'ops-project',
       observations_scanned: 1,
     });
-    expect(graphRebuild.body.facts_created).toBeGreaterThan(0);
+    expect(graphRebuild.body.facts_created).toBe(0);
+    expect(graphRebuild.body.facts_deleted).toBe(0);
+
+    bridge.store.config.knowledgeGraph!.kgSupersededKeepN = 1;
+    seedPrunableGraphRows(bridge.store);
+    const graphPruneDryRun = await fetchJson(
+      '/graph/prune',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project', dryRun: true }),
+      },
+      bridge.port,
+    );
+    expect(graphPruneDryRun.response.status).toBe(200);
+    expect(graphPruneDryRun.body).toMatchObject({
+      project: 'ops-project',
+      dry_run: true,
+      triples_pruned: 2,
+      entities_pruned: 2,
+    });
+    const graphPruneReal = await fetchJson(
+      '/graph/prune',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-project' }),
+      },
+      bridge.port,
+    );
+    expect(graphPruneReal.response.status).toBe(200);
+    expect(graphPruneReal.body).toMatchObject({
+      project: 'ops-project',
+      dry_run: false,
+      triples_pruned: 2,
+      entities_pruned: 2,
+    });
+    expect(bridge.store.getDb().prepare(
+      "SELECT COUNT(*) AS count FROM kg_entities WHERE entity_key = 'http-prune:ops-project:unrelated-orphan'"
+    ).get()).toEqual({ count: 1 });
+
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP maintenance source A',
+          content: 'http maintenance duplicate marker',
+          session_id: 'maint-session',
+          project: 'ops-maint-project',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP maintenance source B',
+          content: 'http maintenance duplicate marker',
+          session_id: 'maint-session',
+          project: 'ops-maint-project',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    const maintenancePreview = await fetchJson(
+      '/maintenance/preview',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'ops-maint-project' }),
+      },
+      bridge.port,
+    );
+    expect(maintenancePreview.response.status).toBe(200);
+    expect(maintenancePreview.body).toMatchObject({
+      dry_run: true,
+      scope: { project: 'ops-maint-project' },
+      counts: { consolidation_candidates: 1 },
+    });
+    expect(bridge.store.getDb().prepare('SELECT COUNT(*) AS count FROM maintenance_runs').get()).toEqual({ count: 0 });
+
+    const maintenanceApply = await fetchJson(
+      '/maintenance/apply',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic_prefix: 'maintenance/reflection/' }),
+      },
+      bridge.port,
+    );
+    expect(maintenanceApply.response.status).toBe(200);
+    expect(maintenanceApply.body.dry_run).toBe(false);
+    expect(maintenanceApply.body.scope).toEqual({ topic_prefix: 'maintenance/reflection/' });
+  });
+
+  it('mirrors MCP identity fallback semantics in HTTP save and session routes', async () => {
+    const bridge = await startBridge();
+
+    const explicitObservation = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Explicit identity',
+          content: 'Explicit identity body',
+          session_id: 'http-session',
+          project: 'http-project',
+        }),
+      },
+      bridge.port,
+    );
+    expect(explicitObservation.response.status).toBe(201);
+    expect(explicitObservation.body.identity).toBeUndefined();
+
+    const fallbackObservation = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Fallback identity',
+          content: 'Fallback identity body',
+        }),
+      },
+      bridge.port,
+    );
+    expect(fallbackObservation.response.status).toBe(201);
+    expect(fallbackObservation.body.identity.degraded).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'session_id',
+        reason: 'missing',
+        fallback_value: 'manual-save-thoth-mem',
+      }),
+    ]));
+
+    const fallbackPrompt = await fetchJson(
+      '/prompts',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Fallback prompt' }),
+      },
+      bridge.port,
+    );
+    expect(fallbackPrompt.response.status).toBe(201);
+    expect(fallbackPrompt.body.identity.synthesized_session_id).toBe('manual-save-thoth-mem');
+
+    const fallbackSummary = await fetchJson(
+      '/sessions/summary',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'http-project',
+          content: '## Goal\nHTTP fallback\n\n## Accomplished\n- Done',
+        }),
+      },
+      bridge.port,
+    );
+    expect(fallbackSummary.response.status).toBe(201);
+    expect(fallbackSummary.body.identity.degraded).toEqual([
+      expect.objectContaining({
+        field: 'session_id',
+        reason: 'missing',
+        fallback_value: 'manual-save-http-project',
+      }),
+    ]);
+  });
+
+  it('community HTTP admin routes exist', async () => {
+    const bridge = await startBridge();
+    seedCommunityGraphRows(bridge.store, 'http-community-project');
+
+    const operations = await fetchJson('/operations', undefined, bridge.port);
+    expect(operations.response.status).toBe(200);
+    expect(operations.body.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'community-rebuild', origin: 'http', method: 'POST', path: '/communities/rebuild' }),
+      expect.objectContaining({ id: 'community-preview', origin: 'http', method: 'POST', path: '/communities/preview' }),
+      expect.objectContaining({ id: 'community-status', origin: 'http', method: 'GET', path: '/communities/status' }),
+      expect.objectContaining({ id: 'project-communities', origin: 'http', method: 'GET', path: '/projects/:project/communities' }),
+      expect.objectContaining({ id: 'community-drop', origin: 'http', method: 'DELETE', path: '/communities' }),
+    ]));
+    expect(operations.body.operations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ origin: 'mcp', target: expect.stringMatching(/communit/i) }),
+    ]));
+
+    const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+    expect(openapi.response.status).toBe(200);
+    expect(openapi.body.paths['/communities/rebuild']).toBeDefined();
+    expect(openapi.body.paths['/communities/preview']).toBeDefined();
+    expect(openapi.body.paths['/communities/status']).toBeDefined();
+    expect(openapi.body.paths['/projects/{project}/communities']).toBeDefined();
+    expect(openapi.body.paths['/communities']).toBeDefined();
+
+    const preview = await fetchJson(
+      '/communities/preview',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project', limit: 1, max_chars: 240 }),
+      },
+      bridge.port,
+    );
+    expect(preview.response.status).toBe(200);
+    expect(preview.body).toMatchObject({
+      project: 'http-community-project',
+      would_commit: false,
+      communities: expect.any(Array),
+    });
+    expect(preview.body.communities).toHaveLength(1);
+
+    const rebuild = await fetchJson(
+      '/communities/rebuild',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project' }),
+      },
+      bridge.port,
+    );
+    expect(rebuild.response.status).toBe(200);
+    expect(rebuild.body).toMatchObject({
+      project: 'http-community-project',
+      status: 'committed',
+      communities_created: 1,
+    });
+
+    const status = await fetchJson('/communities/status?project=http-community-project', undefined, bridge.port);
+    expect(status.response.status).toBe(200);
+    expect(status.body).toMatchObject({
+      project: 'http-community-project',
+      state: 'fresh',
+      communities_count: 1,
+    });
+
+    const projectCommunities = await fetchJson('/projects/http-community-project/communities?limit=1&max_chars=240', undefined, bridge.port);
+    expect(projectCommunities.response.status).toBe(200);
+    expect(projectCommunities.body).toMatchObject({
+      project: 'http-community-project',
+      state: 'fresh',
+      communities: expect.any(Array),
+    });
+    expect(projectCommunities.body.communities).toHaveLength(1);
+
+    const dropped = await fetchJson(
+      '/communities',
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'http-community-project' }),
+      },
+      bridge.port,
+    );
+    expect(dropped.response.status).toBe(200);
+    expect(dropped.body).toMatchObject({
+      project: 'http-community-project',
+      communities_deleted: 1,
+    });
   });
 
   it('supports observation CRUD, search, and paginated retrieval', async () => {
@@ -866,6 +1237,113 @@ describe('createHttpBridge', () => {
         relation: 'HAS_WHAT',
       },
     });
+  });
+
+  it('project graph defaults to current facts for omitted and false-like include_superseded values', async () => {
+    const bridge = await startBridge();
+    const created = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP superseded project graph',
+          content: '**What**: generated content ignored by fixture',
+          project: 'http-superseded-project',
+          topic_key: 'history/http-graph',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    bridge.store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(created.body.id);
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-project',
+      subjectKey: 'http-current-subject',
+      objectKey: 'http-current-object',
+      objectName: 'Current HTTP graph fact',
+    });
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-project',
+      subjectKey: 'http-historical-subject',
+      objectKey: 'http-historical-object',
+      objectName: 'Historical HTTP graph fact',
+      superseded: true,
+    });
+
+    for (const suffix of ['', '&include_superseded=false', '&include_superseded=', '&include_superseded=banana']) {
+      const graph = await fetchJson(
+        `/projects/http-superseded-project/graph?topic_key=history%2Fhttp-graph&relation=HAS_WHAT${suffix}`,
+        undefined,
+        bridge.port,
+      );
+
+      expect(graph.response.status).toBe(200);
+      expect(graph.body.facts.map((fact: { object: string }) => fact.object)).toEqual(['Current HTTP graph fact']);
+      expect(graph.body.facts.some((fact: { superseded?: boolean }) => fact.superseded === true)).toBe(false);
+      expect(graph.body.summary.total).toBe(1);
+      expect(graph.body.text).toContain('Current HTTP graph fact');
+      expect(graph.body.text).not.toContain('Historical HTTP graph fact');
+    }
+  });
+
+  it('project graph include_superseded=true includes tagged historical facts', async () => {
+    const bridge = await startBridge();
+    const created = await fetchJson(
+      '/observations',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'HTTP superseded opt-in project graph',
+          content: '**What**: generated content ignored by fixture',
+          project: 'http-superseded-opt-in',
+          topic_key: 'history/http-graph',
+          type: 'decision',
+        }),
+      },
+      bridge.port,
+    );
+    bridge.store.getDb().prepare(
+      "DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+    ).run(created.body.id);
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-opt-in',
+      subjectKey: 'http-opt-current-subject',
+      objectKey: 'http-opt-current-object',
+      objectName: 'Current opt-in graph fact',
+    });
+    seedHttpSupersededFact(bridge.store, {
+      observationId: created.body.id,
+      project: 'http-superseded-opt-in',
+      subjectKey: 'http-opt-historical-subject',
+      objectKey: 'http-opt-historical-object',
+      objectName: 'Historical opt-in graph fact',
+      superseded: true,
+    });
+
+    const graph = await fetchJson(
+      '/projects/http-superseded-opt-in/graph?topic_key=history%2Fhttp-graph&relation=HAS_WHAT&include_superseded=true',
+      undefined,
+      bridge.port,
+    );
+
+    expect(graph.response.status).toBe(200);
+    expect(graph.body.facts.map((fact: { object: string }) => fact.object)).toEqual([
+      'Current opt-in graph fact',
+      'Historical opt-in graph fact',
+    ]);
+    expect(graph.body.facts[1]).toMatchObject({
+      object: 'Historical opt-in graph fact',
+      superseded: true,
+    });
+    expect(graph.body.summary.total).toBe(2);
+    expect(graph.body.text).toContain('Historical opt-in graph fact');
   });
 
   it('supports topic key suggestion', async () => {
@@ -1336,6 +1814,69 @@ describe('createHttpBridge', () => {
       expect(openapi.body.paths['/capture-passive']).toBeDefined();
     });
 
+    it('rejects multi-harness contract expansion', async () => {
+      const bridge = await startBridge();
+
+      const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+      const paths = Object.keys(openapi.body.paths);
+      const promptRequest = openapi.body.paths['/prompts'].post.requestBody
+        .content['application/json'].schema;
+      const promptResponse = openapi.body.paths['/prompts'].post.responses['201']
+        .content['application/json'].schema;
+
+      interface PromptOpenApiSpec {
+        paths: Record<string, unknown> & {
+          '/prompts': {
+            post: {
+              requestBody: {
+                content: {
+                  'application/json': {
+                    schema: { properties: Record<string, unknown> };
+                  };
+                };
+              };
+            };
+          };
+        };
+      }
+      const httpExpansionViolations = (spec: PromptOpenApiSpec): string[] => {
+        const specPaths = Object.keys(spec.paths);
+        const requestProperties = Object.keys(
+          spec.paths['/prompts'].post.requestBody.content['application/json'].schema.properties,
+        );
+        return [
+          ...requestProperties
+            .filter((name) => /adapter|event|harness|idempotenc|native/i.test(name))
+            .map((name) => `prompt-input:${name}`),
+          ...specPaths
+            .filter((path) => (
+              /adapter|harness|idempotenc|integration|lifecycle|native-event|\/events?(?:\/|$)/i.test(path)
+            ))
+            .map((path) => `path:${path}`),
+        ];
+      };
+
+      expect(openapi.response.status).toBe(200);
+      expect(Object.keys(promptRequest.properties)).toEqual([
+        'content',
+        'session_id',
+        'project',
+      ]);
+      expect(promptRequest.required).toEqual(['content']);
+      expect(Object.keys(promptResponse.properties)).toEqual(['id']);
+      expect(paths).toContain('/prompts');
+      expect(httpExpansionViolations(openapi.body as PromptOpenApiSpec)).toEqual([]);
+
+      const adversarialSpec = structuredClone(openapi.body) as PromptOpenApiSpec;
+      adversarialSpec.paths['/prompts'].post.requestBody
+        .content['application/json'].schema.properties.harness = { type: 'string' };
+      adversarialSpec.paths['/harness/events'] = { post: {} };
+      expect(httpExpansionViolations(adversarialSpec)).toEqual([
+        'prompt-input:harness',
+        'path:/harness/events',
+      ]);
+    });
+
     it('OpenAPI spec documents the /projects/delete contract', async () => {
       const bridge = await startBridge();
 
@@ -1436,17 +1977,55 @@ describe('createHttpBridge', () => {
         'project',
         'topic_key',
         'relation',
+        'include_superseded',
         'limit',
         'max_chars',
+      ]);
+      expect(openapi.body.paths['/observatory/ledger/{id}'].get.parameters.map((parameter: any) => parameter.name)).toEqual([
+        'id',
+        'include_superseded',
       ]);
       expect(openapi.body.paths['/projects/{project}/graph'].get.responses['200'].content['application/json'].schema).toEqual({
         $ref: '#/components/schemas/ProjectGraphResponse',
       });
+      expect(openapi.body.components.schemas.ProjectGraphFact.properties.superseded).toEqual({
+        type: 'boolean',
+        description: 'Present and true only for historical KG facts when include_superseded=true.',
+      });
+      expect(openapi.body.components.schemas.ProjectGraphFact.required).not.toContain('superseded');
       expect(openapi.body.components.schemas.ProjectTextResponse).toBeDefined();
       expect(openapi.body.components.schemas.ProjectGraphFact).toBeDefined();
       expect(openapi.body.components.schemas.ProjectGraphSummary).toBeDefined();
       expect(openapi.body.components.schemas.ProjectGraphResponse).toBeDefined();
       expect(openapi.body.components.schemas.TopicKeysResponse).toBeDefined();
+    });
+
+    it('bounds project summary text through the shared getContext layer', async () => {
+      const bridge = await startBridge();
+      const marker = 'HTTP-SUMMARY-FULL-MARKER';
+
+      for (let i = 0; i < 30; i++) {
+        await fetchJson(
+          '/observations',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: `Large HTTP summary ${i}`,
+              content: `${'http summary body '.repeat(220)}${marker}-${i}`,
+              project: 'http-summary-project',
+            }),
+          },
+          bridge.port,
+        );
+      }
+
+      const summary = await fetchJson('/projects/http-summary-project/summary', undefined, bridge.port);
+
+      expect(summary.response.status).toBe(200);
+      expect(summary.body.text.length).toBeLessThanOrEqual(8000);
+      expect(summary.body.text).toContain('mem_get(id=');
+      expect(summary.body.text).not.toContain(marker);
     });
   });
 

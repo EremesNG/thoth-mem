@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripPrivateTags } from '../../src/utils/privacy.js';
+import { stripPrivateTags, stripPrivateTagsStrict } from '../../src/utils/privacy.js';
 
 describe('stripPrivateTags', () => {
   it('returns unchanged text when there are no tags', () => {
@@ -36,5 +36,32 @@ describe('stripPrivateTags', () => {
 
   it('collapses excessive newlines after stripping', () => {
     expect(stripPrivateTags('line 1\n\n\n<private>hidden</private>\n\n\nline 2')).toBe('line 1\n\nline 2');
+  });
+
+  it('sanitizes root prompt capture privacy tags fail closed', () => {
+    expect(stripPrivateTagsStrict('public <private>secret</private> tail')).toEqual({
+      text: 'public  tail',
+      malformed: false,
+      rejected: false,
+      removedPrivateContent: true,
+    });
+    expect(stripPrivateTagsStrict('public prefix<private>secret suffix')).toEqual({
+      text: 'public prefix',
+      malformed: true,
+      rejected: false,
+      removedPrivateContent: true,
+    });
+    expect(stripPrivateTagsStrict('public </private> ambiguous')).toEqual({
+      text: '',
+      malformed: true,
+      rejected: true,
+      removedPrivateContent: true,
+    });
+    expect(stripPrivateTagsStrict('safe prefix<private data-kind="secret">ambiguous suffix')).toEqual({
+      text: 'safe prefix',
+      malformed: true,
+      rejected: false,
+      removedPrivateContent: true,
+    });
   });
 });

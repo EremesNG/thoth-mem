@@ -38,7 +38,9 @@ Agent Session 1                    Agent Session 2
 - **Git-friendly sync** — export memory as gzipped chunks for version control
 - **JSON export/import** — portable memory backup and transfer
 - **Project migration** — rename projects across all entities in one operation
-- **Knowledge Graph Ledger rebuild** — backfill derived KG/ledger facts for existing memories; legacy graph endpoint compatibility is preserved
+- **Knowledge Graph recall** — deterministic KG extraction, optional LLM enrichment, multi-hop recall, supersession history, pruning, and bounded graph navigation
+- **Community summaries** — derived KG community metadata with default-off read-path rollout gates
+- **Operational health** — semantic lane, KG, community, job, trace, and token-savings telemetry through existing tools and HTTP
 - **MCP Server Instructions** — built-in protocol guidance for connected agents
 - **Observation versioning** — full history preserved on topic_key upserts
 - **Session enrichment** — sessions auto-fill missing project/directory on reconnect
@@ -49,7 +51,7 @@ Agent Session 1                    Agent Session 2
 - **Token-efficient recall** — compact fused evidence first, context expansion only when needed
 - **Retrieval and KG eval baselines** — deterministic hybrid retrieval and graph-quality benchmarks (lexical, semantic raw/HyDE, KG, compression, lineage, forbidden triples, optional LLM KG acceptance)
 - **Agent-first MCP tools** — recall, save, context, project navigation, session lifecycle, and full-content fetch
-- **Admin tools via CLI & HTTP** — export, import, sync, and migration available without cluttering the MCP tool surface
+- **Admin tools via CLI & HTTP** — export/import, sync, migration, graph prune/rebuild, community summaries, index jobs, and maintenance without cluttering the MCP tool surface
 - **Operation trace logging** — MCP and HTTP calls persist sanitized request/response traces for dashboard inspection
 
 ## Quick Start
@@ -67,6 +69,79 @@ Requires Node.js >= 18.
 
 For backwards compatibility, running `thoth-mem` with no subcommand also starts the MCP server and HTTP bridge. New MCP client configs should prefer the explicit `mcp` subcommand.
 
+## Transitioning to native harness integration
+
+Native setup is opt-in. Existing manual MCP connections and stored memories continue to work until you deliberately enable a native integration. OpenCode and Codex use the managed setup commands documented below; Claude Code uses its plugin marketplace flow:
+
+```bash
+claude plugin marketplace add EremesNG/thoth-mem
+claude plugin install thoth-mem
+```
+
+The installed plugin may also be shown in qualified form as `thoth-mem@thoth-mem`, but the commands above are the supported transition path.
+
+Global scope manages only the current user's harness configuration plus thoth-mem receipts and backups. Project scope manages only the explicitly selected project directory and its project-local receipt tree. Neither scope grants ownership of another project or repository.
+
+Engram, thoth-agents, or another memory integration may already provide overlapping hooks or instructions. Treat this as a warning only: thoth-mem does not edit, disable, remove, or write to external repositories. Review the active harness configuration and choose which integration should own overlapping lifecycle events.
+
+### Manual MCP fallback
+
+Native hooks are optional. You can keep or restore a plain MCP connection at any time using the [manual MCP configuration](#mcp-configuration) below; this fallback uses the same six-tool server and does not require managed setup or a native plugin.
+
+## Managed Harness Setup
+
+Use managed setup for native OpenCode or Codex integration. Global scope is the default:
+
+```bash
+thoth-mem setup opencode
+thoth-mem setup codex --scope global --plan --json
+```
+
+Project scope is explicit and requires a project path. The following examples also show the ownership-bounded conflict override and receipt rollback forms:
+
+```bash
+thoth-mem setup opencode --scope project --project /path/to/project --force
+thoth-mem setup codex --rollback /path/to/receipt.json
+```
+
+### Setup reference
+
+| Option | Behavior |
+| --- | --- |
+| no scope option | Uses global scope. |
+| `--scope global` | Explicitly selects global scope; `--project` is rejected. |
+| `--scope project --project <path>` | Confines inspection, files, receipts, and rollback to the selected project. |
+| `--plan` | Reports the ordered plan and detected conflicts/capabilities. Plan mode performs zero writes, backups, receipts, or mutating external commands. |
+| `--force` | Replaces conflicts only at thoth-mem-managed locations after backup. It never grants access to unrelated configuration or bypasses receipt validation. |
+| `--rollback <receipt-path>` | Reverts only locations owned by that valid receipt and preserves unrelated settings and later unrelated edits. |
+| `--json` | Emits the stable machine-readable result object. |
+
+OpenCode global setup probes `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` or `opencode.jsonc`; in other words, the selected filename is `opencode.json` or `opencode.jsonc`. On Windows the default root is `%USERPROFILE%\.config\opencode`. Project setup probes `<project>/opencode.json` or `<project>/opencode.jsonc` and installs the direct plugin entry under `<project>/.opencode/plugins/`. If both sibling configuration files exist, setup stops for explicit operator action instead of guessing ownership.
+
+Setup reports one status and matching process exit code:
+
+| Status | Exit code | Meaning |
+| --- | --- | --- |
+| `complete` | `0` | Every required outcome is verified, including a no-op. |
+| `failed` | `1` | Validation, backup, mutation, verification, or rollback failed. |
+| `partial` | `2` | At least one Codex external step verified and another attempted step failed or remained unverifiable. |
+| `requires_user_action` | `3` | A conflict or unavailable/unsafe capability needs operator action. |
+
+### Receipts, recovery, and rollback
+
+Backups are created before the first mutation. After backups succeed, setup durably writes an HMAC-protected receipt with status `in_progress` before changing a target or invoking a mutating external command. Each attempted step is then recorded atomically. Receipt locations are:
+
+- global receipts: `<thoth-data-dir>/setup/receipts/<receipt-id>/receipt.json`
+- project receipts: `<project>/.thoth/setup/receipts/<receipt-id>/receipt.json`
+
+An interrupted `in_progress` transaction is never inferred as complete. The next setup or rollback reports recovery guidance based on the receipt. A missing, invalid, or tampered receipt is refused even with `--force`; restore only from verified receipt evidence and its named backups.
+
+Rollback restores or removes only receipt-owned values. If an owned value diverged, rollback stops with `requires_user_action`; `--force` remains limited to that valid receipt-owned location and creates fresh rollback backups and a rollback receipt. Repeated setup and repeated completed rollback are no-ops with `changed=false` when the verified state already matches.
+
+### Codex capability limits
+
+Codex marketplace registration and plugin installation are capability-gated and verified independently. Exit zero from an external command is not enough to report `complete`. If the installed Codex CLI does not advertise a safe command or cannot verify the result, setup returns `requires_user_action` or `partial` with exact manual actions; open Codex `/plugins` to inspect or complete the plugin installation. External Codex registration is not atomically reversible, so its receipt steps report evidence independently from reversible filesystem changes.
+
 ## MCP Configuration
 
 ### Claude Code
@@ -77,7 +152,7 @@ claude mcp add thoth-mem -- npx -y thoth-mem@latest mcp
 
 ### OpenCode
 
-Add to `~/.config/opencode/config.json`:
+Add to `~/.config/opencode/opencode.json` (or the sibling `opencode.jsonc`):
 
 ```json
 {
@@ -125,16 +200,23 @@ thoth-mem context                      # Recent session context
 thoth-mem stats                        # Memory statistics
 thoth-mem export [file]                # Export to JSON (stdout if no file)
 thoth-mem import <file>                # Import from JSON
-thoth-mem sync [--sync-dir=<path>]     # Git sync export
-thoth-mem sync-import [--sync-dir=<path>]  # Git sync import from another instance
+thoth-mem sync [--dir=<path>]          # Git sync export
+thoth-mem sync-import [--dir=<path>]   # Git sync import from another instance
 thoth-mem migrate-project <old> <new>  # Rename a project across all entities
 thoth-mem delete-project <project>     # Delete a project and its related data
 thoth-mem rebuild-graph --project <name> # Rebuild graph facts for one project
 thoth-mem rebuild-graph --all          # Rebuild graph facts for every project
+thoth-mem prune-graph --project <name> # Bound superseded graph history
+thoth-mem rebuild-communities --project <name> # Rebuild KG community summaries
+thoth-mem preview-communities -p <name> # Preview KG community summaries
+thoth-mem communities-status -p <name>  # Inspect KG community summary state
+thoth-mem drop-communities --project <name> # Drop KG community summaries
 thoth-mem rebuild-index --project <name> # Queue semantic index rebuild for one project
 thoth-mem rebuild-index --all          # Queue semantic index rebuild for all projects
 thoth-mem rebuild-index --all --process 500 # Queue and process up to 500 jobs
 thoth-mem rebuild-index --status       # Show semantic index queue/coverage progress
+thoth-mem maintain-memory --project <name> # Preview maintenance metadata
+thoth-mem maintain-memory --project <name> --apply # Apply maintenance metadata
 thoth-mem version                      # Show version
 thoth-mem help                         # Show help
 ```
@@ -208,7 +290,9 @@ curl -X POST http://localhost:7438/index/rebuild \
   -d '{"project":"my-project","reason":"manual","process_limit":0}'
 ```
 
-The HTTP API supports sessions, observations, prompts, search, export/import, sync, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection. See the interactive `/docs` interface for the full API reference.
+The HTTP API supports sessions, observations, prompts, search, export/import, sync, operation traces, index status/rebuild, graph rebuild/prune, community summaries, maintenance preview/apply, operation catalog, and version inspection. See the interactive `/docs` interface for the full API reference.
+
+Admin surfaces also include graph pruning (`POST /graph/prune`), community summary rebuild/preview/status/drop (`/communities/*` and `/projects/:project/communities`), and memory maintenance preview/apply (`/maintenance/preview`, `/maintenance/apply`). These remain CLI/HTTP-only by design; they are not registered as MCP tools.
 
 ## Development Checks
 
@@ -221,7 +305,7 @@ pnpm run eval:retrieval
 pnpm run eval:kg
 ```
 
-`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The default gate now requires every eval case to land at rank 1.
+`pnpm run eval:retrieval` runs a deterministic in-memory hybrid retrieval eval against seeded observations, curated non-synthetic project-documentation examples, and synthetic distractors. It reports hybrid recall under noise, corpus size, direct vs rephrased vs non-synthetic case mix, measured surgical compression, HyDE lift, pending/degraded fallback, lexical prefix behavior, semantic raw vs HyDE contribution, sentence-first small-to-big promotion, KG enrichment, KG-as-primary lane rate, and evidence lineage coverage without requiring model downloads or remote APIs. The community rollout section is scoped to P3 community read-path eligibility only: it compares disabled and enabled same-corpus runs, P4 token-savings rows, readiness inputs, fallback states, lane truth, direct KG, and B2 multi-hop no-regression for that read path. Passing these gates does not mean global default-on readiness, P5 graph navigation v2, GraphRAG synthesis, multi-harness completion, G3 harness parity, or MemoryIntegrationCore migration. The CLI gate fails below 95% recall@1 or 90% recall@k, while curated non-synthetic/current-state cases keep stricter per-case assertions.
 
 Scale the retrieval eval with `THOTH_RETRIEVAL_EVAL_NOISE` when you want hundreds or thousands of synthetic distractors. In PowerShell:
 
@@ -240,7 +324,7 @@ $env:THOTH_RETRIEVAL_EVAL_NOISE='250'; pnpm run eval:retrieval
 | `mem_recall`            | Primary fused hybrid recall across semantic, KG, and lexical lanes |
 | `mem_context`           | Get recent context — sessions, prompts, observations, stats      |
 | `mem_get`               | Retrieve an observation or prompt by ID, with optional timeline or pagination |
-| `mem_project`           | List projects, summarize one project, inspect graph facts/topics |
+| `mem_project`           | List projects, summarize one project, inspect graph facts/topics/health |
 | `mem_session`           | Start, checkpoint, or summarize a memory session                  |
 
 Current tool/action map:
@@ -251,12 +335,16 @@ Current tool/action map:
 | `mem_recall` | `mode="compact"` first, `mode="context"` for retrieved text; supports filters plus `hyde` and `debug` |
 | `mem_context` | Recent sessions/prompts/observations, optionally with `recall_query` fused evidence |
 | `mem_get` | `id`, `kind`, `offset`, `max_length`, `include_timeline`, `before`, and `after` |
-| `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, or `"topic"` |
+| `mem_project` | `action="list"`, `"summary"`, `"graph"`, `"topics"`, `"topic"`, or `"health"` |
 | `mem_session` | `action="start"`, `"checkpoint"`, or `"summary"` |
 
 Legacy one-tool-per-view names are intentionally obsolete and are not registered. Use `mem_recall` instead of `mem_search`, `mem_get` instead of `mem_get_observation` or `mem_timeline`, `mem_project` instead of `mem_project_summary`, `mem_project_graph`, or `mem_topic_keys`, `mem_session` instead of `mem_session_start` or `mem_session_summary`, and `mem_save(kind="prompt")` instead of `mem_save_prompt`.
 
-> **Admin operations** (export, import, sync, sync-import, migrate-project, delete-project, rebuild-graph, rebuild-index) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
+`mem_project(action="graph")` defaults to the current-state KG ledger. Add `navigation="neighborhood"` with `focus_node_id="obs:<id>"` for bounded frontier expansion, `navigation="lineage"` for timeline-style evidence, `navigation="community"` for community-summary inspection, or `navigation="superseded"` for retained superseded history. Each navigation view supports bounded `limit`/`max_chars` output; superseded history is explicit and opt-in.
+
+`mem_project(action="health")` returns compact operational health for all projects or one project: semantic lane state, vector coverage, KG availability, community-summary state, recent indexing/KG errors, job counts, and trace/token telemetry.
+
+> **Admin operations** (export, import, sync, sync-import, migrate-project, delete-project, rebuild-graph, prune-graph, rebuild-index, community-summary operations, and maintenance preview/apply) are available via the [CLI](#cli-commands). Export, import, sync, migration, operation traces, index status/rebuild, graph rebuild/prune, community summaries, maintenance, operation catalog, and version inspection are also available through the [HTTP REST API](#http-rest-api). They are not registered as MCP tools to keep the agent's tool surface lean.
 
 ## Retrieval and Embeddings
 
@@ -274,6 +362,9 @@ Legacy one-tool-per-view names are intentionally obsolete and are not registered
 - Local embeddings default to provider `transformers_local` and model `nomic-ai/nomic-embed-text-v1.5` unless overridden.
 - HyDE is enabled by default. The local fallback uses Transformers.js text generation with `onnx-community/Qwen2.5-Coder-0.5B-Instruct`; remote HyDE can use Ollama or an OpenAI-compatible LM Studio server.
 - KG extraction is deterministic-first. Optional LLM enrichment can be enabled for long conversations with Ollama or LM Studio; generated triples are filtered through the same relation taxonomy and merged with deterministic triples. If the remote extractor is disabled or unavailable, deterministic KG extraction still completes.
+- KG recall includes entity-anchored multi-hop traversal, current-state supersession handling, keep-N pruning of superseded history, and bounded graph navigation through `mem_project(action="graph")`.
+- Community summaries derive compact KG neighborhoods for eligible projects. They are built and inspected through CLI/HTTP admin surfaces, and their retrieval read path stays default-off behind rollout gates.
+- Maintenance metadata supports consolidation, reflection, and decay scoring. Read-path consumption is configurable, while preview/apply operations remain CLI/HTTP-only.
 
 ### Recommended Embedding Models
 
@@ -374,6 +465,8 @@ THOTH_KG_LLM_MODEL=loaded_model \
 thoth-mem
 ```
 
+For LM Studio, Thoth-Mem requests `response_format: { "type": "text" }` and parses JSON from `message.content`. This matches current LM Studio servers that reject `json_object` but accept `text` or `json_schema`. Use the exact model id shown by LM Studio, keep the server running on the configured base URL, and increase `THOTH_KG_LLM_TIMEOUT_MS` if your model needs longer first-load time.
+
 The LLM pass is an enrichment step, not the source of truth: invalid relation names are discarded, duplicate triples are deduped, and KG jobs continue with deterministic triples if the remote request fails.
 
 
@@ -400,7 +493,7 @@ Incremental, append-only gzipped chunks designed for version control — no merg
 
 ```bash
 # Export a chunk to the sync directory
-thoth-mem sync --sync-dir=.thoth-sync
+thoth-mem sync --dir=.thoth-sync
 
 # Structure created:
 # .thoth-sync/
@@ -412,7 +505,7 @@ thoth-mem sync --sync-dir=.thoth-sync
 Import on another machine:
 
 ```bash
-thoth-mem sync-import --sync-dir=.thoth-sync
+thoth-mem sync-import --dir=.thoth-sync
 ```
 
 Each observation and prompt carries a `sync_id` (UUID) that prevents duplicates on re-import.
@@ -451,9 +544,10 @@ Default editable config:
 
 ```json
 {
-  "$schema": "https://unpkg.com/thoth-mem@0.3.1/config.schema.json",
+  "$schema": "https://unpkg.com/thoth-mem@0.3.7/config.schema.json",
   "version": 1,
   "maxContentLength": 100000,
+  "maxContextChars": 8000,
   "maxContextResults": 20,
   "maxSearchResults": 20,
   "dedupeWindowMinutes": 15,
@@ -461,6 +555,9 @@ Default editable config:
   "http": {
     "port": 7438,
     "disabled": false
+  },
+  "project": {
+    "default": null
   },
   "retrievalDefaults": {
     "sentenceTopK": 100,
@@ -487,16 +584,115 @@ Default editable config:
     "provider": "transformers_local",
     "model": "onnx-community/Qwen2.5-Coder-0.5B-Instruct",
     "baseUrl": null,
-    "timeoutMs": 8000,
+    "timeoutMs": 30000,
     "minContentChars": 12000
-  }
+  },
+  "knowledgeGraph": {
+    "kgMultiHopEnabled": true,
+    "kgMaxDepth": 2,
+    "kgNeighborhoodLimit": 50,
+    "kgMultiHopWeight": 0.7,
+    "kgDepthDecay": 0.5,
+    "kgTraversalTimeoutMs": 50,
+    "kgRelationAllowList": [
+      "USES",
+      "DEPENDS_ON",
+      "BELONGS_TO",
+      "PART_OF",
+      "OWNS",
+      "CONFIGURES",
+      "IMPLEMENTS",
+      "RUNS_IN",
+      "DEPLOYS_TO",
+      "CAUSES",
+      "FIXES",
+      "BLOCKS",
+      "UNBLOCKS",
+      "AFFECTS",
+      "REFERENCES",
+      "AUTHENTICATES_WITH",
+      "PRECEDES",
+      "FOLLOWS"
+    ],
+    "kgSupersedeEnabled": true,
+    "kgSupersedeContentPatterns": false,
+    "kgSupersedeConfidenceThreshold": 0.8,
+    "kgSupersedeDeprioritizeWeight": 0.5,
+    "kgPruneEnabled": true,
+    "kgSupersededKeepN": 10,
+    "kgPruneOrphanEntities": true
+  },
+  "communitySummaries": {
+    "enabled": true,
+    "readPath": {
+      "enabled": false
+    },
+    "algorithm": "connected_components",
+    "advancedAlgorithmFallback": "connected_components",
+    "summaryMaxChars": 1200,
+    "maxCommunitiesPerProject": 200,
+    "maxRetrievalCommunities": 3,
+    "maxEvidencePerCommunity": 8,
+    "sourceObservationLimit": 12,
+    "rebuildMaxTriples": 5000,
+    "staleBehavior": "skip",
+    "kgCommunityWeight": 0.45,
+    "enrichment": {
+      "enabled": false,
+      "timeoutMs": 8000,
+      "maxCostUsd": 0,
+      "maxChars": 1200
+    }
+  },
+  "maintenance": {
+    "enabled": true,
+    "defaultMode": "dry-run",
+    "automatic": {
+      "enabled": false,
+      "maxRecordsPerRun": 500
+    },
+    "readPath": {
+      "enabled": true
+    },
+    "consolidation": {
+      "enabled": true,
+      "exactHashThreshold": 1,
+      "lexicalSimilarityThreshold": 0.92,
+      "reviewSimilarityThreshold": 0.82
+    },
+    "reflection": {
+      "enabled": true,
+      "minSourceCount": 2,
+      "maxSourceCount": 8,
+      "contentBudgetChars": 1200,
+      "modelAssisted": false
+    },
+    "decay": {
+      "enabled": true,
+      "defaultState": "attenuated",
+      "staleAfterDays": 180,
+      "redundantDuplicateCount": 2,
+      "lowValueTypes": [
+        "discovery",
+        "manual"
+      ],
+      "scoreMultiplier": 0.6
+    }
+  },
+  "graphFactsSource": "kg"
 }
 ```
+
+`communitySummaries` derives compressed graph neighborhoods for maintenance/rebuild and retrieval support. Rebuilds are enabled by config (`communitySummaries.enabled`) and can generate metadata continuously, but retrieval/context usage requires operator opt-in via `communitySummaries.readPath.enabled` (default `false`) and per-project rollout eligibility gates. Opt-in is necessary but not sufficient: eligibility gates still control which projects can surface community summaries. This is reversible—clearing the opt-in in env or persisted config restores the disabled baseline. This gate is evidence-bounded and does not make community summaries globally default-on or claim deferred-scope parity; it does not add P5 graph navigation, GraphRAG synthesis, or multi-harness behavior. This lets eligible projects reuse cross-session context without re-reading all raw observations.
+
+`knowledgeGraph.kgSupersedeContentPatterns` is intentionally default-off. Deterministic same-source graph diffs remain the primary supersession signal; optional content phrases such as "replaced by" or "deprecated" are lower-confidence hints and should only be enabled after validating the project corpus against false positives.
 
 | Environment Variable          | Default    | Description                                 |
 | ----------------------------- | ---------- | ------------------------------------------- |
 | `THOTH_DATA_DIR`              | `~/.thoth` | Data directory for SQLite database          |
+| `THOTH_PROJECT`               | unset      | Default project for saves/searches when callers omit one |
 | `THOTH_MAX_CONTENT_LENGTH`    | `100000`   | Max content length (warns, never truncates) |
+| `THOTH_MAX_CONTEXT_CHARS`     | `8000`     | Default output budget for context/summary responses |
 | `THOTH_MAX_CONTEXT_RESULTS`   | `20`       | Max observations in context response        |
 | `THOTH_MAX_SEARCH_RESULTS`    | `20`       | Max search results returned                 |
 | `THOTH_DEDUPE_WINDOW_MINUTES` | `15`       | Rolling deduplication window                |
@@ -516,8 +712,59 @@ Default editable config:
 | `THOTH_KG_LLM_PROVIDER`       | `transformers_local` | KG LLM provider (`transformers_local`, `ollama`, `lmstudio`) |
 | `THOTH_KG_LLM_MODEL`          | `onnx-community/Qwen2.5-Coder-0.5B-Instruct` | KG LLM model id |
 | `THOTH_KG_LLM_BASE_URL`       | unset      | KG LLM provider base URL for remote providers |
-| `THOTH_KG_LLM_TIMEOUT_MS`     | `8000`     | KG LLM timeout before deterministic-only fallback |
+| `THOTH_KG_LLM_TIMEOUT_MS`     | `30000`    | KG LLM timeout before deterministic-only fallback |
 | `THOTH_KG_LLM_MIN_CONTENT_CHARS` | `12000` | Minimum observation size that triggers LLM enrichment |
+| `THOTH_GRAPH_FACTS_SOURCE`  | `kg`       | Graph facts source for read paths |
+| `THOTH_KG_MULTI_HOP_ENABLED` | `true`    | Enable entity-anchored multi-hop KG recall |
+| `THOTH_KG_MAX_DEPTH`        | `2`        | Maximum KG traversal depth |
+| `THOTH_KG_NEIGHBORHOOD_LIMIT` | `50`     | Maximum KG neighborhood rows considered |
+| `THOTH_KG_MULTI_HOP_WEIGHT` | `0.7`      | Ranking contribution from multi-hop KG evidence |
+| `THOTH_KG_DEPTH_DECAY`      | `0.5`      | Per-depth decay for KG traversal weight |
+| `THOTH_KG_TRAVERSAL_TIMEOUT_MS` | `50`   | KG traversal time budget |
+| `THOTH_KG_RELATION_ALLOW_LIST` | default relation taxonomy | Comma-separated relation allow-list override |
+| `THOTH_KG_SUPERSEDE_ENABLED` | `true`    | Enable KG supersession marking/current-state graph views |
+| `THOTH_KG_SUPERSEDE_CONTENT_PATTERNS` | `false` | Optional lower-confidence content phrase supersession hints |
+| `THOTH_KG_SUPERSEDE_CONFIDENCE_THRESHOLD` | `0.8` | Minimum confidence for optional content-pattern hints |
+| `THOTH_KG_SUPERSEDE_DEPRIORITIZE_WEIGHT` | `0.5` | Ranking multiplier for superseded KG evidence |
+| `THOTH_KG_PRUNE_ENABLED`    | `true`     | Enable keep-N pruning of superseded KG history |
+| `THOTH_KG_SUPERSEDED_KEEP_N` | `10`      | Superseded KG triples retained per source/subject/relation slot |
+| `THOTH_KG_PRUNE_ORPHAN_ENTITIES` | `true` | Remove KG entities left without referencing triples after pruning |
+| `THOTH_COMMUNITY_ENABLED` | `true` | Enable derived community metadata/rebuild behavior |
+| `THOTH_COMMUNITY_READ_PATH_ENABLED` | `false` | Opt-in retrieval/context use of community summaries; clear/unset to rollback to disabled baseline |
+| `THOTH_COMMUNITY_ALGORITHM` | `connected_components` | Community detection algorithm |
+| `THOTH_COMMUNITY_ADVANCED_ALGORITHM_FALLBACK` | `connected_components` | Fallback community algorithm |
+| `THOTH_COMMUNITY_SUMMARY_MAX_CHARS` | `1200` | Max chars per community summary |
+| `THOTH_COMMUNITY_MAX_COMMUNITIES_PER_PROJECT` | `200` | Max communities built per project |
+| `THOTH_COMMUNITY_MAX_RETRIEVAL_COMMUNITIES` | `3` | Max communities surfaced per retrieval |
+| `THOTH_COMMUNITY_MAX_EVIDENCE_PER_COMMUNITY` | `8` | Evidence rows per community summary |
+| `THOTH_COMMUNITY_SOURCE_OBSERVATION_LIMIT` | `12` | Max source observations sampled per community |
+| `THOTH_COMMUNITY_REBUILD_MAX_TRIPLES` | `5000` | Rebuild triplets cap |
+| `THOTH_COMMUNITY_STALE_BEHAVIOR` | `skip` | Stale community metadata handling |
+| `THOTH_COMMUNITY_KG_WEIGHT` | `0.45` | Ranking weight for community signal |
+| `THOTH_COMMUNITY_ENRICHMENT_ENABLED` | `false` | Optional community summary enrichment |
+| `THOTH_COMMUNITY_ENRICHMENT_TIMEOUT_MS` | `8000` | Community enrichment timeout |
+| `THOTH_COMMUNITY_ENRICHMENT_MAX_COST_USD` | `0` | Community enrichment cost ceiling |
+| `THOTH_COMMUNITY_ENRICHMENT_MAX_CHARS` | `1200` | Max chars per enriched community summary |
+| `THOTH_MAINTENANCE_ENABLED` | `true` | Global maintenance switch |
+| `THOTH_MAINTENANCE_DEFAULT_MODE` | `dry-run` | Maintenance default mode |
+| `THOTH_MAINTENANCE_AUTOMATIC_ENABLED` | `false` | Enable automatic maintenance jobs |
+| `THOTH_MAINTENANCE_AUTOMATIC_MAX_RECORDS_PER_RUN` | `500` | Automatic job batch size |
+| `THOTH_MAINTENANCE_READ_PATH_ENABLED` | `true` | Consume maintenance metadata in retrieval/context |
+| `THOTH_MAINTENANCE_CONSOLIDATION_ENABLED` | `true` | Enable consolidation metadata generation |
+| `THOTH_MAINTENANCE_CONSOLIDATION_EXACT_HASH_THRESHOLD` | `1` | Consolidation hash threshold |
+| `THOTH_MAINTENANCE_CONSOLIDATION_LEXICAL_SIMILARITY_THRESHOLD` | `0.92` | Consolidation lexical threshold |
+| `THOTH_MAINTENANCE_CONSOLIDATION_REVIEW_SIMILARITY_THRESHOLD` | `0.82` | Consolidation review threshold |
+| `THOTH_MAINTENANCE_REFLECTION_ENABLED` | `true` | Enable reflection maintenance lane |
+| `THOTH_MAINTENANCE_REFLECTION_MIN_SOURCE_COUNT` | `2` | Reflection minimum source count |
+| `THOTH_MAINTENANCE_REFLECTION_MAX_SOURCE_COUNT` | `8` | Reflection maximum source count |
+| `THOTH_MAINTENANCE_REFLECTION_CONTENT_BUDGET_CHARS` | `1200` | Reflection content budget |
+| `THOTH_MAINTENANCE_REFLECTION_MODEL_ASSISTED` | `false` | Optional model-assisted reflection |
+| `THOTH_MAINTENANCE_DECAY_ENABLED` | `true` | Enable maintenance decay metadata |
+| `THOTH_MAINTENANCE_DECAY_DEFAULT_STATE` | `attenuated` | Default decay state |
+| `THOTH_MAINTENANCE_DECAY_STALE_AFTER_DAYS` | `180` | Decay staleness window |
+| `THOTH_MAINTENANCE_DECAY_REDUNDANT_DUPLICATE_COUNT` | `2` | Consolidation duplicate trigger |
+| `THOTH_MAINTENANCE_DECAY_LOW_VALUE_TYPES` | `discovery,manual` | Low-value observation types |
+| `THOTH_MAINTENANCE_DECAY_SCORE_MULTIPLIER` | `0.6` | Decay score multiplier |
 
 ## Storage
 

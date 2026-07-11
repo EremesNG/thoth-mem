@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { PRAGMAS, SCHEMA_SQL } from '../../src/store/schema.js';
+import { runMigrationsWithSemantic } from '../../src/store/migrations.js';
 import { Store } from '../../src/store/index.js';
 
 function setupDb(): InstanceType<typeof Database> {
@@ -40,7 +41,13 @@ describe('Database Schema', () => {
     expect(tableNames).toContain('prompts_fts');
     expect(tableNames).toContain('sync_chunks');
     expect(tableNames).toContain('sync_mutations');
-    expect(tableNames).toContain('observation_facts');
+    expect(tableNames).toContain('maintenance_runs');
+    expect(tableNames).toContain('maintenance_consolidations');
+    expect(tableNames).toContain('maintenance_consolidation_members');
+    expect(tableNames).toContain('maintenance_reflections');
+    expect(tableNames).toContain('maintenance_reflection_sources');
+    expect(tableNames).toContain('maintenance_decay');
+    expect(tableNames).not.toContain('observation_facts');
     db.close();
   });
 
@@ -59,8 +66,9 @@ describe('Database Schema', () => {
     db.close();
   });
 
-  it('creates all expected indexes', () => {
+  it('creates all expected indexes after migrations', () => {
     const db = setupDb();
+    runMigrationsWithSemantic(db, {});
     const indexes = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name"
     ).all() as { name: string }[];
@@ -75,11 +83,37 @@ describe('Database Schema', () => {
     expect(indexNames).toContain('idx_obs_deleted');
     expect(indexNames).toContain('idx_obs_dedupe');
     expect(indexNames).toContain('idx_obs_versions_obs');
-    expect(indexNames).toContain('idx_observation_facts_observation');
-    expect(indexNames).toContain('idx_observation_facts_project');
-    expect(indexNames).toContain('idx_observation_facts_topic');
+    expect(indexNames).not.toContain('idx_observation_facts_observation');
+    expect(indexNames).not.toContain('idx_observation_facts_project');
+    expect(indexNames).not.toContain('idx_observation_facts_topic');
     expect(indexNames).toContain('idx_prompts_session');
     expect(indexNames).toContain('idx_prompts_project');
+    expect(indexNames).toContain('idx_kg_triples_superseded');
+    expect(indexNames).toContain('idx_kg_triples_slot_superseded');
+    expect(indexNames).toContain('idx_maintenance_consolidation_members_source');
+    expect(indexNames).toContain('idx_maintenance_decay_state');
+    expect(indexNames).toContain('idx_maintenance_reflection_sources_source');
+    db.close();
+  });
+
+  it('creates nullable supersession columns on kg_triples for fresh databases', () => {
+    const db = setupDb();
+    const columns = db.prepare('PRAGMA table_info(kg_triples)').all() as Array<{
+      name: string;
+      notnull: number;
+      type: string;
+    }>;
+    const byName = new Map(columns.map((column) => [column.name, column]));
+
+    expect(byName.get('superseded_by_triple_id')).toMatchObject({
+      type: 'INTEGER',
+      notnull: 0,
+    });
+    expect(byName.get('superseded_at')).toMatchObject({
+      type: 'TEXT',
+      notnull: 0,
+    });
+
     db.close();
   });
 

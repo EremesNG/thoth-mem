@@ -1,8 +1,10 @@
 import type { Store } from '../store/index.js';
+import { runSupersededPrune } from '../store/index.js';
+import { DEFAULT_KNOWLEDGE_GRAPH_CONFIG } from '../config.js';
 import type { EmbeddingProviderAdapter } from '../retrieval/providers.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../retrieval/sentences.js';
 import { vectorToBuffer } from '../retrieval/sqlite-vec.js';
-import { extractKnowledgeTriples } from './kg-extractor.js';
+import { extractKnowledgeTriples, SUPERSESSION_CONTENT_PATTERNS } from './kg-extractor.js';
 import type { KgLlmExtractor } from './kg-llm-generator.js';
 
 interface JobRow {
@@ -26,6 +28,19 @@ interface LaneStateUpdate {
   stale: number;
   degraded: number;
 }
+type KgExtractionResult = ReturnType<typeof extractKnowledgeTriples>;
+type ObservationKgRow = {
+  id: number;
+  title: string;
+  content: string;
+  project: string | null;
+  topic_key: string | null;
+  sync_id: string | null;
+};
+type TouchedPruneSlot = {
+  subjectEntityId: number;
+  relation: string;
+};
 
 const STALE_RUNNING_JOB_MODIFIER = '-15 minutes';
 const MAX_VEC_ROWID_PROBES = 2048;
@@ -417,9 +432,7 @@ function processRebuildJob(store: Store, jobKey: string): void {
 
 async function processKgJob(store: Store, observationId: number, kgLlmExtractor: KgLlmExtractor | null): Promise<string | null> {
   const db = store.getDb();
-  const obs = db.prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
-    | { id: number; title: string; content: string; project: string | null; topic_key: string | null; sync_id: string | null }
-    | undefined;
+  const obs = loadObservationForKg(store, observationId);
   if (!obs) {
     db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
     return null;
@@ -441,6 +454,8 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
   let extraction = extractKnowledgeTriples(extractionInput);
   let warning: string | null = null;
 
+  writeDeterministicKgFacts(store, observationId);
+
   if (extraction.strategy.llmFallback === 'recommended' && kgLlmExtractor) {
     try {
       const llmTriples = await kgLlmExtractor.extract({
@@ -459,6 +474,41 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       extraction = extractKnowledgeTriples(extractionInput);
     }
   }
+  if (extraction.strategy.llmFallback === 'used') {
+    persistKgExtraction(store, obs, extraction);
+  }
+  return warning;
+}
+
+function loadObservationForKg(store: Store, observationId: number): ObservationKgRow | undefined {
+  return store.getDb().prepare('SELECT id, title, content, project, topic_key, sync_id FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
+    | ObservationKgRow
+    | undefined;
+}
+
+export function writeDeterministicKgFacts(store: Store, observationId: number): void {
+  const db = store.getDb();
+  const obs = loadObservationForKg(store, observationId);
+  if (!obs) {
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(observationId);
+    return;
+  }
+
+  const extraction = extractKnowledgeTriples({
+    content: obs.content,
+    provenance: `observation:${obs.id}`,
+    subjectHint: obs.topic_key ?? obs.title,
+    project: obs.project,
+    topicKey: obs.topic_key,
+  });
+
+  persistKgExtraction(store, obs, extraction);
+}
+
+function persistKgExtraction(store: Store, obs: ObservationKgRow, extraction: KgExtractionResult): void {
+  const db = store.getDb();
+  const knowledgeGraphConfig = store.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+  const supersedeEnabled = knowledgeGraphConfig.kgSupersedeEnabled;
   db.prepare(
     `INSERT INTO kg_taxonomy_metadata (id, taxonomy_version, entity_types_json, relation_types_json, updated_at)
      VALUES (1, ?, ?, ?, datetime('now'))
@@ -489,14 +539,51 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       provenance = excluded.provenance,
       confidence = excluded.confidence,
       extractor_version = excluded.extractor_version,
+      superseded_by_triple_id = NULL,
+      superseded_at = NULL,
       updated_at = datetime('now')`
   );
+  const selectTripleByHash = db.prepare('SELECT id FROM kg_triples WHERE triple_hash = ?');
 
-  db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(obs.id);
+  const priorRows = supersedeEnabled
+    ? db.prepare(
+      `SELECT t.id, t.triple_hash, t.subject_entity_id, t.relation, se.canonical_name AS subject, oe.canonical_name AS object,
+              t.superseded_by_triple_id, t.superseded_at
+       FROM kg_triples t
+       JOIN kg_entities se ON se.id = t.subject_entity_id
+       JOIN kg_entities oe ON oe.id = t.object_entity_id
+       WHERE t.source_type = 'observation' AND t.source_id = ?
+       ORDER BY t.id ASC`
+    ).all(obs.id) as Array<{
+      id: number;
+      triple_hash: string;
+      subject_entity_id: number;
+      relation: string;
+      subject: string;
+      object: string;
+      superseded_by_triple_id: number | null;
+      superseded_at: string | null;
+    }>
+    : [];
+  const priorByHash = new Map(priorRows.map((row) => [row.triple_hash, row]));
+
+  if (!supersedeEnabled) {
+    db.prepare("DELETE FROM kg_triples WHERE source_type = 'observation' AND source_id = ?").run(obs.id);
+  }
+
+  const newRows: Array<{
+    id: number;
+    tripleHash: string;
+    subject: string;
+    relation: string;
+    object: string;
+  }> = [];
+  const newHashes = new Set<string>();
 
   for (const triple of extraction.triples) {
     const subject = upsertEntity.get(`entity:${triple.subject}`, triple.subjectType, triple.subject) as { id: number };
     const object = upsertEntity.get(`entity:${triple.object}`, triple.objectType, triple.object) as { id: number };
+    const scopedTripleHash = `observation:${obs.id}:${triple.tripleHash}`;
     insertTriple.run(
       subject.id,
       triple.relation,
@@ -507,11 +594,81 @@ async function processKgJob(store: Store, observationId: number, kgLlmExtractor:
       obs.topic_key,
       triple.provenance,
       triple.confidence,
-      `observation:${obs.id}:${triple.tripleHash}`,
+      scopedTripleHash,
       extraction.taxonomy.version
     );
+    const row = selectTripleByHash.get(scopedTripleHash) as { id: number };
+    newHashes.add(scopedTripleHash);
+    newRows.push({
+      id: row.id,
+      tripleHash: scopedTripleHash,
+      subject: triple.subject,
+      relation: triple.relation,
+      object: triple.object,
+    });
   }
-  return warning;
+
+  if (!supersedeEnabled) {
+    return;
+  }
+
+  const markSuperseded = db.prepare(
+    `UPDATE kg_triples
+     SET superseded_at = datetime('now'), superseded_by_triple_id = ?
+     WHERE id = ?
+       AND superseded_at IS NULL
+       AND superseded_by_triple_id IS NULL`
+  );
+  const touchedSlots = new Map<string, TouchedPruneSlot>();
+  const rememberTouchedSlot = (prior: { subject_entity_id: number; relation: string }) => {
+    const key = `${prior.subject_entity_id}\u0000${prior.relation}`;
+    touchedSlots.set(key, {
+      subjectEntityId: prior.subject_entity_id,
+      relation: prior.relation,
+    });
+  };
+
+  for (const prior of priorByHash.values()) {
+    if (newHashes.has(prior.triple_hash)) continue;
+    const replacement = newRows.find((row) => (
+      row.subject === prior.subject
+      && row.relation === prior.relation
+      && row.object !== prior.object
+    ));
+    const result = markSuperseded.run(replacement?.id ?? null, prior.id);
+    if (result.changes > 0) {
+      rememberTouchedSlot(prior);
+    }
+  }
+
+  if (knowledgeGraphConfig.kgSupersedeContentPatterns) {
+    const contentHasSupersessionHint = SUPERSESSION_CONTENT_PATTERNS.some((hint) => (
+      hint.confidence >= knowledgeGraphConfig.kgSupersedeConfidenceThreshold && hint.pattern.test(obs.content)
+    ));
+    if (contentHasSupersessionHint) {
+      const normalizedContent = obs.content.toLowerCase();
+      for (const prior of priorByHash.values()) {
+        if (!normalizedContent.includes(prior.object.toLowerCase())) {
+          continue;
+        }
+        const result = markSuperseded.run(null, prior.id);
+        if (result.changes > 0) {
+          rememberTouchedSlot(prior);
+        }
+      }
+    }
+  }
+
+  if (knowledgeGraphConfig.kgPruneEnabled && touchedSlots.size > 0) {
+    runSupersededPrune(db, {
+      keepN: knowledgeGraphConfig.kgSupersededKeepN,
+      orphanCleanup: knowledgeGraphConfig.kgPruneOrphanEntities,
+      slotFilter: {
+        sourceId: obs.id,
+        pairs: Array.from(touchedSlots.values()),
+      },
+    });
+  }
 }
 
 function cleanupSemanticArtifactsForObservation(store: Store, observationId: number): void {

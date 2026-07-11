@@ -326,7 +326,7 @@ class RemoteKgLlmExtractor implements KgLlmExtractor {
           { role: 'user', content: prompt },
         ],
         temperature: 0,
-        response_format: { type: 'json_object' },
+        response_format: { type: 'text' },
         max_tokens: 1000,
       }, this.config.timeoutMs);
 

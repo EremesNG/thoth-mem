@@ -1,0 +1,21 @@
+{
+  "name": "thoth-mem",
+  "version": "0.3.7",
+  "description": "Persistent project memory through the existing six thoth-mem MCP tools.",
+  "author": {
+    "name": "thoth-mem maintainers"
+  },
+  "homepage": "https://github.com/EremesNG/thoth-mem",
+  "repository": "https://github.com/EremesNG/thoth-mem",
+  "license": "MIT",
+  "keywords": ["memory", "mcp", "sessions", "context"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "thoth-mem Persistent Memory",
+    "shortDescription": "Privacy-safe root-session memory and bounded recall.",
+    "developerName": "thoth-mem maintainers",
+    "category": "Productivity"
+  }
+}

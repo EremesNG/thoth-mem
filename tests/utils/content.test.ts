@@ -86,6 +86,18 @@ describe('formatObservationMarkdown', () => {
   it('omits topic_key when null', () => {
     expect(formatObservationMarkdown({ ...baseObservation, topic_key: null })).not.toContain('**Topic:**');
   });
+
+  it('renders a bounded content preview when preview mode is enabled', () => {
+    const longContent = `${'word '.repeat(80)}tail marker`;
+
+    const preview = formatObservationMarkdown({ ...baseObservation, content: longContent }, { preview: true });
+    const full = formatObservationMarkdown({ ...baseObservation, content: longContent });
+
+    expect(preview).toContain('### [decision] Use content utils (ID: 7)');
+    expect(preview).toContain('...');
+    expect(preview).not.toContain(longContent);
+    expect(full).toContain(longContent);
+  });
 });
 
 describe('formatSearchResultMarkdown', () => {
