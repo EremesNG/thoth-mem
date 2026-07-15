@@ -1,6 +1,10 @@
-# Packaging
+# Delta for Packaging
 
-## Requirements
+## ADDED Requirements
+
+None.
+
+## MODIFIED Requirements
 
 ### Requirement: Published Package MUST Contain Native Assets for All Three Harnesses
 The published thoth-mem package MUST contain complete, host-discoverable integration assets for OpenCode, Codex, and Claude Code. OpenCode assets MUST support `thoth-mem setup opencode`; Codex assets MUST provide the marketplace/plugin identity and runtime content required by Codex plugin-manager installation and the packaged content required by the explicit legacy fallback; and Claude Code assets MUST support repository marketplace registration followed by `claude plugin install thoth-mem`. Modern Codex setup MUST make Codex consume and own its manager-installed content, while only the legacy strategy MAY direct-copy the packaged fallback content.
@@ -15,7 +19,6 @@ The published thoth-mem package MUST contain complete, host-discoverable integra
 - GIVEN the published package or controlled marketplace fixture is available without the development checkout
 - WHEN a compatible Codex plugin manager resolves thoth-mem
 - THEN the expected marketplace, plugin manifest, hook, skill, runner, and MCP declaration MUST be discoverable under the exact thoth-mem identity
-- AND the Codex MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `thoth-mem` and args `["mcp", "--no-http"]`
 - AND thoth-mem setup MUST NOT need to copy that manager-installed content into the legacy direct-install target
 
 #### Scenario: Legacy Codex fallback assets are discoverable
@@ -35,81 +38,6 @@ The published thoth-mem package MUST contain complete, host-discoverable integra
 - WHEN package integrity verification compares their version and stable content identity
 - THEN the identities MUST be compatible with the packed package version
 - AND verification MUST fail if the strategies would install conflicting plugin identities or runtime content
-
-### Requirement: Hook Execution MUST Use Portable Node Runners
-Every packaged harness hook MUST invoke a Node.js runner compatible with the package runtime floor and MUST NOT require Bash, PowerShell, a repository checkout, or the caller's current working directory. Runner resolution MUST work from global and project installations on Windows and POSIX systems, including paths containing spaces.
-
-#### Scenario: Runner works from an unrelated working directory
-- GIVEN a packed artifact is installed and the caller's current working directory is outside the package and target project
-- WHEN a harness invokes a declared hook
-- THEN the Node runner MUST resolve all required packaged assets
-- AND it MUST NOT read a repository-relative runtime dependency
-
-#### Scenario: Windows path with spaces is supported
-- GIVEN the package or harness home is installed at a Windows path containing spaces
-- WHEN a packaged hook invokes its runner
-- THEN the intended Node runner MUST execute with intact arguments
-- AND no PowerShell- or command-shell-specific wrapper MUST be required
-
-#### Scenario: POSIX path with spaces is supported
-- GIVEN the package or harness home is installed at a POSIX path containing spaces
-- WHEN a packaged hook invokes its runner
-- THEN the intended Node runner MUST execute with intact arguments
-- AND no Bash-specific wrapper MUST be required
-
-### Requirement: NPM Tarball MUST Include the Complete Integration Inventory
-The npm tarball MUST include every manifest, marketplace descriptor, plugin descriptor, hook declaration, skill, adapter entry point, Node runner, setup asset, and packaged instruction required by the three native integrations. Package-content verification MUST evaluate one canonical inventory whose entries each contain exactly one harness owner (`opencode`, `codex`, `claude`), one role, and one unique package-relative path. Every runtime-declared asset MUST appear exactly once in that inventory, and every inventory entry MUST exist in the tarball. Codex MCP verification MUST require a top-level `mcpServers` object containing exactly one `thoth-mem` server and MUST reject flat root declarations. Verification MUST fail for a missing, duplicate, undeclared, or extra required runtime asset or when a declared runtime path resolves outside the tarball.
-
-#### Scenario: Complete tarball passes inventory verification
-- GIVEN the package is packed using the release packaging flow
-- WHEN package-content verification inspects the tarball
-- THEN every required integration inventory item for OpenCode, Codex, and Claude Code MUST be present
-- AND every declared runtime path MUST resolve to an item inside the unpacked artifact
-
-#### Scenario: Missing asset fails packaging verification
-- GIVEN a required hook runner or manifest is omitted from the tarball
-- WHEN package-content verification runs
-- THEN verification MUST fail
-- AND it MUST identify the missing harness, asset, and declared path
-
-#### Scenario: Source-tree-only asset is rejected
-- GIVEN a manifest references a file that exists in the repository but is excluded from the tarball
-- WHEN package-content verification runs against the packed artifact
-- THEN verification MUST fail
-- AND source-tree presence MUST NOT satisfy the packed-artifact requirement
-
-#### Scenario: Canonical inventory rejects duplicate or undeclared runtime assets
-- GIVEN two inventory entries use the same package-relative path or a manifest declares a runtime asset absent from the inventory
-- WHEN package-content verification runs
-- THEN verification MUST fail
-- AND it MUST identify the duplicate or undeclared path and owning harness
-
-### Requirement: Manifest Versions and Paths MUST Be Internally Consistent
-Every version-bearing native manifest MUST equal the packed `package.json` version exactly, and every manifest path MUST resolve to the intended asset within the package or marketplace root. Both normalized lexical paths and resolved real paths after following links MUST remain within the applicable root. Packaging verification MUST reject version ranges, stale versions, missing targets, absolute checkout paths, lexical traversal, link-based escapes, and harness declarations that disagree about the installed plugin identity.
-
-#### Scenario: Versions and plugin identity agree
-- GIVEN a thoth-mem package tarball and its native manifests
-- WHEN integrity verification runs
-- THEN every version-bearing manifest MUST match or explicitly declare compatibility with the package version
-- AND every harness MUST identify the integration as thoth-mem
-
-#### Scenario: Stale version is rejected
-- GIVEN a native manifest declares an incompatible or stale thoth-mem version
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND it MUST identify the manifest and conflicting versions
-
-#### Scenario: Escaping or absolute checkout path is rejected
-- GIVEN a native manifest declares an absolute repository path or a relative path that escapes the package or marketplace root
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND the unsafe path MUST NOT be executed during smoke testing
-
-#### Scenario: Link-based path escape is rejected
-- GIVEN a declared package-relative asset resolves through a link to a target outside the package or marketplace root
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND the external target MUST NOT be executed or accepted as packaged content
 
 ### Requirement: Installation Smoke Tests MUST Execute From the Packed Artifact
 Release verification MUST install and exercise the actual npm tarball in isolated harness homes and project directories. Automated smoke tests MUST use controlled filesystem and command-executor fixtures for Codex and MUST NOT mutate a real personal/global Codex installation. They MUST prove OpenCode global and project setup, modern and legacy Codex ownership behavior, dual-state migration and idempotency, Codex global/project scope confinement, and Claude Code marketplace/plugin installation without resolving runtime files from the source checkout. A real Codex smoke mutation MAY run only after separate explicit user authorization and MUST use disposable controlled homes/projects.
@@ -188,3 +116,22 @@ Release verification MUST install and exercise the actual npm tarball in isolate
 - WHEN a real Codex mutation smoke test is considered
 - THEN it MUST NOT run without separate explicit user authorization
 - AND any authorized run MUST target disposable controlled global and project homes
+
+## REMOVED Requirements
+
+None.
+
+## Assumptions
+
+- The published package continues to carry Codex integration descriptors and runtime assets even though the modern setup route delegates installation and cache ownership to Codex.
+- Controlled Codex fixtures are authoritative automated acceptance evidence until a separately authorized real smoke run is available.
+- Project-scoped manager operations are exercised only when the controlled capability fixture proves that scope; otherwise the legacy strategy is tested for that scope.
+- Modern and legacy assets share one stable package/plugin identity and compatible runtime content rather than becoming independent release products.
+
+## handoffHints
+
+- Design MUST keep one canonical packaged identity while making modern manager consumption and legacy direct-copy consumption distinct.
+- Design MUST ensure packed smoke fixtures cover modern, legacy, proven dual-state, ambiguous, project/global, repeat no-op, and executable-path variation cases.
+- Design MUST keep automated Codex verification isolated and credential-free; real mutation remains a separate user-authorized gate.
+- Design MUST preserve checkout independence and existing OpenCode/Claude packed-install coverage.
+
