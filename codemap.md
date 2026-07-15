@@ -11,7 +11,7 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 - `src/config.ts` - environment-driven runtime configuration and data directory resolution.
 - `src/http-server.ts` - HTTP bridge server with REST API, route matching, and bridge ownership/takeover for port conflict resolution.
 - `src/integration/runtime/integration-event-command.ts` - package-internal integration-event entry point that validates hook input and runs the host-neutral lifecycle core.
-- `src/setup/engine.ts` - managed OpenCode/Codex setup planner, executor, verifier, receipt recovery, and rollback coordinator.
+- `src/setup/engine.ts` - managed OpenCode/Codex setup strategy planner, executor, verifier, V2 receipt recovery, migration, idempotency, and rollback coordinator.
 - `integrations/inventory.json` - canonical package-relative inventory for every native harness runtime asset.
 - `AGENTS.md` - repository instructions for coding agents, including commands and conventions.
 
@@ -40,7 +40,7 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 - CLI command dispatch in `src/cli.ts` with `withStore` lifecycle wrapper for database operations and automatic cleanup.
 - Incremental sync via mutation watermarks and manifest-driven chunk tracking in `src/sync/` for efficient data export and import.
 - Adapter/core separation in `src/integration/`: host payloads normalize at the edge, while lifecycle planning and confirmed MCP effects stay harness-neutral.
-- Receipt-backed setup in `src/setup/`: plans are zero-write, mutations are ownership-bounded, and rollback uses validated write-ahead evidence.
+- Strategy- and receipt-backed setup in `src/setup/`: plans are zero-write, verified no-ops return before locking, Codex chooses one immutable owner, mutations are ownership-bounded, and rollback uses validated write-ahead evidence.
 - Inventory-driven packaging: one canonical asset list feeds synchronization, verification, build, and tarball checks.
 
 ## Data & Control Flow
@@ -76,9 +76,12 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 ### Managed Setup Path
 1. `src/cli.ts` parses `setup opencode|codex`, scope, plan, force, rollback, and output flags.
 2. `src/setup/paths.ts` confines global or explicit project targets, and harness planners inspect only managed configuration locations.
-3. `src/setup/engine.ts` produces a zero-write plan or coordinates backups, an HMAC-protected write-ahead receipt, atomic changes, and post-write verification.
-4. `src/setup/codex-cli.ts` probes and verifies optional Codex marketplace/plugin commands independently from reversible filesystem steps.
-5. Rollback restores only receipt-owned values and preserves unrelated configuration.
+3. For Codex, `src/setup/codex-cli.ts` classifies the tested `0.144.x` version family, selected-scope command grammar, and exact marketplace/plugin state; `src/setup/engine.ts` freezes either `plugin_manager` or `legacy_filesystem` before mutation and never falls back after modern execution starts.
+4. A previously completed, independently verified state returns from a read-only preflight before transaction locking, with no write, receipt, backup, or manager mutation.
+5. Mutating Codex attempts write an HMAC-protected V2 receipt before the first mutation and checkpoint each external command or migration fragment. V1 receipts remain bounded to their original signed claims.
+6. The modern route leaves marketplace/cache/activation ownership to Codex. The legacy route owns only packaged copied assets, stable metadata/content identity, and exact managed TOML fragments.
+7. Proven dual-owned migration checkpoints manager state, then removes the owned config fragment, metadata, and assets in sequence before a final reread. Recovery restores only exact fragments or completes a verified manager-owned state.
+8. Legacy/migration rollback preserves unrelated later configuration. Modern manager removal remains manual-only because no independently verified removal grammar is implemented; setup never deletes Codex cache/config directly.
 
 ## Native Package Inventory
 
@@ -107,7 +110,7 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 1. `scripts/sync-integration-assets.mjs` synchronizes package versions and canonical runner copies; it is the explicit mutating preparation step.
 2. `scripts/verify-integration-package.mjs` performs read-only inventory, manifest, version, lexical/realpath containment, and package-file checks.
 3. `scripts/build.mjs` produces the existing Node bundle and then invokes the integration verifier, so stale native assets fail the build gate instead of being repaired silently.
-4. Package publication and packed-install tests consume the tarball file list and `integrations/inventory.json`, keeping source checkout paths out of runtime verification.
+4. Package publication and packed-install tests consume the tarball file list and `integrations/inventory.json`, keeping source checkout paths out of runtime verification. Codex ownership tests use injected commands, isolated global/project homes, and credential-free environments; real manager/setup mutation remains a separately authorized disposable-home operation.
 
 ## Root Asset Notes
 - `package.json` defines runtime, test, build, native integration sync/verify, version, and release scripts.

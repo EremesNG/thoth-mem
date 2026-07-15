@@ -84,6 +84,8 @@ Global scope manages only the current user's harness configuration plus thoth-me
 
 Engram, thoth-agents, or another memory integration may already provide overlapping hooks or instructions. Treat this as a warning only: thoth-mem does not edit, disable, remove, or write to external repositories. Review the active harness configuration and choose which integration should own overlapping lifecycle events.
 
+Codex setup has one owner per attempt. For the tested Codex `0.144.x` capability set, the Codex plugin manager owns marketplace registration, cached plugin content, enablement, and generated activation/configuration. Thoth-mem orchestrates and verifies that state but does not copy the plugin into the legacy target or add a second legacy activation block. Other Codex versions are not assumed compatible: setup must prove the required version, scope, command grammar, and independent verification before it selects plugin-manager ownership.
+
 ### Manual MCP fallback
 
 Native hooks are optional. You can keep or restore a plain MCP connection at any time using the [manual MCP configuration](#mcp-configuration) below; this fallback uses the same six-tool server and does not require managed setup or a native plugin.
@@ -96,6 +98,8 @@ Use managed setup for native OpenCode or Codex integration. Global scope is the 
 thoth-mem setup opencode
 thoth-mem setup codex --scope global --plan --json
 ```
+
+Codex chooses its ownership strategy before mutation and keeps it for the entire attempt. If the tested plugin-manager path is unavailable or unproven for the selected scope, and existing manager state is safely classified, setup may select the packaged `legacy_filesystem` route. A manager command that fails after modern selection does not trigger a legacy fallback.
 
 Project scope is explicit and requires a project path. The following examples also show the ownership-bounded conflict override and receipt rollback forms:
 
@@ -112,8 +116,8 @@ thoth-mem setup codex --rollback /path/to/receipt.json
 | `--scope global` | Explicitly selects global scope; `--project` is rejected. |
 | `--scope project --project <path>` | Confines inspection, files, receipts, and rollback to the selected project. |
 | `--plan` | Reports the ordered plan and detected conflicts/capabilities. Plan mode performs zero writes, backups, receipts, or mutating external commands. |
-| `--force` | Replaces conflicts only at thoth-mem-managed locations after backup. It never grants access to unrelated configuration or bypasses receipt validation. |
-| `--rollback <receipt-path>` | Reverts only locations owned by that valid receipt and preserves unrelated settings and later unrelated edits. |
+| `--force` | Replaces conflicts only at thoth-mem-managed locations whose ownership is already proven and backed up. It never creates ownership, authorizes an ambiguous Codex migration, grants access to unrelated configuration, or bypasses receipt validation. |
+| `--rollback <receipt-path>` | Uses the valid receipt's exact authority. Legacy and migration receipts can restore only receipt-owned fragments; modern manager-created state may require manual manager action when removal cannot be independently verified. |
 | `--json` | Emits the stable machine-readable result object. |
 
 OpenCode global setup probes `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` or `opencode.jsonc`; in other words, the selected filename is `opencode.json` or `opencode.jsonc`. On Windows the default root is `%USERPROFILE%\.config\opencode`. Project setup probes `<project>/opencode.json` or `<project>/opencode.jsonc` and installs the direct plugin entry under `<project>/.opencode/plugins/`. If both sibling configuration files exist, setup stops for explicit operator action instead of guessing ownership.
@@ -129,18 +133,26 @@ Setup reports one status and matching process exit code:
 
 ### Receipts, recovery, and rollback
 
-Backups are created before the first mutation. After backups succeed, setup durably writes an HMAC-protected receipt with status `in_progress` before changing a target or invoking a mutating external command. Each attempted step is then recorded atomically. Receipt locations are:
+Backups are created before the first mutation of filesystem-owned legacy or migration locations. Every mutating Codex attempt durably writes an HMAC-protected V2 receipt with status `in_progress` before the first filesystem change or mutating manager command, then checkpoints each attempted external command and each migration fragment. Receipt locations are:
 
 - global receipts: `<thoth-data-dir>/setup/receipts/<receipt-id>/receipt.json`
 - project receipts: `<project>/.thoth/setup/receipts/<receipt-id>/receipt.json`
 
-An interrupted `in_progress` transaction is never inferred as complete. The next setup or rollback reports recovery guidance based on the receipt. A missing, invalid, or tampered receipt is refused even with `--force`; restore only from verified receipt evidence and its named backups.
+V2 records the immutable strategy, bounded capability evidence, manager state that existed before the attempt versus state created by the attempt, ordered checkpoints, owned migration fragments, and the final reread. Existing V1 receipts remain readable only for the claims they originally signed; they are not upgraded into proof of manager ownership or destructive migration authority. A missing, invalid, or tampered receipt fails closed even with `--force`.
 
-Rollback restores or removes only receipt-owned values. If an owned value diverged, rollback stops with `requires_user_action`; `--force` remains limited to that valid receipt-owned location and creates fresh rollback backups and a rollback receipt. Repeated setup and repeated completed rollback are no-ops with `changed=false` when the verified state already matches.
+An interrupted `in_progress` transaction is never inferred as complete. Proven dual-owned migration checkpoints the verified manager state, then removes legacy state sequentially: managed TOML fragment, installation metadata, and copied assets. Recovery uses the receipt to restore only proven fragments to a usable dual state or to finish a verified manager-owned state. It never replaces the whole TOML file, so later unrelated Codex and user changes remain intact.
+
+Rollback for legacy and migration receipts restores or removes only receipt-owned fragments and preserves unrelated settings plus later unrelated TOML changes. If an owned value diverged, rollback stops with `requires_user_action`; `--force` cannot expand the receipt's authority. External Codex registration is not atomically reversible, so automatic modern plugin-manager removal is not advertised because the tested CLI grammar does not provide independently verified removal. When a V2 receipt proves that modern setup created manager state, rollback returns a bounded manual action instead of deleting manager cache or config directly.
+
+Before acquiring the setup lock, a repeated successful Codex setup performs a verified read-only preflight. If the selected strategy and owned state still match, it returns `complete` with `changed=false` and performs no lock, write, receipt, backup, or manager mutation. Repeated setup and repeated completed rollback are no-ops when their independently verified state already matches. Detected drift continues through the normal bounded, locked setup path.
 
 ### Codex capability limits
 
-Codex marketplace registration and plugin installation are capability-gated and verified independently. Exit zero from an external command is not enough to report `complete`. If the installed Codex CLI does not advertise a safe command or cannot verify the result, setup returns `requires_user_action` or `partial` with exact manual actions; open Codex `/plugins` to inspect or complete the plugin installation. External Codex registration is not atomically reversible, so its receipt steps report evidence independently from reversible filesystem changes.
+The currently tested compatibility family is Codex `0.144.x`. Marketplace registration and plugin installation are capability-gated and verified independently for the selected scope. Exit zero from an external command is not enough to report `complete`; advertised JSON is parsed exactly, and recognized legacy text is used only when that command does not advertise JSON. Use Codex `/plugins` as an operator inspection or reload surface, not as an advertised removal command.
+
+If version, scope, mutation grammar, verification grammar, or current manager ownership cannot be proven safe before mutation, setup selects the explicit legacy route only when manager state is safely absent. Otherwise it returns `requires_user_action` with bounded evidence-based guidance. After `plugin_manager` is selected, an operational failure remains a modern `failed`, `partial`, or `requires_user_action` outcome and never installs legacy assets as recovery.
+
+Automated packed-install coverage uses injected Codex behavior, isolated global/project homes, and credential-free environments. It does not mutate a personal Codex installation. A real marketplace add, plugin add, plugin removal, or mutating `thoth-mem setup codex` smoke requires separate explicit authorization and disposable controlled homes.
 
 ## MCP Configuration
 

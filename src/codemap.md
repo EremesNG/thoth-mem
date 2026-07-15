@@ -12,7 +12,7 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 - HTTP bridge with ownership/takeover: `createHttpBridge()` attempts to bind to a port; if occupied, it takes over the existing bridge via a handshake protocol.
 - OpenAPI spec generation: `getOpenApiSpec(port)` dynamically builds an OpenAPI 3.0 document describing the REST API routes and schemas.
 - Host-neutral lifecycle core: adapters normalize host events before `MemoryIntegrationCore` plans and confirms effects through the existing six MCP tools.
-- Managed setup transaction: scope/path inspection, ownership-aware config merges, atomic filesystem changes, write-ahead receipts, and bounded rollback remain separate from lifecycle execution.
+- Managed setup state machine: scope/path inspection, immutable Codex ownership selection, verified pre-lock no-ops, exact config fragments, atomic filesystem changes, versioned write-ahead receipts, migration recovery, and bounded rollback remain separate from lifecycle execution.
 - Subsystems are isolated behind directory codemaps in `src/store/`, `src/tools/`, `src/utils/`, and `src/sync/`; native `src/integration/` and `src/setup/` modules are mapped below.
 
 ## Data & Control Flow
@@ -40,9 +40,11 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 ### Managed Harness Setup Path (cli.ts, setup/)
 1. `src/cli.ts` parses exact setup flags and delegates to `src/setup/engine.ts`.
 2. `src/setup/paths.ts` resolves global or explicit project targets; harness modules inspect and plan only their owned configuration locations.
-3. `src/setup/managed-config.ts` prepares JSONC/TOML changes, and `src/setup/filesystem.ts` applies verified backup-first atomic mutations.
-4. `src/setup/receipt.ts` persists HMAC-protected write-ahead ownership evidence and recovery state.
-5. `src/setup/codex-cli.ts` capability-gates optional Codex registration commands and verifies their outcomes independently.
+3. `src/setup/codex-cli.ts` classifies tested Codex `0.144.x`, scoped marketplace/plugin grammar, and exact manager state; setup selects one immutable `plugin_manager` or `legacy_filesystem` strategy before mutation.
+4. A completed matching Codex state can return through a read-only preflight before the transaction lock. Otherwise `src/setup/receipt.ts` persists HMAC-protected Receipt V2 evidence before mutation; V1 readers retain only their original authority.
+5. The manager strategy delegates marketplace, cache, enablement, and generated activation to Codex. The legacy strategy uses `src/setup/harnesses/codex.ts`, `src/setup/managed-config.ts`, and `src/setup/filesystem.ts` for exact managed fragments, stable content identity, backups, and atomic changes.
+6. Proven dual-state migration checkpoints manager evidence, then removes config, metadata, and assets sequentially. Recovery and rollback restore only receipt-owned fragments and preserve later unrelated TOML.
+7. Modern manager removal is manual-only when receipt-created state needs reversal; the engine reports bounded guidance and never edits manager cache/config directly.
 
 ### HTTP Bridge Path (http-server.ts, http-routes.ts)
 1. `createHttpBridge()` attempts to bind to a configured port; if occupied, it performs a takeover handshake with the existing bridge.
@@ -57,7 +59,7 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 - `src/tools/` for compact MCP tool registration.
 - `src/sync/` for multi-project sync operations used by CLI and HTTP routes.
 - `src/integration/` for native lifecycle normalization and confirmed six-tool memory effects.
-- `src/setup/` for opt-in OpenCode/Codex setup, verification, recovery, and rollback.
+- `src/setup/` for opt-in OpenCode/Codex strategy selection, setup, verification, migration recovery, idempotency, and rollback.
 - `src/utils/` for shared helpers used by deeper layers.
 - `src/cli.ts` imports Store, sync functions, config, and formatters; exports `runCli`, `isCliError`, `VERSION`.
 - `src/http-server.ts` and `src/http-routes.ts` provide REST API handlers; `http-openapi.ts` generates OpenAPI specs.
@@ -86,13 +88,13 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 
 | Module | Responsibility |
 | --- | --- |
-| `src/setup/types.ts` | Setup request, plan, step, status, result, and exit-code contracts. |
-| `src/setup/engine.ts` | Inspect/plan/apply/verify orchestration, Codex external checkpoints, receipt recovery, and rollback. |
-| `src/setup/paths.ts` | Platform-specific global and explicit project target resolution. |
+| `src/setup/types.ts` | Setup request/result contracts plus Codex strategy, capability, ownership, and evidence types. |
+| `src/setup/engine.ts` | Inspect/plan/apply/verify orchestration, pre-lock no-op checks, dual migration, V2 checkpoints, recovery, and strategy-bounded rollback. |
+| `src/setup/paths.ts` | Platform-specific global/project targets with manager-observed and legacy-owned Codex locations kept distinct. |
 | `src/setup/managed-config.ts` | Ownership-aware JSONC edits and validated TOML marker blocks. |
-| `src/setup/filesystem.ts` | Contained backup-first atomic writes, restoration, hashing, and verification. |
-| `src/setup/receipt.ts` | Durable HMAC receipt creation, validation, checkpoints, and recovery metadata. |
-| `src/setup/codex-cli.ts` | Bounded Codex CLI grammar probes, argument-array execution, and post-command verification. |
+| `src/setup/filesystem.ts` | Contained backup-first atomic writes, removal/restoration, stable entry snapshots, hashing, and verification. |
+| `src/setup/receipt.ts` | Durable HMAC Receipt V1/V2 decoding, creation, validation, checkpoints, manager evidence, and recovery metadata. |
+| `src/setup/codex-cli.ts` | Tested-version and scoped grammar classification, immutable strategy evidence, bounded argument-array execution, and exact post-command verification. |
 | `src/setup/transaction-lock.ts` | Canonical-target transaction locking, stale-lock recovery, and ownership-safe release. |
 | `src/setup/harnesses/opencode.ts` | OpenCode config/plugin asset planning and verification. |
-| `src/setup/harnesses/codex.ts` | Codex plugin-scoped TOML planning and filesystem verification. |
+| `src/setup/harnesses/codex.ts` | Legacy-only Codex managed-fragment planning, exact capture/restore, and filesystem verification. |
