@@ -1,6 +1,7 @@
 # AGENTS.md
 
-IMPORTANT: Always use `webstorm-index` MCP tools for project file navigation, including text search, file search, file reading, and refactoring. This rule applies to the root agent **and to every delegated sub-agent**.
+IMPORTANT: Prefer `webstorm-index` MCP tools for all project file navigation tasks, including text search, file search, file reading, and refactoring. This rule applies to the root agent and every delegated sub-agent. If `webstorm-index` is unavailable, returns errors, lacks the required capability, produces incomplete results, or otherwise blocks progress, the agent may use other available tools as a fallback. When doing so, it should use the least invasive suitable tool and resume using `webstorm-index` once it becomes practical.
+
 
 ## Scope
 
@@ -160,6 +161,7 @@ For deep work on a specific folder, also read that folder's `codemap.md`.
 ## Agent Working Rules for This Repo
 
 - Read the touched file before editing it.
+- Every `request_user_input` call MUST omit the `autoResolutionMs` parameter entirely; never set it to any value, including `null` or `undefined`, so the question has no expiration and the user can take as long as needed to respond.
 - Fix bugs minimally; do not refactor unrelated modules during a bugfix.
 - Do not edit `dist/` directly.
 - Do not claim a new lint command exists unless you also add it to `package.json`.
