@@ -28,11 +28,23 @@ import {
   type CodexRegistrationEvidence,
   type SetupFileSystem,
 } from '../../src/setup/engine.js';
+import type {
+  CodexCommandExecutor,
+  CodexCommandResult,
+} from '../../src/setup/codex-cli.js';
 import {
   resolveSetupPaths,
   type SetupPaths,
   type SetupRoots,
 } from '../../src/setup/paths.js';
+import {
+  createSetupReceipt,
+  loadSetupReceipt,
+  persistSetupReceipt,
+  resolveSetupReceiptPaths,
+  type ReceiptFaultEvent,
+  type SetupReceiptV2,
+} from '../../src/setup/receipt.js';
 import { planOpenCodeManagedConfig } from '../../src/setup/harnesses/opencode.js';
 import { getVersion } from '../../src/version.js';
 import {
@@ -453,7 +465,467 @@ const CONFIRMED_PROJECT_CODEX: CodexRegistrationEvidence = {
   plugin: 'confirmed',
 };
 
+interface PlanningCodexOptions {
+  version?: string;
+  marketplace?: boolean;
+  plugin?: boolean;
+  projectScoped?: boolean;
+  malformedState?: boolean;
+}
+
+class PlanningCodexExecutor implements CodexCommandExecutor {
+  readonly calls: string[][] = [];
+  readonly mutatingCalls: string[][] = [];
+
+  constructor(private readonly options: PlanningCodexOptions = {}) {}
+
+  async execute(args: readonly string[]): Promise<CodexCommandResult> {
+    const command = [...args];
+    this.calls.push(command);
+    const success = (stdout: string): CodexCommandResult => ({ exitCode: 0, stdout, stderr: '' });
+    const key = command
+      .filter((argument, index) => (
+        argument !== '--json'
+        && argument !== '--project'
+        && command[index - 1] !== '--project'
+      ))
+      .join(' ');
+    if (key === '--version') {
+      return success(this.options.version ?? 'codex-cli 0.144.0');
+    }
+    if (key === '--help') {
+      return success('Usage: codex\nCommands:\n  plugin  Manage plugins');
+    }
+    if (key === 'plugin --help') {
+      return success('Usage: codex plugin <COMMAND>\nCommands:\n  list\n  add\n  marketplace');
+    }
+    if (key === 'plugin marketplace --help') {
+      return success('Usage: codex plugin marketplace <COMMAND>\nCommands:\n  list\n  add');
+    }
+    if (key.endsWith('--help')) {
+      const supportsProject = this.options.projectScoped ? '\nOptions:\n  --project <PATH>' : '';
+      const supportsJson = key.includes(' list --help') ? '\n  --json' : '';
+      const usage = key === 'plugin marketplace add --help'
+        ? 'Usage: codex plugin marketplace add [OPTIONS] <SOURCE>'
+        : key === 'plugin marketplace list --help'
+          ? 'Usage: codex plugin marketplace list [OPTIONS]'
+          : key === 'plugin add --help'
+            ? 'Usage: codex plugin add [OPTIONS] <PLUGIN>'
+            : 'Usage: codex plugin list [OPTIONS]';
+      return success(`${usage}${supportsProject}${supportsJson}`);
+    }
+    if (key === 'plugin marketplace list') {
+      return success(this.options.malformedState
+        ? '{"marketplaces":['
+        : JSON.stringify({
+            marketplaces: this.options.marketplace
+              ? [{
+                  name: 'thoth-mem',
+                  marketplaceSource: {
+                    sourceType: 'git',
+                    source: 'https://github.com/EremesNG/thoth-mem.git',
+                  },
+                }]
+              : [],
+          }));
+    }
+    if (key === 'plugin list') {
+      return success(this.options.malformedState
+        ? JSON.stringify({ unexpected: [] })
+        : JSON.stringify({
+            installed: this.options.plugin
+              ? [{
+                  pluginId: 'thoth-mem@thoth-mem',
+                  name: 'thoth-mem',
+                  marketplaceName: 'thoth-mem',
+                  installed: true,
+                  enabled: true,
+                }]
+              : [],
+            available: [],
+          }));
+    }
+    if (key.startsWith('plugin marketplace add') || key.startsWith('plugin add')) {
+      this.mutatingCalls.push(command);
+      return success('unexpected mutation');
+    }
+    return { exitCode: 64, stdout: '', stderr: 'unexpected command' };
+  }
+}
+
+type MarketplaceMutation =
+  | 'success'
+  | 'nonzero_verified'
+  | 'collision'
+  | 'ordinary_failure';
+type PluginMutation = 'success' | 'ordinary_failure';
+
+interface ExecutingCodexOptions {
+  marketplaceInitially?: boolean;
+  pluginInitially?: boolean;
+  marketplaceMutation?: MarketplaceMutation;
+  pluginMutation?: PluginMutation;
+  removeAvailable?: boolean;
+}
+
+function normalizedCodexCommand(command: readonly string[]): string {
+  return command
+    .filter((argument, index) => (
+      argument !== '--json'
+      && argument !== '--project'
+      && command[index - 1] !== '--project'
+    ))
+    .join(' ');
+}
+
+class ExecutingCodexExecutor implements CodexCommandExecutor {
+  readonly calls: string[][] = [];
+  readonly mutatingCalls: string[] = [];
+  marketplaceInstalled: boolean;
+  pluginInstalled: boolean;
+
+  constructor(private readonly options: ExecutingCodexOptions = {}) {
+    this.marketplaceInstalled = options.marketplaceInitially ?? false;
+    this.pluginInstalled = options.pluginInitially ?? false;
+  }
+
+  async execute(args: readonly string[]): Promise<CodexCommandResult> {
+    const command = [...args];
+    this.calls.push(command);
+    const success = (stdout: string): CodexCommandResult => ({ exitCode: 0, stdout, stderr: '' });
+    const key = normalizedCodexCommand(command);
+
+    if (key === '--version') {
+      return success('codex-cli 0.144.0');
+    }
+    if (key === '--help') {
+      return success('Usage: codex\nCommands:\n  plugin  Manage plugins');
+    }
+    if (key === 'plugin --help') {
+      return success('Usage: codex plugin <COMMAND>\nCommands:\n  list\n  add\n  marketplace');
+    }
+    if (key === 'plugin marketplace --help') {
+      return success([
+        'Usage: codex plugin marketplace <COMMAND>',
+        'Commands:',
+        '  list',
+        '  add',
+        ...(this.options.removeAvailable ? ['  remove'] : []),
+      ].join('\n'));
+    }
+    if (key === 'plugin marketplace add --help') {
+      return success('Usage: codex plugin marketplace add [OPTIONS] <SOURCE>');
+    }
+    if (key === 'plugin marketplace list --help') {
+      return success('Usage: codex plugin marketplace list [OPTIONS]\n  --json');
+    }
+    if (key === 'plugin marketplace remove --help' && this.options.removeAvailable) {
+      return success('Usage: codex plugin marketplace remove [OPTIONS] <NAME>\n  --json');
+    }
+    if (key === 'plugin add --help') {
+      return success('Usage: codex plugin add [OPTIONS] <PLUGIN>');
+    }
+    if (key === 'plugin list --help') {
+      return success('Usage: codex plugin list [OPTIONS]\n  --json');
+    }
+    if (key === 'plugin marketplace list') {
+      return success(JSON.stringify({
+        marketplaces: this.marketplaceInstalled
+          ? [{
+              name: 'thoth-mem',
+              marketplaceSource: {
+                sourceType: 'git',
+                source: 'https://github.com/EremesNG/thoth-mem.git',
+              },
+            }]
+          : [],
+      }));
+    }
+    if (key === 'plugin list') {
+      return success(JSON.stringify({
+        installed: this.pluginInstalled
+          ? [{
+              pluginId: 'thoth-mem@thoth-mem',
+              name: 'thoth-mem',
+              marketplaceName: 'thoth-mem',
+              installed: true,
+              enabled: true,
+            }]
+          : [],
+        available: [],
+      }));
+    }
+    if (key === 'plugin marketplace add EremesNG/thoth-mem') {
+      this.mutatingCalls.push(key);
+      const mutation = this.options.marketplaceMutation ?? 'success';
+      if (mutation === 'success' || mutation === 'nonzero_verified') {
+        this.marketplaceInstalled = true;
+      }
+      if (mutation === 'success') {
+        return success('registered');
+      }
+      if (mutation === 'nonzero_verified') {
+        return { exitCode: 17, stdout: '', stderr: 'transient command failure' };
+      }
+      if (mutation === 'collision') {
+        return {
+          exitCode: 17,
+          stdout: '',
+          stderr: "marketplace 'thoth-mem' is already added from a different source; remove it before adding this source",
+        };
+      }
+      return { exitCode: 17, stdout: '', stderr: 'ordinary marketplace failure' };
+    }
+    if (key === 'plugin add thoth-mem') {
+      this.mutatingCalls.push(key);
+      if ((this.options.pluginMutation ?? 'success') === 'success') {
+        this.pluginInstalled = true;
+        return success('installed');
+      }
+      return { exitCode: 17, stdout: '', stderr: 'ordinary plugin failure' };
+    }
+    if (key.startsWith('plugin marketplace remove')) {
+      this.mutatingCalls.push(key);
+      return { exitCode: 70, stdout: '', stderr: 'remove must remain manual' };
+    }
+    return { exitCode: 64, stdout: '', stderr: `unexpected command: ${key}` };
+  }
+}
+
+interface ExecutingCodexFixture {
+  dataDir: string;
+  executablePath: string;
+  receiptBasePath: string;
+  request: SetupRequest;
+  roots: SetupRoots;
+}
+
+async function withExecutingCodexFixture<T>(
+  run: (fixture: ExecutingCodexFixture) => Promise<T>,
+): Promise<T> {
+  return withTemporarySetupRoot(async (root) => {
+    const dataDir = join(root, 'thoth data');
+    const executablePath = join(root, 'bin', 'thoth-mem.js');
+    const roots: SetupRoots = {
+      homeDir: join(root, 'home'),
+      cwd: join(root, 'work'),
+      packageRoot: join(root, 'package with spaces'),
+      codexHome: join(root, 'Codex Home'),
+    };
+    const request = setupRequest('codex', { planOnly: false });
+    await mkdir(join(roots.packageRoot, 'integrations', 'codex'), { recursive: true });
+    await mkdir(roots.codexHome!, { recursive: true });
+    await mkdir(dirname(executablePath), { recursive: true });
+    await writeFile(executablePath, '#!/usr/bin/env node\n', 'utf8');
+    return run({
+      dataDir,
+      executablePath,
+      receiptBasePath: join(dataDir, 'setup', 'receipts'),
+      request,
+      roots,
+    });
+  });
+}
+
+async function runExecutingCodexSetup(
+  fixture: ExecutingCodexFixture,
+  executor: ExecutingCodexExecutor,
+  options: {
+    id?: string;
+    receiptFault?: (event: ReceiptFaultEvent) => void | Promise<void>;
+  } = {},
+): Promise<SetupResult> {
+  return inspectAndPlanSetup(fixture.request, {
+    roots: fixture.roots,
+    dataDir: fixture.dataDir,
+    executablePath: fixture.executablePath,
+    codexExecutor: executor,
+    transaction: {
+      idFactory: () => options.id ?? 'engine-codex-v2',
+      now: () => new Date('2026-07-14T16:00:00.000Z'),
+      receiptFault: options.receiptFault,
+    },
+  });
+}
+
+async function loadEngineV2Receipt(
+  fixture: ExecutingCodexFixture,
+  receiptPath: string,
+): Promise<SetupReceiptV2> {
+  const loaded = await loadSetupReceipt(receiptPath, {
+    dataDir: fixture.dataDir,
+    expectedBasePath: fixture.receiptBasePath,
+  });
+  expect(loaded.ok).toBe(true);
+  if (!loaded.ok || loaded.receipt.schema_version !== 2) {
+    throw new Error('expected signed V2 receipt');
+  }
+  return loaded.receipt;
+}
+
+function codexPlanStepNames(scope: SetupRequest['scope'], strategy: 'modern' | 'legacy'): string[] {
+  if (strategy === 'modern') {
+    return [
+      `Inspect Codex plugin manager capabilities (${scope})`,
+      `Inspect Codex manager state (${scope})`,
+      `Register thoth-mem Codex marketplace (${scope})`,
+      `Checkpoint Codex marketplace state (${scope})`,
+      `Reread Codex manager state after marketplace (${scope})`,
+      `Install thoth-mem Codex plugin (${scope})`,
+      `Checkpoint Codex plugin state (${scope})`,
+      `Reread Codex manager state after plugin (${scope})`,
+      `Verify Codex plugin-manager setup (${scope})`,
+    ];
+  }
+  return [
+    'Inspect packaged legacy Codex assets',
+    'Inspect legacy Codex managed configuration fragment',
+    'Install legacy Codex assets',
+    'Merge legacy Codex managed configuration fragment',
+    'Write legacy Codex installation metadata',
+    'Verify legacy Codex setup',
+  ];
+}
+
 describe('inspects and plans with zero writes', () => {
+  it.each([
+    { scope: 'global' as const, projectPath: undefined, projectScoped: false },
+    { scope: 'project' as const, projectPath: PROJECT_PATH, projectScoped: true },
+  ])('plans exclusive modern ownership with zero writes in $scope scope', async ({
+    scope,
+    projectPath,
+    projectScoped,
+  }) => {
+    const request = setupRequest('codex', {
+      scope,
+      ...(projectPath ? { projectPath } : {}),
+    });
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    const executor = new PlanningCodexExecutor({ projectScoped });
+    const before = fileSystem.snapshot();
+    const trace: string[] = [];
+
+    const result = await inspectAndPlanSetup(request, {
+      roots: ROOTS,
+      fileSystem,
+      codexExecutor: executor,
+      transaction: { trace: ({ kind }) => trace.push(kind) },
+    });
+
+    expect(result).toMatchObject({ status: 'complete', changed: false, receipt: null });
+    expect(result.steps.map((step) => step.name)).toEqual(codexPlanStepNames(scope, 'modern'));
+    expect(result.steps.every((step) => !step.name.includes('legacy Codex'))).toBe(true);
+    expect(executor.mutatingCalls).toEqual([]);
+    expect(trace).toEqual([]);
+    expectZeroWrites(fileSystem, before);
+    expect(fileSystem.reads.every((path) => (
+      path.startsWith(paths.targetRoot) || path.startsWith(ROOTS.packageRoot)
+    ))).toBe(true);
+  });
+
+  it.each([
+    { scope: 'global' as const, projectPath: undefined, projectScoped: false },
+    { scope: 'project' as const, projectPath: PROJECT_PATH, projectScoped: true },
+  ])('plans only legacy-owned paths with zero writes in $scope scope', async ({
+    scope,
+    projectPath,
+    projectScoped,
+  }) => {
+    const request = setupRequest('codex', {
+      scope,
+      ...(projectPath ? { projectPath } : {}),
+    });
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    seedPackagedAssets(fileSystem, paths);
+    const before = fileSystem.snapshot();
+    const executor = new PlanningCodexExecutor({
+      version: 'codex-cli 0.145.0',
+      projectScoped,
+    });
+
+    const result = await inspectAndPlanSetup(request, {
+      roots: ROOTS,
+      fileSystem,
+      codexExecutor: executor,
+    });
+
+    expect(result).toMatchObject({ status: 'complete', changed: false, receipt: null });
+    expect(result.steps.map((step) => step.name)).toEqual(codexPlanStepNames(scope, 'legacy'));
+    expect(result.steps.every((step) => !step.name.includes('marketplace'))).toBe(true);
+    expect(result.steps.every((step) => !step.name.includes('plugin manager'))).toBe(true);
+    expect(executor.mutatingCalls).toEqual([]);
+    expectZeroWrites(fileSystem, before);
+  });
+
+  it('plans exactly one bounded manager action when only the modern plugin drifts', async () => {
+    const request = setupRequest('codex');
+    const fileSystem = new FakeSetupFileSystem();
+    const executor = new PlanningCodexExecutor({ marketplace: true, plugin: false });
+    const before = fileSystem.snapshot();
+
+    const result = await inspectAndPlanSetup(request, {
+      roots: ROOTS,
+      fileSystem,
+      codexExecutor: executor,
+    });
+
+    expect(result).toMatchObject({ status: 'complete', changed: false, receipt: null });
+    expect(result.steps.filter((step) => (
+      (step.name.startsWith('Register ') || step.name.startsWith('Install '))
+      && step.outcome === 'planned'
+    )).map((step) => step.name)).toEqual(['Install thoth-mem Codex plugin (global)']);
+    expect(executor.mutatingCalls).toEqual([]);
+    expectZeroWrites(fileSystem, before);
+  });
+
+  it('orders verified manager checkpointing before planned legacy fragment removal', async () => {
+    const request = setupRequest('codex');
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    seedManagedSetup(fileSystem, request, paths);
+    const before = fileSystem.snapshot();
+    const executor = new PlanningCodexExecutor({ marketplace: true, plugin: true });
+
+    const result = await inspectAndPlanSetup(request, {
+      roots: ROOTS,
+      fileSystem,
+      codexExecutor: executor,
+    });
+
+    const names = result.steps.map((step) => step.name);
+    expect(result).toMatchObject({ status: 'complete', changed: false, receipt: null });
+    expect(names).toContain('Checkpoint verified Codex manager state (global)');
+    expect(names).toContain('Remove proven legacy Codex managed configuration fragment');
+    expect(names.indexOf('Checkpoint verified Codex manager state (global)'))
+      .toBeLessThan(names.indexOf('Remove proven legacy Codex managed configuration fragment'));
+    expect(executor.mutatingCalls).toEqual([]);
+    expectZeroWrites(fileSystem, before);
+  });
+
+  it('keeps ambiguous legacy residue non-forceable and zero-write', async () => {
+    const request = setupRequest('codex', { force: true });
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    seedPackagedAssets(fileSystem, paths);
+    fileSystem.directory(paths.assetPath);
+    fileSystem.file(join(paths.assetPath, 'lookalike.txt'), 'unowned-private-value');
+    const before = fileSystem.snapshot();
+    const executor = new PlanningCodexExecutor({ marketplace: true, plugin: true });
+
+    const result = await inspectAndPlanSetup(request, {
+      roots: ROOTS,
+      fileSystem,
+      codexExecutor: executor,
+    });
+
+    expect(result).toMatchObject({ status: 'requires_user_action', changed: false, receipt: null });
+    expect(result.steps.some((step) => step.name.startsWith('Remove '))).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('unowned-private-value');
+    expect(executor.mutatingCalls).toEqual([]);
+    expectZeroWrites(fileSystem, before);
+  });
   it('resolves global and explicit project targets without ambient home state', () => {
     const openCode = resolveSetupPaths(setupRequest('opencode'), ROOTS);
     expect(openCode).toEqual({
@@ -753,6 +1225,163 @@ describe('inspects and plans with zero writes', () => {
     expect(forced.status).toBe('complete');
     expect(forced.changed).toBe(false);
     expectZeroWrites(conflictFileSystem, conflictBefore);
+  });
+});
+
+describe('projects Codex execution evidence without losing phase semantics', () => {
+  it('keeps result, signed receipt, JSON, and human output aligned for mixed outcomes', async () => {
+    await withExecutingCodexFixture(async (fixture) => {
+      const executor = new ExecutingCodexExecutor({ pluginMutation: 'ordinary_failure' });
+      const result = await runExecutingCodexSetup(fixture, executor, { id: 'mixed-outcome-v2' });
+
+      expect(result.status).toBe('partial');
+      expect(getSetupExitCode(result.status)).toBe(2);
+      expect(result.steps).toEqual(expect.arrayContaining([
+        { name: 'Register thoth-mem Codex marketplace (global)', outcome: 'confirmed' },
+        { name: 'Checkpoint Codex marketplace state (global)', outcome: 'confirmed' },
+        { name: 'Reread Codex manager state after marketplace (global)', outcome: 'confirmed' },
+        { name: 'Install thoth-mem Codex plugin (global)', outcome: 'failed' },
+        { name: 'Checkpoint Codex plugin state (global)', outcome: 'failed' },
+        { name: 'Reread Codex manager state after plugin (global)', outcome: 'failed' },
+        { name: 'Verify Codex plugin-manager setup (global)', outcome: 'failed' },
+      ]));
+      expect(result.steps.some((step) => step.outcome === 'planned')).toBe(false);
+
+      const receipt = await loadEngineV2Receipt(fixture, result.receipt!);
+      expect(receipt.status).toBe('partial');
+      expect(receipt.steps.find((step) => step.id === 'codex-marketplace')?.outcome)
+        .toBe('confirmed');
+      expect(receipt.steps.find((step) => step.id === 'codex-plugin')?.outcome).toBe('failed');
+      expect(receipt.steps.find((step) => step.id === 'verify')?.outcome).toBe('failed');
+      expect(receipt.external_checkpoints.map(({ id, outcome }) => ({ id, outcome }))).toEqual([
+        { id: 'codex-marketplace', outcome: 'confirmed' },
+        { id: 'codex-marketplace', outcome: 'confirmed' },
+        { id: 'codex-plugin', outcome: 'failed' },
+        { id: 'codex-plugin', outcome: 'failed' },
+      ]);
+
+      expect(JSON.parse(formatSetupResult(result, true))).toEqual(result);
+      const human = formatSetupResult(result, false);
+      expect(human).toContain('Status: partial');
+      expect(human).toContain('Checkpoint Codex plugin state (global): failed');
+      expect(human).toContain('Verify Codex plugin-manager setup (global): failed');
+    });
+  });
+
+  it('preserves checkpoint boundaries, reread precedence, and existing V2 limits', async () => {
+    for (const failedRename of [2, 3]) {
+      await withExecutingCodexFixture(async (fixture) => {
+        const executor = new ExecutingCodexExecutor();
+        let receiptRenames = 0;
+        const result = await runExecutingCodexSetup(fixture, executor, {
+          id: `checkpoint-boundary-${failedRename}`,
+          receiptFault: ({ point }) => {
+            if (point === 'receipt-rename' && ++receiptRenames === failedRename) {
+              throw new Error('injected checkpoint persistence failure');
+            }
+          },
+        });
+
+        expect(result.status).toBe('failed');
+        expect(executor.mutatingCalls).toEqual([
+          'plugin marketplace add EremesNG/thoth-mem',
+        ]);
+        const receipt = await loadEngineV2Receipt(fixture, result.receipt!);
+        expect(receipt.external_checkpoints).toHaveLength(failedRename === 2 ? 0 : 1);
+        expect(receipt.steps.find((step) => step.id === 'codex-marketplace')?.outcome)
+          .toBe(failedRename === 2 ? 'planned' : 'confirmed');
+        const mutationIndex = executor.calls.findIndex((call) => (
+          normalizedCodexCommand(call) === 'plugin marketplace add EremesNG/thoth-mem'
+        ));
+        const callsAfterMutation = executor.calls
+          .slice(mutationIndex + 1)
+          .map(normalizedCodexCommand);
+        expect(callsAfterMutation.filter((call) => call === 'plugin marketplace list'))
+          .toHaveLength(failedRename === 2 ? 0 : 1);
+        expect(callsAfterMutation).not.toContain('plugin add thoth-mem');
+      });
+    }
+
+    await withExecutingCodexFixture(async (fixture) => {
+      const baselineResult = await runExecutingCodexSetup(
+        fixture,
+        new ExecutingCodexExecutor(),
+        { id: 'limits-baseline-v2' },
+      );
+      const baseline = await loadEngineV2Receipt(fixture, baselineResult.receipt!);
+      const { hmac_sha256: _signature, ...unsigned } = baseline;
+      const persistence = {
+        dataDir: fixture.dataDir,
+        expectedBasePath: fixture.receiptBasePath,
+      };
+      const invalidDiagnostic = createSetupReceipt({
+        ...unsigned,
+        id: 'diagnostic-limit-v2',
+        external_checkpoints: [{
+          ...baseline.external_checkpoints[0]!,
+          diagnostic: 'x'.repeat(513),
+        }],
+      });
+      const diagnosticPath = resolveSetupReceiptPaths(
+        fixture.receiptBasePath,
+        invalidDiagnostic.id,
+      ).receiptPath;
+      await expect(persistSetupReceipt(diagnosticPath, invalidDiagnostic, persistence))
+        .resolves.toEqual({ ok: false, reason: 'receipt_schema_invalid' });
+
+      const tooManyCheckpoints = createSetupReceipt({
+        ...unsigned,
+        id: 'checkpoint-limit-v2',
+        external_checkpoints: Array.from({ length: 257 }, (_, index) => ({
+          sequence: index + 1,
+          id: index % 2 === 0 ? 'codex-marketplace' as const : 'codex-plugin' as const,
+          outcome: 'confirmed' as const,
+          observed_at: '2026-07-14T16:00:00.000Z',
+        })),
+      });
+      const checkpointPath = resolveSetupReceiptPaths(
+        fixture.receiptBasePath,
+        tooManyCheckpoints.id,
+      ).receiptPath;
+      await expect(persistSetupReceipt(checkpointPath, tooManyCheckpoints, persistence))
+        .resolves.toEqual({ ok: false, reason: 'receipt_schema_invalid' });
+
+      const oversized = createSetupReceipt({
+        ...unsigned,
+        id: 'byte-limit-v2',
+        target: 'x'.repeat((1024 * 1024) + 1),
+      });
+      const oversizedPath = resolveSetupReceiptPaths(
+        fixture.receiptBasePath,
+        oversized.id,
+      ).receiptPath;
+      await expect(persistSetupReceipt(oversizedPath, oversized, persistence))
+        .resolves.toEqual({ ok: false, reason: 'receipt_schema_invalid' });
+    });
+
+    await withExecutingCodexFixture(async (fixture) => {
+      const executor = new ExecutingCodexExecutor({
+        marketplaceMutation: 'nonzero_verified',
+        pluginInitially: true,
+      });
+      const result = await runExecutingCodexSetup(fixture, executor, {
+        id: 'reread-precedence-v2',
+      });
+      const receipt = await loadEngineV2Receipt(fixture, result.receipt!);
+
+      expect(result.status).toBe('complete');
+      expect(receipt.external_checkpoints
+        .filter((checkpoint) => checkpoint.id === 'codex-marketplace')
+        .map((checkpoint) => checkpoint.outcome)).toEqual(['failed', 'confirmed']);
+      expect(result.steps).toContainEqual({
+        name: 'Checkpoint Codex marketplace state (global)',
+        outcome: 'failed',
+      });
+      expect(result.steps).toContainEqual({
+        name: 'Reread Codex manager state after marketplace (global)',
+        outcome: 'confirmed',
+      });
+    });
   });
 });
 

@@ -975,9 +975,10 @@ describe('native plugin assets', () => {
     expect(codexMcpDescriptorExists).toBe(true);
 
     expect(codexMcp).toEqual({
-      'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+      mcpServers: {
+        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+      },
     });
-    expect(codexMcp).not.toHaveProperty('mcpServers');
     expect(claudeMcp).toEqual({
       mcpServers: {
         'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },

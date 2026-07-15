@@ -12,6 +12,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 
@@ -24,6 +25,10 @@ import {
   type FilesystemFaultPoint,
 } from '../../src/setup/filesystem.js';
 import { inspectAndPlanSetup } from '../../src/setup/engine.js';
+import type {
+  CodexCommandExecutor,
+  CodexCommandResult,
+} from '../../src/setup/codex-cli.js';
 import {
   resolveSetupPaths,
   type SetupPaths,
@@ -63,6 +68,96 @@ interface RunSetupOptions {
     stagePath?: string;
   }) => void | Promise<void>;
   receiptFault?: (event: { point: ReceiptFaultPoint; path: string }) => void | Promise<void>;
+}
+
+interface ControlledCodexState {
+  version?: string;
+  projectScoped?: boolean;
+  marketplace: boolean;
+  plugin: boolean;
+  mutations: string[];
+  events?: string[];
+}
+
+function controlledCodexExecutor(state: ControlledCodexState): CodexCommandExecutor {
+  const success = (stdout: string): CodexCommandResult => ({ exitCode: 0, stdout, stderr: '' });
+  return {
+    async execute(args): Promise<CodexCommandResult> {
+      const command = [...args];
+      const key = command.filter((argument) => argument !== '--json').join(' ');
+      if (key === '--version') {
+        return success(state.version ?? 'codex-cli 0.144.0');
+      }
+      if (key === '--help') {
+        return success('Usage: codex\nCommands:\n  plugin  Manage plugins');
+      }
+      if (key === 'plugin --help') {
+        return success('Usage: codex plugin <COMMAND>\nCommands:\n  list\n  add\n  marketplace');
+      }
+      if (key === 'plugin marketplace --help') {
+        return success('Usage: codex plugin marketplace <COMMAND>\nCommands:\n  list\n  add');
+      }
+      if (key === 'plugin marketplace add --help') {
+        return success(`Usage: codex plugin marketplace add [OPTIONS] <SOURCE>${state.projectScoped ? '\nOptions:\n  --project <PATH>' : ''}`);
+      }
+      if (key === 'plugin marketplace list --help') {
+        return success(`Usage: codex plugin marketplace list [OPTIONS] [--json]${state.projectScoped ? '\nOptions:\n  --project <PATH>' : ''}`);
+      }
+      if (key === 'plugin add --help') {
+        return success(`Usage: codex plugin add [OPTIONS] <PLUGIN>${state.projectScoped ? '\nOptions:\n  --project <PATH>' : ''}`);
+      }
+      if (key === 'plugin list --help') {
+        return success(`Usage: codex plugin list [OPTIONS] [--json]${state.projectScoped ? '\nOptions:\n  --project <PATH>' : ''}`);
+      }
+      const normalized = command.filter((argument, index) => (
+        argument !== '--json'
+        && argument !== '--project'
+        && command[index - 1] !== '--project'
+      )).join(' ');
+      if (normalized === 'plugin marketplace list') {
+        return success(JSON.stringify({
+          marketplaces: state.marketplace
+            ? [{
+                name: 'thoth-mem',
+                marketplaceSource: {
+                  sourceType: 'git',
+                  source: 'https://github.com/EremesNG/thoth-mem.git',
+                },
+                unrelatedSecret: 'private-marketplace-token',
+              }]
+            : [],
+        }));
+      }
+      if (normalized === 'plugin list') {
+        return success(JSON.stringify({
+          installed: state.plugin
+            ? [{
+                pluginId: 'thoth-mem@thoth-mem',
+                name: 'thoth-mem',
+                marketplaceName: 'thoth-mem',
+                installed: true,
+                enabled: true,
+                unrelatedSecret: 'private-plugin-token',
+              }]
+            : [],
+          available: [],
+        }));
+      }
+      if (normalized === 'plugin marketplace add EremesNG/thoth-mem') {
+        state.mutations.push(normalized);
+        state.events?.push(`manager:${normalized}`);
+        state.marketplace = true;
+        return success('registered private-command-token');
+      }
+      if (normalized === 'plugin add thoth-mem') {
+        state.mutations.push(normalized);
+        state.events?.push(`manager:${normalized}`);
+        state.plugin = true;
+        return success('installed private-command-token');
+      }
+      return { exitCode: 64, stdout: '', stderr: 'unexpected private-command-token' };
+    },
+  };
 }
 
 async function withTemporaryFixture<T>(
@@ -168,10 +263,784 @@ async function receiptDirectoryCount(fixture: SetupFixture): Promise<number> {
   }
 }
 
+async function runControlledCodexSetup(
+  fixture: SetupFixture,
+  state: ControlledCodexState,
+  options: Pick<RunSetupOptions, 'trace' | 'receiptFault' | 'filesystemFault'> & {
+    id?: string;
+    request?: SetupRequest;
+  } = {},
+): Promise<SetupResult> {
+  const request: SetupRequest = options.request ?? {
+    harness: 'codex',
+    scope: 'global',
+    planOnly: false,
+    force: false,
+    json: false,
+  };
+  fixture.paths = resolveSetupPaths(request, fixture.roots);
+  await mkdir(join(fixture.roots.packageRoot, 'integrations', 'codex'), { recursive: true });
+  return inspectAndPlanSetup(request, {
+    roots: fixture.roots,
+    dataDir: fixture.dataDir,
+    executablePath: fixture.executablePath,
+    codexExecutor: controlledCodexExecutor(state),
+    transaction: {
+      idFactory: () => options.id ?? 'codex-v2',
+      now: () => new Date('2026-07-09T12:00:00.000Z'),
+      trace: options.trace,
+      receiptFault: options.receiptFault,
+      filesystemFault: options.filesystemFault,
+    },
+  });
+}
+
+async function installLegacyCodex(
+  fixture: SetupFixture,
+  state: ControlledCodexState,
+  id = 'legacy-v2',
+): Promise<SetupResult> {
+  state.version = 'codex-cli 0.145.0';
+  await mkdir(join(fixture.roots.packageRoot, 'integrations', 'codex'), { recursive: true });
+  await writeFile(
+    join(fixture.roots.packageRoot, 'integrations', 'codex', '.mcp.json'),
+    '{"mcpServers":{}}\n',
+    'utf8',
+  );
+  return runControlledCodexSetup(fixture, state, { id });
+}
+
 function ownedConfig(text: string): unknown {
   const parsed = parse(text) as Record<string, unknown>;
   return (parsed.mcp as Record<string, unknown> | undefined)?.['thoth-mem'];
 }
+
+const CODEX_OWNED_LOCATION = 'plugins."thoth-mem".mcp_servers."thoth-mem"';
+const CODEX_MANAGED_FRAGMENT = [
+  '# >>> thoth-mem managed >>>',
+  '[plugins."thoth-mem".mcp_servers."thoth-mem"]',
+  'enabled = true',
+  '# <<< thoth-mem managed <<<',
+  '',
+].join('\n');
+
+function fragmentSha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+describe('versioned setup receipt dispatch', () => {
+  it('persists signed Codex V2 strategy, checkpoints, and final reread evidence', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const events: string[] = [];
+      const state: ControlledCodexState = {
+        marketplace: false,
+        plugin: false,
+        mutations: [],
+        events,
+      };
+
+      const result = await runControlledCodexSetup(fixture, state, {
+        trace: ({ kind }) => events.push(`trace:${kind}`),
+      });
+
+      expect(result).toMatchObject({ status: 'complete', changed: true });
+      const raw = JSON.parse(await readFile(result.receipt!, 'utf8')) as Record<string, unknown>;
+      expect(raw).toMatchObject({
+        schema_version: 2,
+        strategy: 'plugin_manager',
+        capability_evidence: {
+          version: { value: '0.144.0', classification: 'tested' },
+          capabilities: { scope: 'global', complete: true },
+          managerState: 'absent',
+        },
+        manager_evidence: {
+          initial_state: 'absent',
+          marketplace: {
+            name: 'thoth-mem',
+            source: 'EremesNG/thoth-mem',
+            pre_existing_verified: false,
+            created_by_attempt: true,
+            final_verified: true,
+          },
+          plugin: {
+            plugin_id: 'thoth-mem@thoth-mem',
+            name: 'thoth-mem',
+            marketplace_name: 'thoth-mem',
+            pre_existing_verified: false,
+            created_by_attempt: true,
+            final_verified: true,
+          },
+          final_verified_at: '2026-07-09T12:00:00.000Z',
+        },
+        external_checkpoints: [
+          expect.objectContaining({ sequence: 1, id: 'codex-marketplace', outcome: 'confirmed' }),
+          expect.objectContaining({ sequence: 2, id: 'codex-marketplace', outcome: 'confirmed' }),
+          expect.objectContaining({ sequence: 3, id: 'codex-plugin', outcome: 'confirmed' }),
+          expect.objectContaining({ sequence: 4, id: 'codex-plugin', outcome: 'confirmed' }),
+        ],
+      });
+      expect(events.indexOf('trace:receipt_in_progress'))
+        .toBeLessThan(events.indexOf('manager:plugin marketplace add EremesNG/thoth-mem'));
+      expect(JSON.stringify(raw)).not.toContain('private-marketplace-token');
+      expect(JSON.stringify(raw)).not.toContain('private-plugin-token');
+      expect(JSON.stringify(raw)).not.toContain('private-command-token');
+
+      const loaded = await loadVerifiedReceipt(fixture, result.receipt!);
+      expect(loaded.ok).toBe(true);
+      const managerEvidence = raw.manager_evidence as Record<string, unknown>;
+      raw.manager_evidence = { ...managerEvidence, final_verified_at: null };
+      await writeFile(result.receipt!, JSON.stringify(raw), 'utf8');
+      expect(await loadVerifiedReceipt(fixture, result.receipt!))
+        .toMatchObject({ ok: false, reason: 'hmac_mismatch' });
+
+      const v1 = createSetupReceipt({
+        id: 'bounded-v1',
+        operation: 'setup',
+        status: 'in_progress',
+        harness: 'opencode',
+        scope: 'global',
+        target: fixture.paths.targetRoot,
+        package_version: getVersion(),
+        force: false,
+        started_at: '2026-07-09T12:00:00.000Z',
+        updated_at: '2026-07-09T12:00:00.000Z',
+        steps: [],
+      });
+      expect(v1.schema_version).toBe(1);
+      expect(v1).not.toHaveProperty('strategy');
+      expect(v1).not.toHaveProperty('manager_evidence');
+      expect(v1).not.toHaveProperty('external_checkpoints');
+    });
+  });
+
+  it('stops manager mutation when a V2 attempt checkpoint cannot be persisted', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = {
+        marketplace: false,
+        plugin: false,
+        mutations: [],
+      };
+      let receiptRenames = 0;
+
+      const result = await runControlledCodexSetup(fixture, state, {
+        receiptFault: ({ point }) => {
+          if (point === 'receipt-rename' && ++receiptRenames === 2) {
+            throw new Error('checkpoint unavailable');
+          }
+        },
+      });
+
+      expect(result.status).toBe('failed');
+      expect(state.mutations).toEqual(['plugin marketplace add EremesNG/thoth-mem']);
+      const raw = JSON.parse(await readFile(result.receipt!, 'utf8')) as Record<string, unknown>;
+      expect(raw).toMatchObject({
+        schema_version: 2,
+        status: 'in_progress',
+        strategy: 'plugin_manager',
+        external_checkpoints: [],
+      });
+    });
+  });
+
+  it('binds legacy setup authority to the exact signed managed fragment only', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      fixture.paths = resolveSetupPaths({
+        harness: 'codex',
+        scope: 'global',
+        planOnly: false,
+        force: false,
+        json: false,
+      }, fixture.roots);
+      const original = [
+        'model = "gpt-5"',
+        'private_token = "must-not-enter-receipt"',
+        '',
+        '[features]',
+        'web_search = true',
+        '',
+      ].join('\n');
+      await mkdir(dirname(fixture.paths.configPath), { recursive: true });
+      await writeFile(fixture.paths.configPath, original, 'utf8');
+
+      const legacy = await installLegacyCodex(fixture, state, 'legacy-fragment-evidence-v2');
+
+      expect(legacy).toMatchObject({ status: 'complete', changed: true });
+      const raw = JSON.parse(await readFile(legacy.receipt!, 'utf8')) as {
+        steps: Array<Record<string, unknown>>;
+      };
+      const configStep = raw.steps.find((step) => step.id === 'config');
+      expect(configStep).toMatchObject({
+        outcome: 'confirmed',
+        path: fixture.paths.configPath,
+        managed_fragment: {
+          config_path: fixture.paths.configPath,
+          owned_location: CODEX_OWNED_LOCATION,
+          operation: 'apply',
+          kind: 'insert',
+          pre_state: { state: 'absent' },
+          post_state: {
+            state: 'present',
+            sha256: fragmentSha256(CODEX_MANAGED_FRAGMENT),
+          },
+          restore: {
+            leading_separator: '\n',
+            before_text: null,
+            after_text: CODEX_MANAGED_FRAGMENT,
+          },
+        },
+      });
+      expect(configStep).not.toHaveProperty('pre_hash');
+      expect(configStep).not.toHaveProperty('post_hash');
+      const receiptJson = JSON.stringify(raw);
+      expect(receiptJson).not.toContain('must-not-enter-receipt');
+      expect(receiptJson).not.toContain('web_search');
+
+      const installed = await readFile(fixture.paths.configPath, 'utf8');
+      await writeFile(
+        fixture.paths.configPath,
+        `${installed}\n[plugins."foreign@market"]\nenabled = true\n`,
+        'utf8',
+      );
+      const rollback = await runControlledCodexSetup(fixture, state, {
+        id: 'legacy-fragment-evidence-rollback',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: legacy.receipt!,
+          json: false,
+        },
+      });
+
+      expect(rollback).toMatchObject({ status: 'complete', changed: true });
+      const restored = await readFile(fixture.paths.configPath, 'utf8');
+      expect(restored).toContain('private_token = "must-not-enter-receipt"');
+      expect(restored).toContain('[plugins."foreign@market"]');
+      expect(restored).not.toContain('thoth-mem managed');
+    });
+  });
+});
+
+describe('Codex dual-state migration and strategy rollback', () => {
+  it('uses an exact signed legacy receipt when live package corroboration is unavailable', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      const legacy = await installLegacyCodex(fixture, state, 'signed-proof-v2');
+      expect(legacy.status).toBe('complete');
+      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+        recursive: true,
+        force: true,
+      });
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const migrated = await runControlledCodexSetup(fixture, state, { id: 'signed-migration-v2' });
+
+      expect(migrated).toMatchObject({ status: 'complete', changed: true });
+    });
+  });
+
+  it('fails closed when the signed legacy fragment is stale or the receipt is tampered', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      const legacy = await installLegacyCodex(fixture, state, 'stale-proof-v2');
+      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+        recursive: true,
+        force: true,
+      });
+      await writeFile(
+        fixture.paths.configPath,
+        (await readFile(fixture.paths.configPath, 'utf8')).replace(
+          'enabled = true',
+          'enabled = false',
+        ),
+        'utf8',
+      );
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+      const stale = await runControlledCodexSetup(fixture, state, { id: 'stale-migration-v2' });
+      expect(stale).toMatchObject({ status: 'requires_user_action', changed: false });
+
+      const raw = JSON.parse(await readFile(legacy.receipt!, 'utf8')) as Record<string, unknown>;
+      raw.force = true;
+      await writeFile(legacy.receipt!, JSON.stringify(raw), 'utf8');
+      const tampered = await runControlledCodexSetup(fixture, state, { id: 'tampered-v2' });
+      expect(tampered).toMatchObject({ status: 'requires_user_action', changed: false });
+    });
+  });
+
+  it('migrates an explicit project target without changing global Codex state', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const projectRequest: SetupRequest = {
+        harness: 'codex',
+        scope: 'project',
+        projectPath: fixture.projectPath,
+        planOnly: false,
+        force: false,
+        json: false,
+      };
+      const state: ControlledCodexState = {
+        marketplace: false,
+        plugin: false,
+        mutations: [],
+        projectScoped: true,
+      };
+      state.version = 'codex-cli 0.145.0';
+      const legacy = await runControlledCodexSetup(fixture, state, {
+        id: 'project-legacy-v2',
+        request: projectRequest,
+      });
+      expect(legacy.status).toBe('complete');
+      const globalRoot = fixture.roots.codexHome!;
+      await mkdir(globalRoot, { recursive: true });
+      await writeFile(join(globalRoot, 'sentinel.txt'), 'global-unchanged', 'utf8');
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const migrated = await runControlledCodexSetup(fixture, state, {
+        id: 'project-migration-v2',
+        request: projectRequest,
+      });
+
+      expect(migrated).toMatchObject({ status: 'complete', changed: true, scope: 'project' });
+      expect(await readFile(join(globalRoot, 'sentinel.txt'), 'utf8')).toBe('global-unchanged');
+      expect(migrated.target).toBe(join(fixture.projectPath, '.codex'));
+    });
+  });
+
+  it('preserves usable dual state when the manager checkpoint cannot persist', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      await installLegacyCodex(fixture, state);
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+      let renames = 0;
+      const failed = await runControlledCodexSetup(fixture, state, {
+        id: 'manager-checkpoint-failure',
+        receiptFault: ({ point }) => {
+          if (point === 'receipt-rename' && ++renames === 1) {
+            throw new Error('manager checkpoint unavailable');
+          }
+        },
+      });
+      expect(failed).toMatchObject({ status: 'failed', changed: false });
+      expect(await readFile(fixture.paths.configPath, 'utf8')).toContain('thoth-mem managed');
+      expect(await stat(fixture.paths.assetPath)).toBeDefined();
+
+      const retried = await runControlledCodexSetup(fixture, state, { id: 'manager-checkpoint-retry' });
+      expect(retried).toMatchObject({ status: 'complete', changed: true });
+    });
+  });
+
+  it.each([
+    { name: 'config', failedRename: 2 },
+    { name: 'metadata', failedRename: 4 },
+    { name: 'assets', failedRename: 6 },
+  ])('recovers safely after the $name fragment checkpoint fails', async ({ failedRename }) => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      await installLegacyCodex(fixture, state);
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+      let renames = 0;
+      let fragmentCheckpointReached = false;
+      const interrupted = await runControlledCodexSetup(fixture, state, {
+        id: `fragment-failure-${failedRename}`,
+        receiptFault: ({ point }) => {
+          if (point === 'receipt-rename' && ++renames === failedRename) {
+            fragmentCheckpointReached = true;
+            throw new Error('fragment checkpoint unavailable');
+          }
+        },
+      });
+      expect(interrupted.status).toBe('failed');
+      expect(interrupted.receipt).not.toBeNull();
+      expect(fragmentCheckpointReached).toBe(true);
+
+      if (failedRename === 6) {
+        const receiptDirectory = dirname(interrupted.receipt!);
+        const expectedMetadataBackup = join(
+          receiptDirectory,
+          'backups',
+          'migration-metadata',
+          'plugins',
+          'thoth-mem',
+          'thoth-mem.installation.json',
+        );
+        const expectedAssetBackup = join(
+          receiptDirectory,
+          'backups',
+          'migration-assets',
+          'plugins',
+          'thoth-mem',
+        );
+        const loaded = await loadVerifiedReceipt(fixture, interrupted.receipt!);
+        expect(loaded.ok).toBe(true);
+        if (!loaded.ok) {
+          throw new Error(loaded.reason);
+        }
+        const metadataStep = loaded.receipt.steps.find((step) => step.id === 'migration-metadata');
+        const assetStep = loaded.receipt.steps.find((step) => step.id === 'migration-assets');
+        expect(metadataStep).toMatchObject({
+          outcome: 'confirmed',
+          backup_path: expectedMetadataBackup,
+        });
+        expect(assetStep).toMatchObject({
+          outcome: 'planned',
+          backup_path: expectedAssetBackup,
+        });
+        expect(assetStep?.backup_path).not.toBe(metadataStep?.backup_path);
+        expect(relative(receiptDirectory, metadataStep!.backup_path!)).toBe(join(
+          'backups',
+          'migration-metadata',
+          'plugins',
+          'thoth-mem',
+          'thoth-mem.installation.json',
+        ));
+        expect(relative(receiptDirectory, assetStep!.backup_path!)).toBe(join(
+          'backups',
+          'migration-assets',
+          'plugins',
+          'thoth-mem',
+        ));
+      }
+
+      const recovered = await runControlledCodexSetup(fixture, state, {
+        id: `fragment-recovery-${failedRename}`,
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: interrupted.receipt!,
+          json: false,
+        },
+      });
+      expect(recovered.status).toBe('complete');
+      expect(await readFile(fixture.paths.configPath, 'utf8')).toContain('thoth-mem managed');
+      expect(await stat(fixture.paths.assetPath)).toBeDefined();
+    });
+  });
+
+  it('checkpoints verified manager state before removing each proven legacy fragment', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const events: string[] = [];
+      const state: ControlledCodexState = {
+        marketplace: false,
+        plugin: false,
+        mutations: [],
+        events,
+      };
+      const legacy = await installLegacyCodex(fixture, state);
+      expect(legacy.status).toBe('complete');
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const migrated = await runControlledCodexSetup(fixture, state, {
+        id: 'migration-v2',
+        trace: ({ kind, path }) => events.push(`trace:${kind}:${path ?? ''}`),
+      });
+
+      expect(migrated).toMatchObject({ status: 'complete', changed: true });
+      expect(await readFile(fixture.paths.configPath, 'utf8')).not.toContain('thoth-mem managed');
+      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      const raw = JSON.parse(await readFile(migrated.receipt!, 'utf8')) as {
+        steps: Array<{ id: string; outcome: string; backup_path?: string }>;
+      };
+      expect(raw.steps).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'migration-manager', outcome: 'confirmed' }),
+        expect.objectContaining({ id: 'migration-config', outcome: 'confirmed' }),
+        expect.objectContaining({ id: 'migration-metadata', outcome: 'confirmed' }),
+        expect.objectContaining({ id: 'migration-assets', outcome: 'confirmed' }),
+        expect.objectContaining({ id: 'verify', outcome: 'confirmed' }),
+      ]));
+      const managerCheckpoint = events.findIndex((event) => event.startsWith('trace:migration_manager_checkpoint'));
+      const firstRemoval = events.findIndex((event) => event.startsWith('trace:migration_fragment_removed'));
+      expect(managerCheckpoint).toBeGreaterThanOrEqual(0);
+      expect(managerCheckpoint).toBeLessThan(firstRemoval);
+      expect(state.mutations).toEqual([]);
+    });
+  });
+
+  it('records migration removal and restores from signed fragment evidence around unrelated edits', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      fixture.paths = resolveSetupPaths({
+        harness: 'codex',
+        scope: 'global',
+        planOnly: false,
+        force: false,
+        json: false,
+      }, fixture.roots);
+      await mkdir(dirname(fixture.paths.configPath), { recursive: true });
+      await writeFile(
+        fixture.paths.configPath,
+        'model = "gpt-5"\nprivate_token = "migration-secret"\n',
+        'utf8',
+      );
+      const legacy = await installLegacyCodex(fixture, state, 'legacy-before-bounded-migration');
+      expect(legacy.status).toBe('complete');
+      await writeFile(
+        fixture.paths.configPath,
+        `${await readFile(fixture.paths.configPath, 'utf8')}\n[plugins."foreign-before@market"]\nenabled = true\n`,
+        'utf8',
+      );
+      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+        recursive: true,
+        force: true,
+      });
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const migrated = await runControlledCodexSetup(fixture, state, {
+        id: 'bounded-migration-fragment-v2',
+      });
+
+      expect(migrated).toMatchObject({ status: 'complete', changed: true });
+      const raw = JSON.parse(await readFile(migrated.receipt!, 'utf8')) as {
+        steps: Array<Record<string, unknown>>;
+      };
+      const configStep = raw.steps.find((step) => step.id === 'migration-config');
+      expect(configStep).toMatchObject({
+        outcome: 'confirmed',
+        path: fixture.paths.configPath,
+        managed_fragment: {
+          config_path: fixture.paths.configPath,
+          owned_location: CODEX_OWNED_LOCATION,
+          operation: 'remove',
+          kind: 'insert',
+          pre_state: {
+            state: 'present',
+            sha256: fragmentSha256(CODEX_MANAGED_FRAGMENT),
+          },
+          post_state: { state: 'absent' },
+          restore: {
+            before_text: null,
+            after_text: CODEX_MANAGED_FRAGMENT,
+          },
+        },
+      });
+      expect(configStep).not.toHaveProperty('pre_hash');
+      expect(configStep).not.toHaveProperty('post_hash');
+      const receiptJson = JSON.stringify(raw);
+      expect(receiptJson).not.toContain('migration-secret');
+      expect(receiptJson).not.toContain('foreign-before@market');
+
+      await writeFile(
+        fixture.paths.configPath,
+        `${await readFile(fixture.paths.configPath, 'utf8')}\n[plugins."foreign-after@market"]\nenabled = true\n`,
+        'utf8',
+      );
+      const rollback = await runControlledCodexSetup(fixture, state, {
+        id: 'bounded-migration-fragment-rollback',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: migrated.receipt!,
+          json: false,
+        },
+      });
+
+      expect(rollback).toMatchObject({ status: 'complete', changed: true });
+      const restored = await readFile(fixture.paths.configPath, 'utf8');
+      expect(restored).toContain('private_token = "migration-secret"');
+      expect(restored).toContain('[plugins."foreign-before@market"]');
+      expect(restored).toContain('[plugins."foreign-after@market"]');
+      expect(restored).toContain('thoth-mem managed');
+    });
+  });
+
+  it('accepts complete corroborating legacy proof without a prior receipt', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      const legacy = await installLegacyCodex(fixture, state);
+      expect(legacy.status).toBe('complete');
+      await rm(receiptBasePath(fixture), { recursive: true, force: true });
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const migrated = await runControlledCodexSetup(fixture, state, { id: 'corroborated-v2' });
+
+      expect(migrated).toMatchObject({ status: 'complete', changed: true });
+      expect(state.mutations).toEqual([]);
+    });
+  });
+
+  it.each([
+    {
+      name: 'missing metadata',
+      mutate: async (fixture: SetupFixture) => unlink(join(
+        fixture.paths.assetPath,
+        'thoth-mem.installation.json',
+      )),
+    },
+    {
+      name: 'drifted owned content',
+      mutate: async (fixture: SetupFixture) => writeFile(
+        join(fixture.paths.assetPath, '.mcp.json'),
+        '{"drifted":true}\n',
+        'utf8',
+      ),
+    },
+    {
+      name: 'missing exact marker',
+      mutate: async (fixture: SetupFixture) => writeFile(
+        fixture.paths.configPath,
+        'model = "keep"\n',
+        'utf8',
+      ),
+    },
+  ])('keeps partial corroborating proof zero-write: $name', async ({ mutate }) => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      await installLegacyCodex(fixture, state);
+      await rm(receiptBasePath(fixture), { recursive: true, force: true });
+      await mutate(fixture);
+      const configBefore = await readFile(fixture.paths.configPath, 'utf8');
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+
+      const result = await runControlledCodexSetup(fixture, state, {
+        id: 'ambiguous-v2',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: true,
+          json: false,
+        },
+      });
+
+      expect(result).toMatchObject({ status: 'requires_user_action', changed: false, receipt: null });
+      expect(await readFile(fixture.paths.configPath, 'utf8')).toBe(configBefore);
+      expect(state.mutations).toEqual([]);
+    });
+  });
+
+  it('keeps modern manager rollback manual-only and never touches cache or config', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      const modern = await runControlledCodexSetup(fixture, state, { id: 'modern-created-v2' });
+      expect(modern.status).toBe('complete');
+      const configPath = fixture.paths.configPath;
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, 'user_setting = true\n', 'utf8');
+
+      const rollback = await runControlledCodexSetup(fixture, state, {
+        id: 'modern-rollback',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: modern.receipt!,
+          json: false,
+        },
+      });
+
+      expect(rollback).toMatchObject({ status: 'requires_user_action', changed: false });
+      expect(rollback.manual_actions.join(' ')).toContain('Codex plugin manager');
+      expect(await readFile(configPath, 'utf8')).toBe('user_setting = true\n');
+      expect(state.mutations).toEqual([
+        'plugin marketplace add EremesNG/thoth-mem',
+        'plugin add thoth-mem',
+      ]);
+    });
+  });
+
+  it('rolls back legacy setup by removing only its marker and owned assets', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      const legacy = await installLegacyCodex(fixture, state);
+      const installed = await readFile(fixture.paths.configPath, 'utf8');
+      await writeFile(
+        fixture.paths.configPath,
+        `${installed}\n[plugins."foreign@market"]\nenabled = true\n`,
+        'utf8',
+      );
+
+      const rollback = await runControlledCodexSetup(fixture, state, {
+        id: 'legacy-rollback',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: legacy.receipt!,
+          json: false,
+        },
+      });
+
+      expect(rollback).toMatchObject({ status: 'complete', changed: true });
+      const restored = await readFile(fixture.paths.configPath, 'utf8');
+      expect(restored).toContain('[plugins."foreign@market"]');
+      expect(restored).not.toContain('thoth-mem managed');
+      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  it('restores only migration-owned legacy fragments and keeps later config edits', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
+      await installLegacyCodex(fixture, state);
+      state.version = 'codex-cli 0.144.0';
+      state.marketplace = true;
+      state.plugin = true;
+      const migrated = await runControlledCodexSetup(fixture, state, { id: 'migration-for-rollback' });
+      expect(migrated.status).toBe('complete');
+      await writeFile(
+        fixture.paths.configPath,
+        'user_setting = true\n\n[plugins."foreign@market"]\nenabled = true\n',
+        'utf8',
+      );
+
+      const rollback = await runControlledCodexSetup(fixture, state, {
+        id: 'migration-rollback',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: migrated.receipt!,
+          json: false,
+        },
+      });
+
+      expect(rollback).toMatchObject({ status: 'complete', changed: true });
+      const restored = await readFile(fixture.paths.configPath, 'utf8');
+      expect(restored).toContain('user_setting = true');
+      expect(restored).toContain('[plugins."foreign@market"]');
+      expect(restored).toContain('thoth-mem managed');
+      expect(await stat(fixture.paths.assetPath)).toBeDefined();
+
+      const repeated = await runControlledCodexSetup(fixture, state, {
+        id: 'migration-rollback-repeat',
+        request: {
+          harness: 'codex',
+          scope: 'global',
+          planOnly: false,
+          force: false,
+          rollbackReceipt: migrated.receipt!,
+          json: false,
+        },
+      });
+      expect(repeated).toMatchObject({ status: 'complete', changed: false });
+    });
+  });
+});
 
 describe('write-ahead setup receipts', () => {
   it('orders target lock, backups, in-progress receipt, target mutation, and final receipt', async () => {
@@ -461,6 +1330,63 @@ describe('strict receipt integrity and binding', () => {
 });
 
 describe('receipt-owned rollback', () => {
+  it('recomposes and restores only the exact Codex managed fragment around later edits', async () => {
+    const codexHarness: Record<string, unknown> = await import('../../src/setup/harnesses/codex.js');
+    const planFragment: unknown = codexHarness.planCodexManagedFragment;
+    const applyFragment: unknown = codexHarness.applyCodexManagedFragment;
+    const restoreFragment: unknown = codexHarness.restoreCodexManagedFragment;
+
+    expect(typeof planFragment).toBe('function');
+    expect(typeof applyFragment).toBe('function');
+    expect(typeof restoreFragment).toBe('function');
+    if (
+      typeof planFragment !== 'function'
+      || typeof applyFragment !== 'function'
+      || typeof restoreFragment !== 'function'
+    ) {
+      return;
+    }
+
+    const original = 'model = "gpt-5"\n\n[features]\nweb_search = true\n';
+    const planned = planFragment({ before: original, force: false }) as {
+      fragment: unknown;
+      conflicts: unknown[];
+    };
+    expect(planned.conflicts).toEqual([]);
+    const withLateUserEdit = `${original}\n[user]\nkeep = "later"\n`;
+    const installed = applyFragment(withLateUserEdit, planned.fragment) as string;
+    expect(installed).toContain('[user]\nkeep = "later"');
+
+    const withLaterCodexEdit = `${installed}\n[plugins."foreign@market"]\nenabled = true\n`;
+    const restored = restoreFragment(withLaterCodexEdit, planned.fragment) as string;
+    expect(restored).toBe(`${withLateUserEdit}\n[plugins."foreign@market"]\nenabled = true\n`);
+    expect(restored).not.toContain('thoth-mem managed');
+  });
+
+  it('rejects ambiguous Codex marker contents even with force', async () => {
+    const codexHarness: Record<string, unknown> = await import('../../src/setup/harnesses/codex.js');
+    const planFragment: unknown = codexHarness.planCodexManagedFragment;
+    expect(typeof planFragment).toBe('function');
+    if (typeof planFragment !== 'function') {
+      return;
+    }
+    const before = [
+      '# >>> thoth-mem managed >>>',
+      '[plugins."thoth-mem".mcp_servers."thoth-mem"]',
+      'enabled = true',
+      '[plugins."thoth-mem@thoth-mem"]',
+      'enabled = true',
+      '# <<< thoth-mem managed <<<',
+      '',
+    ].join('\n');
+
+    const plan = planFragment({ before, force: true }) as {
+      changed: boolean;
+      conflicts: Array<{ forceable: boolean }>;
+    };
+    expect(plan.changed).toBe(false);
+    expect(plan.conflicts).toEqual([expect.objectContaining({ forceable: false })]);
+  });
   it('preserves unrelated post-install config additions while restoring only the owned key', async () => {
     await withTemporaryFixture(async (fixture) => {
       await mkdir(dirname(fixture.paths.configPath), { recursive: true });

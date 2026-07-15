@@ -437,9 +437,22 @@ async function validateRuntimeDeclarations(root, inventory) {
   );
 
   const codexMcp = requireObject(await readJson(codexMcpPath, 'Codex MCP'), 'Codex MCP');
-  assertPluginIdentity(Object.keys(codexMcp)[0], 'Codex MCP server');
-  if (Object.keys(codexMcp).length !== 1) {
-    throw new Error('Codex MCP descriptor must declare exactly one server.');
+  const codexServers = requireObject(codexMcp.mcpServers, 'Codex MCP mcpServers');
+  if (Object.keys(codexServers).length !== 1) {
+    throw new Error('Codex MCP mcpServers must declare exactly one server.');
+  }
+  assertPluginIdentity(Object.keys(codexServers)[0], 'Codex MCP server');
+  const codexServer = requireObject(codexServers['thoth-mem'], 'Codex MCP server');
+  if (codexServer.command !== 'thoth-mem') {
+    throw new Error('Codex MCP server command must be "thoth-mem".');
+  }
+  if (
+    !Array.isArray(codexServer.args)
+    || codexServer.args.length !== 2
+    || codexServer.args[0] !== 'mcp'
+    || codexServer.args[1] !== '--no-http'
+  ) {
+    throw new Error('Codex MCP server args must be ["mcp", "--no-http"].');
   }
 
   for (const [relativePath, role] of [

@@ -8,10 +8,12 @@ import {
   createNodeCodexCommandExecutor,
   executeCodexCli,
   inspectCodexCli,
+  type CodexCliExecutionResult,
   type CodexCliPlan,
   type CodexCommandExecutor,
   type CodexExecutionTiming,
   type CodexExternalCheckpoint,
+  type CodexOperationExecutionEvidence,
 } from './codex-cli.js';
 import {
   applyAtomicFilesystemChanges,
@@ -23,7 +25,14 @@ import {
   type FilesystemDirectoryEntry,
   type FilesystemFaultEvent,
 } from './filesystem.js';
-import { planCodexManagedConfig } from './harnesses/codex.js';
+import {
+  applyCodexManagedFragment,
+  captureCodexManagedFragment,
+  planCodexManagedConfig,
+  planCodexManagedFragment,
+  restoreCodexManagedFragment,
+  type CodexManagedFragment,
+} from './harnesses/codex.js';
 import {
   inspectOpenCodeOwnedState,
   planOpenCodeManagedConfig,
@@ -36,6 +45,8 @@ import {
   type SetupRoots,
 } from './paths.js';
 import {
+  codexManagedFragmentFromReceiptEvidence,
+  createCodexManagedFragmentReceiptEvidence,
   createSetupReceipt,
   loadSetupReceipt,
   persistSetupReceipt,
@@ -43,8 +54,12 @@ import {
   scanSetupReceipts,
   type ReceiptFaultEvent,
   type ReceiptPaths,
+  type SetupReceipt,
+  type SetupReceiptManagedFragmentEvidence,
   type SetupReceiptStep,
   type SetupReceiptV1,
+  type SetupReceiptV2,
+  type SetupReceiptV2ManagerEvidence,
 } from './receipt.js';
 import {
   acquireSetupTargetLock,
@@ -118,6 +133,8 @@ interface SetupInspection {
   configType: SetupPathType;
   managed: boolean;
   conflicts: SetupConflict[];
+  sourceAssetsAvailable: boolean;
+  codexLegacyState: 'absent' | 'managed' | 'ambiguous' | null;
 }
 
 const OPENCODE_MCP_VALUE = {
@@ -224,11 +241,9 @@ function metadataMatches(
   metadata: ManagedSetupMetadata,
   request: SetupRequest,
   paths: SetupPaths,
-  executablePath: string,
 ): boolean {
   return metadata.schemaVersion === SETUP_MANAGED_METADATA_VERSION
     && metadata.packageVersion === getVersion()
-    && resolve(metadata.executable) === executablePath
     && metadata.harness === request.harness
     && metadata.scope === request.scope
     && metadata.target === paths.targetRoot
@@ -251,7 +266,8 @@ async function inspectSetup(
   options: SetupEngineOptions,
 ): Promise<SetupInspection> {
   const sourceAssetsType = await fileSystem.pathType(unresolvedPaths.sourceAssetsPath);
-  if (sourceAssetsType !== 'directory') {
+  const sourceAssetsAvailable = sourceAssetsType === 'directory';
+  if (request.harness === 'opencode' && !sourceAssetsAvailable) {
     throw new Error('packaged-assets-unavailable');
   }
   if (
@@ -346,7 +362,7 @@ async function inspectSetup(
   }
 
   const matchingMetadata = metadata !== null
-    && metadataMatches(metadata, request, paths, setupExecutablePath(options));
+    && metadataMatches(metadata, request, paths);
   const canonicalMetadataMatches = matchingMetadata && metadataPath === canonicalMetadataPath;
   const assetLayout: FilesystemDirectoryEntry[] = request.harness === 'opencode'
     ? [
@@ -371,6 +387,20 @@ async function inspectSetup(
     && !baselineConfigPlan.changed
     && baselineConfigPlan.verification.ownedValuesMatch;
   const managed = canonicalMetadataMatches && configMatches && assetsMatch;
+  const hasCodexLegacyResidue = request.harness === 'codex'
+    && (
+      configMatches
+      || assetType !== 'missing'
+      || metadataPath !== null
+      || baselineConfigPlan.conflicts.length > 0
+    );
+  const codexLegacyState = request.harness === 'codex'
+    ? managed
+      ? 'managed'
+      : hasCodexLegacyResidue
+        ? 'ambiguous'
+        : 'absent'
+    : null;
 
   if (metadataPath && !matchingMetadata) {
     conflicts.push({
@@ -406,6 +436,8 @@ async function inspectSetup(
     configType,
     managed,
     conflicts,
+    sourceAssetsAvailable,
+    codexLegacyState,
   };
 }
 
@@ -657,16 +689,27 @@ function codexPlanningResult(
   plan: CodexCliPlan,
 ): SetupResult {
   const evidence = codexEvidenceFromPlan(request, plan);
-  const needsFileChanges = !inspection.managed;
+  const needsFileChanges = plan.strategy === 'legacy_filesystem' && !inspection.managed;
   const allExternalVerified = plan.operations.every((operation) => operation.verified);
   let status: SetupResult['status'];
-  if (hasBlockingConflict(request, inspection)) {
+  if (
+    hasBlockingConflict(request, inspection)
+    || inspection.codexLegacyState === 'ambiguous'
+  ) {
+    status = 'requires_user_action';
+  } else if (plan.strategy === 'legacy_filesystem' && !inspection.sourceAssetsAvailable) {
     status = 'requires_user_action';
   } else if (plan.status === 'failed') {
     status = 'failed';
   } else if (plan.status === 'requires_user_action') {
     status = 'requires_user_action';
-  } else if (request.planOnly || (!needsFileChanges && allExternalVerified)) {
+  } else if (request.planOnly) {
+    status = 'complete';
+  } else if (inspection.codexLegacyState === 'managed' && plan.strategy === 'plugin_manager') {
+    status = 'requires_user_action';
+  } else if (!needsFileChanges && allExternalVerified) {
+    status = 'complete';
+  } else if (plan.strategy === 'legacy_filesystem' && !needsFileChanges) {
     status = 'complete';
   } else {
     status = 'requires_user_action';
@@ -678,7 +721,7 @@ function codexPlanningResult(
     harness: request.harness,
     scope: request.scope,
     target: inspection.paths.targetRoot,
-    steps: planSteps(request, inspection.paths, inspection, evidence, plan.steps),
+    steps: codexStrategySteps(request, inspection, evidence, plan),
     diagnostics: [
       ...planDiagnostics(request, inspection.paths, inspection, evidence, false),
       ...plan.diagnostics,
@@ -691,9 +734,147 @@ function codexPlanningResult(
   };
 }
 
-interface ReceiptBackedChangeResult {
+function isVerifiedCodexNoOp(
+  request: SetupRequest,
+  inspection: SetupInspection,
+  plan: CodexCliPlan,
+): boolean {
+  if (
+    plan.status !== 'ready'
+    || inspection.conflicts.length > 0
+    || hasBlockingConflict(request, inspection)
+    || inspection.codexLegacyState === 'ambiguous'
+  ) {
+    return false;
+  }
+  if (plan.strategy === 'plugin_manager') {
+    return inspection.codexLegacyState === 'absent'
+      && plan.operations.every((operation) => operation.verified);
+  }
+  return inspection.sourceAssetsAvailable
+    && inspection.managed
+    && inspection.codexLegacyState === 'managed';
+}
+
+async function inspectVerifiedCodexNoOpBeforeLock(
+  request: SetupRequest,
+  paths: SetupPaths,
+  dataDir: string,
+  canonicalTarget: string,
+  receiptBasePath: string,
+  options: SetupEngineOptions,
+): Promise<SetupResult | null> {
+  const scanned = await scanSetupReceipts(receiptBasePath, {
+    dataDir,
+    expectedBasePath: receiptBasePath,
+  });
+  if (!scanned.ok) {
+    return null;
+  }
+  const matchingReceipts = scanned.receipts.filter(({ receipt }) => (
+    receipt.harness === request.harness
+    && receipt.scope === request.scope
+    && resolve(receipt.target) === resolve(canonicalTarget)
+  ));
+  if (
+    !matchingReceipts.some(({ receipt }) => receipt.status === 'complete')
+    || matchingReceipts.some(({ receipt }) => (
+    receipt.status === 'in_progress'
+    ))
+  ) {
+    return null;
+  }
+
+  let inspection: SetupInspection;
+  try {
+    inspection = await inspectSetup(request, paths, createNodeSetupFileSystem(), options);
+  } catch {
+    return null;
+  }
+  const executor = options.codexExecutor ?? createNodeCodexCommandExecutor();
+  const plan = await inspectCodexCli({
+    executor,
+    scope: request.scope,
+    ...(request.projectPath ? { projectPath: request.projectPath } : {}),
+  });
+  return isVerifiedCodexNoOp(request, inspection, plan)
+    ? codexPlanningResult(request, inspection, plan)
+    : null;
+}
+
+function codexStrategySteps(
+  request: SetupRequest,
+  inspection: SetupInspection,
+  evidence: CodexRegistrationEvidence,
+  plan: CodexCliPlan,
+): SetupStep[] {
+  const scope = request.scope;
+  if (plan.strategy === 'legacy_filesystem') {
+    const filesystemOutcome = filesystemStepOutcome(request, inspection);
+    return [
+      {
+        name: 'Inspect packaged legacy Codex assets',
+        outcome: inspection.sourceAssetsAvailable ? 'confirmed' : 'unavailable',
+      },
+      {
+        name: 'Inspect legacy Codex managed configuration fragment',
+        outcome: inspection.codexLegacyState === 'ambiguous' ? 'unavailable' : 'confirmed',
+      },
+      { name: 'Install legacy Codex assets', outcome: filesystemOutcome },
+      { name: 'Merge legacy Codex managed configuration fragment', outcome: filesystemOutcome },
+      { name: 'Write legacy Codex installation metadata', outcome: filesystemOutcome },
+      {
+        name: 'Verify legacy Codex setup',
+        outcome: inspection.managed ? 'confirmed' : 'planned',
+      },
+    ];
+  }
+
+  if (plan.strategy === 'plugin_manager') {
+    if (inspection.codexLegacyState === 'managed') {
+      return [
+        { name: `Inspect Codex plugin manager capabilities (${scope})`, outcome: 'confirmed' },
+        { name: `Inspect Codex manager state (${scope})`, outcome: 'confirmed' },
+        { name: `Verify existing Codex manager state (${scope})`, outcome: 'confirmed' },
+        { name: `Checkpoint verified Codex manager state (${scope})`, outcome: 'planned' },
+        { name: 'Remove proven legacy Codex managed configuration fragment', outcome: 'planned' },
+        { name: 'Remove proven legacy Codex assets', outcome: 'planned' },
+        { name: 'Remove proven legacy Codex installation metadata', outcome: 'planned' },
+        { name: `Verify Codex plugin-manager setup (${scope})`, outcome: 'planned' },
+      ];
+    }
+
+    const marketplace = plan.operations.find((operation) => operation.id === 'codex-marketplace')!;
+    const plugin = plan.operations.find((operation) => operation.id === 'codex-plugin')!;
+    const marketplaceOutcome = marketplace.verified ? 'confirmed' : 'planned';
+    const pluginOutcome = plugin.verified ? 'confirmed' : 'planned';
+    return [
+      { name: `Inspect Codex plugin manager capabilities (${scope})`, outcome: 'confirmed' },
+      { name: `Inspect Codex manager state (${scope})`, outcome: 'confirmed' },
+      { name: marketplace.name, outcome: marketplaceOutcome },
+      { name: `Checkpoint Codex marketplace state (${scope})`, outcome: marketplaceOutcome },
+      { name: `Reread Codex manager state after marketplace (${scope})`, outcome: marketplaceOutcome },
+      { name: plugin.name, outcome: pluginOutcome },
+      { name: `Checkpoint Codex plugin state (${scope})`, outcome: pluginOutcome },
+      { name: `Reread Codex manager state after plugin (${scope})`, outcome: pluginOutcome },
+      {
+        name: `Verify Codex plugin-manager setup (${scope})`,
+        outcome: marketplace.verified && plugin.verified ? 'confirmed' : 'planned',
+      },
+    ];
+  }
+
+  return [
+    { name: `Inspect Codex plugin manager capabilities (${scope})`, outcome: 'confirmed' },
+    { name: `Inspect Codex manager state (${scope})`, outcome: 'unavailable' },
+    ...plan.steps,
+    { name: 'Validate legacy Codex ownership evidence', outcome: 'unavailable' },
+  ];
+}
+
+interface ReceiptBackedChangeResult<T extends SetupReceipt = SetupReceipt> {
   filesystem: AtomicFilesystemResult;
-  receipt: SetupReceiptV1;
+  receipt: T;
   initialReceiptPersisted: boolean;
   keyProtection: 'enforced' | 'best_effort_windows' | null;
 }
@@ -761,10 +942,10 @@ function fileContentSnapshot(content: string): string {
 }
 
 function withReceiptBackups(
-  receipt: SetupReceiptV1,
+  receipt: SetupReceipt,
   backups: FilesystemBackup[],
   updatedAt: string,
-): SetupReceiptV1 {
+): SetupReceipt {
   const backupByTarget = new Map(backups.map((backup) => [backup.targetPath, backup.backupPath]));
   return {
     ...receipt,
@@ -780,18 +961,20 @@ function withReceiptBackups(
 }
 
 function withConfirmedReceiptStep(
-  receipt: SetupReceiptV1,
+  receipt: SetupReceipt,
   path: string,
   postHash: string,
   updatedAt: string,
-): SetupReceiptV1 {
+): SetupReceipt {
   let matched = false;
   const steps = receipt.steps.map((step) => {
     if (step.path !== path) {
       return step;
     }
     matched = true;
-    return { ...step, outcome: 'confirmed' as const, post_hash: postHash };
+    return step.managed_fragment
+      ? { ...step, outcome: 'confirmed' as const }
+      : { ...step, outcome: 'confirmed' as const, post_hash: postHash };
   });
   if (!matched) {
     throw new Error('receipt-step-missing');
@@ -800,10 +983,10 @@ function withConfirmedReceiptStep(
 }
 
 function withExternalReceiptCheckpoint(
-  receipt: SetupReceiptV1,
+  receipt: SetupReceipt,
   checkpoint: CodexExternalCheckpoint,
   updatedAt: string,
-): SetupReceiptV1 {
+): SetupReceipt {
   let matched = false;
   const steps = receipt.steps.map((step) => {
     if (step.id !== checkpoint.id || step.kind !== 'external_command') {
@@ -823,13 +1006,29 @@ function withExternalReceiptCheckpoint(
   if (!matched) {
     throw new Error('external-receipt-step-missing');
   }
-  return { ...receipt, updated_at: updatedAt, steps };
+  const updated = { ...receipt, updated_at: updatedAt, steps };
+  if (updated.schema_version === 1) {
+    return updated;
+  }
+  return {
+    ...updated,
+    external_checkpoints: [
+      ...updated.external_checkpoints,
+      {
+        sequence: updated.external_checkpoints.length + 1,
+        id: checkpoint.id,
+        outcome: checkpoint.outcome,
+        observed_at: updatedAt,
+        ...(checkpoint.diagnostic ? { diagnostic: checkpoint.diagnostic } : {}),
+      },
+    ],
+  };
 }
 
 async function persistReceiptCheckpoint(
   receiptPath: string,
   receiptBasePath: string,
-  receipt: SetupReceiptV1,
+  receipt: SetupReceipt,
   dataDir: string,
   options: SetupEngineOptions,
 ) {
@@ -840,17 +1039,19 @@ async function persistReceiptCheckpoint(
   });
 }
 
-async function applyReceiptBackedChanges(input: {
+async function applyReceiptBackedChanges<T extends SetupReceipt>(input: {
   targetRoot: string;
   sourceRoot?: string;
   receiptBasePath: string;
   receiptPaths: ReceiptPaths;
   dataDir: string;
-  receipt: SetupReceiptV1;
+  receipt: T;
   changes: FilesystemChange[];
   options: SetupEngineOptions;
   postHash: (path: string) => Promise<string>;
-}): Promise<ReceiptBackedChangeResult> {
+  afterWriteAhead?: () => void | Promise<void>;
+  changeTraceKind?: string;
+}): Promise<ReceiptBackedChangeResult<T>> {
   let activeReceipt = input.receipt;
   let initialReceiptPersisted = false;
   let keyProtection: ReceiptBackedChangeResult['keyProtection'] = null;
@@ -867,7 +1068,7 @@ async function applyReceiptBackedChanges(input: {
         activeReceipt,
         backups,
         transactionNow(input.options),
-      );
+      ) as T;
       const persisted = await persistReceiptCheckpoint(
         input.receiptPaths.receiptPath,
         input.receiptBasePath,
@@ -878,10 +1079,11 @@ async function applyReceiptBackedChanges(input: {
       if (!persisted.ok) {
         throw new Error('receipt-write-ahead-failed');
       }
-      activeReceipt = persisted.receipt;
+      activeReceipt = persisted.receipt as T;
       keyProtection = persisted.keyProtection;
       initialReceiptPersisted = true;
       await traceSetup(input.options, 'receipt_in_progress', input.receiptPaths.receiptPath);
+      await input.afterWriteAhead?.();
     },
     afterChange: async ({ targetPath }) => {
       activeReceipt = withConfirmedReceiptStep(
@@ -889,7 +1091,7 @@ async function applyReceiptBackedChanges(input: {
         targetPath,
         await input.postHash(targetPath),
         transactionNow(input.options),
-      );
+      ) as T;
       const persisted = await persistReceiptCheckpoint(
         input.receiptPaths.receiptPath,
         input.receiptBasePath,
@@ -900,9 +1102,9 @@ async function applyReceiptBackedChanges(input: {
       if (!persisted.ok) {
         throw new Error('receipt-checkpoint-failed');
       }
-      activeReceipt = persisted.receipt;
+      activeReceipt = persisted.receipt as T;
       keyProtection = persisted.keyProtection;
-      await traceSetup(input.options, 'target_renamed', targetPath);
+      await traceSetup(input.options, input.changeTraceKind ?? 'target_renamed', targetPath);
     },
   });
   return { filesystem, receipt: activeReceipt, initialReceiptPersisted, keyProtection };
@@ -914,11 +1116,11 @@ async function markRestoredFailure(
   receiptBasePath: string,
   dataDir: string,
   options: SetupEngineOptions,
-): Promise<SetupReceiptV1> {
+): Promise<SetupReceipt> {
   if (!result.initialReceiptPersisted || result.filesystem.changed) {
     return result.receipt;
   }
-  const failedReceipt: SetupReceiptV1 = {
+  const failedReceipt: SetupReceipt = {
     ...result.receipt,
     status: 'failed',
     updated_at: transactionNow(options),
@@ -1068,6 +1270,44 @@ async function readRegularFileOrNull(path: string): Promise<string | null> {
   }
 }
 
+function codexManagedFragmentStateMatches(
+  current: string | null,
+  evidence: SetupReceiptManagedFragmentEvidence,
+  state: 'pre' | 'post',
+): boolean {
+  try {
+    const fragment = codexManagedFragmentFromReceiptEvidence(evidence);
+    const source = current ?? '';
+    if (state === 'pre') {
+      if (evidence.operation === 'apply') {
+        applyCodexManagedFragment(source, fragment);
+      } else {
+        restoreCodexManagedFragment(source, fragment);
+      }
+    } else if (evidence.operation === 'apply') {
+      restoreCodexManagedFragment(source, fragment);
+    } else {
+      applyCodexManagedFragment(source, fragment);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function codexManagedFragmentPostSnapshot(
+  path: string,
+  evidence: SetupReceiptManagedFragmentEvidence,
+): Promise<string> {
+  const current = await readRegularFileOrNull(path);
+  if (!codexManagedFragmentStateMatches(current, evidence, 'post')) {
+    throw new Error('codex-managed-fragment-poststate-diverged');
+  }
+  return evidence.post_state.state === 'absent'
+    ? 'managed-fragment:absent'
+    : `managed-fragment:${evidence.post_state.sha256}`;
+}
+
 function setupMetadata(
   request: SetupRequest,
   paths: SetupPaths,
@@ -1084,6 +1324,193 @@ function setupMetadata(
     assetsPath: paths.assetPath,
     verified: true,
   }, null, 2)}\n`;
+}
+
+async function hasExactSignedLegacyProof(
+  receipts: Array<{ path: string; receipt: SetupReceipt }>,
+  request: SetupRequest,
+  paths: SetupPaths,
+  canonicalTarget: string,
+): Promise<boolean> {
+  const candidates = receipts.filter(({ receipt }) => (
+    receipt.schema_version === 2
+    && receipt.status === 'complete'
+    && receipt.strategy === 'legacy_filesystem'
+    && receipt.scope === request.scope
+    && resolve(receipt.target) === resolve(canonicalTarget)
+  ));
+  if (candidates.length === 0) {
+    return false;
+  }
+  const metadataPath = join(paths.assetPath, MANAGED_METADATA_NAME);
+  const [currentConfig, assetHash, metadataHash] = await Promise.all([
+    readRegularFileOrNull(paths.configPath),
+    filesystemEntrySnapshot(paths.assetPath),
+    filesystemEntrySnapshot(metadataPath),
+  ]);
+  return candidates.some(({ receipt }) => {
+    const config = receipt.steps.find((step) => step.id === 'config');
+    const assets = receipt.steps.find((step) => step.id === 'assets');
+    const metadata = receipt.steps.find((step) => step.id === 'metadata');
+    return config?.outcome === 'confirmed'
+      && config.path === paths.configPath
+      && config.managed_fragment?.operation === 'apply'
+      && codexManagedFragmentStateMatches(currentConfig, config.managed_fragment, 'post')
+      && assets?.outcome === 'confirmed'
+      && assets.path === paths.assetPath
+      && assets.post_hash === assetHash
+      && metadata?.outcome === 'confirmed'
+      && metadata.path === metadataPath
+      && metadata.post_hash === metadataHash;
+  });
+}
+
+function initialCodexManagerEvidence(plan: CodexCliPlan): SetupReceiptV2ManagerEvidence {
+  const marketplace = plan.operations.find((operation) => operation.id === 'codex-marketplace');
+  const plugin = plan.operations.find((operation) => operation.id === 'codex-plugin');
+  return {
+    initial_state: plan.evidence.managerState,
+    marketplace: {
+      name: 'thoth-mem',
+      source: 'EremesNG/thoth-mem',
+      pre_existing_verified: marketplace?.verified ?? false,
+      created_by_attempt: false,
+      final_verified: false,
+    },
+    plugin: {
+      plugin_id: 'thoth-mem@thoth-mem',
+      name: 'thoth-mem',
+      marketplace_name: 'thoth-mem',
+      installed: false,
+      enabled: false,
+      pre_existing_verified: plugin?.verified ?? false,
+      created_by_attempt: false,
+      final_verified: false,
+    },
+    final_verified_at: null,
+  };
+}
+
+function withFinalCodexManagerEvidence(
+  receipt: SetupReceiptV2,
+  operations: CodexOperationExecutionEvidence[],
+  observedAt: string,
+): SetupReceiptV2 {
+  const marketplace = operations.find((operation) => operation.id === 'codex-marketplace');
+  const plugin = operations.find((operation) => operation.id === 'codex-plugin');
+  const marketplaceVerified = marketplace?.finalOutcome === 'confirmed';
+  const pluginVerified = plugin?.finalOutcome === 'confirmed';
+  return {
+    ...receipt,
+    manager_evidence: {
+      ...receipt.manager_evidence,
+      marketplace: {
+        ...receipt.manager_evidence.marketplace,
+        created_by_attempt: !receipt.manager_evidence.marketplace.pre_existing_verified
+          && marketplace?.safeAttempt === 'attempted'
+          && marketplaceVerified,
+        final_verified: marketplaceVerified,
+      },
+      plugin: {
+        ...receipt.manager_evidence.plugin,
+        installed: pluginVerified,
+        enabled: pluginVerified,
+        created_by_attempt: !receipt.manager_evidence.plugin.pre_existing_verified
+          && plugin?.safeAttempt === 'attempted'
+          && pluginVerified,
+        final_verified: pluginVerified,
+      },
+      final_verified_at: marketplaceVerified && pluginVerified ? observedAt : null,
+    },
+  };
+}
+
+function codexOperationOutcome(
+  operation: CodexOperationExecutionEvidence | undefined,
+): SetupStepOutcome {
+  return operation?.finalOutcome ?? 'unavailable';
+}
+
+function codexCheckpointOutcome(
+  operation: CodexOperationExecutionEvidence | undefined,
+  phase: 'attempt' | 'reread',
+): SetupStepOutcome {
+  const checkpoint = phase === 'attempt'
+    ? operation?.attemptCheckpoint
+    : operation?.rereadCheckpoint;
+  if (checkpoint) {
+    return checkpoint.outcome;
+  }
+  if (operation?.safeAttempt === 'not_needed') {
+    return operation.finalOutcome;
+  }
+  return operation?.finalOutcome ?? 'unavailable';
+}
+
+function codexPluginManagerResultSteps(
+  request: SetupRequest,
+  plan: CodexCliPlan,
+  execution: CodexCliExecutionResult,
+): SetupStep[] {
+  const scope = request.scope;
+  const marketplacePlan = plan.operations.find((operation) => operation.id === 'codex-marketplace');
+  const pluginPlan = plan.operations.find((operation) => operation.id === 'codex-plugin');
+  const marketplace = execution.operations.find((operation) => operation.id === 'codex-marketplace');
+  const plugin = execution.operations.find((operation) => operation.id === 'codex-plugin');
+  return [
+    { name: `Inspect Codex plugin manager capabilities (${scope})`, outcome: 'confirmed' },
+    { name: `Inspect Codex manager state (${scope})`, outcome: 'confirmed' },
+    {
+      name: marketplacePlan?.name ?? `Register thoth-mem Codex marketplace (${scope})`,
+      outcome: codexOperationOutcome(marketplace),
+    },
+    {
+      name: `Checkpoint Codex marketplace state (${scope})`,
+      outcome: codexCheckpointOutcome(marketplace, 'attempt'),
+    },
+    {
+      name: `Reread Codex manager state after marketplace (${scope})`,
+      outcome: codexCheckpointOutcome(marketplace, 'reread'),
+    },
+    {
+      name: pluginPlan?.name ?? `Install thoth-mem Codex plugin (${scope})`,
+      outcome: codexOperationOutcome(plugin),
+    },
+    {
+      name: `Checkpoint Codex plugin state (${scope})`,
+      outcome: codexCheckpointOutcome(plugin, 'attempt'),
+    },
+    {
+      name: `Reread Codex manager state after plugin (${scope})`,
+      outcome: codexCheckpointOutcome(plugin, 'reread'),
+    },
+    {
+      name: `Verify Codex plugin-manager setup (${scope})`,
+      outcome: execution.status === 'complete' ? 'confirmed' : 'failed',
+    },
+  ];
+}
+
+function codexLegacyResultSteps(
+  request: SetupRequest,
+  inspection: SetupInspection,
+  execution: CodexCliExecutionResult,
+): SetupStep[] {
+  const mutationOutcome = execution.status === 'complete' ? 'confirmed' : 'failed';
+  return [
+    {
+      name: 'Inspect packaged legacy Codex assets',
+      outcome: inspection.sourceAssetsAvailable ? 'confirmed' : 'unavailable',
+    },
+    {
+      name: 'Inspect legacy Codex managed configuration fragment',
+      outcome: inspection.codexLegacyState === 'ambiguous' ? 'unavailable' : 'confirmed',
+    },
+    { name: 'Install legacy Codex assets', outcome: mutationOutcome },
+    { name: 'Merge legacy Codex managed configuration fragment', outcome: mutationOutcome },
+    { name: 'Write legacy Codex installation metadata', outcome: mutationOutcome },
+    { name: 'Verify legacy Codex setup', outcome: mutationOutcome },
+  ];
 }
 
 async function executeOpenCodeSetup(
@@ -1295,11 +1722,15 @@ async function executeCodexSetup(
   codexPlan: CodexCliPlan,
 ): Promise<SetupResult> {
   const paths = inspection.paths;
-  const configBefore = inspection.configType === 'file'
+  const usesLegacyFilesystem = codexPlan.strategy === 'legacy_filesystem';
+  const configBefore = usesLegacyFilesystem && inspection.configType === 'file'
     ? await readRegularFileOrNull(paths.configPath)
     : null;
-  const configPlan = planCodexManagedConfig({ before: configBefore, force: request.force });
-  if (configPlan.conflicts.length > 0 || !configPlan.verification.ownedValuesMatch) {
+  const configPlan = planCodexManagedFragment({ before: configBefore, force: request.force });
+  if (
+    usesLegacyFilesystem
+    && (configPlan.conflicts.length > 0 || !configPlan.verification.ownedValuesMatch)
+  ) {
     return requiresSetupActionResult(
       request,
       paths,
@@ -1307,33 +1738,77 @@ async function executeCodexSetup(
       'Resolve the owned Codex configuration conflict and retry.',
     );
   }
+  let configAfter = configPlan.after;
+  if (usesLegacyFilesystem && configPlan.fragment) {
+    try {
+      configAfter = applyCodexManagedFragment(configBefore, configPlan.fragment);
+    } catch {
+      return requiresSetupActionResult(
+        request,
+        paths,
+        'The selected Codex managed fragment changed during planning.',
+        'Review the current Codex configuration and retry without overwriting unrelated changes.',
+      );
+    }
+  }
 
+  const metadataPath = join(paths.assetPath, MANAGED_METADATA_NAME);
   let configPreHash: string;
   let assetPreHash: string;
+  let metadataPreHash: string;
   try {
-    [configPreHash, assetPreHash] = await Promise.all([
+    [configPreHash, assetPreHash, metadataPreHash] = await Promise.all([
       filesystemEntrySnapshot(paths.configPath),
       filesystemEntrySnapshot(paths.assetPath),
+      filesystemEntrySnapshot(metadataPath),
     ]);
   } catch {
     return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
   }
 
-  const needsFileChanges = !inspection.managed;
+  const needsFileChanges = usesLegacyFilesystem && !inspection.managed;
+  const configFragmentEvidence = usesLegacyFilesystem && configPlan.fragment
+    ? createCodexManagedFragmentReceiptEvidence(
+        paths.configPath,
+        'apply',
+        configPlan.fragment,
+      )
+    : undefined;
+  if (needsFileChanges && configPlan.changed && !configFragmentEvidence) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The planned Codex config mutation lacks exact managed-fragment evidence.',
+      'Reinspect the exact managed marker fragment before retrying.',
+    );
+  }
   const metadata = setupMetadata(request, paths, options);
   const receiptPaths = resolveSetupReceiptPaths(receiptBasePath, nextReceiptId(options));
   const startedAt = transactionNow(options);
+  if (codexPlan.strategy === null) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'Codex ownership strategy could not be selected safely.',
+      'Resolve the Codex capability or ownership ambiguity before retrying.',
+    );
+  }
   const receipt = createSetupReceipt({
+    schema_version: 2,
     id: basename(dirname(receiptPaths.receiptPath)),
     operation: 'setup',
     status: 'in_progress',
-    harness: request.harness,
+    harness: 'codex',
     scope: request.scope,
     target: canonicalTarget,
     package_version: getVersion(),
     force: request.force,
     started_at: startedAt,
     updated_at: startedAt,
+    strategy: codexPlan.strategy,
+    capability_evidence: codexPlan.evidence,
+    manager_evidence: initialCodexManagerEvidence(codexPlan),
+    external_checkpoints: [],
     steps: [
       {
         id: 'config',
@@ -1341,10 +1816,14 @@ async function executeCodexSetup(
         outcome: needsFileChanges && configPlan.changed ? 'planned' : 'skipped',
         owned_key: 'plugins."thoth-mem".mcp_servers."thoth-mem"',
         path: paths.configPath,
-        pre_hash: configPreHash,
-        post_hash: configPlan.changed
-          ? fileContentSnapshot(configPlan.after)
-          : configPreHash,
+        ...(configFragmentEvidence
+          ? { managed_fragment: configFragmentEvidence }
+          : {
+              pre_hash: configPreHash,
+              post_hash: configPlan.changed
+                ? fileContentSnapshot(configAfter)
+                : configPreHash,
+            }),
       },
       {
         id: 'assets',
@@ -1354,10 +1833,20 @@ async function executeCodexSetup(
         pre_hash: assetPreHash,
         post_hash: needsFileChanges ? 'pending' : assetPreHash,
       },
+      {
+        id: 'metadata',
+        kind: 'filesystem',
+        outcome: needsFileChanges ? 'planned' : 'skipped',
+        path: metadataPath,
+        pre_hash: metadataPreHash,
+        post_hash: needsFileChanges ? fileContentSnapshot(metadata) : metadataPreHash,
+      },
       ...codexPlan.operations.map((operation): SetupReceiptStep => ({
         id: operation.id,
         kind: 'external_command',
-        outcome: operation.verified ? 'confirmed' : 'planned',
+        outcome: usesLegacyFilesystem
+          ? 'skipped'
+          : (operation.verified ? 'confirmed' : 'planned'),
         external_scope: request.scope,
       })),
       { id: 'verify', kind: 'verification', outcome: 'planned' },
@@ -1365,9 +1854,6 @@ async function executeCodexSetup(
   });
   const changes: FilesystemChange[] = needsFileChanges
     ? [
-        ...(configPlan.changed
-          ? [{ kind: 'file' as const, targetPath: paths.configPath, content: configPlan.after }]
-          : []),
         {
           kind: 'directory',
           targetPath: paths.assetPath,
@@ -1378,16 +1864,11 @@ async function executeCodexSetup(
             mode: 0o600,
           }],
         },
+        ...(configPlan.changed
+          ? [{ kind: 'file' as const, targetPath: paths.configPath, content: configAfter }]
+          : []),
       ]
     : [];
-  const evidence = codexEvidenceFromPlan(request, codexPlan);
-  const plannedSteps = planSteps(
-    request,
-    paths,
-    inspection,
-    evidence,
-    codexPlan.steps,
-  );
   const applied = await applyReceiptBackedChanges({
     targetRoot: paths.targetRoot,
     sourceRoot: roots.packageRoot,
@@ -1397,7 +1878,9 @@ async function executeCodexSetup(
     receipt,
     changes,
     options,
-    postHash: filesystemEntrySnapshot,
+    postHash: async (path) => path === paths.configPath && configFragmentEvidence
+      ? codexManagedFragmentPostSnapshot(path, configFragmentEvidence)
+      : filesystemEntrySnapshot(path),
   });
   if (applied.filesystem.outcome === 'failed') {
     await markRestoredFailure(
@@ -1418,11 +1901,18 @@ async function executeCodexSetup(
     );
   }
 
-  let filesystemVerified: boolean;
-  try {
-    filesystemVerified = (await inspectSetup(request, paths, createNodeSetupFileSystem(), options)).managed;
-  } catch {
-    filesystemVerified = false;
+  let filesystemVerified = !usesLegacyFilesystem;
+  if (usesLegacyFilesystem) {
+    try {
+      filesystemVerified = (await inspectSetup(
+        request,
+        paths,
+        createNodeSetupFileSystem(),
+        options,
+      )).managed;
+    } catch {
+      filesystemVerified = false;
+    }
   }
   if (!filesystemVerified) {
     return receiptFailureResult(
@@ -1435,17 +1925,42 @@ async function executeCodexSetup(
   }
 
   let activeReceipt = applied.receipt;
+  if (usesLegacyFilesystem && needsFileChanges) {
+    activeReceipt = withConfirmedReceiptStep(
+      activeReceipt,
+      metadataPath,
+      await filesystemEntrySnapshot(metadataPath),
+      transactionNow(options),
+    ) as SetupReceiptV2;
+    const metadataCheckpoint = await persistReceiptCheckpoint(
+      receiptPaths.receiptPath,
+      receiptBasePath,
+      activeReceipt,
+      dataDir,
+      options,
+    );
+    if (!metadataCheckpoint.ok) {
+      return receiptFailureResult(
+        request,
+        paths,
+        true,
+        receiptPaths.receiptPath,
+        'Codex legacy metadata state could not be durably checkpointed.',
+      );
+    }
+    activeReceipt = metadataCheckpoint.receipt as SetupReceiptV2;
+  }
   const external = await executeCodexCli(codexPlan, {
     executor,
     ...(options.codexTiming ? { timing: options.codexTiming } : {}),
     checkpoint: async (checkpoint) => {
-      let checkpointReceipt: SetupReceiptV1;
+      let checkpointReceipt: SetupReceiptV2;
       try {
         checkpointReceipt = withExternalReceiptCheckpoint(
           activeReceipt,
           checkpoint,
           transactionNow(options),
-        );
+        ) as SetupReceiptV2;
       } catch {
         return false;
       }
@@ -1459,7 +1974,7 @@ async function executeCodexSetup(
       if (!persisted.ok) {
         return false;
       }
-      activeReceipt = persisted.receipt;
+      activeReceipt = persisted.receipt as SetupReceiptV2;
       await traceSetup(options, `external_${checkpoint.id}_${checkpoint.outcome}`, receiptPaths.receiptPath);
       return true;
     },
@@ -1474,16 +1989,27 @@ async function executeCodexSetup(
     );
   }
 
-  const finalReceipt: SetupReceiptV1 = {
-    ...activeReceipt,
+  const finalizedAt = transactionNow(options);
+  const operationById = new Map<string, CodexOperationExecutionEvidence>(
+    external.operations.map((operation) => [operation.id, operation]),
+  );
+  const finalReceipt: SetupReceiptV2 = {
+    ...withFinalCodexManagerEvidence(activeReceipt, external.operations, finalizedAt),
     status: external.status,
-    updated_at: transactionNow(options),
-    steps: activeReceipt.steps.map((step) => (step.id === 'verify'
-      ? {
+    updated_at: finalizedAt,
+    steps: activeReceipt.steps.map((step) => {
+      if (step.kind === 'external_command') {
+        const operation = operationById.get(step.id);
+        return operation ? { ...step, outcome: operation.finalOutcome } : step;
+      }
+      if (step.id === 'verify') {
+        return {
           ...step,
           outcome: external.status === 'complete' ? 'confirmed' as const : 'failed' as const,
-        }
-      : step)),
+        };
+      }
+      return step;
+    }),
   };
   const persisted = await persistReceiptCheckpoint(
     receiptPaths.receiptPath,
@@ -1503,20 +2029,9 @@ async function executeCodexSetup(
   }
   await traceSetup(options, `receipt_${external.status}`, receiptPaths.receiptPath);
 
-  const externalByName = new Map(external.steps.map((step) => [step.name, step]));
-  const resultSteps = plannedSteps.map((step) => {
-    const externalStep = externalByName.get(step.name);
-    if (externalStep) {
-      return externalStep;
-    }
-    if (step.name === 'Verify Codex setup') {
-      return {
-        ...step,
-        outcome: external.status === 'complete' ? 'confirmed' as const : 'failed' as const,
-      };
-    }
-    return step.outcome === 'planned' ? { ...step, outcome: 'confirmed' as const } : step;
-  });
+  const resultSteps = codexPlan.strategy === 'plugin_manager'
+    ? codexPluginManagerResultSteps(request, codexPlan, external)
+    : codexLegacyResultSteps(request, inspection, external);
   return {
     status: external.status,
     changed: applied.filesystem.changed || external.changed,
@@ -1526,6 +2041,252 @@ async function executeCodexSetup(
     steps: resultSteps,
     diagnostics: [...receiptKeyDiagnostic(applied.keyProtection), ...external.diagnostics],
     manual_actions: external.manualActions,
+    receipt: receiptPaths.receiptPath,
+  };
+}
+
+async function executeCodexMigration(
+  request: SetupRequest,
+  roots: SetupRoots,
+  inspection: SetupInspection,
+  dataDir: string,
+  canonicalTarget: string,
+  receiptBasePath: string,
+  options: SetupEngineOptions,
+  executor: CodexCommandExecutor,
+  codexPlan: CodexCliPlan,
+): Promise<SetupResult> {
+  const paths = inspection.paths;
+  const configBefore = await readRegularFileOrNull(paths.configPath);
+  if (configBefore === null) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The proven legacy Codex configuration fragment is unavailable.',
+      'Restore the exact owned fragment or resolve the ambiguous legacy state manually.',
+    );
+  }
+  let configAfter: string;
+  let configFragment: CodexManagedFragment;
+  try {
+    configFragment = captureCodexManagedFragment(configBefore);
+    configAfter = restoreCodexManagedFragment(
+      configBefore,
+      configFragment,
+    );
+  } catch {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The legacy Codex configuration fragment is not exact or independently owned.',
+      'Resolve the legacy marker ambiguity manually; --force cannot establish ownership.',
+    );
+  }
+
+  const metadataPath = join(paths.assetPath, MANAGED_METADATA_NAME);
+  const receiptPaths = resolveSetupReceiptPaths(receiptBasePath, nextReceiptId(options));
+  const configReceiptPaths = {
+    ...receiptPaths,
+    backupRoot: join(receiptPaths.backupRoot, 'migration-config'),
+  };
+  const metadataReceiptPaths = {
+    ...receiptPaths,
+    backupRoot: join(receiptPaths.backupRoot, 'migration-metadata'),
+  };
+  const assetReceiptPaths = {
+    ...receiptPaths,
+    backupRoot: join(receiptPaths.backupRoot, 'migration-assets'),
+  };
+  const startedAt = transactionNow(options);
+  const configFragmentEvidence = createCodexManagedFragmentReceiptEvidence(
+    paths.configPath,
+    'remove',
+    configFragment,
+  );
+  const receipt = createSetupReceipt({
+    schema_version: 2,
+    id: basename(dirname(receiptPaths.receiptPath)),
+    operation: 'setup',
+    status: 'in_progress',
+    harness: 'codex',
+    scope: request.scope,
+    target: canonicalTarget,
+    package_version: getVersion(),
+    force: request.force,
+    started_at: startedAt,
+    updated_at: startedAt,
+    strategy: 'plugin_manager',
+    capability_evidence: codexPlan.evidence,
+    manager_evidence: initialCodexManagerEvidence(codexPlan),
+    external_checkpoints: [],
+    steps: [
+      { id: 'migration-manager', kind: 'verification', outcome: 'confirmed' },
+      {
+        id: 'migration-config',
+        kind: 'filesystem',
+        outcome: 'planned',
+        owned_key: 'plugins."thoth-mem".mcp_servers."thoth-mem"',
+        path: paths.configPath,
+        managed_fragment: configFragmentEvidence,
+      },
+      {
+        id: 'migration-metadata',
+        kind: 'filesystem',
+        outcome: 'planned',
+        path: metadataPath,
+        pre_hash: await filesystemEntrySnapshot(metadataPath),
+        post_hash: 'missing',
+      },
+      {
+        id: 'migration-assets',
+        kind: 'filesystem',
+        outcome: 'planned',
+        path: paths.assetPath,
+        pre_hash: await filesystemEntrySnapshot(paths.assetPath),
+        post_hash: 'missing',
+      },
+      { id: 'verify', kind: 'verification', outcome: 'planned' },
+    ],
+  });
+  const configApplied = await applyReceiptBackedChanges({
+    targetRoot: paths.targetRoot,
+    sourceRoot: roots.packageRoot,
+    receiptBasePath,
+    receiptPaths: configReceiptPaths,
+    dataDir,
+    receipt,
+    changes: [{ kind: 'file', targetPath: paths.configPath, content: configAfter }],
+    options,
+    postHash: async (path) => path === paths.configPath
+      ? codexManagedFragmentPostSnapshot(path, configFragmentEvidence)
+      : filesystemEntrySnapshot(path),
+    afterWriteAhead: () => traceSetup(options, 'migration_manager_checkpoint', receiptPaths.receiptPath),
+    changeTraceKind: 'migration_fragment_removed',
+  });
+  if (configApplied.filesystem.outcome === 'failed') {
+    return receiptFailureResult(
+      request,
+      paths,
+      configApplied.filesystem.changed,
+      configApplied.initialReceiptPersisted ? receiptPaths.receiptPath : null,
+      'Codex legacy migration stopped before a verified final state.',
+    );
+  }
+
+  const metadataApplied = await applyReceiptBackedChanges({
+    targetRoot: paths.targetRoot,
+    sourceRoot: roots.packageRoot,
+    receiptBasePath,
+    receiptPaths: metadataReceiptPaths,
+    dataDir,
+    receipt: configApplied.receipt,
+    changes: [{ kind: 'remove', targetPath: metadataPath }],
+    options,
+    postHash: filesystemEntrySnapshot,
+    changeTraceKind: 'migration_fragment_removed',
+  });
+  if (metadataApplied.filesystem.outcome === 'failed') {
+    return receiptFailureResult(
+      request,
+      paths,
+      true,
+      receiptPaths.receiptPath,
+      'Codex legacy metadata migration stopped before a verified checkpoint.',
+    );
+  }
+
+  const assetsApplied = await applyReceiptBackedChanges({
+    targetRoot: paths.targetRoot,
+    sourceRoot: roots.packageRoot,
+    receiptBasePath,
+    receiptPaths: assetReceiptPaths,
+    dataDir,
+    receipt: metadataApplied.receipt,
+    changes: [{ kind: 'remove', targetPath: paths.assetPath }],
+    options,
+    postHash: filesystemEntrySnapshot,
+    changeTraceKind: 'migration_fragment_removed',
+  });
+  if (assetsApplied.filesystem.outcome === 'failed') {
+    return receiptFailureResult(
+      request,
+      paths,
+      true,
+      receiptPaths.receiptPath,
+      'Codex legacy asset migration stopped before a verified checkpoint.',
+    );
+  }
+
+  const finalPlan = await inspectCodexCli({
+    executor,
+    scope: request.scope,
+    ...(request.projectPath ? { projectPath: request.projectPath } : {}),
+  });
+  const finalInspection = await inspectSetup(request, paths, createNodeSetupFileSystem(), options);
+  const managerVerified = finalPlan.strategy === 'plugin_manager'
+    && finalPlan.operations.every((operation) => operation.verified);
+  if (!managerVerified || finalInspection.codexLegacyState !== 'absent') {
+    return receiptFailureResult(
+      request,
+      paths,
+      true,
+      receiptPaths.receiptPath,
+      'Codex migration final reread did not confirm a single manager-owned state.',
+    );
+  }
+
+  const finalizedAt = transactionNow(options);
+  const finalReceipt: SetupReceiptV2 = {
+    ...assetsApplied.receipt,
+    status: 'complete',
+    updated_at: finalizedAt,
+    manager_evidence: {
+      ...assetsApplied.receipt.manager_evidence,
+      marketplace: {
+        ...assetsApplied.receipt.manager_evidence.marketplace,
+        final_verified: true,
+      },
+      plugin: {
+        ...assetsApplied.receipt.manager_evidence.plugin,
+        installed: true,
+        enabled: true,
+        final_verified: true,
+      },
+      final_verified_at: finalizedAt,
+    },
+    steps: assetsApplied.receipt.steps.map((step) => {
+      if (step.id === 'verify') {
+        return { ...step, outcome: 'confirmed' as const };
+      }
+      return step;
+    }),
+  };
+  const persisted = await persistReceiptCheckpoint(
+    receiptPaths.receiptPath,
+    receiptBasePath,
+    finalReceipt,
+    dataDir,
+    options,
+  );
+  if (!persisted.ok) {
+    return receiptFailureResult(
+      request,
+      paths,
+      true,
+      receiptPaths.receiptPath,
+      'Codex migration completed but its final receipt could not be confirmed.',
+    );
+  }
+  return {
+    status: 'complete',
+    changed: true,
+    harness: 'codex',
+    scope: request.scope,
+    target: paths.targetRoot,
+    steps: codexStrategySteps(request, inspection, codexEvidenceFromPlan(request, finalPlan), finalPlan)
+      .map((step) => ({ ...step, outcome: 'confirmed' as const })),
+    diagnostics: receiptKeyDiagnostic(assetsApplied.keyProtection),
+    manual_actions: [],
     receipt: receiptPaths.receiptPath,
   };
 }
@@ -1550,6 +2311,273 @@ function rollbackStepChange(
   throw new Error('file-rollback-content-required');
 }
 
+async function executeCodexRollback(
+  request: SetupRequest,
+  paths: SetupPaths,
+  dataDir: string,
+  canonicalTarget: string,
+  receiptBasePath: string,
+  options: SetupEngineOptions,
+): Promise<SetupResult> {
+  const selectedReceiptPath = request.rollbackReceipt!;
+  const loaded = await loadSetupReceipt(selectedReceiptPath, {
+    dataDir,
+    expectedBasePath: receiptBasePath,
+  });
+  if (!loaded.ok) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The selected Codex rollback receipt failed integrity or topology verification.',
+      'Use the original signed receipt; --force cannot bypass receipt verification.',
+      `Verify rollback receipt: ${selectedReceiptPath}`,
+    );
+  }
+  if (
+    loaded.receipt.schema_version !== 2
+    || loaded.receipt.harness !== 'codex'
+    || loaded.receipt.scope !== request.scope
+    || resolve(loaded.receipt.target) !== resolve(canonicalTarget)
+  ) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The selected receipt does not carry V2 authority for this Codex target.',
+      'Use the verified V2 setup receipt created for this exact scope and target.',
+    );
+  }
+  const receipt = loaded.receipt;
+  const migrationConfig = receipt.steps.find((step) => step.id === 'migration-config');
+  const migrationMetadata = receipt.steps.find((step) => step.id === 'migration-metadata');
+  const migrationAssets = receipt.steps.find((step) => step.id === 'migration-assets');
+  const isMigration = migrationConfig !== undefined
+    && migrationMetadata !== undefined
+    && migrationAssets !== undefined;
+
+  if (receipt.strategy === 'plugin_manager' && !isMigration) {
+    const createdByAttempt = receipt.manager_evidence.marketplace.created_by_attempt
+      || receipt.manager_evidence.plugin.created_by_attempt;
+    return createdByAttempt
+      ? requiresSetupActionResult(
+          request,
+          paths,
+          'Automatic Codex plugin-manager removal is unavailable for this verified CLI grammar.',
+          'Use the Codex plugin manager manually to remove only receipt-created state; thoth-mem will not edit manager cache or config directly.',
+          'Inspect receipt-created Codex plugin manager state',
+        )
+      : {
+          status: 'complete',
+          changed: false,
+          harness: 'codex',
+          scope: request.scope,
+          target: paths.targetRoot,
+          steps: [{ name: 'Preserve pre-existing Codex plugin manager state', outcome: 'confirmed' }],
+          diagnostics: [],
+          manual_actions: [],
+          receipt: null,
+        };
+  }
+
+  const configStep = isMigration
+    ? migrationConfig!
+    : receipt.steps.find((step) => step.id === 'config');
+  const assetStep = isMigration
+    ? migrationAssets!
+    : receipt.steps.find((step) => step.id === 'assets');
+  if (
+    !configStep?.path
+    || !configStep.managed_fragment
+    || configStep.managed_fragment.config_path !== paths.configPath
+    || configStep.managed_fragment.operation !== (isMigration ? 'remove' : 'apply')
+    || !assetStep?.path
+  ) {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The selected receipt lacks exact filesystem rollback authority.',
+      'Recover the original signed receipt or restore the owned locations manually.',
+    );
+  }
+
+  let currentConfig: string | null;
+  let configAfter: string | null;
+  const changes: FilesystemChange[] = [];
+  try {
+    currentConfig = await readRegularFileOrNull(paths.configPath);
+    configAfter = currentConfig;
+    const evidence = configStep.managed_fragment;
+    const fragment = codexManagedFragmentFromReceiptEvidence(evidence);
+    if (codexManagedFragmentStateMatches(currentConfig, evidence, 'post')) {
+      configAfter = isMigration
+        ? applyCodexManagedFragment(currentConfig ?? '', fragment)
+        : restoreCodexManagedFragment(currentConfig ?? '', fragment);
+    } else if (!codexManagedFragmentStateMatches(currentConfig, evidence, 'pre')) {
+      throw new Error('codex-managed-fragment-diverged');
+    }
+  } catch {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The receipt-owned Codex configuration fragment is unavailable or diverged.',
+      'Restore the exact signed managed fragment or resolve the marker ambiguity manually.',
+    );
+  }
+  if (configAfter !== currentConfig) {
+    changes.push(configAfter === null
+      ? { kind: 'remove', targetPath: paths.configPath }
+      : { kind: 'file', targetPath: paths.configPath, content: configAfter });
+  }
+
+  try {
+    const currentAssetHash = await filesystemEntrySnapshot(paths.assetPath);
+    if (isMigration) {
+      if (currentAssetHash !== assetStep.pre_hash) {
+        if (!assetStep.backup_path || !migrationMetadata!.backup_path) {
+          throw new Error('migration-assets-backup-missing');
+        }
+        const [backupHash, metadataBackupHash, metadataContent] = await Promise.all([
+          filesystemEntrySnapshot(assetStep.backup_path),
+          filesystemEntrySnapshot(migrationMetadata!.backup_path),
+          readRegularFileOrNull(migrationMetadata!.backup_path),
+        ]);
+        if (
+          metadataContent === null
+          || metadataBackupHash !== migrationMetadata!.pre_hash
+        ) {
+          throw new Error('migration-metadata-backup-diverged');
+        }
+        if (currentAssetHash === 'missing') {
+          changes.unshift({
+            kind: 'directory',
+            targetPath: paths.assetPath,
+            entries: [{ sourcePath: assetStep.backup_path, targetRelativePath: '.' }],
+            generatedFiles: [{
+              targetRelativePath: MANAGED_METADATA_NAME,
+              content: metadataContent,
+              mode: 0o600,
+            }],
+          });
+        } else if (currentAssetHash === backupHash) {
+          changes.unshift({
+            kind: 'file',
+            targetPath: join(paths.assetPath, MANAGED_METADATA_NAME),
+            content: metadataContent,
+          });
+        } else {
+          throw new Error('migration-assets-diverged');
+        }
+      }
+    } else if (currentAssetHash !== 'missing') {
+      if (currentAssetHash !== assetStep.post_hash) {
+        throw new Error('legacy-assets-diverged');
+      }
+      if (assetStep.backup_path) {
+        changes.unshift({
+          kind: 'directory',
+          targetPath: paths.assetPath,
+          entries: [{ sourcePath: assetStep.backup_path, targetRelativePath: '.' }],
+        });
+      } else {
+        changes.unshift({ kind: 'remove', targetPath: paths.assetPath });
+      }
+    }
+  } catch {
+    return requiresSetupActionResult(
+      request,
+      paths,
+      'The receipt-owned Codex asset location is unavailable or diverged.',
+      'Do not delete lookalike paths; restore the exact receipt backup or resolve the divergence manually.',
+    );
+  }
+
+  if (changes.length === 0) {
+    return {
+      status: 'complete',
+      changed: false,
+      harness: 'codex',
+      scope: request.scope,
+      target: paths.targetRoot,
+      steps: [{ name: 'Confirm receipt-owned Codex rollback state', outcome: 'confirmed' }],
+      diagnostics: [],
+      manual_actions: [],
+      receipt: null,
+    };
+  }
+
+  const rollbackReceiptPaths = resolveSetupReceiptPaths(receiptBasePath, nextReceiptId(options));
+  const startedAt = transactionNow(options);
+  const rollbackReceipt = createSetupReceipt({
+    id: basename(dirname(rollbackReceiptPaths.receiptPath)),
+    operation: 'rollback',
+    status: 'in_progress',
+    harness: 'codex',
+    scope: request.scope,
+    target: canonicalTarget,
+    package_version: getVersion(),
+    force: request.force,
+    started_at: startedAt,
+    updated_at: startedAt,
+    steps: changes.map((change, index) => ({
+      id: `codex-rollback-${index + 1}`,
+      kind: 'filesystem' as const,
+      outcome: 'planned' as const,
+      path: change.targetPath,
+    })),
+  });
+  const applied = await applyReceiptBackedChanges({
+    targetRoot: paths.targetRoot,
+    sourceRoot: dirname(selectedReceiptPath),
+    receiptBasePath,
+    receiptPaths: rollbackReceiptPaths,
+    dataDir,
+    receipt: rollbackReceipt,
+    changes,
+    options,
+    postHash: filesystemEntrySnapshot,
+  });
+  if (applied.filesystem.outcome === 'failed') {
+    return receiptFailureResult(
+      request,
+      paths,
+      applied.filesystem.changed,
+      applied.initialReceiptPersisted ? rollbackReceiptPaths.receiptPath : null,
+      'Receipt-owned Codex rollback did not complete.',
+    );
+  }
+  const completedReceipt: SetupReceiptV1 = {
+    ...applied.receipt,
+    status: 'complete',
+    updated_at: transactionNow(options),
+  };
+  const completed = await persistReceiptCheckpoint(
+    rollbackReceiptPaths.receiptPath,
+    receiptBasePath,
+    completedReceipt,
+    dataDir,
+    options,
+  );
+  if (!completed.ok) {
+    return receiptFailureResult(
+      request,
+      paths,
+      true,
+      rollbackReceiptPaths.receiptPath,
+      'Codex rollback completed but its final receipt could not be confirmed.',
+    );
+  }
+  return {
+    status: 'complete',
+    changed: true,
+    harness: 'codex',
+    scope: request.scope,
+    target: paths.targetRoot,
+    steps: [{ name: 'Restore only receipt-owned Codex fragments', outcome: 'confirmed' }],
+    diagnostics: receiptKeyDiagnostic(applied.keyProtection),
+    manual_actions: [],
+    receipt: rollbackReceiptPaths.receiptPath,
+  };
+}
+
 async function executeOpenCodeRollback(
   request: SetupRequest,
   unresolvedPaths: SetupPaths,
@@ -1569,6 +2597,15 @@ async function executeOpenCodeRollback(
       unresolvedPaths,
       'The selected rollback receipt failed integrity or topology verification.',
       'Select the original verified setup receipt; --force cannot bypass receipt verification.',
+      `Verify rollback receipt: ${selectedReceiptPath}`,
+    );
+  }
+  if (loaded.receipt.schema_version !== 1) {
+    return requiresSetupActionResult(
+      request,
+      unresolvedPaths,
+      'The selected versioned Codex receipt does not authorize this legacy rollback path.',
+      'Use the strategy-aware Codex rollback flow when manager removal support is available.',
       `Verify rollback receipt: ${selectedReceiptPath}`,
     );
   }
@@ -1924,7 +2961,10 @@ export async function inspectAndPlanSetup(
   const canMutateCodex = request.harness === 'codex'
     && canUseNodeFilesystem
     && request.rollbackReceipt === undefined;
-  const needsTargetLock = canMutateOpenCode || canMutateCodex;
+  const canMutateCodexRollback = request.harness === 'codex'
+    && canUseNodeFilesystem
+    && request.rollbackReceipt !== undefined;
+  const needsTargetLock = canMutateOpenCode || canMutateCodex || canMutateCodexRollback;
   let dataDir: string;
   let receiptBasePath: string;
   let canonicalTarget: string;
@@ -1940,6 +2980,19 @@ export async function inspectAndPlanSetup(
   }
 
   let releaseLock: (() => Promise<void>) | undefined;
+  if (canMutateCodex) {
+    const noOp = await inspectVerifiedCodexNoOpBeforeLock(
+      request,
+      paths,
+      dataDir,
+      canonicalTarget,
+      receiptBasePath,
+      options,
+    );
+    if (noOp) {
+      return noOp;
+    }
+  }
   if (needsTargetLock) {
     const lock = await acquireSetupTargetLock(
       dataDir,
@@ -1982,7 +3035,10 @@ export async function inspectAndPlanSetup(
       && receipt.scope === request.scope
       && resolve(receipt.target) === resolve(canonicalTarget)
     ));
-    if (incomplete.length > 0) {
+    const blockingIncomplete = request.rollbackReceipt
+      ? incomplete.filter(({ path }) => resolve(path) !== resolve(request.rollbackReceipt!))
+      : incomplete;
+    if (blockingIncomplete.length > 0) {
       return {
         status: 'requires_user_action',
         changed: false,
@@ -1990,13 +3046,23 @@ export async function inspectAndPlanSetup(
         scope: request.scope,
         target: paths.targetRoot,
         steps: [{ name: 'Inspect incomplete setup transaction receipts', outcome: 'unavailable' }],
-        diagnostics: incomplete.map(({ path }) => `Incomplete setup receipt: ${path}`),
+        diagnostics: blockingIncomplete.map(({ path }) => `Incomplete setup receipt: ${path}`),
         manual_actions: ['Inspect the verified in-progress receipt before retrying setup or rollback.'],
         receipt: null,
       };
     }
 
     if (request.rollbackReceipt) {
+      if (canMutateCodexRollback) {
+        return await executeCodexRollback(
+          request,
+          paths,
+          dataDir,
+          canonicalTarget,
+          receiptBasePath,
+          options,
+        );
+      }
       if (!canMutateOpenCode) {
         return requiresSetupActionResult(
           request,
@@ -2026,6 +3092,23 @@ export async function inspectAndPlanSetup(
       return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
     }
     paths = inspection.paths;
+    if (
+      request.harness === 'codex'
+      && inspection.codexLegacyState === 'ambiguous'
+      && await hasExactSignedLegacyProof(
+        scanned.receipts,
+        request,
+        paths,
+        canonicalTarget,
+      )
+    ) {
+      inspection = {
+        ...inspection,
+        managed: true,
+        conflicts: [],
+        codexLegacyState: 'managed',
+      };
+    }
 
     const needsFileChanges = !inspection.managed;
     const useCodexCli = request.harness === 'codex'
@@ -2037,6 +3120,16 @@ export async function inspectAndPlanSetup(
         scope: request.scope,
         ...(request.projectPath ? { projectPath: request.projectPath } : {}),
       });
+      if (inspection.conflicts.some((conflict) => conflict.forceable)) {
+        const ownershipBlockedInspection: SetupInspection = {
+          ...inspection,
+          conflicts: inspection.conflicts.map((conflict) => ({
+            ...conflict,
+            forceable: false,
+          })),
+        };
+        return codexPlanningResult(request, ownershipBlockedInspection, codexPlan);
+      }
       if (
         request.planOnly
         || codexPlan.status !== 'ready'
@@ -2045,7 +3138,30 @@ export async function inspectAndPlanSetup(
         return codexPlanningResult(request, inspection, codexPlan);
       }
       const allExternalVerified = codexPlan.operations.every((operation) => operation.verified);
-      if (!needsFileChanges && allExternalVerified) {
+      if (
+        canMutateCodex
+        && codexPlan.strategy === 'plugin_manager'
+        && inspection.codexLegacyState === 'managed'
+        && allExternalVerified
+      ) {
+        return await executeCodexMigration(
+          request,
+          roots,
+          inspection,
+          dataDir,
+          canonicalTarget,
+          receiptBasePath,
+          options,
+          executor,
+          codexPlan,
+        );
+      }
+      const strategyNeedsFileChanges = codexPlan.strategy === 'legacy_filesystem'
+        && needsFileChanges;
+      if (
+        !strategyNeedsFileChanges
+        && (allExternalVerified || codexPlan.strategy === 'legacy_filesystem')
+      ) {
         return codexPlanningResult(request, inspection, codexPlan);
       }
       if (canMutateCodex) {

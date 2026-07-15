@@ -205,6 +205,20 @@ describe('canonical inventory', () => {
     });
   });
 
+  it('canonical inventory rejects a flat Codex MCP descriptor', async () => {
+    const verifier = await importVerifier();
+
+    await withPackageFixture(async (root) => {
+      const path = join(root, 'integrations', 'codex', '.mcp.json');
+      await writeJson(path, {
+        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+      });
+
+      await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
+        .rejects.toThrow(/mcpServers/i);
+    });
+  });
+
   it('canonical inventory rejects invalid owners, duplicates, missing declarations, and extra runtime assets', async () => {
     const verifier = await importVerifier();
 

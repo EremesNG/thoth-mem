@@ -1,6 +1,7 @@
 import spawn from 'cross-spawn';
 
 import type {
+  CodexSetupStrategy,
   SetupScope,
   SetupStatus,
   SetupStep,
@@ -16,6 +17,7 @@ const RECONCILIATION_BUDGET_MS = 30_000;
 const RECONCILIATION_INTERVAL_MS = 1_000;
 const RECONCILIATION_MAX_POLLS = 30;
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
+const SAFE_DIAGNOSTIC_MAX_CHARS = 512;
 const SAFE_SPAWN_ERROR_CODES = new Set([
   'EACCES',
   'EAGAIN',
@@ -28,6 +30,7 @@ const SAFE_SPAWN_ERROR_CODES = new Set([
   'ENOTDIR',
   'EPERM',
 ]);
+const TESTED_CODEX_VERSION = { major: 0, minor: 144 } as const;
 
 export interface CodexCommandResult {
   exitCode: number | null;
@@ -62,6 +65,7 @@ interface CodexOperationPlan {
   id: CodexExternalStepId;
   name: string;
   noun: 'marketplace registration' | 'plugin installation';
+  initialState: CodexObservedState;
   verified: boolean;
   available: boolean;
   mutationArgs: string[] | null;
@@ -69,19 +73,69 @@ interface CodexOperationPlan {
   unavailableDiagnostic: string;
 }
 
+export type CodexVersionClassification = 'tested' | 'untested' | 'unknown';
+export type CodexManagerState = 'absent' | 'compatible' | 'partial' | 'unclassifiable';
+export type CodexObservedState = 'present' | 'absent' | 'conflicting' | 'unclassifiable';
+export type CodexCheckpointPhase = 'attempt' | 'reread';
+export type SafeCommandFailureClass =
+  | 'different_source_marketplace_collision'
+  | 'scope_conflict'
+  | 'divergent_source'
+  | 'unsafe_path'
+  | 'concurrent_activity';
+export type SafeCommandReason = 'ok' | 'timeout' | 'output_limit' | 'spawn_failure' | 'nonzero';
+
+export interface CodexOperationCapabilityEvidence {
+  mutation: boolean;
+  verification: boolean;
+  format: 'json' | 'legacy' | null;
+}
+
+export interface CodexCliEvidence {
+  version: {
+    value: string | null;
+    classification: CodexVersionClassification;
+  };
+  capabilities: {
+    scope: SetupScope;
+    marketplace: CodexOperationCapabilityEvidence;
+    plugin: CodexOperationCapabilityEvidence;
+    complete: boolean;
+  };
+  managerState: CodexManagerState;
+}
+
 export interface CodexCliPlan {
   scope: SetupScope;
   status: 'ready' | 'failed' | 'requires_user_action';
+  strategy: CodexSetupStrategy | null;
+  evidence: CodexCliEvidence;
   operations: CodexOperationPlan[];
   steps: SetupStep[];
   diagnostics: string[];
   manualActions: string[];
+  manualMarketplaceRemoveCommand: string | null;
 }
 
 export interface CodexExternalCheckpoint {
   id: CodexExternalStepId;
+  phase: CodexCheckpointPhase;
   outcome: SetupStepOutcome;
   diagnostic?: string;
+}
+
+export interface CodexOperationExecutionEvidence {
+  id: CodexExternalStepId;
+  initialState: CodexObservedState;
+  safeAttempt: 'not_needed' | 'attempted' | 'blocked';
+  commandReason: SafeCommandReason | null;
+  failureClass: SafeCommandFailureClass | null;
+  diagnostic?: string;
+  attemptCheckpoint: { persisted: boolean; outcome: SetupStepOutcome } | null;
+  reread: { performed: boolean; state: CodexObservedState };
+  rereadCheckpoint: { persisted: boolean; outcome: SetupStepOutcome } | null;
+  finalOutcome: Exclude<SetupStepOutcome, 'planned'>;
+  requiresUserAction: boolean;
 }
 
 export interface CodexCliExecutionResult {
@@ -91,6 +145,7 @@ export interface CodexCliExecutionResult {
   diagnostics: string[];
   manualActions: string[];
   checkpointsConfirmed: boolean;
+  operations: CodexOperationExecutionEvidence[];
 }
 
 export interface InspectCodexCliOptions {
@@ -113,15 +168,29 @@ export interface CodexExecutionTiming {
 interface SafeCommandResult {
   ok: boolean;
   output: string;
+  stdout: string;
   exitCode: number | null;
-  reason: 'ok' | 'timeout' | 'output_limit' | 'spawn_failure' | 'nonzero';
+  reason: SafeCommandReason;
   errorCode?: string;
+  failureClass?: SafeCommandFailureClass;
+  collisionObserved?: boolean;
+  safeDiagnostic?: string;
 }
 
 interface OperationGrammar {
   available: boolean;
   mutationArgs: string[] | null;
   verificationArgs: string[] | null;
+  verificationFormat: 'json' | 'legacy' | null;
+  manualRemoveCommand?: string | null;
+}
+
+interface StateVerification {
+  ok: boolean;
+  verified: boolean;
+  state: CodexObservedState;
+  reason: SafeCommandReason;
+  errorCode?: string;
 }
 
 interface MutationGrammarVariant {
@@ -154,6 +223,14 @@ export function createNodeCodexCommandExecutor(
 export async function inspectCodexCli(
   options: InspectCodexCliOptions,
 ): Promise<CodexCliPlan> {
+  const versionProbe = await runSafe(options.executor, ['--version']);
+  if (!versionProbe.ok) {
+    return failedPlan(
+      options.scope,
+      probeFailureDiagnostic(versionProbe.reason, versionProbe.errorCode),
+    );
+  }
+  const version = classifyCodexVersion(versionProbe.stdout);
   const rootHelp = await runSafe(options.executor, ['--help']);
   if (!rootHelp.ok) {
     return failedPlan(
@@ -162,7 +239,7 @@ export async function inspectCodexCli(
     );
   }
   if (!advertisesCommand(rootHelp.output, 'plugin')) {
-    return unavailablePlan(options.scope, false, false);
+    return unavailablePlan(options.scope, version, false, false);
   }
 
   const pluginHelp = await runSafe(options.executor, ['plugin', '--help']);
@@ -189,7 +266,7 @@ export async function inspectCodexCli(
     ? await verifyState(
         options.executor,
         marketplaceGrammar.verificationArgs,
-        MARKETPLACE_SOURCE,
+        'codex-marketplace',
       )
     : null;
   if (marketplaceVerification && !marketplaceVerification.ok) {
@@ -203,7 +280,7 @@ export async function inspectCodexCli(
     );
   }
   const pluginVerification = pluginGrammar.verificationArgs
-    ? await verifyState(options.executor, pluginGrammar.verificationArgs, PLUGIN_NAME)
+    ? await verifyState(options.executor, pluginGrammar.verificationArgs, 'codex-plugin')
     : null;
   if (pluginVerification && !pluginVerification.ok) {
     return failedPlan(
@@ -220,6 +297,7 @@ export async function inspectCodexCli(
     id: 'codex-marketplace',
     name: `Register thoth-mem Codex marketplace (${options.scope})`,
     noun: 'marketplace registration',
+    initialState: marketplaceVerification?.state ?? 'unclassifiable',
     verified: marketplaceVerification?.verified ?? false,
     grammar: marketplaceGrammar,
     unavailableDiagnostic: options.scope === 'project'
@@ -230,6 +308,7 @@ export async function inspectCodexCli(
     id: 'codex-plugin',
     name: `Install thoth-mem Codex plugin (${options.scope})`,
     noun: 'plugin installation',
+    initialState: pluginVerification?.state ?? 'unclassifiable',
     verified: pluginVerification?.verified ?? false,
     grammar: pluginGrammar,
     unavailableDiagnostic: options.scope === 'project'
@@ -237,20 +316,35 @@ export async function inspectCodexCli(
       : 'The detected Codex CLI does not advertise a safely verifiable plugin installation command.',
   });
   const operations = [marketplace, plugin];
+  const evidence = codexCliEvidence(
+    options.scope,
+    version,
+    marketplaceGrammar,
+    pluginGrammar,
+    marketplaceVerification?.state ?? 'unclassifiable',
+    pluginVerification?.state ?? 'unclassifiable',
+  );
+  const strategy = selectCodexStrategy(evidence);
   const unavailable = operations.filter((operation) => !operation.verified && !operation.available);
   const allProjectOperationsUnavailable = options.scope === 'project'
     && unavailable.length === operations.length;
   const diagnostics = allProjectOperationsUnavailable
     ? ['The detected Codex CLI does not advertise project-scoped marketplace and plugin operations.']
     : unavailable.map((operation) => operation.unavailableDiagnostic);
+  if (strategy === null && evidence.managerState === 'unclassifiable') {
+    diagnostics.push('Codex manager state could not be classified safely for the selected scope.');
+  }
 
   return {
     scope: options.scope,
-    status: unavailable.length > 0 ? 'requires_user_action' : 'ready',
+    status: strategy === null ? 'requires_user_action' : 'ready',
+    strategy,
+    evidence,
     operations,
     steps: operations.map(operationStep),
     diagnostics,
     manualActions: unavailable.length > 0 ? [manualPluginsAction()] : [],
+    manualMarketplaceRemoveCommand: marketplaceGrammar.manualRemoveCommand ?? null,
   };
 }
 
@@ -266,12 +360,40 @@ export async function executeCodexCli(
       diagnostics: plan.diagnostics,
       manualActions: plan.manualActions,
       checkpointsConfirmed: true,
+      operations: unexecutedOperationEvidence(plan.operations),
+    };
+  }
+  if (plan.strategy === null) {
+    return {
+      status: 'requires_user_action',
+      changed: false,
+      steps: plan.steps,
+      diagnostics: plan.diagnostics,
+      manualActions: plan.manualActions,
+      checkpointsConfirmed: true,
+      operations: unexecutedOperationEvidence(plan.operations),
+    };
+  }
+  if (plan.strategy === 'legacy_filesystem') {
+    return {
+      status: 'complete',
+      changed: false,
+      steps: plan.operations.map((operation) => ({ name: operation.name, outcome: 'skipped' })),
+      diagnostics: plan.diagnostics,
+      manualActions: [],
+      checkpointsConfirmed: true,
+      operations: plan.operations.map((operation) => operationEvidence(
+        operation,
+        'not_needed',
+        'skipped',
+      )),
     };
   }
 
   const steps: SetupStep[] = [];
   const diagnostics: string[] = [];
   const manualActions: string[] = [];
+  const operations: CodexOperationExecutionEvidence[] = [];
   let changed = false;
   let checkpointsConfirmed = true;
   let verifiedCount = 0;
@@ -279,6 +401,7 @@ export async function executeCodexCli(
   for (const operation of plan.operations) {
     if (operation.verified) {
       steps.push({ name: operation.name, outcome: 'confirmed' });
+      operations.push(operationEvidence(operation, 'not_needed', 'confirmed'));
       verifiedCount += 1;
       continue;
     }
@@ -291,36 +414,67 @@ export async function executeCodexCli(
     );
     const attemptDiagnostic = mutation.ok
       ? `${capitalize(operation.noun)} command completed; independent verification is pending.`
-      : mutationFailureDiagnostic(operation.noun, mutation);
-    checkpointsConfirmed = await persistCheckpoint(options, {
+      : mutationFailureDiagnostic(operation.noun, plan.scope, mutation);
+    const attemptOutcome: Exclude<SetupStepOutcome, 'planned' | 'skipped' | 'unavailable'> = mutation.ok
+      ? 'confirmed'
+      : 'failed';
+    checkpointsConfirmed = await persistCheckpoint(options, phasedCheckpoint({
       id: operation.id,
-      outcome: mutation.ok ? 'planned' : 'failed',
+      outcome: attemptOutcome,
       diagnostic: attemptDiagnostic,
-    });
+    }, 'attempt'));
     if (!checkpointsConfirmed) {
       diagnostics.push('Codex external command outcome could not be checkpointed in the setup receipt.');
       steps.push({ name: operation.name, outcome: 'failed' });
+      operations.push(operationEvidence(operation, 'attempted', 'failed', {
+        commandReason: mutation.reason,
+        failureClass: mutation.failureClass ?? null,
+        diagnostic: attemptDiagnostic,
+        attemptCheckpoint: { persisted: false, outcome: attemptOutcome },
+      }));
       break;
     }
 
-    const verification = mutation.reason === 'ok' || mutation.reason === 'timeout'
-      ? await reconcileState(
-          options.executor,
-          operation.verificationArgs!,
-          operation.id === 'codex-marketplace' ? MARKETPLACE_SOURCE : PLUGIN_NAME,
-          options.timing,
-        )
-      : {
-          ok: false,
-          verified: false,
-          reason: mutation.reason,
-          ...(mutation.errorCode ? { errorCode: mutation.errorCode } : {}),
-        };
+    let rereadPerformed = true;
+    let verification: StateVerification;
+    if (mutation.reason === 'nonzero' || mutation.reason === 'output_limit') {
+      verification = await verifyState(
+        options.executor,
+        operation.verificationArgs!,
+        operation.id,
+      );
+    } else if (mutation.reason === 'ok' || mutation.reason === 'timeout') {
+      verification = await reconcileState(
+        options.executor,
+        operation.verificationArgs!,
+        operation.id,
+        options.timing,
+      );
+    } else {
+      rereadPerformed = false;
+      verification = {
+        ok: false,
+        verified: false,
+        state: operation.initialState,
+        reason: mutation.reason,
+        ...(mutation.errorCode ? { errorCode: mutation.errorCode } : {}),
+      };
+    }
     const verified = verification.ok && verification.verified;
+    const manualRecovery = classifyManualRecovery(
+      plan,
+      operation,
+      mutation,
+      verification,
+      rereadPerformed,
+      verified,
+    );
     let finalDiagnostic: string | undefined;
     if (!verified) {
-      if (!mutation.ok) {
-        finalDiagnostic = mutationFailureDiagnostic(operation.noun, mutation);
+      if (manualRecovery.requiresUserAction) {
+        finalDiagnostic = manualRecoveryDiagnostic(plan.scope, mutation, verification);
+      } else if (!mutation.ok) {
+        finalDiagnostic = mutationFailureDiagnostic(operation.noun, plan.scope, mutation);
       } else if (verification.ok) {
         finalDiagnostic = `Codex ${operation.noun} exited successfully but independent verification did not confirm thoth-mem.`;
       } else {
@@ -330,22 +484,53 @@ export async function executeCodexCli(
           verification.errorCode,
         );
       }
-      diagnostics.push(finalDiagnostic);
-      manualActions.push(retryAction(operation.id));
+      pushUnique(diagnostics, boundedDiagnostic(finalDiagnostic));
+      pushUnique(
+        manualActions,
+        manualRecovery.requiresUserAction
+          ? manualRecovery.manualAction
+          : retryAction(operation.id),
+      );
     }
 
-    checkpointsConfirmed = await persistCheckpoint(options, {
+    const rereadOutcome: Exclude<SetupStepOutcome, 'planned' | 'skipped' | 'unavailable'> = verified
+      ? 'confirmed'
+      : 'failed';
+    checkpointsConfirmed = await persistCheckpoint(options, phasedCheckpoint({
       id: operation.id,
-      outcome: verified ? 'confirmed' : 'failed',
+      outcome: rereadOutcome,
       ...(finalDiagnostic ? { diagnostic: finalDiagnostic } : {}),
-    });
+    }, 'reread'));
     if (!checkpointsConfirmed) {
       diagnostics.push('Codex external verification outcome could not be checkpointed in the setup receipt.');
       steps.push({ name: operation.name, outcome: 'failed' });
+      operations.push(operationEvidence(operation, 'attempted', 'failed', {
+        commandReason: mutation.reason,
+        failureClass: mutation.failureClass ?? null,
+        diagnostic: finalDiagnostic ?? (!mutation.ok ? attemptDiagnostic : undefined),
+        attemptCheckpoint: { persisted: true, outcome: attemptOutcome },
+        reread: { performed: rereadPerformed, state: verification.state },
+        rereadCheckpoint: { persisted: false, outcome: rereadOutcome },
+        requiresUserAction: manualRecovery.requiresUserAction,
+      }));
       break;
     }
 
     steps.push({ name: operation.name, outcome: verified ? 'confirmed' : 'failed' });
+    operations.push(operationEvidence(
+      operation,
+      'attempted',
+      verified ? 'confirmed' : 'failed',
+      {
+        commandReason: mutation.reason,
+        failureClass: mutation.failureClass ?? null,
+        diagnostic: finalDiagnostic ?? (!mutation.ok ? attemptDiagnostic : undefined),
+        attemptCheckpoint: { persisted: true, outcome: attemptOutcome },
+        reread: { performed: rereadPerformed, state: verification.state },
+        rereadCheckpoint: { persisted: true, outcome: rereadOutcome },
+        requiresUserAction: manualRecovery.requiresUserAction,
+      },
+    ));
     if (verified) {
       verifiedCount += 1;
     }
@@ -359,10 +544,13 @@ export async function executeCodexCli(
       diagnostics,
       manualActions: ['Inspect the verified in-progress receipt before retrying Codex setup.'],
       checkpointsConfirmed: false,
+      operations: completeMissingOperationEvidence(plan.operations, operations),
     };
   }
 
-  const status = externalStatus(verifiedCount, plan.operations.length);
+  const status = operations.some((operation) => operation.requiresUserAction)
+    ? 'requires_user_action'
+    : externalStatus(verifiedCount, plan.operations.length);
   return {
     status,
     changed,
@@ -370,6 +558,7 @@ export async function executeCodexCli(
     diagnostics,
     manualActions,
     checkpointsConfirmed: true,
+    operations,
   };
 }
 
@@ -388,7 +577,7 @@ async function inspectMarketplaceGrammar(
   }
   const hasAdd = advertisesCommand(marketplaceHelp.output, 'add');
   const hasList = advertisesCommand(marketplaceHelp.output, 'list');
-  return inspectOperationGrammar(options, {
+  const grammar = await inspectOperationGrammar(options, {
     hasAdd,
     hasList,
     addHelpArgs: ['plugin', 'marketplace', 'add', '--help'],
@@ -399,6 +588,40 @@ async function inspectMarketplaceGrammar(
     mutationBase: ['plugin', 'marketplace', 'add'],
     verificationBase: ['plugin', 'marketplace', 'list'],
   });
+  if ('failure' in grammar) {
+    return grammar;
+  }
+  return {
+    ...grammar,
+    manualRemoveCommand: await inspectMarketplaceRemoveCommand(
+      options,
+      marketplaceHelp.output,
+    ),
+  };
+}
+
+async function inspectMarketplaceRemoveCommand(
+  options: InspectCodexCliOptions,
+  marketplaceHelp: string,
+): Promise<string | null> {
+  if (!advertisesCommand(marketplaceHelp, 'remove')) {
+    return null;
+  }
+  const result = await runSafe(
+    options.executor,
+    ['plugin', 'marketplace', 'remove', '--help'],
+  );
+  if (
+    !result.ok
+    || !advertisesUsage(result.output, 'codex plugin marketplace remove', '<NAME>')
+    || !advertisesJsonOption(result.output)
+    || (options.scope === 'project' && !advertisesProjectOption(result.output))
+  ) {
+    return null;
+  }
+  return options.scope === 'global'
+    ? 'codex plugin marketplace remove thoth-mem --json'
+    : 'codex plugin marketplace remove --project <selected-project> thoth-mem --json';
 }
 
 async function inspectPluginGrammar(
@@ -471,10 +694,16 @@ async function inspectOperationGrammar(
   const verificationArgs = listGrammar && (!projectScoped || advertisesProjectOption(listHelp))
     ? withScope(shape.verificationBase, options)
     : null;
+  if (verificationArgs && advertisesJsonOption(listHelp)) {
+    verificationArgs.push('--json');
+  }
   return {
     available: mutationArgs !== null && verificationArgs !== null,
     mutationArgs,
     verificationArgs,
+    verificationFormat: verificationArgs
+      ? (verificationArgs.includes('--json') ? 'json' : 'legacy')
+      : null,
   };
 }
 
@@ -482,6 +711,7 @@ function operationPlan(input: {
   id: CodexExternalStepId;
   name: string;
   noun: CodexOperationPlan['noun'];
+  initialState: CodexObservedState;
   verified: boolean;
   grammar: OperationGrammar;
   unavailableDiagnostic: string;
@@ -490,6 +720,7 @@ function operationPlan(input: {
     id: input.id,
     name: input.name,
     noun: input.noun,
+    initialState: input.initialState,
     verified: input.verified,
     available: input.grammar.available,
     mutationArgs: input.grammar.mutationArgs,
@@ -523,6 +754,8 @@ function unavailableGrammar(): OperationGrammar {
     available: false,
     mutationArgs: null,
     verificationArgs: null,
+    verificationFormat: null,
+    manualRemoveCommand: null,
   };
 }
 
@@ -562,6 +795,10 @@ function advertisesProjectOption(help: string): boolean {
   return /(?:^|\s|\[)--project\s+<[^>]+>/m.test(help);
 }
 
+function advertisesJsonOption(help: string): boolean {
+  return /(?:^|[\s[,])--json(?:[=\s,\]]|$)/m.test(help);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -569,18 +806,17 @@ function escapeRegExp(value: string): string {
 async function verifyState(
   executor: CodexCommandExecutor,
   args: string[],
-  expected: string,
+  operation: CodexExternalStepId,
   timeoutMs = SHORT_PROBE_TIMEOUT_MS,
-): Promise<{
-  ok: boolean;
-  verified: boolean;
-  reason: SafeCommandResult['reason'];
-  errorCode?: string;
-}> {
+): Promise<StateVerification> {
   const result = await runSafe(executor, args, timeoutMs);
+  const state = result.ok
+    ? operationState(result.stdout, operation, args.includes('--json'))
+    : 'unclassifiable';
   return {
     ok: result.ok,
-    verified: result.ok && containsIdentity(result.output, expected),
+    verified: result.ok && state === 'present',
+    state,
     reason: result.reason,
     ...(result.errorCode ? { errorCode: result.errorCode } : {}),
   };
@@ -589,28 +825,19 @@ async function verifyState(
 async function reconcileState(
   executor: CodexCommandExecutor,
   args: string[],
-  expected: string,
+  operation: CodexExternalStepId,
   injectedTiming?: CodexExecutionTiming,
-): Promise<{
-  ok: boolean;
-  verified: boolean;
-  reason: SafeCommandResult['reason'];
-  errorCode?: string;
-}> {
+): Promise<StateVerification> {
   const timing = injectedTiming ?? {
     now: Date.now,
     sleep: sleepFor,
   };
   const startedAt = timing.now();
   let polls = 0;
-  let latest: {
-    ok: boolean;
-    verified: boolean;
-    reason: SafeCommandResult['reason'];
-    errorCode?: string;
-  } = {
+  let latest: StateVerification = {
     ok: true,
     verified: false,
+    state: 'absent',
     reason: 'ok',
   };
 
@@ -623,7 +850,7 @@ async function reconcileState(
     latest = await verifyState(
       executor,
       args,
-      expected,
+      operation,
       Math.min(SHORT_PROBE_TIMEOUT_MS, remainingBeforePoll),
     );
     polls += 1;
@@ -651,9 +878,154 @@ function sleepFor(delayMs: number): Promise<void> {
   });
 }
 
-function containsIdentity(output: string, identity: string): boolean {
-  const escaped = escapeRegExp(identity);
-  return new RegExp(`(?:^|[\\s\"'])${escaped}(?:$|[\\s\"'])`, 'm').test(output);
+function operationState(
+  output: string,
+  operation: CodexExternalStepId,
+  structuredJson: boolean,
+): CodexObservedState {
+  if (structuredJson) {
+    return operation === 'codex-marketplace'
+      ? verifiesMarketplaceJson(output)
+      : verifiesPluginJson(output);
+  }
+  return operation === 'codex-marketplace'
+    ? verifiesLegacyMarketplace(output)
+    : verifiesLegacyPlugin(output);
+}
+
+function verifiesMarketplaceJson(output: string): CodexObservedState {
+  const parsed = parseJsonRecord(output);
+  if (!parsed || !Array.isArray(parsed.marketplaces)) {
+    return 'unclassifiable';
+  }
+  const candidates = parsed.marketplaces;
+  if (!candidates.every(isRecord)) {
+    return 'unclassifiable';
+  }
+  const exactName = candidates.filter((candidate) => candidate.name === MARKETPLACE_NAME);
+  if (exactName.length === 0) {
+    return 'absent';
+  }
+  return exactName.some((candidate) => {
+    const source = candidate.marketplaceSource;
+    return isRecord(source)
+      && source.sourceType === 'git'
+      && isCanonicalMarketplaceSource(source.source);
+  }) ? 'present' : 'conflicting';
+}
+
+function verifiesPluginJson(output: string): CodexObservedState {
+  const parsed = parseJsonRecord(output);
+  if (!parsed || !Array.isArray(parsed.installed) || !Array.isArray(parsed.available)) {
+    return 'unclassifiable';
+  }
+  if (![...parsed.installed, ...parsed.available].every(isRecord)) {
+    return 'unclassifiable';
+  }
+  const exact = parsed.installed.filter((candidate) => (
+    candidate.pluginId === `${PLUGIN_NAME}@${MARKETPLACE_NAME}`
+    || candidate.name === PLUGIN_NAME
+    || candidate.marketplaceName === MARKETPLACE_NAME
+  ));
+  if (exact.length === 0) {
+    return 'absent';
+  }
+  return exact.some((candidate) => {
+    const exactIdentity = candidate.pluginId === `${PLUGIN_NAME}@${MARKETPLACE_NAME}`
+      && candidate.name === PLUGIN_NAME
+      && candidate.marketplaceName === MARKETPLACE_NAME;
+    return exactIdentity && candidate.installed === true && candidate.enabled === true;
+  }) ? 'present' : 'conflicting';
+}
+
+function verifiesLegacyMarketplace(output: string): CodexObservedState {
+  const lines = nonEmptyLines(output);
+  if (lines.some((line) => isCanonicalMarketplaceSource(line))) {
+    return 'present';
+  }
+  const rows = fixedWidthRows(lines);
+  const headerIndex = rows.findIndex((row) => (
+    normalizedColumnIndex(row, ['name']) >= 0
+    && normalizedColumnIndex(row, ['source', 'repository', 'repository source']) >= 0
+  ));
+  if (headerIndex < 0) {
+    return 'unclassifiable';
+  }
+  const header = rows[headerIndex]!;
+  const nameIndex = normalizedColumnIndex(header, ['name']);
+  const sourceIndex = normalizedColumnIndex(header, ['source', 'repository', 'repository source']);
+  const targetRows = rows.slice(headerIndex + 1).filter((row) => row[nameIndex] === MARKETPLACE_NAME);
+  if (targetRows.length === 0) {
+    return 'absent';
+  }
+  return targetRows.some((row) => (
+    row[nameIndex] === MARKETPLACE_NAME
+    && isCanonicalMarketplaceSource(row[sourceIndex])
+  )) ? 'present' : 'conflicting';
+}
+
+function verifiesLegacyPlugin(output: string): CodexObservedState {
+  const lines = output
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0);
+  const pluginId = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
+  const headerIndex = lines.findIndex((line) => (
+    /^\s*PLUGIN\s+STATUS\s+VERSION\s+PATH\s*$/.test(line)
+  ));
+  if (headerIndex < 0) {
+    return 'unclassifiable';
+  }
+  const enabledRow = new RegExp(
+    `^\\s*${escapeRegExp(pluginId)}\\s+installed, enabled(?:\\s+|$)`,
+  );
+  const targetRows = lines.slice(headerIndex + 1).filter((line) => line.includes(pluginId));
+  if (targetRows.length === 0) {
+    return 'absent';
+  }
+  return targetRows.some((line) => enabledRow.test(line)) ? 'present' : 'conflicting';
+}
+
+function parseJsonRecord(output: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCanonicalMarketplaceSource(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const githubPrefix = 'https://github.com/';
+  let repository = value.startsWith(githubPrefix)
+    ? value.slice(githubPrefix.length)
+    : value;
+  if (repository.endsWith('.git')) {
+    repository = repository.slice(0, -4);
+  }
+  return repository === MARKETPLACE_SOURCE;
+}
+
+function nonEmptyLines(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function fixedWidthRows(lines: string[]): string[][] {
+  return lines.map((line) => line.split(/\s{2,}/));
+}
+
+function normalizedColumnIndex(row: string[], candidates: string[]): number {
+  const normalized = row.map((column) => column.trim().toLowerCase());
+  return normalized.findIndex((column) => candidates.includes(column));
 }
 
 async function runSafe(
@@ -669,22 +1041,30 @@ async function runSafe(
     return {
       ok: false,
       output: '',
+      stdout: '',
       exitCode: null,
       reason: 'spawn_failure',
       ...(errorCode ? { errorCode } : {}),
     };
   }
   if (result.timedOut) {
-    return { ok: false, output: '', exitCode: result.exitCode, reason: 'timeout' };
+    return { ok: false, output: '', stdout: '', exitCode: result.exitCode, reason: 'timeout' };
   }
   if (result.outputTruncated || byteLength(result.stdout) + byteLength(result.stderr) > DEFAULT_MAX_OUTPUT_BYTES) {
-    return { ok: false, output: '', exitCode: result.exitCode, reason: 'output_limit' };
+    return {
+      ok: false,
+      output: '',
+      stdout: '',
+      exitCode: result.exitCode,
+      reason: 'output_limit',
+    };
   }
   if (result.error) {
     const errorCode = safeSpawnErrorCode(result.errorCode);
     return {
       ok: false,
       output: '',
+      stdout: '',
       exitCode: result.exitCode,
       reason: 'spawn_failure',
       ...(errorCode ? { errorCode } : {}),
@@ -692,13 +1072,169 @@ async function runSafe(
   }
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.exitCode !== 0) {
-    return { ok: false, output: '', exitCode: result.exitCode, reason: 'nonzero' };
+    const classification = classifyNonzeroOutput(output);
+    return {
+      ok: false,
+      output: '',
+      stdout: '',
+      exitCode: result.exitCode,
+      reason: 'nonzero',
+      ...classification,
+      safeDiagnostic: boundedDiagnostic(nonzeroSafeDiagnostic(
+        classification.failureClass,
+        result.exitCode,
+      )),
+    };
   }
-  return { ok: true, output, exitCode: result.exitCode, reason: 'ok' };
+  return { ok: true, output, stdout: result.stdout, exitCode: result.exitCode, reason: 'ok' };
+}
+
+function classifyNonzeroOutput(output: string): Pick<
+  SafeCommandResult,
+  'failureClass' | 'collisionObserved'
+> {
+  const collisionObserved = /marketplace\s+['"]?thoth-mem['"]?\s+is already added from a different source;\s*remove it before adding this source/i.test(output);
+  if (!collisionObserved) {
+    return {};
+  }
+  if (/^scope\s*=\s*.+$/im.test(output)) {
+    return { failureClass: 'scope_conflict', collisionObserved: true };
+  }
+  if (/^source\s*=\s*.+$/im.test(output)) {
+    return { failureClass: 'divergent_source', collisionObserved: true };
+  }
+  if (/reparse|resolves? outside|symbolic link|junction/i.test(output)) {
+    return { failureClass: 'unsafe_path', collisionObserved: true };
+  }
+  if (/manager busy|another marketplace operation|operation is in progress/i.test(output)) {
+    return { failureClass: 'concurrent_activity', collisionObserved: true };
+  }
+  return {
+    failureClass: 'different_source_marketplace_collision',
+    collisionObserved: true,
+  };
+}
+
+function nonzeroSafeDiagnostic(
+  failureClass: SafeCommandFailureClass | undefined,
+  exitCode: number | null,
+): string {
+  switch (failureClass) {
+    case 'different_source_marketplace_collision':
+      return 'Codex reported that thoth-mem is already added from a different marketplace source.';
+    case 'scope_conflict':
+      return 'Codex reported marketplace collision evidence for a conflicting scope.';
+    case 'divergent_source':
+      return 'Codex reported marketplace collision evidence with divergent source provenance.';
+    case 'unsafe_path':
+      return 'Codex reported marketplace collision evidence with unsafe path or link state.';
+    case 'concurrent_activity':
+      return 'Codex reported marketplace collision evidence while manager activity was in progress.';
+    default:
+      return exitCode === null
+        ? 'Codex command returned a nonzero result.'
+        : `Codex command exited with code ${exitCode}.`;
+  }
 }
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
+}
+
+function classifyCodexVersion(output: string): CodexCliEvidence['version'] {
+  const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(output.trim());
+  if (!match) {
+    return { value: null, classification: 'unknown' };
+  }
+  const value = `${match[1]}.${match[2]}.${match[3]}`;
+  const tested = Number(match[1]) === TESTED_CODEX_VERSION.major
+    && Number(match[2]) === TESTED_CODEX_VERSION.minor;
+  return { value, classification: tested ? 'tested' : 'untested' };
+}
+
+function operationCapability(grammar: OperationGrammar): CodexOperationCapabilityEvidence {
+  return {
+    mutation: grammar.mutationArgs !== null,
+    verification: grammar.verificationArgs !== null,
+    format: grammar.verificationFormat,
+  };
+}
+
+function classifyManagerState(
+  marketplace: CodexObservedState,
+  plugin: CodexObservedState,
+): CodexManagerState {
+  if (
+    marketplace === 'unclassifiable'
+    || marketplace === 'conflicting'
+    || plugin === 'unclassifiable'
+    || plugin === 'conflicting'
+  ) {
+    return 'unclassifiable';
+  }
+  if (marketplace === 'present' && plugin === 'present') {
+    return 'compatible';
+  }
+  if (marketplace === 'absent' && plugin === 'absent') {
+    return 'absent';
+  }
+  return 'partial';
+}
+
+function codexCliEvidence(
+  scope: SetupScope,
+  version: CodexCliEvidence['version'],
+  marketplaceGrammar: OperationGrammar,
+  pluginGrammar: OperationGrammar,
+  marketplaceState: CodexObservedState,
+  pluginState: CodexObservedState,
+): CodexCliEvidence {
+  const marketplace = operationCapability(marketplaceGrammar);
+  const plugin = operationCapability(pluginGrammar);
+  return {
+    version,
+    capabilities: {
+      scope,
+      marketplace,
+      plugin,
+      complete: marketplace.mutation
+        && marketplace.verification
+        && plugin.mutation
+        && plugin.verification,
+    },
+    managerState: classifyManagerState(marketplaceState, pluginState),
+  };
+}
+
+function selectCodexStrategy(evidence: CodexCliEvidence): CodexSetupStrategy | null {
+  if (evidence.managerState === 'unclassifiable') {
+    return null;
+  }
+  if (
+    evidence.version.classification === 'tested'
+    && evidence.capabilities.complete
+  ) {
+    return 'plugin_manager';
+  }
+  return evidence.managerState === 'absent' ? 'legacy_filesystem' : null;
+}
+
+function emptyCodexCliEvidence(scope: SetupScope): CodexCliEvidence {
+  const unavailable: CodexOperationCapabilityEvidence = {
+    mutation: false,
+    verification: false,
+    format: null,
+  };
+  return {
+    version: { value: null, classification: 'unknown' },
+    capabilities: {
+      scope,
+      marketplace: unavailable,
+      plugin: unavailable,
+      complete: false,
+    },
+    managerState: 'unclassifiable',
+  };
 }
 
 function failedPlan(scope: SetupScope, diagnostic: string): CodexCliPlan {
@@ -706,15 +1242,19 @@ function failedPlan(scope: SetupScope, diagnostic: string): CodexCliPlan {
   return {
     scope,
     status: 'failed',
+    strategy: null,
+    evidence: emptyCodexCliEvidence(scope),
     operations,
     steps: operations.map((operation) => ({ name: operation.name, outcome: 'failed' })),
     diagnostics: [diagnostic],
     manualActions: ['Verify the Codex CLI is installed and its non-mutating help/list commands are available, then retry.'],
+    manualMarketplaceRemoveCommand: null,
   };
 }
 
 function unavailablePlan(
   scope: SetupScope,
+  version: CodexCliEvidence['version'],
   marketplaceVerified: boolean,
   pluginVerified: boolean,
 ): CodexCliPlan {
@@ -725,10 +1265,16 @@ function unavailablePlan(
   return {
     scope,
     status: 'requires_user_action',
+    strategy: null,
+    evidence: {
+      ...emptyCodexCliEvidence(scope),
+      version,
+    },
     operations,
     steps: operations.map(operationStep),
     diagnostics: ['The detected Codex CLI does not advertise a safe plugin management surface.'],
     manualActions: [manualPluginsAction()],
+    manualMarketplaceRemoveCommand: null,
   };
 }
 
@@ -738,6 +1284,7 @@ function unavailableOperations(scope: SetupScope): CodexOperationPlan[] {
       id: 'codex-marketplace',
       name: `Register thoth-mem Codex marketplace (${scope})`,
       noun: 'marketplace registration',
+      initialState: 'unclassifiable',
       verified: false,
       available: false,
       mutationArgs: null,
@@ -748,6 +1295,7 @@ function unavailableOperations(scope: SetupScope): CodexOperationPlan[] {
       id: 'codex-plugin',
       name: `Install thoth-mem Codex plugin (${scope})`,
       noun: 'plugin installation',
+      initialState: 'unclassifiable',
       verified: false,
       available: false,
       mutationArgs: null,
@@ -755,6 +1303,137 @@ function unavailableOperations(scope: SetupScope): CodexOperationPlan[] {
       unavailableDiagnostic: 'Codex plugin installation is unavailable.',
     },
   ];
+}
+
+function operationEvidence(
+  operation: CodexOperationPlan,
+  safeAttempt: CodexOperationExecutionEvidence['safeAttempt'],
+  finalOutcome: CodexOperationExecutionEvidence['finalOutcome'],
+  overrides: Partial<CodexOperationExecutionEvidence> = {},
+): CodexOperationExecutionEvidence {
+  return {
+    id: operation.id,
+    initialState: operation.initialState,
+    safeAttempt,
+    commandReason: null,
+    failureClass: null,
+    attemptCheckpoint: null,
+    reread: { performed: false, state: operation.initialState },
+    rereadCheckpoint: null,
+    finalOutcome,
+    requiresUserAction: false,
+    ...overrides,
+  };
+}
+
+function unexecutedOperationEvidence(
+  operations: CodexOperationPlan[],
+): CodexOperationExecutionEvidence[] {
+  return operations.map((operation) => operationEvidence(
+    operation,
+    operation.verified ? 'not_needed' : 'blocked',
+    operation.verified ? 'confirmed' : 'unavailable',
+  ));
+}
+
+function completeMissingOperationEvidence(
+  planned: CodexOperationPlan[],
+  executed: CodexOperationExecutionEvidence[],
+): CodexOperationExecutionEvidence[] {
+  const ids = new Set(executed.map((operation) => operation.id));
+  return [
+    ...executed,
+    ...planned
+      .filter((operation) => !ids.has(operation.id))
+      .map((operation) => operationEvidence(operation, 'blocked', 'unavailable')),
+  ];
+}
+
+function classifyManualRecovery(
+  plan: CodexCliPlan,
+  operation: CodexOperationPlan,
+  mutation: SafeCommandResult,
+  verification: StateVerification,
+  rereadPerformed: boolean,
+  verified: boolean,
+): { requiresUserAction: boolean; manualAction: string } {
+  if (verified || operation.id !== 'codex-marketplace' || !mutation.collisionObserved) {
+    return { requiresUserAction: false, manualAction: retryAction(operation.id) };
+  }
+  const corroboratedStableAbsence = operation.initialState === 'absent'
+    && rereadPerformed
+    && verification.ok
+    && verification.state === 'absent'
+    && mutation.failureClass === 'different_source_marketplace_collision';
+  if (corroboratedStableAbsence && plan.manualMarketplaceRemoveCommand) {
+    return {
+      requiresUserAction: true,
+      manualAction: plan.manualMarketplaceRemoveCommand,
+    };
+  }
+  return {
+    requiresUserAction: true,
+    manualAction: `Inspect the ${plan.scope} Codex marketplace list, resolve the unverified thoth-mem marketplace residue through Codex, then rerun setup.`,
+  };
+}
+
+function manualRecoveryDiagnostic(
+  scope: SetupScope,
+  mutation: SafeCommandResult,
+  verification: StateVerification,
+): string {
+  const state = verification.state === 'absent'
+    ? 'the exact marketplace list still reports thoth-mem absent'
+    : `the exact marketplace state is ${verification.state}`;
+  const classification = mutation.failureClass === 'different_source_marketplace_collision'
+    ? 'a different-source marketplace collision'
+    : 'ambiguous marketplace collision evidence';
+  return boundedDiagnostic(
+    `Codex marketplace registration (${scope}) encountered ${classification}; ${state}. Manual Codex recovery is required before setup is retried.`,
+  );
+}
+
+function phasedCheckpoint(
+  checkpoint: Omit<CodexExternalCheckpoint, 'phase'>,
+  phase: CodexCheckpointPhase,
+): CodexExternalCheckpoint {
+  const result = { ...checkpoint } as CodexExternalCheckpoint;
+  Object.defineProperty(result, 'phase', {
+    value: phase,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return result;
+}
+
+function pushUnique(values: string[], value: string): void {
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function boundedDiagnostic(value: string): string {
+  return truncateSafeDiagnostic(redactSafeDiagnostic(value));
+}
+
+function redactSafeDiagnostic(value: string): string {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/authorization\s*:\s*(?:bearer\s+)?[^\s,;]+/gi, 'Authorization: [redacted]')
+    .replace(/https?:\/\/[^/\s:@]+:[^@\s/]+@/gi, 'https://[redacted]@')
+    .replace(/([?&](?:token|secret|password|key)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\b(token|secret|password|authorization)\s*[=:]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\b[A-Za-z]:\\Users\\[^\\\r\n]+(?:\\[^\s\r\n]*)?/g, '<home>')
+    .replace(/\/(?:Users|home)\/[^/\s]+(?:\/[^\s]*)?/g, '<home>');
+}
+
+function truncateSafeDiagnostic(value: string): string {
+  if (value.length <= SAFE_DIAGNOSTIC_MAX_CHARS) {
+    return value;
+  }
+  const suffix = '… [truncated]';
+  return `${value.slice(0, SAFE_DIAGNOSTIC_MAX_CHARS - suffix.length)}${suffix}`;
 }
 
 function probeFailureDiagnostic(
@@ -787,15 +1466,23 @@ function verificationProbeDiagnostic(
 
 function mutationFailureDiagnostic(
   noun: CodexOperationPlan['noun'],
+  scope: SetupScope,
   result: SafeCommandResult,
 ): string {
+  if (result.failureClass) {
+    return boundedDiagnostic(
+      `${capitalize(noun)} (${scope}) failed: ${result.safeDiagnostic ?? nonzeroSafeDiagnostic(result.failureClass, result.exitCode)} Exact selected-scope verification determines the final state.`,
+    );
+  }
   if (result.reason === 'nonzero' && result.exitCode !== null) {
     return `${capitalize(noun)} command exited with code ${result.exitCode}.`;
   }
-  return `${capitalize(noun)} command failed safely: ${probeFailureDiagnostic(
-    result.reason,
-    result.errorCode,
-  )}`;
+  return boundedDiagnostic(
+    `${capitalize(noun)} command failed safely: ${probeFailureDiagnostic(
+      result.reason,
+      result.errorCode,
+    )}`,
+  );
 }
 
 function verificationFailureDiagnostic(
