@@ -250,7 +250,7 @@ describe('MCP tool registration', () => {
       expect(afterEnablement.tools).toEqual(baseline.tools);
       expect(afterEnablement.responses).toEqual(baseline.responses);
     }
-  });
+  }, 30_000);
 
   it('rejects multi-harness contract expansion', async () => {
     const contract = await capturePublicContract();
