@@ -11,8 +11,12 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 - CLI command dispatch: `runCli()` parses arguments and routes to command handlers (search, save, timeline, context, stats, export, import, sync, migrate-project, version, help) via a `withStore` lifecycle wrapper.
 - HTTP bridge with ownership/takeover: `createHttpBridge()` attempts to bind to a port; if occupied, it takes over the existing bridge via a handshake protocol.
 - OpenAPI spec generation: `getOpenApiSpec(port)` dynamically builds an OpenAPI 3.0 document describing the REST API routes and schemas.
-- Host-neutral lifecycle core: adapters normalize host events before `MemoryIntegrationCore` plans and confirms effects through the existing six MCP tools.
-- Managed setup state machine: scope/path inspection, immutable Codex ownership selection, verified pre-lock no-ops, exact config fragments, atomic filesystem changes, versioned write-ahead receipts, migration recovery, and bounded rollback remain separate from lifecycle execution.
+- Capability evidence is resolved before adapter selection by `src/integration/runtime/capability-evidence.ts`; adapters accept resolver-produced evidence only.
+- `MemoryIntegrationCore` confirms six-tool effects before producing bounded `HostOutputDirective`; hook and integration commands preserve it.
+- OpenCode privately prepares/confirms `protocolRequest`, mutates `output.system`/`output.context`, awaits the structured log, then confirms; Codex and Claude use verified native stdout.
+- Compaction recovery uses checkpoint reservation, consume, and TTL. `emitted_via_verified_channel` proves channel emission; `modelConsumption` remains unproven.
+- Setup covers all three hosts. Public `claude-code` maps to private runtime/inventory `claude`; `claude-code-cli.ts` and `ClaudeCodeSetupStrategy` own Claude setup evidence.
+- Static checks and a hermetic packed-runtime verifier protect release assets; live smoke is opt-in only. The six-tool and no-auto-start boundaries remain unchanged.
 - Subsystems are isolated behind directory codemaps in `src/store/`, `src/tools/`, `src/utils/`, and `src/sync/`; native `src/integration/` and `src/setup/` modules are mapped below.
 
 ## Data & Control Flow
@@ -32,19 +36,18 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 4. `version.ts` provides `VERSION` constant and `getVersion()` for the version command.
 
 ### Native Integration Event Path (cli.ts, integration/)
-1. `src/cli.ts` routes bounded package-internal event input to `src/integration/runtime/integration-event-command.ts`.
-2. `src/integration/runtime/hook-command.ts` validates the shared JSON protocol and selects the OpenCode, Codex, or Claude Code adapter.
-3. The adapter emits normalized events and capability evidence; `src/integration/core/lifecycle.ts` resolves root identity, sanitizes eligible root prompts, and plans host-neutral effects.
-4. `src/integration/core/mcp-memory-port.ts` executes only the six allowed MCP tools, while `src/integration/core/state-store.ts` records confirmed, HMAC-keyed progress for retry/restart safety.
+    1. `src/cli.ts` routes bounded package-internal event input to `src/integration/runtime/integration-event-command.ts`.
+    2. `src/integration/runtime/hook-command.ts` validates the protocol, resolves capability evidence before adapter selection, and fails closed on unknown/mismatched claims.
+    3. Adapters normalize only resolver-backed evidence; lifecycle confirms six-tool effects and produces bounded `HostOutputDirective` data.
+    4. Hook/integration commands preserve the directive. OpenCode mutates `output.system`/`output.context`, awaits the structured log, and confirms; Codex/Claude render verified native stdout.
+    5. Checkpoint reservation/consume/TTL gates compaction recovery. Local `emitted_via_verified_channel` is separate from unproven model consumption.
 
 ### Managed Harness Setup Path (cli.ts, setup/)
-1. `src/cli.ts` parses exact setup flags and delegates to `src/setup/engine.ts`.
-2. `src/setup/paths.ts` resolves global or explicit project targets; harness modules inspect and plan only their owned configuration locations.
-3. `src/setup/codex-cli.ts` classifies tested Codex `0.144.x`, scoped marketplace/plugin grammar, and exact manager state; setup selects one immutable `plugin_manager` or `legacy_filesystem` strategy before mutation.
-4. A completed matching Codex state can return through a read-only preflight before the transaction lock. Otherwise `src/setup/receipt.ts` persists HMAC-protected Receipt V2 evidence before mutation; V1 readers retain only their original authority.
-5. The manager strategy delegates marketplace, cache, enablement, and generated activation to Codex. The legacy strategy uses `src/setup/harnesses/codex.ts`, `src/setup/managed-config.ts`, and `src/setup/filesystem.ts` for exact managed fragments, stable content identity, backups, and atomic changes.
-6. Proven dual-state migration checkpoints manager evidence, then removes config, metadata, and assets sequentially. Recovery and rollback restore only receipt-owned fragments and preserve later unrelated TOML.
-7. Modern manager removal is manual-only when receipt-created state needs reversal; the engine reports bounded guidance and never edits manager cache/config directly.
+    1. `src/cli.ts` exposes setup for `opencode`, `codex`, and public `claude-code`, with global/project scope, plan, force, rollback, and JSON controls.
+    2. `src/setup/paths.ts` resolves bounded targets; public `claude-code` translates to private runtime/inventory identity `claude`.
+    3. `src/setup/codex-cli.ts` and `src/setup/claude-code-cli.ts` provide bounded host-manager evidence. `src/setup/engine.ts` selects one immutable strategy, including `ClaudeCodeSetupStrategy`, before mutation.
+    4. Preflight no-ops return before locking. Receipt-backed mutations checkpoint external outcomes, preserve later edits, and rollback only owned state.
+    5. Live setup/smoke is opt-in only; no automated path starts a server, uses credentials, or edits external repositories.
 
 ### HTTP Bridge Path (http-server.ts, http-routes.ts)
 1. `createHttpBridge()` attempts to bind to a configured port; if occupied, it performs a takeover handshake with the existing bridge.
@@ -81,8 +84,10 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 | `src/integration/adapters/opencode.ts` | OpenCode native event and capability normalization. |
 | `src/integration/adapters/codex.ts` | Codex evidence-backed event and capability normalization. |
 | `src/integration/adapters/claude-code.ts` | Claude Code lifecycle hook normalization and sub-agent exclusion. |
-| `src/integration/runtime/hook-command.ts` | Bounded JSON hook protocol validation and adapter dispatch. |
-| `src/integration/runtime/integration-event-command.ts` | Production data-dir, memory-port, state-store, lifecycle-core, and stdin route composition. |
+| `src/integration/runtime/capability-evidence.ts` | Sole fail-closed capability resolver; mints resolver-backed evidence before adapters. |
+| `src/integration/runtime/host-output.ts` | Bounded `HostOutputDirective` validation and transport metadata. |
+| `src/integration/runtime/hook-command.ts` | JSON validation, capability ingress, adapter dispatch, and directive preservation. |
+| `src/integration/runtime/integration-event-command.ts` | Production route composition and directive preservation through integration commands. |
 
 ## Managed Setup Modules
 
@@ -94,7 +99,9 @@ Bootstraps the Thoth MCP server, resolves runtime configuration, and wires the t
 | `src/setup/managed-config.ts` | Ownership-aware JSONC edits and validated TOML marker blocks. |
 | `src/setup/filesystem.ts` | Contained backup-first atomic writes, removal/restoration, stable entry snapshots, hashing, and verification. |
 | `src/setup/receipt.ts` | Durable HMAC Receipt V1/V2 decoding, creation, validation, checkpoints, manager evidence, and recovery metadata. |
-| `src/setup/codex-cli.ts` | Tested-version and scoped grammar classification, immutable strategy evidence, bounded argument-array execution, and exact post-command verification. |
-| `src/setup/transaction-lock.ts` | Canonical-target transaction locking, stale-lock recovery, and ownership-safe release. |
+| `src/setup/codex-cli.ts` | Tested-version/scoped grammar classification, immutable strategy evidence, bounded execution, and verification. |
+| `src/setup/claude-code-cli.ts` | Injected Claude manager probing and command execution evidence. |
+| `src/setup/transaction-lock.ts` | Canonical-target locking, stale-lock recovery, and ownership-safe release. |
 | `src/setup/harnesses/opencode.ts` | OpenCode config/plugin asset planning and verification. |
 | `src/setup/harnesses/codex.ts` | Legacy-only Codex managed-fragment planning, exact capture/restore, and filesystem verification. |
+| `src/setup/harnesses/claude-code.ts` | `ClaudeCodeSetupStrategy` planning, ownership-gated mutation, verification, rollback, and later-edit preservation. |

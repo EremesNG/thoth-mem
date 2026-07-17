@@ -2,8 +2,16 @@
 
 ## Requirements
 
-### Requirement: CLI MUST Provide Managed Setup for OpenCode and Codex
-The public CLI MUST accept `thoth-mem setup opencode` and `thoth-mem setup codex`. Both commands MUST default to global scope. Project scope MUST use `--scope project --project <path>`; explicit global scope MAY use `--scope global`, and `--project` MUST be rejected outside project scope. Plan-only MUST use `--plan`, conflict override MUST use `--force`, rollback MUST use `--rollback <receipt-path>`, and machine-readable output MUST use `--json`. Inspection, planning, mutation, verification, receipts, and rollback MUST remain confined to the selected harness and scope.
+### Requirement: CLI MUST Provide Managed Setup for OpenCode, Codex, and Claude Code
+The public CLI MUST accept `thoth-mem setup opencode`, `thoth-mem setup codex`,
+and `thoth-mem setup claude-code`. Each command MUST default to global scope
+and MUST use the established explicit project-scope, plan-only, force, rollback,
+and JSON controls. Inspection, planning, mutation, verification, receipts, and
+rollback MUST remain confined to the selected harness and scope. Claude Code
+setup MUST apply its manager-ownership and coexistence checks before any
+mutation. Project scope MUST use `--scope project --project <path>`; explicit
+global scope MAY use `--scope global`, and `--project` MUST be rejected outside
+project scope.
 
 #### Scenario: OpenCode setup defaults to global scope
 - GIVEN the user runs `thoth-mem setup opencode` without a scope option
@@ -28,6 +36,12 @@ The public CLI MUST accept `thoth-mem setup opencode` and `thoth-mem setup codex
 - WHEN setup validates its inputs
 - THEN setup MUST return `failed`
 - AND it MUST perform zero writes
+
+#### Scenario: Claude Code setup defaults to global scope
+- GIVEN the user runs `thoth-mem setup claude-code` without a scope option
+- WHEN setup resolves its target
+- THEN it MUST select the detected global Claude Code scope
+- AND it MUST NOT write project-local configuration
 
 ### Requirement: Plan-Only Setup MUST Perform Zero Writes
 Setup MUST provide a plan-only operation that reports the deterministic ordered actions, selected scope, target paths, detected capabilities, selected ownership strategy, ownership evidence, conflicts, expected backups, expected migrations, and expected external commands without changing files, invoking mutating external commands, creating backups, or creating receipts.
@@ -374,7 +388,14 @@ When `plugin_manager` is selected, Codex setup MUST independently plan, attempt,
 - AND it MUST provide bounded precise retry or manual-completion guidance
 
 ### Requirement: Setup Results and Exit Codes MUST Be Deterministic
-Setup and rollback MUST emit a human-readable result and MUST support a machine-readable JSON object. That object MUST contain `status` as `complete|failed|partial|requires_user_action`, `changed` as a boolean, `harness` as `opencode|codex`, `scope` as `global|project`, `target` as a string, `steps` as an ordered array whose entries contain a non-empty `name` and `outcome` from `planned|skipped|confirmed|failed|unavailable`, `diagnostics` and `manual_actions` as arrays of strings, and `receipt` as a string path or `null`. `requires_user_action` MUST take precedence over `partial` whenever corroborated orphan residue or ownership ambiguity prevents safe recovery and requires manual intervention, even if another requested operation is independently verified. Status and process exit code MUST map exactly as follows: `complete` to `0`, `failed` to `1`, `partial` to `2`, and `requires_user_action` to `3`.
+Setup results and rollback MUST accept `claude-code` as a harness value while
+preserving the exact `complete`, `failed`, `partial`, and
+`requires_user_action` statuses and their existing exit-code mappings. Claude
+Code results MUST expose only bounded diagnostics, ordered evidence-backed
+steps, scope, target, receipt, and manual actions; they MUST NOT expose
+secrets, raw configuration, or unsupported success claims. The machine-readable
+JSON object MUST retain the existing status, changed, harness, scope, target,
+steps, diagnostics, manual_actions, and receipt fields and their bounds.
 
 #### Scenario: Complete and no-op results exit zero
 - GIVEN setup or rollback verifies every required outcome, including an idempotent no-op
@@ -404,6 +425,62 @@ Setup and rollback MUST emit a human-readable result and MUST support a machine-
 - AND process exit code MUST be `3`
 - AND manual actions MUST identify the unresolved steps
 - AND any independently verified requested operation MUST remain represented without changing the final status to `partial`
+
+#### Scenario: Claude manual-recovery result preserves the existing status mapping
+- GIVEN a Claude Code setup capability is unsafe or unproven
+- WHEN setup renders human-readable and JSON results
+- THEN both results MUST report `requires_user_action` with the established exit
+  code
+- AND they MUST preserve the same bounded evidence and manual-action semantics
+
+### Requirement: Managed Claude Code Setup MUST Be Capability- and Ownership-Gated
+The CLI MUST provide managed Claude Code setup through the established setup
+workflow and MUST apply the existing scope, plan-only, conflict, receipt, and
+rollback discipline. Before mutation, setup MUST inspect the selected scope,
+identify the managed Claude Code assets and activation state, and verify that
+any manager command grammar or removal path is safe for the detected runtime.
+When safe capability evidence is absent, setup MUST return bounded
+`requires_user_action` guidance and MUST NOT guess commands, auto-start an
+external server, or rely on a shell-specific workaround.
+
+#### Scenario: Claude Code plan is zero-write and evidence-bearing
+- GIVEN an operator requests Claude Code setup in plan-only mode
+- WHEN setup inspects the selected scope
+- THEN it MUST report the detected activation, ownership, and capability
+  evidence without creating a file, receipt, backup, registration, or server
+- AND it MUST identify any unproven manager capability before mutation
+
+#### Scenario: Unproven Claude manager grammar requires manual action
+- GIVEN a selected Claude Code scope lacks a verified manager mutation or
+  removal capability
+- WHEN mutating setup or rollback is requested
+- THEN setup MUST return `requires_user_action` with a bounded safe next action
+- AND it MUST perform zero guessed command, direct manager cleanup, or
+  shell-specific fallback
+
+### Requirement: Claude Code Coexistence and Migration MUST Preserve Ownership Boundaries
+Managed Claude Code setup MUST classify existing manual MCP configuration,
+marketplace-managed installation, prior thoth-mem-managed state, and ambiguous
+lookalikes before mutation. It MUST preserve manual and externally managed
+state unless a compatible no-op is verified or the exact target is proven
+receipt-owned. Migration or rollback MUST change only receipt-owned managed
+fragments and MUST preserve unrelated later user changes. Ambiguous ownership
+MUST fail closed with manual recovery guidance and MUST NOT create duplicate
+activation or cross-repository mutation.
+
+#### Scenario: Manual configuration remains intact during setup
+- GIVEN a selected Claude Code scope contains unrelated manual MCP configuration
+  or a marketplace-managed integration
+- WHEN managed setup evaluates coexistence
+- THEN it MUST preserve that state unless compatible ownership is independently
+  verified
+- AND it MUST not add a duplicate activation or overwrite unrelated settings
+
+#### Scenario: Claude rollback restores only receipt-owned state
+- GIVEN a valid Claude Code setup receipt proves exact managed changes
+- WHEN rollback succeeds
+- THEN it MUST restore or remove only those receipt-owned changes
+- AND it MUST preserve marketplace-managed state and unrelated later user edits
 
 ### Requirement: Codex Setup MUST Safely Migrate Proven Dual-Owned State
 Codex setup MUST recognize a dual-owned state when independently verified plugin-manager state coexists with legacy copied assets, legacy managed activation, or legacy metadata. For destructive migration, a legacy location MUST be considered proven thoth-owned only when either a valid signed receipt binds that exact location and prior owned state, or the exact managed marker, valid legacy metadata, expected scoped path, stable package/content identity, and current owned content all agree. A name or path alone MUST NOT prove ownership. For a modern-capable target, setup MUST preserve the working manager installation until its state is confirmed and the migration decision is durably recorded. It MUST then remove only proven legacy state and MUST verify the final single-owned state. Routine migration MUST NOT require `--force`, and `--force` MUST NOT establish ownership of ambiguous state.

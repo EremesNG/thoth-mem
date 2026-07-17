@@ -39,9 +39,12 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 - HTTP bridge pattern in `src/http-server.ts` with ownership takeover for port conflict resolution and graceful bridge delegation.
 - CLI command dispatch in `src/cli.ts` with `withStore` lifecycle wrapper for database operations and automatic cleanup.
 - Incremental sync via mutation watermarks and manifest-driven chunk tracking in `src/sync/` for efficient data export and import.
-- Adapter/core separation in `src/integration/`: host payloads normalize at the edge, while lifecycle planning and confirmed MCP effects stay harness-neutral.
-- Strategy- and receipt-backed setup in `src/setup/`: plans are zero-write, verified no-ops return before locking, Codex chooses one immutable owner, mutations are ownership-bounded, and rollback uses validated write-ahead evidence.
-- Inventory-driven packaging: one canonical asset list feeds synchronization, verification, build, and tarball checks.
+- Capability-evidence resolution in `src/integration/runtime/capability-evidence.ts` runs before adapter selection; adapters consume resolver-produced evidence rather than infer support from assets, paths, or exit codes.
+- Host-neutral lifecycle planning produces bounded `HostOutputDirective` data only after confirmed memory effects; hook and integration commands preserve it through ingress.
+- OpenCode uses private prepare/confirm: `protocolRequest` mutates existing `output.system`/`output.context`, awaits the structured log, then confirms; Codex and Claude render verified native stdout.
+- Compaction recovery is gated by bounded checkpoint reservation/consume/TTL; `emitted_via_verified_channel` proves local emission only, while `modelConsumption` remains unproven.
+- Setup covers OpenCode, Codex, and Claude Code. Public `claude-code` maps to private runtime/inventory `claude`, with `claude-code-cli.ts` and `ClaudeCodeSetupStrategy` kept separate from public routing.
+- Packaging uses a hermetic packed-runtime verifier plus static checks; live host smoke is opt-in only. Preserve the six-tool surface, no-auto-start behavior, and no formal Engram references.
 
 ## Data & Control Flow
 
@@ -67,21 +70,19 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 5. Sync operations may be triggered via HTTP endpoints for incremental data export and import.
 
 ### Native Integration Event Path
-1. A published OpenCode, Codex, or Claude Code asset receives a verified native lifecycle event.
-2. A portable Node runner forwards bounded JSON to the package-internal integration-event route in `src/cli.ts`.
-3. `src/integration/runtime/integration-event-command.ts` resolves the data directory, linked six-tool `MemoryPort`, lifecycle state store, and root identity.
-4. The harness adapter normalizes capabilities and event data; `src/integration/core/lifecycle.ts` plans host-neutral effects.
-5. Lifecycle state advances only after the linked MCP operation confirms success; failures remain explicit and retryable.
+    1. A published OpenCode, Codex, or Claude Code asset receives a verified native lifecycle event; the portable runner forwards bounded JSON to the package-internal route in `src/cli.ts`.
+    2. `src/integration/runtime/hook-command.ts` validates the envelope and resolves capability evidence before selecting an adapter.
+    3. `src/integration/runtime/integration-event-command.ts` composes the data directory, linked six-tool `MemoryPort`, state store, lifecycle core, and root identity.
+    4. `src/integration/core/lifecycle.ts` confirms memory effects before producing a bounded `HostOutputDirective`; hook/integration commands preserve it without exposing raw persisted content.
+    5. OpenCode privately prepares then confirms `protocolRequest`: it mutates `output.system` and `output.context`, awaits the structured log, and records verified local emission. Codex/Claude runners render verified native stdout.
+    6. Compaction uses checkpoint reservation/consume/TTL gating. `emitted_via_verified_channel` is distinct from unproven `modelConsumption`; failures remain explicit and retryable.
 
 ### Managed Setup Path
-1. `src/cli.ts` parses `setup opencode|codex`, scope, plan, force, rollback, and output flags.
-2. `src/setup/paths.ts` confines global or explicit project targets, and harness planners inspect only managed configuration locations.
-3. For Codex, `src/setup/codex-cli.ts` classifies the tested `0.144.x` version family, selected-scope command grammar, and exact marketplace/plugin state; `src/setup/engine.ts` freezes either `plugin_manager` or `legacy_filesystem` before mutation and never falls back after modern execution starts.
-4. A previously completed, independently verified state returns from a read-only preflight before transaction locking, with no write, receipt, backup, or manager mutation.
-5. Mutating Codex attempts write an HMAC-protected V2 receipt before the first mutation and checkpoint each external command or migration fragment. V1 receipts remain bounded to their original signed claims.
-6. The modern route leaves marketplace/cache/activation ownership to Codex. The legacy route owns only packaged copied assets, stable metadata/content identity, and exact managed TOML fragments.
-7. Proven dual-owned migration checkpoints manager state, then removes the owned config fragment, metadata, and assets in sequence before a final reread. Recovery restores only exact fragments or completes a verified manager-owned state.
-8. Legacy/migration rollback preserves unrelated later configuration. Modern manager removal remains manual-only because no independently verified removal grammar is implemented; setup never deletes Codex cache/config directly.
+    1. `src/cli.ts` accepts setup for all three hosts: `opencode`, `codex`, and public `claude-code`, with scope, plan, force, rollback, and output controls.
+    2. `src/setup/paths.ts` confines global or explicit project targets; planners inspect only owned locations. `claude-code` translates internally to private runtime/inventory identity `claude`.
+    3. `src/setup/codex-cli.ts` classifies Codex grammar; `src/setup/claude-code-cli.ts` probes Claude manager capabilities. `src/setup/engine.ts` selects one immutable strategy, including `ClaudeCodeSetupStrategy`, before mutation.
+    4. Read-only preflight returns verified no-ops before locking. Mutations use ownership-bounded receipts, checkpoint external outcomes, preserve later edits, and provide manual guidance when manager evidence is unavailable.
+    5. Live setup/smoke is opt-in only; automated release verification uses isolated packed assets and never starts a server, uses credentials, or edits external repositories.
 
 ## Native Package Inventory
 
@@ -109,8 +110,9 @@ Provides a persistent memory MCP server for coding agents. The system stores pro
 
 1. `scripts/sync-integration-assets.mjs` synchronizes package versions and canonical runner copies; it is the explicit mutating preparation step.
 2. `scripts/verify-integration-package.mjs` performs read-only inventory, manifest, version, lexical/realpath containment, and package-file checks.
-3. `scripts/build.mjs` produces the existing Node bundle and then invokes the integration verifier, so stale native assets fail the build gate instead of being repaired silently.
-4. Package publication and packed-install tests consume the tarball file list and `integrations/inventory.json`, keeping source checkout paths out of runtime verification. Codex ownership tests use injected commands, isolated global/project homes, and credential-free environments; real manager/setup mutation remains a separately authorized disposable-home operation.
+3. `scripts/build.mjs` produces the existing Node bundle and invokes the integration verifier; stale native assets fail the build gate instead of being repaired silently.
+4. The verifier performs static inventory/containment checks and a hermetic packed-runtime probe for inventory-selected native assets in isolated temporary homes with bounded timeouts and sanitized environment.
+5. Package publication and packed-install tests consume the tarball file list and `integrations/inventory.json`, keeping source checkout paths out of runtime verification. Live host smoke is opt-in only.
 
 ## Root Asset Notes
 - `package.json` defines runtime, test, build, native integration sync/verify, version, and release scripts.

@@ -71,14 +71,14 @@ For backwards compatibility, running `thoth-mem` with no subcommand also starts 
 
 ## Transitioning to native harness integration
 
-Native setup is opt-in. Existing manual MCP connections and stored memories continue to work until you deliberately enable a native integration. OpenCode and Codex use the managed setup commands documented below; Claude Code uses its plugin marketplace flow:
+Native setup is opt-in. Existing manual MCP connections and stored memories continue to work until you deliberately enable a native integration. OpenCode, Codex, and Claude Code all support the managed setup commands documented below. Claude Code also supports this direct native plugin marketplace flow:
 
 ```bash
 claude plugin marketplace add EremesNG/thoth-mem
 claude plugin install thoth-mem
 ```
 
-The installed plugin may also be shown in qualified form as `thoth-mem@thoth-mem`, but the commands above are the supported transition path.
+The installed plugin may also be shown in qualified form as `thoth-mem@thoth-mem`; the marketplace commands above are a direct native alternative to managed setup.
 
 Global scope manages only the current user's harness configuration plus thoth-mem receipts and backups. Project scope manages only the explicitly selected project directory and its project-local receipt tree. Neither scope grants ownership of another project or repository.
 
@@ -92,12 +92,15 @@ Native hooks are optional. You can keep or restore a plain MCP connection at any
 
 ## Managed Harness Setup
 
-Use managed setup for native OpenCode or Codex integration. Global scope is the default:
+Use managed setup for native OpenCode, Codex, or Claude Code integration. Global scope is the default:
 
 ```bash
 thoth-mem setup opencode
 thoth-mem setup codex --scope global --plan --json
+thoth-mem setup claude-code --scope global --plan --json
 ```
+
+The same `--scope`, `--plan`, `--force`, `--rollback`, and `--json` controls apply to all managed harness setup commands.
 
 Codex chooses its ownership strategy before mutation and keeps it for the entire attempt. If the tested plugin-manager path is unavailable or unproven for the selected scope, and existing manager state is safely classified, setup may select the packaged `legacy_filesystem` route. A manager command that fails after modern selection does not trigger a legacy fallback.
 
@@ -153,6 +156,51 @@ The currently tested compatibility family is Codex `0.144.x`. Marketplace regist
 If version, scope, mutation grammar, verification grammar, or current manager ownership cannot be proven safe before mutation, setup selects the explicit legacy route only when manager state is safely absent. Otherwise it returns `requires_user_action` with bounded evidence-based guidance. After `plugin_manager` is selected, an operational failure remains a modern `failed`, `partial`, or `requires_user_action` outcome and never installs legacy assets as recovery.
 
 Automated packed-install coverage uses injected Codex behavior, isolated global/project homes, and credential-free environments. It does not mutate a personal Codex installation. A real marketplace add, plugin add, plugin removal, or mutating `thoth-mem setup codex` smoke requires separate explicit authorization and disposable controlled homes.
+
+### Manually authorized native smoke (opt-in)
+
+The following smoke is an operator-run, manually authorized check for native runtime parity. It is **not** automated coverage and must never use a personal home, existing harness installation, or exposed credentials. Use a disposable isolated home and set all relevant paths before each run:
+
+```bash
+export HOME="$(mktemp -d)"
+export USERPROFILE="$HOME"
+export XDG_CONFIG_HOME="$HOME/.config"
+export CODEX_HOME="$HOME/.codex"
+export THOTH_DATA_DIR="$HOME/.thoth"
+mkdir -p "$XDG_CONFIG_HOME" "$CODEX_HOME" "$THOTH_DATA_DIR"
+```
+
+On Windows PowerShell, use equivalent disposable paths (for example, a new directory under `$env:TEMP`) and set `$env:HOME`, `$env:USERPROFILE`, `$env:XDG_CONFIG_HOME`, `$env:CODEX_HOME`, and `$env:THOTH_DATA_DIR` to that directory's isolated subdirectories. Do not point any of them at a personal or shared home.
+
+For each host, inspect the zero-write plan first and review it before authorizing mutation:
+
+```bash
+thoth-mem setup opencode --scope global --plan --json
+thoth-mem setup codex --scope global --plan --json
+thoth-mem setup claude-code --scope global --plan --json
+```
+
+Only after the reviewed plan is acceptable, explicitly authorize the mutating attempt with `--force`; keep machine-readable output:
+
+```bash
+thoth-mem setup opencode --scope global --force --json
+thoth-mem setup codex --scope global --force --json
+thoth-mem setup claude-code --scope global --force --json
+```
+
+Inspect each native installation with the host's existing commands, where available:
+
+```bash
+opencode debug config
+codex plugin list --json
+claude plugin list --json
+```
+
+Where the installed host supports it, launch the disposable host and exercise the installed integration, then capture the operator-visible activation/recovery evidence. OpenCode and Claude Code may be launched through their normal host commands; Codex may be inspected or launched through the installed CLI. Do not claim evidence when a host cannot expose or confirm it. Capture, for every plan, mutation, inspection, and launch attempt: stdout, stderr, process exit status, setup receipt path, before/after host state, and rollback result. Roll back only receipt-owned state, then record the rollback command, output, exit status, and final state.
+
+These commands may contact external services and may use host credentials. Run them only with explicit operator authorization, a disposable isolated environment, and credentials that are safe for the test; never copy personal credentials into the harness or expose tokens in logs, screenshots, receipts, or bug reports. Do not run this smoke as part of normal development.
+
+This smoke is explicitly excluded from `pnpm run build`, `pnpm test`, `prepublishOnly`, and automated packed-install verification. No package script or CLI entrypoint is added for it; real hosts are never invoked by automated checks.
 
 ## MCP Configuration
 
