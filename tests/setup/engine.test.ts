@@ -110,6 +110,13 @@ const RESULT_BY_STATUS: Record<SetupStatus, SetupResult> = {
 
 describe('setup command contract', () => {
   it('parses only the accepted setup grammar with global and explicit project scope', () => {
+    expect(parseSetupRequest(['claude-code'])).toEqual({
+      harness: 'claude-code',
+      scope: 'global',
+      planOnly: false,
+      force: false,
+      json: false,
+    });
     expect(parseSetupRequest(['opencode'])).toEqual({
       harness: 'opencode',
       scope: 'global',
@@ -149,7 +156,7 @@ describe('setup command contract', () => {
   });
 
   it.each([
-    { args: [], message: 'setup requires opencode or codex' },
+    { args: [], message: 'setup requires opencode, codex, or claude-code' },
     { args: ['claude'], message: 'Invalid setup harness' },
     { args: ['opencode', '--scope', 'workspace'], message: 'Invalid value for --scope' },
     { args: ['opencode', '--scope', 'project'], message: '--scope project requires --project <path>' },

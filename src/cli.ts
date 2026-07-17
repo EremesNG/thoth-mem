@@ -48,7 +48,7 @@ Commands:
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    maintain-memory        Preview/apply memory maintenance metadata
-   setup <opencode|codex> Plan or manage a native harness integration
+   setup <opencode|codex|claude-code> Plan or manage a native harness integration
    version                Show version
    help                   Show this help
 
@@ -231,10 +231,10 @@ function setupOptionName(arg: string): string {
 export function parseSetupRequest(args: string[]): SetupRequest {
   const [harnessValue, ...options] = args;
   if (!harnessValue) {
-    fail('setup requires opencode or codex');
+    fail('setup requires opencode, codex, or claude-code');
   }
-  if (harnessValue !== 'opencode' && harnessValue !== 'codex') {
-    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex`);
+  if (harnessValue !== 'opencode' && harnessValue !== 'codex' && harnessValue !== 'claude-code') {
+    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex, claude-code`);
   }
 
   let scope: SetupRequest['scope'] = 'global';
@@ -1154,7 +1154,7 @@ function setupValidationFailure(
   error: unknown,
 ): { result: SetupResult; json: boolean } | null {
   const harness = args[0];
-  if (harness !== 'opencode' && harness !== 'codex') {
+  if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude-code') {
     return null;
   }
 

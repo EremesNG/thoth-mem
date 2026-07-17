@@ -1,4 +1,4 @@
-export type SetupHarness = 'opencode' | 'codex';
+export type SetupHarness = 'opencode' | 'codex' | 'claude-code';
 export type SetupScope = 'global' | 'project';
 export type SetupStatus = 'complete' | 'failed' | 'partial' | 'requires_user_action';
 export type CodexSetupStrategy = 'plugin_manager' | 'legacy_filesystem';

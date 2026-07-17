@@ -1,75 +1,77 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import {createHash, randomUUID} from 'node:crypto';
+import {lstat, readFile} from 'node:fs/promises';
+import {basename, dirname, isAbsolute, join, relative, resolve} from 'node:path';
 
-import { getConfig } from '../config.js';
-import { getVersion } from '../version.js';
+import {getConfig} from '../config.js';
+import {getVersion} from '../version.js';
+import type { ClaudeCommandExecutor } from './claude-code-cli.js';
+    import { claudeCodeSetupStrategy } from './harnesses/claude-code.js';
 import {
-  createNodeCodexCommandExecutor,
-  executeCodexCli,
-  inspectCodexCli,
-  type CodexCliExecutionResult,
-  type CodexCliPlan,
-  type CodexCommandExecutor,
-  type CodexExecutionTiming,
-  type CodexExternalCheckpoint,
-  type CodexOperationExecutionEvidence,
+    createNodeCodexCommandExecutor,
+    executeCodexCli,
+    inspectCodexCli,
+    type CodexCliExecutionResult,
+    type CodexCliPlan,
+    type CodexCommandExecutor,
+    type CodexExecutionTiming,
+    type CodexExternalCheckpoint,
+    type CodexOperationExecutionEvidence,
 } from './codex-cli.js';
 import {
-  applyAtomicFilesystemChanges,
-  filesystemDirectoryMatches,
-  filesystemEntrySnapshot,
-  type AtomicFilesystemResult,
-  type FilesystemBackup,
-  type FilesystemChange,
-  type FilesystemDirectoryEntry,
-  type FilesystemFaultEvent,
+    applyAtomicFilesystemChanges,
+    filesystemDirectoryMatches,
+    filesystemEntrySnapshot,
+    type AtomicFilesystemResult,
+    type FilesystemBackup,
+    type FilesystemChange,
+    type FilesystemDirectoryEntry,
+    type FilesystemFaultEvent,
 } from './filesystem.js';
 import {
-  applyCodexManagedFragment,
-  captureCodexManagedFragment,
-  planCodexManagedConfig,
-  planCodexManagedFragment,
-  restoreCodexManagedFragment,
-  type CodexManagedFragment,
+    applyCodexManagedFragment,
+    captureCodexManagedFragment,
+    planCodexManagedConfig,
+    planCodexManagedFragment,
+    restoreCodexManagedFragment,
+    type CodexManagedFragment,
 } from './harnesses/codex.js';
 import {
-  inspectOpenCodeOwnedState,
-  planOpenCodeManagedConfig,
-  planOpenCodeManagedRollback,
+    inspectOpenCodeOwnedState,
+    planOpenCodeManagedConfig,
+    planOpenCodeManagedRollback,
 } from './harnesses/opencode.js';
 import {
-  getDefaultSetupRoots,
-  resolveSetupPaths,
-  type SetupPaths,
-  type SetupRoots,
+    getDefaultSetupRoots,
+    resolveSetupPaths,
+    type SetupPaths,
+    type SetupRoots,
 } from './paths.js';
 import {
-  codexManagedFragmentFromReceiptEvidence,
-  createCodexManagedFragmentReceiptEvidence,
-  createSetupReceipt,
-  loadSetupReceipt,
-  persistSetupReceipt,
-  resolveSetupReceiptPaths,
-  scanSetupReceipts,
-  type ReceiptFaultEvent,
-  type ReceiptPaths,
-  type SetupReceipt,
-  type SetupReceiptManagedFragmentEvidence,
-  type SetupReceiptStep,
-  type SetupReceiptV1,
-  type SetupReceiptV2,
-  type SetupReceiptV2ManagerEvidence,
+    codexManagedFragmentFromReceiptEvidence,
+    createCodexManagedFragmentReceiptEvidence,
+    createSetupReceipt,
+    loadSetupReceipt,
+    persistSetupReceipt,
+    resolveSetupReceiptPaths,
+    scanSetupReceipts,
+    type ReceiptFaultEvent,
+    type ReceiptPaths,
+    type SetupReceipt,
+    type SetupReceiptManagedFragmentEvidence,
+    type SetupReceiptStep,
+    type SetupReceiptV1,
+    type SetupReceiptV2,
+    type SetupReceiptV2ManagerEvidence,
 } from './receipt.js';
 import {
-  acquireSetupTargetLock,
-  canonicalizeSetupTarget,
+    acquireSetupTargetLock,
+    canonicalizeSetupTarget,
 } from './transaction-lock.js';
 import type {
-  SetupRequest,
-  SetupResult,
-  SetupStep,
-  SetupStepOutcome,
+    SetupRequest,
+    SetupResult,
+    SetupStep,
+    SetupStepOutcome,
 } from './types.js';
 
 export const SETUP_MANAGED_METADATA_VERSION = 1;
@@ -78,36 +80,39 @@ type SetupPathType = 'missing' | 'file' | 'directory' | 'other';
 type CodexRegistrationState = 'confirmed' | 'unverified';
 
 export interface SetupFileSystem {
-  pathType(path: string): Promise<SetupPathType>;
-  readText(path: string): Promise<string>;
-  directoryMatches(
-    targetPath: string,
-    layout: FilesystemDirectoryEntry[],
-    ignoredRelativePaths: string[],
-  ): Promise<boolean>;
+    pathType(path: string): Promise<SetupPathType>;
+
+    readText(path: string): Promise<string>;
+
+    directoryMatches(
+        targetPath: string,
+        layout: FilesystemDirectoryEntry[],
+        ignoredRelativePaths: string[],
+    ): Promise<boolean>;
 }
 
 export interface CodexRegistrationEvidence {
-  scope: 'global' | 'project';
-  marketplace: CodexRegistrationState;
-  plugin: CodexRegistrationState;
+    scope: 'global' | 'project';
+    marketplace: CodexRegistrationState;
+    plugin: CodexRegistrationState;
 }
 
 export interface SetupEngineOptions {
-  roots?: SetupRoots;
-  fileSystem?: SetupFileSystem;
-  codexRegistration?: CodexRegistrationEvidence;
-  codexExecutor?: CodexCommandExecutor;
-  codexTiming?: CodexExecutionTiming;
-  dataDir?: string;
-  executablePath?: string;
-  transaction?: {
-    idFactory?: () => string;
-    now?: () => Date;
-    trace?: (event: { kind: string; path?: string }) => void | Promise<void>;
-    filesystemFault?: (event: FilesystemFaultEvent) => void | Promise<void>;
-    receiptFault?: (event: ReceiptFaultEvent) => void | Promise<void>;
-  };
+    roots?: SetupRoots;
+    fileSystem?: SetupFileSystem;
+    codexRegistration?: CodexRegistrationEvidence;
+    codexExecutor?: CodexCommandExecutor;
+    claudeExecutor?: ClaudeCommandExecutor;
+    codexTiming?: CodexExecutionTiming;
+    dataDir?: string;
+    executablePath?: string;
+    transaction?: {
+        idFactory?: () => string;
+        now?: () => Date;
+        trace?: (event: { kind: string; path?: string }) => void | Promise<void>;
+        filesystemFault?: (event: FilesystemFaultEvent) => void | Promise<void>;
+        receiptFault?: (event: ReceiptFaultEvent) => void | Promise<void>;
+    };
 }
 
 interface ManagedSetupMetadata {
@@ -166,30 +171,31 @@ export function createNodeSetupFileSystem(): SetupFileSystem {
         return 'other';
       } catch (error) {
         if (isMissingPathError(error)) {
-          return 'missing';
+            return 'missing';
         }
-        throw error;
+          throw error;
       }
     },
-    async readText(path: string): Promise<string> {
-      return readFile(path, 'utf8');
-    },
-    async directoryMatches(
-      targetPath: string,
-      layout: FilesystemDirectoryEntry[],
-      ignoredRelativePaths: string[],
-    ): Promise<boolean> {
-      return filesystemDirectoryMatches(targetPath, layout, ignoredRelativePaths);
-    },
+      async readText(path: string): Promise<string> {
+          return readFile(path, 'utf8');
+      },
+      async directoryMatches(
+          targetPath: string,
+          layout: FilesystemDirectoryEntry[],
+          ignoredRelativePaths: string[],
+      ): Promise<boolean> {
+          return filesystemDirectoryMatches(targetPath, layout, ignoredRelativePaths);
+      },
   };
 }
 
-function displayHarness(request: SetupRequest): 'OpenCode' | 'Codex' {
-  return request.harness === 'opencode' ? 'OpenCode' : 'Codex';
+function displayHarness(request: SetupRequest): 'OpenCode' | 'Codex' | 'Claude Code' {
+    if (request.harness === 'opencode') return 'OpenCode';
+    return request.harness === 'codex' ? 'Codex' : 'Claude Code';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseManagedMetadata(text: string): ManagedSetupMetadata | null {
@@ -908,7 +914,7 @@ function setupReceiptBasePath(
   if (request.scope === 'global') {
     return join(dataDir, 'setup', 'receipts');
   }
-  const projectRoot = request.harness === 'codex'
+  const projectRoot = request.harness === 'codex' || request.harness === 'claude-code'
     ? dirname(paths.targetRoot)
     : paths.targetRoot;
   return join(projectRoot, '.thoth', 'setup', 'receipts');
@@ -2935,34 +2941,38 @@ async function executeOpenCodeRollback(
     ],
     diagnostics: [
       ...receiptKeyDiagnostic(applied.keyProtection),
-      ...(request.force
-        ? ['Force rollback was bounded to receipt-owned paths and configuration keys.']
-        : []),
+        ...(request.force
+            ? ['Force rollback was bounded to receipt-owned paths and configuration keys.']
+            : []),
     ],
-    manual_actions: [],
-    receipt: rollbackReceiptPaths.receiptPath,
+      manual_actions: [],
+      receipt: rollbackReceiptPaths.receiptPath,
   };
 }
 
 export async function inspectAndPlanSetup(
-  request: SetupRequest,
-  options: SetupEngineOptions = {},
+    request: SetupRequest,
+    options: SetupEngineOptions = {},
 ): Promise<SetupResult> {
-  const roots = options.roots ?? getDefaultSetupRoots();
-  let paths: SetupPaths;
-  try {
-    paths = resolveSetupPaths(request, roots);
-  } catch {
-    return invalidPathResult(request);
-  }
+    const roots = options.roots ?? getDefaultSetupRoots();
+    let paths: SetupPaths;
+    try {
+        paths = resolveSetupPaths(request, roots);
+    } catch {
+        return invalidPathResult(request);
+    }
 
-  const canUseNodeFilesystem = !request.planOnly && options.fileSystem === undefined;
-  const canMutateOpenCode = request.harness === 'opencode' && canUseNodeFilesystem;
-  const canMutateCodex = request.harness === 'codex'
-    && canUseNodeFilesystem
-    && request.rollbackReceipt === undefined;
-  const canMutateCodexRollback = request.harness === 'codex'
-    && canUseNodeFilesystem
+    if (request.harness === 'claude-code') {
+        return claudeCodeSetupStrategy.inspectAndPlan(request, roots, paths, options);
+    }
+
+    const canUseNodeFilesystem = !request.planOnly && options.fileSystem === undefined;
+    const canMutateOpenCode = request.harness === 'opencode' && canUseNodeFilesystem;
+    const canMutateCodex = request.harness === 'codex'
+        && canUseNodeFilesystem
+        && request.rollbackReceipt === undefined;
+    const canMutateCodexRollback = request.harness === 'codex'
+        && canUseNodeFilesystem
     && request.rollbackReceipt !== undefined;
   const needsTargetLock = canMutateOpenCode || canMutateCodex || canMutateCodexRollback;
   let dataDir: string;

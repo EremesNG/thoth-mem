@@ -95,6 +95,7 @@ export interface SetupReceiptV1 {
   started_at: string;
   updated_at: string;
   steps: SetupReceiptStep[];
+  supersedes?: string;
   hmac_sha256: string;
 }
 
@@ -202,10 +203,11 @@ const RECEIPT_V1_KEYS = [
   'started_at',
   'updated_at',
   'steps',
+  'supersedes',
   'hmac_sha256',
 ] as const;
 const RECEIPT_V2_KEYS = [
-  ...RECEIPT_V1_KEYS.filter((key) => key !== 'hmac_sha256'),
+  ...RECEIPT_V1_KEYS.filter((key) => key !== 'hmac_sha256' && key !== 'supersedes'),
   'strategy',
   'capability_evidence',
   'manager_evidence',
@@ -494,7 +496,7 @@ function isSetupReceiptV1(
   value: Record<string, unknown>,
   allowBlankHmac: boolean,
 ): boolean {
-  if (!hasOnlyKeys(value, RECEIPT_V1_KEYS)) {
+  if (!hasAllowedKeys(value, RECEIPT_V1_KEYS)) {
     return false;
   }
   if (
@@ -509,7 +511,7 @@ function isSetupReceiptV1(
       'requires_user_action',
       'rolled_back',
     ])
-    || !isOneOf(value.harness, ['opencode', 'codex'])
+    || !isOneOf(value.harness, ['opencode', 'codex', 'claude-code'])
     || !isOneOf(value.scope, ['global', 'project'])
     || typeof value.target !== 'string'
     || !isAbsolute(value.target)
@@ -520,6 +522,8 @@ function isSetupReceiptV1(
     || !Array.isArray(value.steps)
     || value.steps.length > 128
     || !value.steps.every((step) => isSetupReceiptStep(step, false))
+    || (value.supersedes !== undefined
+      && (!isReceiptId(value.supersedes) || value.supersedes === value.id))
     || typeof value.hmac_sha256 !== 'string'
     || !(HMAC_PATTERN.test(value.hmac_sha256) || (allowBlankHmac && value.hmac_sha256 === ''))
   ) {

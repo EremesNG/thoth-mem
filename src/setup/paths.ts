@@ -89,8 +89,12 @@ export function resolveSetupPaths(
       assetPath = join(projectRoot, '.opencode', 'plugins', '.thoth-mem');
       pluginEntryPath = join(projectRoot, '.opencode', 'plugins', 'thoth-mem.js');
     } else {
-      targetRoot = join(projectRoot, '.codex');
-      configPath = join(targetRoot, 'config.toml');
+      targetRoot = request.harness === 'claude-code'
+        ? join(projectRoot, '.claude')
+        : join(projectRoot, '.codex');
+      configPath = request.harness === 'claude-code'
+        ? join(targetRoot, 'settings.json')
+        : join(targetRoot, 'config.toml');
       configCandidates = [configPath];
       assetPath = join(targetRoot, 'plugins', 'thoth-mem');
       pluginEntryPath = assetPath;
@@ -110,10 +114,14 @@ export function resolveSetupPaths(
       assetPath = join(targetRoot, 'plugins', '.thoth-mem');
       pluginEntryPath = join(targetRoot, 'plugins', 'thoth-mem.js');
     } else {
-      targetRoot = roots.codexHome
-        ? requireAbsolutePath(roots.codexHome, 'Codex home')
-        : join(homeDir, '.codex');
-      configPath = join(targetRoot, 'config.toml');
+      targetRoot = request.harness === 'claude-code'
+        ? join(homeDir, '.claude')
+        : roots.codexHome
+          ? requireAbsolutePath(roots.codexHome, 'Codex home')
+          : join(homeDir, '.codex');
+      configPath = request.harness === 'claude-code'
+        ? join(targetRoot, 'settings.json')
+        : join(targetRoot, 'config.toml');
       configCandidates = [configPath];
       assetPath = join(targetRoot, 'plugins', 'thoth-mem');
       pluginEntryPath = assetPath;
@@ -127,7 +135,9 @@ export function resolveSetupPaths(
     assetPath,
     pluginEntryPath,
     metadataPath: join(assetPath, '.thoth-mem-managed.json'),
-    sourceAssetsPath: join(packageRoot, 'integrations', request.harness),
+    sourceAssetsPath: request.harness === 'claude-code'
+      ? join(packageRoot, '.claude-plugin')
+      : join(packageRoot, 'integrations', request.harness),
     sourceSharedPath: request.harness === 'opencode'
       ? join(packageRoot, 'integrations', 'shared')
       : null,

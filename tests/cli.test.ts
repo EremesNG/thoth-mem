@@ -244,6 +244,7 @@ describe('runCli', () => {
     expect(stdout).toContain('delete-project <project>');
     expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
+    expect(stdout).toContain('setup <opencode|codex|claude-code>');
   });
 
   it('setup command contract keeps project paths command-scoped and returns the setup exit code', async () => {
@@ -285,6 +286,34 @@ describe('runCli', () => {
     expect(JSON.parse(captured.stdout)).toEqual(result);
     expect(captured.stderr).toBe('');
     expect(captured.exitCode).toBe(2);
+  });
+
+  it('dispatches claude-code setup requests through the existing setup runner', async () => {
+    const result: SetupResult = {
+      status: 'complete',
+      changed: false,
+      harness: 'claude-code',
+      scope: 'global',
+      target: 'C:\\Users\\Example User\\.claude',
+      steps: [{ name: 'Inspect Claude Code setup', outcome: 'confirmed' }],
+      diagnostics: [],
+      manual_actions: [],
+      receipt: null,
+    };
+    const setupRunner = vi.fn().mockResolvedValue(result);
+
+    const captured = await captureCli(['setup', 'claude-code', '--plan', '--json'], { setupRunner });
+
+    expect(setupRunner).toHaveBeenCalledWith({
+      harness: 'claude-code',
+      scope: 'global',
+      planOnly: true,
+      force: false,
+      json: true,
+    }, {});
+    expect(JSON.parse(captured.stdout)).toEqual(result);
+    expect(captured.stderr).toBe('');
+    expect(captured.exitCode).toBe(0);
   });
 
   it('setup command contract renders valid-harness input failures as failed JSON', async () => {
