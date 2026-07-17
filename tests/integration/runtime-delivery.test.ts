@@ -252,8 +252,8 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
           deliveryMappingId: claudeEvidence.recovery.mappingId,
         });
       });
-    
-    
+
+
           it('rejects a compact start after a failed checkpoint before it can request guidance', async () => {
                 const dataDir = mkdtempSync(join(tmpdir(), 'thoth-compact-gate-failed-checkpoint-'));
                 const calls: string[] = [];
@@ -294,7 +294,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                   expect(failedCheckpoint.response).toMatchObject({ outcome: 'failed', retryable: true });
                   expect(calls).toEqual(['mem_session']);
                   calls.length = 0;
-    
+
                   const compactStart = await executeIntegrationEvent(request('SessionStart', 'compact'), {
                     dataDir,
                     dependencies: {
@@ -315,7 +315,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                   rmSync(dataDir, { recursive: true, force: true });
                 }
               });
-    
+
       it('maps Codex compact start to gated recovery context after a confirmed checkpoint', async () => {
             const dataDir = mkdtempSync(join(tmpdir(), 'thoth-codex-compact-gate-'));
             const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'codex');
@@ -354,7 +354,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                 }),
               },
             };
-    
+
             try {
               await expect(executeIntegrationEvent(request('PreCompact'), options)).resolves.toMatchObject({ response: { outcome: 'degraded', retryable: false } });
               const resumed = await executeIntegrationEvent(request('SessionStart', 'compact'), options);
@@ -371,7 +371,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               rmSync(dataDir, { recursive: true, force: true });
             }
           });
-    
+
           it('releases a confirmed compaction gate after failed context so compact start can retry without consuming it', async () => {
             const dataDir = mkdtempSync(join(tmpdir(), 'thoth-compact-gate-context-retry-'));
             const capabilities = supportedCapabilities();
@@ -420,7 +420,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               nativeEvent: 'SessionStart',
               compactionGate: { phase: 'resume', sourceIdentity: 'thread-a' },
             });
-    
+
             try {
               await expect(core.handle(checkpoint)).resolves.toMatchObject({ outcome: 'confirmed' });
               await expect(core.handle(compactStart('context-retry-first'))).resolves.toMatchObject({ outcome: 'failed', retryable: true });
@@ -435,7 +435,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               rmSync(dataDir, { recursive: true, force: true });
             }
           });
-    
+
           it('expires a stale confirmed checkpoint gate before compact start can call mem_context', async () => {
             const dataDir = mkdtempSync(join(tmpdir(), 'thoth-compact-gate-expired-'));
             const capabilities = supportedCapabilities();
@@ -475,7 +475,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               nativeEvent: 'SessionStart',
               compactionGate: { phase: 'resume', sourceIdentity: 'thread-a' },
             };
-    
+
             try {
               await expect(core.handle(checkpoint)).resolves.toMatchObject({ outcome: 'confirmed' });
               currentTime += 5 * 60 * 1_000 + 1;
@@ -486,7 +486,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               rmSync(dataDir, { recursive: true, force: true });
             }
           });
-    
+
           it('invalidates a prior gate before a second failed checkpoint and blocks compact-start guidance', async () => {
             const dataDir = mkdtempSync(join(tmpdir(), 'thoth-compact-gate-second-failure-'));
             const capabilities = supportedCapabilities();
@@ -524,7 +524,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               nativeEvent: 'SessionStart',
               compactionGate: { phase: 'resume', sourceIdentity: 'thread-a' },
             };
-    
+
             try {
               await expect(core.handle(checkpoint('first-checkpoint'))).resolves.toMatchObject({ outcome: 'confirmed' });
               await expect(core.handle(checkpoint('second-checkpoint'))).resolves.toMatchObject({ outcome: 'failed', retryable: true });
@@ -536,7 +536,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
               rmSync(dataDir, { recursive: true, force: true });
             }
           });
-    
+
                   it('keeps a confirmed checkpoint across a new FileLifecycleStateStore instance, rejects transcript mismatch and replay, consumes after guidance, and makes no consumption claim', async () => {
                 const dataDir = mkdtempSync(join(tmpdir(), 'thoth-compact-gate-restart-'));
                 const calls: string[] = [];
@@ -587,12 +587,12 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                   expect(JSON.stringify(persisted)).not.toContain('/private/thread-a.jsonl');
                   expect(calls).toEqual(['mem_session']);
                   calls.length = 0;
-    
+
                   const mismatched = await run('SessionStart', '/private/thread-b.jsonl', 'compact-mismatch');
                   expect(mismatched.response).toMatchObject({ outcome: 'degraded' });
                   expect(mismatched.response).not.toHaveProperty('hostOutputDirective');
                   expect(calls).toEqual([]);
-    
+
                   const resumed = await run('SessionStart', '/private/thread-a.jsonl', 'compact-resume');
                   expect(resumed.response.outcome).toMatch(/^(confirmed|degraded)$/);
                       expect(resumed.response.deliveryState?.modelConsumption).toBe('unproven');
@@ -602,7 +602,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                   });
                   expect(calls).toEqual(['mem_context']);
                   calls.length = 0;
-    
+
                   const replay = await run('SessionStart', '/private/thread-a.jsonl', 'compact-replay');
                   expect(replay.response).toMatchObject({ outcome: 'degraded' });
                   expect(replay.response).not.toHaveProperty('hostOutputDirective');
@@ -611,7 +611,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                   rmSync(dataDir, { recursive: true, force: true });
                 }
               });
-    
+
               it('fails closed for Claude SessionStart source=compact without a matching checkpoint gate', async () => {
             const dataDir = mkdtempSync(join(tmpdir(), 'thoth-claude-compact-recovery-'));
             const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];

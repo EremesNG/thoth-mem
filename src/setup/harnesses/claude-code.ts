@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
     import { lstat, readFile } from 'node:fs/promises';
     import { basename, dirname, join, resolve } from 'node:path';
-    
+
     import { getConfig } from '../../config.js';
     import { getVersion } from '../../version.js';
     import {
@@ -34,7 +34,7 @@ import { randomUUID } from 'node:crypto';
       SetupResult,
       SetupStepOutcome,
     } from '../types.js';
-    
+
     export interface ClaudeCodeSetupStrategy {
       inspectAndPlan(
         request: SetupRequest,
@@ -43,11 +43,11 @@ import { randomUUID } from 'node:crypto';
         options: SetupEngineOptions,
       ): Promise<SetupResult>;
     }
-    
+
     export const claudeCodeSetupStrategy: ClaudeCodeSetupStrategy = {
       inspectAndPlan: inspectAndPlanClaudeCodeSetup,
     };
-    
+
     async function inspectAndPlanClaudeCodeSetup(
     request: SetupRequest,
     roots: SetupRoots,
@@ -791,7 +791,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         receipt: null,
       };
     }
-    
+
     function invalidPathResult(request: SetupRequest): SetupResult {
       return {
         status: 'failed',
@@ -805,7 +805,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         receipt: null,
       };
     }
-    
+
     function requiresSetupActionResult(
       request: SetupRequest,
       paths: SetupPaths,
@@ -825,7 +825,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         receipt: null,
       };
     }
-    
+
     function canonicalDataDir(
       options: SetupEngineOptions,
       roots: SetupRoots,
@@ -834,7 +834,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
       if (mutating) return getConfig(options.dataDir ? { dataDir: options.dataDir } : {}).dataDir;
       return options.dataDir ?? process.env.THOTH_DATA_DIR ?? join(roots.homeDir, '.thoth');
     }
-    
+
     function setupReceiptBasePath(
       request: SetupRequest,
       paths: SetupPaths,
@@ -844,15 +844,15 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         ? join(dataDir, 'setup', 'receipts')
         : join(dirname(paths.targetRoot), '.thoth', 'setup', 'receipts');
     }
-    
+
     function transactionNow(options: SetupEngineOptions): string {
       return (options.transaction?.now?.() ?? new Date()).toISOString();
     }
-    
+
     function nextReceiptId(options: SetupEngineOptions): string {
       return options.transaction?.idFactory?.() ?? randomUUID();
     }
-    
+
     async function traceSetup(options: SetupEngineOptions, kind: string, path?: string): Promise<void> {
       try {
         await options.transaction?.trace?.({ kind, ...(path ? { path } : {}) });
@@ -860,7 +860,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         // Trace observers are diagnostic-only and cannot change transaction state.
       }
     }
-    
+
     async function persistReceiptCheckpoint(
       receiptPath: string,
       receiptBasePath: string,
@@ -874,7 +874,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         fault: options.transaction?.receiptFault,
       });
     }
-    
+
     function receiptFailureResult(
       request: SetupRequest,
       paths: SetupPaths,
@@ -891,11 +891,11 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         receipt: receiptPath,
       };
     }
-    
+
     function isMissingPathError(error: unknown): boolean {
       return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
     }
-    
+
     async function readRegularFileOrNull(path: string): Promise<string | null> {
       try {
         const details = await lstat(path);
@@ -906,8 +906,7 @@ async function hasManualClaudeConfiguration(paths: SetupPaths): Promise<boolean>
         throw error;
       }
     }
-    
+
     function isRecord(value: unknown): value is Record<string, unknown> {
       return typeof value === 'object' && value !== null && !Array.isArray(value);
     }
-    

@@ -149,7 +149,7 @@ import type {
               : capability,
           ])) as AdapterCapabilities;
         }
-    
+
         function mintAdapterCapabilities<H extends HarnessId>(
       harness: H,
       value: AdapterCapabilities,
@@ -318,7 +318,7 @@ function parseOpenCodeBehaviorEvidenceClaim(value: unknown): OpenCodeBehaviorEvi
           codex: 'codex-command-hook-payload-v1',
           claude: 'claude-code-command-hook-payload-v1',
         } as const;
-    
+
         interface NativeBehaviorEvidenceClaim {
           payloadMappingId: string;
           assetExecutionMarker: string;
@@ -327,7 +327,7 @@ function parseOpenCodeBehaviorEvidenceClaim(value: unknown): OpenCodeBehaviorEvi
           deliveryMappingId: string;
           behaviorEvidenceMappingId: string;
         }
-    
+
         function parseNativeBehaviorEvidenceClaim(
           harness: HarnessId,
           value: unknown,
@@ -355,7 +355,7 @@ function parseOpenCodeBehaviorEvidenceClaim(value: unknown): OpenCodeBehaviorEvi
             behaviorEvidenceMappingId,
           };
         }
-    
+
         export function authorizePrivatePrepareDelivery(
       harness: HarnessId,
       resolution: RuntimeCapabilityResolution,

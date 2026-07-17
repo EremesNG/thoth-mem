@@ -43,9 +43,9 @@ interface ClaudeManagerState {
 
 class ControlledClaudeExecutor implements ClaudeCommandExecutor {
     readonly calls: string[][] = [];
-    
+
     constructor(readonly state: ClaudeManagerState) {}
-    
+
     async execute(args: readonly string[]): Promise<ClaudeCommandResult> {
         const command = [...args];
         this.calls.push(command);
@@ -55,7 +55,7 @@ class ControlledClaudeExecutor implements ClaudeCommandExecutor {
             && command[index - 1] !== '--scope'
         )).join(' ');
         const success = (stdout: string): ClaudeCommandResult => ({exitCode: 0, stdout, stderr: ''});
-        
+
         if (key === '--version') {
             return this.state.probeFailure === 'version'
                 ? {exitCode: 1, stdout: '', stderr: 'probe unavailable'}
@@ -221,10 +221,10 @@ describe('managed Claude Code setup', () => {
                     ...(scope === 'project' ? {projectPath: fixture.projectPath} : {}),
                 });
                 if (scope === 'project') await mkdir(fixture.projectPath, {recursive: true});
-                
+
                 const result = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
                 const paths = resolveSetupPaths(setupRequest, fixture.roots);
-                
+
                 expect(paths.targetRoot).toBe(scope === 'global'
                     ? join(fixture.roots.homeDir, '.claude')
                     : join(fixture.projectPath, '.claude'));
@@ -242,15 +242,15 @@ describe('managed Claude Code setup', () => {
             });
         },
     );
-    
+
     it('keeps plan-only and unproven manager outcomes zero-write', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
             const setupRequest = request('global', {planOnly: true});
             const before = await readFile(join(fixture.roots.packageRoot, '.claude-plugin', 'marketplace.json'), 'utf8');
-            
+
             const result = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
-            
+
             expect(result).toMatchObject({status: 'complete', changed: false, receipt: null});
             expect(manager.state.mutations).toEqual([]);
             expect(await readFile(join(fixture.roots.packageRoot, '.claude-plugin', 'marketplace.json'), 'utf8')).toBe(before);
@@ -266,7 +266,7 @@ describe('managed Claude Code setup', () => {
             expect(unprovenManager.state.mutations).toEqual([]);
         });
     });
-    
+
     it('returns an exact current no-op and repairs only receipt-owned manager drift', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
@@ -275,11 +275,11 @@ describe('managed Claude Code setup', () => {
             expect(installed).toMatchObject({status: 'complete', changed: true});
             const receipt = installed.receipt!;
             const mutationsBeforeNoOp = [...manager.state.mutations];
-            
+
             const current = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
             expect(current).toMatchObject({status: 'complete', changed: false, receipt: null});
             expect(manager.state.mutations).toEqual(mutationsBeforeNoOp);
-            
+
             manager.state.plugin = false;
             const repaired = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
             expect(repaired).toMatchObject({status: 'complete', changed: true});
@@ -287,7 +287,7 @@ describe('managed Claude Code setup', () => {
             expect(repaired.receipt).not.toBe(receipt);
         });
     });
-    
+
     it('refuses foreign or ambiguous ownership without adding a duplicate activation', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({
@@ -297,16 +297,16 @@ describe('managed Claude Code setup', () => {
                 foreignPlugin: true,
                 mutations: [],
             });
-            
+
             const result = await inspectAndPlanSetup(request(), options(fixture, manager));
-            
+
             expect(result).toMatchObject({status: 'requires_user_action', changed: false, receipt: null});
             expect(manager.state.mutations).toEqual([]);
             expect(CLAUDE_OWNERSHIP_STATES.filter((state) => state.classification !== 'receipt-owned')
             .every((state) => state.setupDisposition === 'preserve')).toBe(true);
         });
     });
-    
+
     it('recovers a verified partial manager state without touching external state', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({
@@ -318,7 +318,7 @@ describe('managed Claude Code setup', () => {
             const first = await inspectAndPlanSetup(request(), options(fixture, manager));
             expect(first).toMatchObject({status: 'partial', changed: true});
             expect(first.receipt).toEqual(expect.any(String));
-            
+
             const recovered = await inspectAndPlanSetup(request(), options(fixture, manager));
             expect(recovered).toMatchObject({status: 'complete', changed: true});
             expect(manager.state.mutations).toEqual([
@@ -328,7 +328,7 @@ describe('managed Claude Code setup', () => {
             ]);
         });
     });
-    
+
     it('rolls back only the receipt-created manager state and preserves later user edits', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
@@ -338,18 +338,18 @@ describe('managed Claude Code setup', () => {
             await writeFile(userSettings, '{"userSetting":true}\n', 'utf8');
             const installed = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
             await writeFile(userSettings, '{"userSetting":true,"laterEdit":true}\n', 'utf8');
-            
+
             const rollback = await inspectAndPlanSetup({
                 ...setupRequest,
                 rollbackReceipt: installed.receipt!
             }, options(fixture, manager));
-            
+
             expect(rollback).toMatchObject({status: 'complete', changed: true});
             expect(manager.state).toMatchObject({marketplace: false, plugin: false});
             expect(await readFile(userSettings, 'utf8')).toContain('laterEdit');
         });
     });
-    
+
     it('fails closed for interrupted or tampered Claude receipts', async () => {
         await withFixture(async (fixture) => {
             const interruptedManager = new ControlledClaudeExecutor({
@@ -361,7 +361,7 @@ describe('managed Claude Code setup', () => {
             const interrupted = await inspectAndPlanSetup(request(), options(fixture, interruptedManager));
             expect(interrupted).toMatchObject({status: 'partial', changed: true});
             expect(interrupted.receipt).toEqual(expect.any(String));
-            
+
             interruptedManager.state.interruptAfterMarketplace = false;
             const recovered = await inspectAndPlanSetup(request(), options(fixture, interruptedManager));
             expect(recovered).toMatchObject({status: 'complete', changed: true});
@@ -371,7 +371,7 @@ describe('managed Claude Code setup', () => {
             );
             expect(rollback).toMatchObject({status: 'complete', changed: true});
             expect(interruptedManager.state).toMatchObject({marketplace: false, plugin: false});
-            
+
             const corruptManager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
             const clean = await inspectAndPlanSetup(request('project', {projectPath: fixture.projectPath}), options(fixture, corruptManager));
             await writeFile(clean.receipt!, '{"tampered":true}', 'utf8');
@@ -396,15 +396,15 @@ describe('managed Claude Code setup', () => {
                     plugin: false,
                     mutations: [],
                 });
-                
+
                 const result = await inspectAndPlanSetup(request(), options(fixture, manager));
-                
+
                 expect(result).toMatchObject({status: 'requires_user_action', changed: false, receipt: null});
                 expect(manager.state.mutations).toEqual([]);
             });
         },
     );
-    
+
     it.each(['malformed', 'unreadable'] as const)(
         'fails closed without mutation for %s Claude settings',
         async (state) => {
@@ -418,15 +418,15 @@ describe('managed Claude Code setup', () => {
                     await mkdir(paths.configPath, {recursive: true});
                 }
                 const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
-                
+
                 const result = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
-                
+
                 expect(result).toMatchObject({status: 'requires_user_action', changed: false, receipt: null});
                 expect(manager.state.mutations).toEqual([]);
             });
         },
     );
-    
+
     it('rescans receipt ownership after the lock before repairing manager drift', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
@@ -434,38 +434,38 @@ describe('managed Claude Code setup', () => {
             const installed = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
             manager.state.plugin = false;
             const mutationsBefore = [...manager.state.mutations];
-            
+
             const result = await inspectAndPlanSetup(
                 setupRequest,
                 options(fixture, manager, async ({kind}) => {
                     if (kind === 'lock_acquired') await writeFile(installed.receipt!, '{"tampered":true}', 'utf8');
                 }),
             );
-            
+
             expect(result).toMatchObject({status: 'requires_user_action', changed: false});
             expect(manager.state.mutations).toEqual(mutationsBefore);
         });
     });
-    
+
     it('rereads manager ownership after the lock before rollback removal', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
             const setupRequest = request();
             const installed = await inspectAndPlanSetup(setupRequest, options(fixture, manager));
             const mutationsBefore = [...manager.state.mutations];
-            
+
             const result = await inspectAndPlanSetup(
                 {...setupRequest, rollbackReceipt: installed.receipt!},
                 options(fixture, manager, ({kind}) => {
                     if (kind === 'lock_acquired') manager.state.foreignPlugin = true;
                 }),
             );
-            
+
             expect(result).toMatchObject({status: 'requires_user_action', changed: false});
             expect(manager.state.mutations).toEqual(mutationsBefore);
         });
     });
-    
+
     it('rolls back a split partial receipt without removing unowned plugin state', async () => {
         await withFixture(async (fixture) => {
             const manager = new ControlledClaudeExecutor({
@@ -477,12 +477,12 @@ describe('managed Claude Code setup', () => {
             const partial = await inspectAndPlanSetup(request(), options(fixture, manager));
             expect(partial).toMatchObject({status: 'partial', changed: true});
             manager.state.interruptAfterMarketplace = false;
-            
+
             const rollback = await inspectAndPlanSetup(
                 {...request(), rollbackReceipt: partial.receipt!},
                 options(fixture, manager),
             );
-            
+
             expect(rollback).toMatchObject({status: 'complete', changed: true});
             expect(manager.state).toMatchObject({marketplace: false, plugin: false});
             expect(manager.state.mutations).toEqual([
@@ -517,7 +517,7 @@ describe('managed Claude Code setup', () => {
             });
             expect(checkpointed.ok).toBe(true);
             manager.state.interruptAfterMarketplace = false;
-            
+
             const recovered = await inspectAndPlanSetup(request(), options(fixture, manager));
             expect(recovered).toMatchObject({status: 'complete', changed: true});
             const rollback = await inspectAndPlanSetup(
@@ -527,7 +527,7 @@ describe('managed Claude Code setup', () => {
             expect(rollback).toMatchObject({status: 'complete', changed: true});
             expect(manager.state).toMatchObject({marketplace: false, plugin: false});
         });
-    
+
     });
 
         it('supersedes a marketplace-only partial receipt before recovery rollback', async () => {
@@ -550,21 +550,21 @@ describe('managed Claude Code setup', () => {
                 expect(firstReceipt.receipt.steps).toEqual(expect.arrayContaining([
                     expect.objectContaining({id: 'claude-marketplace', outcome: 'confirmed'}),
                 ]));
-    
+
                 manager.state.interruptAfterMarketplace = false;
                 const recovered = await inspectAndPlanSetup(request(), options(fixture, manager));
                 expect(recovered).toMatchObject({status: 'complete', changed: true});
                 expect(recovered.receipt).not.toEqual(partial.receipt);
                 const recoveredReceipt = JSON.parse(await readFile(recovered.receipt!, 'utf8')) as Record<string, unknown>;
                 expect(recoveredReceipt.supersedes).toBe(firstReceipt.receipt.id);
-    
+
                 const staleRollback = await inspectAndPlanSetup(
                     {...request(), rollbackReceipt: partial.receipt!},
                     options(fixture, manager),
                 );
                 expect(staleRollback).toMatchObject({status: 'requires_user_action', changed: false});
                 expect(manager.state).toMatchObject({marketplace: true, plugin: true});
-    
+
                 const activeRollback = await inspectAndPlanSetup(
                     {...request(), rollbackReceipt: recovered.receipt!},
                     options(fixture, manager),

@@ -309,7 +309,7 @@ place for non-hermetic operator evidence.
    preserves later unrelated edits and externally managed state.
 
 ### OpenCode private two-phase behavior confirmation
-    
+
     `prepare_delivery` and `confirm_delivery` are private `HookCommandRequest`
     operations, not lifecycle intents, MCP tools, HTTP routes, or schema changes.
     For `prepare_delivery`, the production resolver accepts only bounded eligibility
@@ -318,7 +318,7 @@ place for non-hermetic operator evidence.
     bounded `HostOutputDirective`, `deliveryState`, and signed short-lived
     `DeliveryAttempt` token. The token binds HMAC identity, session, mapping/channel
     IDs, directive hash, nonce, and issued time.
-    
+
     The v1.17.19 plugin validates the token, keeps `hostVersion` unknown/unobserved,
     mutates the original array only (`system.transform` merges the final
     `output.system` entry or pushes when empty; `compacting` uses
@@ -327,7 +327,7 @@ place for non-hermetic operator evidence.
     deduplication before mutation; array identity, payload bounds, log rollback, and
     exact callback/payload rules are strict. Local mutation/log is internal
     `emitted_via_verified_channel`, never a returned host object or consumption.
-    
+
     `confirm_delivery` receives token plus exact mapping/channel IDs. It verifies
     HMAC identity, mappings, channel, directive hash, nonce, and issued time, then
     records support only through the existing state-store `confirmedEvents` lock.
@@ -337,12 +337,12 @@ place for non-hermetic operator evidence.
     local emission, and `modelConsumption`; support is recorded only post-mutation,
     and no response claims consumption. No setup-time version propagation or generic
     behavior-evidence bypass exists.
-    
+
     File/test plan: retain `capability-evidence.ts` for eligibility resolver and add
     private delivery-attempt validation to `host-output.ts`/hook command plumbing;
     add focused prepare/confirm token, replay/expiry/cross-session, array identity,
     log rollback, global dedup, and memory-once tests before the native gate.
-    
+
     ## Interfaces / Contracts
 
 | Contract | Change | Boundary |
