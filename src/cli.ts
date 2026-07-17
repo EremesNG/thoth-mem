@@ -48,7 +48,7 @@ Commands:
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    maintain-memory        Preview/apply memory maintenance metadata
-   setup <opencode|codex|claude-code> Plan or manage a native harness integration
+   setup <opencode|codex|claude> Plan or manage a native harness integration
    version                Show version
    help                   Show this help
 
@@ -231,10 +231,10 @@ function setupOptionName(arg: string): string {
 export function parseSetupRequest(args: string[]): SetupRequest {
   const [harnessValue, ...options] = args;
   if (!harnessValue) {
-    fail('setup requires opencode, codex, or claude-code');
+    fail('setup requires opencode, codex, or claude');
   }
-  if (harnessValue !== 'opencode' && harnessValue !== 'codex' && harnessValue !== 'claude-code') {
-    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex, claude-code`);
+  if (harnessValue !== 'opencode' && harnessValue !== 'codex' && harnessValue !== 'claude') {
+    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex, claude`);
   }
 
   let scope: SetupRequest['scope'] = 'global';
@@ -1154,7 +1154,7 @@ function setupValidationFailure(
   error: unknown,
 ): { result: SetupResult; json: boolean } | null {
   const harness = args[0];
-  if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude-code') {
+  if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude') {
     return null;
   }
 
@@ -1305,7 +1305,7 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
          await handleMaintainMemory(parsed.positionals, parsed.globals);
          return 0;
        case 'setup':
-         return handleSetup(parsed.positionals, parsed.globals, options);
+         return await handleSetup(parsed.positionals, parsed.globals, options);
        case 'integration-event':
          return handleIntegrationEvent(parsed.positionals, parsed.globals, options);
        case 'version':

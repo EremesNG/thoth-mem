@@ -89,10 +89,10 @@ export function resolveSetupPaths(
       assetPath = join(projectRoot, '.opencode', 'plugins', '.thoth-mem');
       pluginEntryPath = join(projectRoot, '.opencode', 'plugins', 'thoth-mem.js');
     } else {
-      targetRoot = request.harness === 'claude-code'
+      targetRoot = request.harness === 'claude'
         ? join(projectRoot, '.claude')
         : join(projectRoot, '.codex');
-      configPath = request.harness === 'claude-code'
+      configPath = request.harness === 'claude'
         ? join(targetRoot, 'settings.json')
         : join(targetRoot, 'config.toml');
       configCandidates = [configPath];
@@ -114,12 +114,12 @@ export function resolveSetupPaths(
       assetPath = join(targetRoot, 'plugins', '.thoth-mem');
       pluginEntryPath = join(targetRoot, 'plugins', 'thoth-mem.js');
     } else {
-      targetRoot = request.harness === 'claude-code'
+      targetRoot = request.harness === 'claude'
         ? join(homeDir, '.claude')
         : roots.codexHome
           ? requireAbsolutePath(roots.codexHome, 'Codex home')
           : join(homeDir, '.codex');
-      configPath = request.harness === 'claude-code'
+      configPath = request.harness === 'claude'
         ? join(targetRoot, 'settings.json')
         : join(targetRoot, 'config.toml');
       configCandidates = [configPath];
@@ -135,7 +135,7 @@ export function resolveSetupPaths(
     assetPath,
     pluginEntryPath,
     metadataPath: join(assetPath, '.thoth-mem-managed.json'),
-    sourceAssetsPath: request.harness === 'claude-code'
+    sourceAssetsPath: request.harness === 'claude'
       ? join(packageRoot, '.claude-plugin')
       : join(packageRoot, 'integrations', request.harness),
     sourceSharedPath: request.harness === 'opencode'

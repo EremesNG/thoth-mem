@@ -1348,6 +1348,32 @@ if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
 }
 
 describe('packed Claude Code manager setup', () => {
+  it('rejects the removed claude-code setup target without mutating disposable state', async () => {
+    const fixture = await getPackedFixture();
+    const scopes = buildClaudeDisposableScopes('packed-claude-removed-target');
+    const scope = scopes.find((candidate) => candidate.scope === 'global')!;
+    const binRoot = join(scope.root, 'controlled-bin');
+    const statePath = join(scope.root, 'claude-state.json');
+    await writeNodeCliFixture(binRoot, 'claude', packedClaudeManagerSource());
+    const env = cliEnvironment(fixture, scope.root, {
+      PATH: [binRoot, process.env.PATH ?? ''].join(delimiter),
+      CLAUDE_FIXTURE_STATE: statePath,
+    });
+    await writeFile(statePath, JSON.stringify({ marketplace: true, plugin: true, mutations: [] }), 'utf8');
+    try {
+      const before = await directoryDigest(scope.root);
+      const result = runPackedCli(fixture, ['setup', 'claude-code', '--plan', '--json'], { cwd: scope.root, env });
+
+      expect(result.status).toBe(1);
+      expect(result.json).toBeUndefined();
+      expect(result.stderr).toContain('Invalid setup harness: claude-code');
+      expect(await directoryDigest(scope.root)).toBe(before);
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ marketplace: true, plugin: true, mutations: [] });
+    } finally {
+      for (const disposable of scopes) expect(disposable.cleanup()).toBe(true);
+    }
+  }, PACKAGE_TIMEOUT_MS);
+
   it('preserves existing coexistence and rolls back only receipt-owned manager changes in disposable homes', async () => {
     const fixture = await getPackedFixture();
     const scopes = buildClaudeDisposableScopes('packed-claude-manager');
@@ -1362,13 +1388,13 @@ describe('packed Claude Code manager setup', () => {
     await writeFile(statePath, JSON.stringify({ marketplace: true, plugin: true, mutations: [] }), 'utf8');
     try {
       const coexistenceBefore = await directoryDigest(scope.root);
-      const coexistencePlan = runPackedCli(fixture, ['setup', 'claude-code', '--plan', '--json'], { cwd: scope.root, env });
+      const coexistencePlan = runPackedCli(fixture, ['setup', 'claude', '--plan', '--json'], { cwd: scope.root, env });
       expect(coexistencePlan.status, coexistencePlan.stderr).toBe(0);
       expect(coexistencePlan.json).toMatchObject({ status: 'complete', changed: false, receipt: null });
       expect(await directoryDigest(scope.root)).toBe(coexistenceBefore);
       expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ marketplace: true, plugin: true, mutations: [] });
 
-      const coexistenceApply = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      const coexistenceApply = runPackedCli(fixture, ['setup', 'claude', '--json'], { cwd: scope.root, env });
       expect(coexistenceApply.status, coexistenceApply.stderr).toBe(0);
       expect(coexistenceApply.json).toMatchObject({ status: 'complete', changed: false, receipt: null });
       expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ marketplace: true, plugin: true, mutations: [] });
@@ -1378,19 +1404,19 @@ describe('packed Claude Code manager setup', () => {
       await mkdir(dirname(settingsPath), { recursive: true });
       await writeFile(settingsPath, JSON.stringify({ mcpServers: { 'thoth-mem': { command: 'manual' } } }), 'utf8');
       const manualBefore = await readFile(settingsPath, 'utf8');
-      const manual = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      const manual = runPackedCli(fixture, ['setup', 'claude', '--json'], { cwd: scope.root, env });
       expect(manual.status).toBe(3);
       expect(manual.json).toMatchObject({ status: 'requires_user_action', changed: false, receipt: null });
       expect(await readFile(settingsPath, 'utf8')).toBe(manualBefore);
       expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ mutations: [] });
       await rm(settingsPath);
 
-      const installed = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      const installed = runPackedCli(fixture, ['setup', 'claude', '--json'], { cwd: scope.root, env });
       expect(installed.status, installed.stderr).toBe(0);
-      expect(installed.json).toMatchObject({ status: 'complete', changed: true, harness: 'claude-code', receipt: expect.any(String) });
+      expect(installed.json).toMatchObject({ status: 'complete', changed: true, harness: 'claude', receipt: expect.any(String) });
       const receipt = installed.json!.receipt as string;
       await writeFile(settingsPath, JSON.stringify({ laterEdit: true }), 'utf8');
-      const rollback = runPackedCli(fixture, ['setup', 'claude-code', '--rollback', receipt, '--json'], { cwd: scope.root, env });
+      const rollback = runPackedCli(fixture, ['setup', 'claude', '--rollback', receipt, '--json'], { cwd: scope.root, env });
       expect(rollback.status, rollback.stderr).toBe(0);
       expect(rollback.json).toMatchObject({ status: 'complete', changed: true, receipt: null });
       expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ marketplace: false, plugin: false, mutations: [
@@ -1403,7 +1429,7 @@ describe('packed Claude Code manager setup', () => {
       const cacheSentinel = join(env.HOME!, '.claude', 'cache', 'sentinel.txt');
       await mkdir(dirname(cacheSentinel), { recursive: true });
       await writeFile(cacheSentinel, 'preserve-cache', 'utf8');
-      const unavailable = runPackedCli(fixture, ['setup', 'claude-code', '--json'], {
+      const unavailable = runPackedCli(fixture, ['setup', 'claude', '--json'], {
         cwd: scope.root,
         env: { ...env, CLAUDE_FIXTURE_UNAVAILABLE: 'true' },
       });

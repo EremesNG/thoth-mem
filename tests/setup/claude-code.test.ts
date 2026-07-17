@@ -6,7 +6,7 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 
 import {describe, expect, it} from 'vitest';
 
@@ -149,7 +149,7 @@ interface Fixture {
 }
 
 function claudeHarness(): SetupRequest['harness'] {
-    return 'claude-code';
+    return 'claude';
 }
 
 function request(scope: 'global' | 'project' = 'global', overrides: Partial<SetupRequest> = {}): SetupRequest {
@@ -231,10 +231,20 @@ describe('managed Claude Code setup', () => {
                 expect(result).toMatchObject({
                     status: 'complete',
                     changed: true,
-                    harness: 'claude-code',
+                    harness: 'claude',
                     scope,
                 });
                 expect(result.receipt).toEqual(expect.any(String));
+                const receiptBasePath = scope === 'global'
+                    ? join(fixture.dataDir, 'setup', 'receipts')
+                    : join(fixture.projectPath, '.thoth', 'setup', 'receipts');
+                const loaded = await loadSetupReceipt(result.receipt!, {
+                    dataDir: fixture.dataDir,
+                    expectedBasePath: receiptBasePath,
+                });
+                expect(loaded.ok).toBe(true);
+                if (!loaded.ok) throw new Error('expected signed Claude receipt');
+                expect(loaded.receipt.harness).toBe('claude');
                 expect(manager.state.mutations).toEqual([
                     'plugin marketplace add EremesNG/thoth-mem',
                     'plugin install thoth-mem@thoth-mem',
@@ -242,6 +252,23 @@ describe('managed Claude Code setup', () => {
             });
         },
     );
+
+    it('rejects the removed claude-code value when loading a Claude setup receipt', async () => {
+        await withFixture(async (fixture) => {
+            const manager = new ControlledClaudeExecutor({marketplace: false, plugin: false, mutations: []});
+            const installed = await inspectAndPlanSetup(request(), options(fixture, manager));
+            expect(installed.receipt).toEqual(expect.any(String));
+            const receiptPath = installed.receipt!;
+            const serialized = JSON.parse(await readFile(receiptPath, 'utf8')) as Record<string, unknown>;
+            serialized.harness = 'claude-code';
+            await writeFile(receiptPath, JSON.stringify(serialized), 'utf8');
+
+            await expect(loadSetupReceipt(receiptPath, {
+                dataDir: fixture.dataDir,
+                expectedBasePath: join(fixture.dataDir, 'setup', 'receipts'),
+            })).resolves.toEqual({ok: false, reason: 'receipt_schema_invalid'});
+        });
+    });
 
     it('keeps plan-only and unproven manager outcomes zero-write', async () => {
         await withFixture(async (fixture) => {
@@ -412,7 +439,7 @@ describe('managed Claude Code setup', () => {
                 const setupRequest = request();
                 const paths = resolveSetupPaths(setupRequest, fixture.roots);
                 if (state === 'malformed') {
-                    await mkdir(join(fixture.roots.homeDir, '.claude'), {recursive: true});
+                    await mkdir(dirname(paths.configPath), {recursive: true});
                     await writeFile(paths.configPath, '{', 'utf8');
                 } else {
                     await mkdir(paths.configPath, {recursive: true});

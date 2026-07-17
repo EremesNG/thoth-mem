@@ -91,7 +91,7 @@ import { randomUUID } from 'node:crypto';
         );
     }
     const incomplete = scanned.receipts.filter(({receipt}) => (
-        receipt.harness === 'claude-code'
+        receipt.harness === 'claude'
         && receipt.scope === request.scope
         && resolve(receipt.target) === resolve(canonicalTarget)
         && receipt.status === 'in_progress'
@@ -206,7 +206,7 @@ import { randomUUID } from 'node:crypto';
             );
         }
         const lockedIncomplete = lockedScanned.receipts.filter(({receipt}) => (
-            receipt.harness === 'claude-code'
+            receipt.harness === 'claude'
             && receipt.scope === request.scope
             && resolve(receipt.target) === resolve(canonicalTarget)
             && receipt.status === 'in_progress'
@@ -711,7 +711,7 @@ function isClaudeSetupReceipt(
 ): receipt is SetupReceiptV1 {
     return receipt.schema_version === 1
         && receipt.operation === 'setup'
-        && receipt.harness === 'claude-code'
+        && receipt.harness === 'claude'
         && receipt.scope === request.scope
         && resolve(receipt.target) === resolve(canonicalTarget)
         && receipt.steps.some((step) => step.id === 'claude-marketplace' && step.kind === 'external_command')

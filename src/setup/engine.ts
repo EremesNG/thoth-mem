@@ -914,7 +914,7 @@ function setupReceiptBasePath(
   if (request.scope === 'global') {
     return join(dataDir, 'setup', 'receipts');
   }
-  const projectRoot = request.harness === 'codex' || request.harness === 'claude-code'
+  const projectRoot = request.harness === 'codex' || request.harness === 'claude'
     ? dirname(paths.targetRoot)
     : paths.targetRoot;
   return join(projectRoot, '.thoth', 'setup', 'receipts');
@@ -2962,7 +2962,7 @@ export async function inspectAndPlanSetup(
         return invalidPathResult(request);
     }
 
-    if (request.harness === 'claude-code') {
+    if (request.harness === 'claude') {
         return claudeCodeSetupStrategy.inspectAndPlan(request, roots, paths, options);
     }
 

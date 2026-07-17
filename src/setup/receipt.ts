@@ -511,7 +511,7 @@ function isSetupReceiptV1(
       'requires_user_action',
       'rolled_back',
     ])
-    || !isOneOf(value.harness, ['opencode', 'codex', 'claude-code'])
+    || !isOneOf(value.harness, ['opencode', 'codex', 'claude'])
     || !isOneOf(value.scope, ['global', 'project'])
     || typeof value.target !== 'string'
     || !isAbsolute(value.target)

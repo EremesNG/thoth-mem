@@ -62,10 +62,10 @@ const RESULT_BY_STATUS: Record<SetupStatus, SetupResult> = {
   complete: {
     status: 'complete',
     changed: false,
-    harness: 'opencode',
+    harness: 'claude',
     scope: 'global',
-    target: 'C:\\Users\\Example User\\.config\\opencode',
-    steps: [{ name: 'Inspect target', outcome: 'confirmed' }],
+    target: 'C:\\Users\\Example User\\.claude',
+    steps: [{ name: 'Inspect Claude Code setup', outcome: 'confirmed' }],
     diagnostics: [],
     manual_actions: [],
     receipt: null,
@@ -110,8 +110,8 @@ const RESULT_BY_STATUS: Record<SetupStatus, SetupResult> = {
 
 describe('setup command contract', () => {
   it('parses only the accepted setup grammar with global and explicit project scope', () => {
-    expect(parseSetupRequest(['claude-code'])).toEqual({
-      harness: 'claude-code',
+    expect(parseSetupRequest(['claude'])).toEqual({
+      harness: 'claude',
       scope: 'global',
       planOnly: false,
       force: false,
@@ -156,8 +156,8 @@ describe('setup command contract', () => {
   });
 
   it.each([
-    { args: [], message: 'setup requires opencode, codex, or claude-code' },
-    { args: ['claude'], message: 'Invalid setup harness' },
+    { args: [], message: 'setup requires opencode, codex, or claude' },
+    { args: ['claude-code'], message: 'Invalid setup harness: claude-code' },
     { args: ['opencode', '--scope', 'workspace'], message: 'Invalid value for --scope' },
     { args: ['opencode', '--scope', 'project'], message: '--scope project requires --project <path>' },
     { args: ['opencode', '--project', 'C:\\Work'], message: '--project is only valid with --scope project' },
