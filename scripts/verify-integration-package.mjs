@@ -1,9 +1,14 @@
 // @ts-check
 
 import {
+  cp,
+  mkdtemp,
+  mkdir,
+  lstat,
   readFile,
   readdir,
   realpath,
+  rm,
   stat,
 } from 'node:fs/promises';
 import {
@@ -16,12 +21,153 @@ import {
   sep,
   win32,
 } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+    import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIRECTORY, '..');
 const INVENTORY_PATH = 'integrations/inventory.json';
 const HARNESSES = new Set(['opencode', 'codex', 'claude']);
+const NPM_PACK_TIMEOUT_MS = 30_000;
+const PACKED_RUNTIME_TIMEOUT_MS = 30_000;
+    const EXTERNAL_RUNTIME_PACKAGES = Object.freeze([
+      'better-sqlite3',
+      'sqlite-vec',
+      'onnxruntime-common',
+      'onnxruntime-node',
+    ]);
+    const PACKAGE_NAME_PATTERN = new RegExp('^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$', 'i');
+
+    export function createStrictSubprocessEnvironment(workspace) {
+      const home = join(workspace, 'home');
+      const windowsEnvironment = process.platform === 'win32'
+        ? {
+            PATHEXT: process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+            SystemRoot: process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows',
+            WINDIR: process.env.WINDIR ?? process.env.SystemRoot ?? 'C:\\Windows',
+            ComSpec: process.env.ComSpec ?? join(process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows', 'System32', 'cmd.exe'),
+          }
+        : {};
+      return {
+        PATH: dirname(process.execPath),
+        ...windowsEnvironment,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_CACHE_HOME: join(workspace, 'cache'),
+        npm_config_cache: join(workspace, 'npm-cache'),
+        npm_config_offline: 'true',
+        npm_config_ignore_scripts: 'true',
+        npm_config_audit: 'false',
+        npm_config_fund: 'false',
+        npm_config_update_notifier: 'false',
+        npm_config_userconfig: join(workspace, 'npmrc'),
+        npm_config_globalconfig: join(workspace, 'global-npmrc'),
+      };
+    }
+
+    function packageTarget(nodeModules, packageName) {
+      if (!PACKAGE_NAME_PATTERN.test(packageName)) {
+        throw new Error('Runtime dependency has an unsafe package name: "' + packageName + '".');
+      }
+      return join(nodeModules, ...packageName.split('/'));
+    }
+
+    async function readPackageManifest(packageRoot, label) {
+      let parsed;
+      try {
+        parsed = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
+      } catch (error) {
+        throw new Error(label + ' package manifest is not readable.', { cause: error });
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.name !== 'string') {
+        throw new Error(label + ' package manifest is invalid.');
+      }
+      return parsed;
+    }
+
+    async function resolvePackageRoot(packageName, fromRoot, sourceNodeModules) {
+      let resolvedEntry;
+      try {
+        resolvedEntry = createRequire(join(fromRoot, 'package.json')).resolve(packageName);
+      } catch (error) {
+        throw new Error('Unable to resolve runtime dependency "' + packageName + '" from its isolated source package.', { cause: error });
+      }
+
+      let candidate = dirname(resolvedEntry);
+      while (isWithin(sourceNodeModules, candidate)) {
+        try {
+          const manifest = await readPackageManifest(candidate, 'Runtime dependency "' + packageName + '"');
+          if (manifest.name === packageName) return candidate;
+        } catch (error) {
+          if (!(error instanceof Error)
+            || (!error.message.includes('not readable') && !error.message.includes('is invalid'))) throw error;
+        }
+        const parent = dirname(candidate);
+        if (parent === candidate) break;
+        candidate = parent;
+      }
+      throw new Error('Resolved runtime dependency "' + packageName + '" escapes the installed node_modules tree.');
+    }
+
+    async function assertTemporaryTreeContained(root, label) {
+      const realRoot = await realpath(root);
+      const visit = async (path) => {
+        const realPath = await realpath(path);
+        if (!isWithin(realRoot, realPath)) {
+          throw new Error(label + ' real path escapes its temporary workspace: "' + path + '".');
+        }
+        const details = await lstat(path);
+        if (details.isSymbolicLink() || !details.isDirectory()) return;
+        const entries = await readdir(path);
+        await Promise.all(entries.map((entry) => visit(join(path, entry))));
+      };
+      await visit(root);
+    }
+
+    async function materializeExternalDependencyHost(rootDir, host) {
+      const sourceNodeModules = join(rootDir, 'node_modules');
+      const realSourceNodeModules = await realpath(sourceNodeModules);
+      const hostNodeModules = join(host, 'node_modules');
+      await mkdir(hostNodeModules, { recursive: true });
+      const pending = EXTERNAL_RUNTIME_PACKAGES.map((name) => ({ name, sourceParent: rootDir, targetParent: hostNodeModules, optional: false }));
+      const copied = new Set();
+
+      while (pending.length > 0) {
+        const dependency = pending.pop();
+        if (!dependency) continue;
+        const target = packageTarget(dependency.targetParent, dependency.name);
+        let source;
+        try {
+          source = await resolvePackageRoot(dependency.name, dependency.sourceParent, realSourceNodeModules);
+        } catch (error) {
+          if (dependency.optional || dependency.sourceParent !== rootDir) continue;
+          throw error;
+        }
+        const identity = JSON.stringify([source, target]);
+        if (copied.has(identity)) continue;
+        copied.add(identity);
+
+        await mkdir(dirname(target), { recursive: true });
+        await cp(source, target, { recursive: true, dereference: true, force: false, errorOnExist: false });
+        const manifest = await readPackageManifest(target, 'Materialized runtime dependency "' + dependency.name + '"');
+        for (const name of Object.keys(manifest.dependencies ?? {})) {
+          pending.push({ name, sourceParent: source, targetParent: join(target, 'node_modules'), optional: false });
+        }
+        for (const name of Object.keys(manifest.optionalDependencies ?? {})) {
+          pending.push({ name, sourceParent: source, targetParent: join(target, 'node_modules'), optional: true });
+        }
+      }
+
+      await assertTemporaryTreeContained(host, 'Packed runtime dependency host');
+    }
+
+    function nativeTarCommand() {
+      return process.platform === 'win32'
+        ? join(process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows', 'System32', 'tar.exe')
+        : 'tar';
+    }
 
 const REQUIRED_ROLES = Object.freeze({
   opencode: Object.freeze(['plugin', 'instruction', 'runner']),
@@ -168,6 +314,17 @@ async function validateInventoryPaths(root, inventory) {
       `Inventory ${asset.harness}/${asset.role} entry ${index}`,
       { kind: 'file', requireCanonical: true },
     );
+  }
+}
+
+export function getDisposableHarnessMatrix(inventory) {
+  return [...new Set(inventory.assets.map((asset) => asset.harness))].sort();
+}
+
+export function validateDisposableHarnessMatrix(inventory) {
+  const harnesses = getDisposableHarnessMatrix(inventory);
+  if (harnesses.length !== HARNESSES.size || harnesses.some((harness) => !HARNESSES.has(harness))) {
+    throw new Error('Integration inventory does not declare the supported disposable harness set.');
   }
 }
 
@@ -538,16 +695,178 @@ export function verifyPackageFileList(packageFiles, inventory) {
   }
 }
 
+export async function verifyCurrentPackageFileList(options = {}) {
+  const rootDir = resolve(options.rootDir ?? DEFAULT_ROOT);
+  const workspace = await mkdtemp(join(tmpdir(), 'thoth-package-list-'));
+  try {
+    const packOptions = {
+      cwd: rootDir,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: NPM_PACK_TIMEOUT_MS,
+      env: createStrictSubprocessEnvironment(workspace),
+    };
+    const packed = process.platform === 'win32'
+      ? spawnSync('npm pack --dry-run --ignore-scripts --json', { ...packOptions, shell: true })
+      : spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { ...packOptions, shell: false });
+    if (packed.error?.code === 'ETIMEDOUT') {
+      throw new Error('npm pack --dry-run timed out after ' + NPM_PACK_TIMEOUT_MS + 'ms while listing package files.');
+    }
+    if (packed.status !== 0) {
+      throw new Error('Unable to list current package files. ' + (packed.stderr || packed.error?.message || ''));
+    }
+    let report;
+    try { report = JSON.parse(packed.stdout); } catch (error) {
+      throw new Error('Current package file list is not readable JSON.', { cause: error });
+    }
+    if (!Array.isArray(report) || report.length !== 1 || !Array.isArray(report[0]?.files)) {
+      throw new Error('Current package dry-run must report exactly one package file list.');
+    }
+    return report[0].files.map((file) => file?.path);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
+function packedRuntimeRequest(harness) {
+  const context = { project: 'packed-verifier', directory: '/packed-verifier' };
+  if (harness === 'opencode') {
+    return {
+      protocolVersion: 1,
+      operation: 'prepare_delivery',
+      harness,
+      capabilityEvidence: {
+        payloadMappingId: 'opencode-session-payload-v1',
+        assetExecutionMarker: 'opencode-activation-v1',
+        eventMappingId: 'opencode-session-start-v1',
+        deliveryChannel: 'opencode-protocol-output',
+        deliveryMappingId: 'opencode-recovery-injection-v1',
+        behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+        mutableOutputChannel: 'system',
+      },
+      event: {
+        type: 'experimental.chat.system.transform',
+        id: 'packed-verifier-opencode',
+        sequence: 1,
+        input: { model: { providerID: 'packed', modelID: 'verifier' }, sessionID: 'packed-opencode-session' },
+      },
+      context,
+    };
+  }
+  const isCodex = harness === 'codex';
+  return {
+    protocolVersion: 1,
+    harness,
+    capabilityEvidence: {
+      payloadMappingId: isCodex ? 'codex-session-payload-v1' : 'claude-code-session-payload-v1',
+      assetExecutionMarker: isCodex ? 'codex-activation-v1' : 'claude-code-activation-v1',
+      eventMappingId: isCodex ? 'codex-session-start-v1' : 'claude-code-session-start-v1',
+      deliveryChannel: 'runner-stdout',
+      deliveryMappingId: isCodex ? 'codex-recovery-injection-v1' : 'claude-code-recovery-injection-v1',
+      behaviorEvidenceMappingId: isCodex ? 'codex-command-hook-payload-v1' : 'claude-code-command-hook-payload-v1',
+    },
+    event: {
+      hook: 'SessionStart',
+      id: 'packed-verifier-' + harness,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      payload: isCodex
+        ? { session_id: 'packed-' + harness + '-session', transcript_path: null, cwd: '/packed-verifier', hook_event_name: 'SessionStart', model: 'packed', permission_mode: 'default', source: 'startup' }
+        : { session_id: 'packed-' + harness + '-session', transcript_path: '/packed-verifier.jsonl', cwd: '/packed-verifier', hook_event_name: 'SessionStart', source: 'startup' },
+    },
+  };
+}
+
+function nativePayload(harness, hook, source) {
+  const common = { session_id: 'packed-asset-' + harness, transcript_path: harness === 'codex' ? null : '/packed-asset.jsonl', cwd: '/packed-assets', hook_event_name: hook };
+  if (hook === 'PreCompact') return harness === 'codex' ? { ...common, model: 'packed', turn_id: 'asset-turn', trigger: 'auto' } : { ...common, trigger: 'auto', custom_instructions: '' };
+  return harness === 'codex' ? { ...common, model: 'packed', permission_mode: 'default', source } : { ...common, source };
+}
+
+function requireNativeEnvelope(result, harness, phase) {
+  if (result.error?.code === 'ETIMEDOUT') throw new Error('Packed ' + harness + ' ' + phase + ' asset probe timed out after ' + PACKED_RUNTIME_TIMEOUT_MS + 'ms.');
+  if (result.status !== 0) throw new Error('Packed ' + harness + ' ' + phase + ' asset probe failed. ' + (result.stderr || result.error?.message || ''));
+  return JSON.parse(result.stdout);
+}
+
+function verifyPackedNativeAssets(packageRoot, inventory, workspace, environment) {
+  const opencodePlugin = join(packageRoot, getInventoryAsset(inventory, 'opencode', 'plugin').path);
+  const opencodeProgram = "const m=await import(process.argv[1]);const logs=[];const p=await m.createOpenCodePlugin()({project:'packed-assets',directory:process.cwd(),client:{app:{log:async x=>logs.push(x)}}});const system=[];const context=[];await p['experimental.chat.system.transform']({model:{providerID:'packed',modelID:'asset'},sessionID:'packed-opencode'}, {system});await p['experimental.session.compacting']({sessionID:'packed-opencode'}, {context});process.stdout.write(JSON.stringify({system,context,logs}));";
+  const opencode = spawnSync(process.execPath, ['--input-type=module', '--eval', opencodeProgram, pathToFileURL(opencodePlugin).href], { cwd: workspace, encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment });
+  if (opencode.error?.code === 'ETIMEDOUT') throw new Error('Packed OpenCode plugin probe timed out after ' + PACKED_RUNTIME_TIMEOUT_MS + 'ms.');
+  if (opencode.status !== 0) throw new Error('Packed OpenCode plugin probe failed. ' + (opencode.stderr || opencode.error?.message || ''));
+  const opencodeOutput = JSON.parse(opencode.stdout);
+  if (!Array.isArray(opencodeOutput.system) || !Array.isArray(opencodeOutput.context) || opencodeOutput.system.length === 0 || opencodeOutput.context.length === 0 || JSON.stringify(opencodeOutput).includes('modelConsumption')) throw new Error('Packed OpenCode plugin did not emit verified startup and compact guidance safely.');
+
+  for (const harness of getDisposableHarnessMatrix(inventory).filter((value) => value !== 'opencode')) {
+    const runner = join(packageRoot, getInventoryAsset(inventory, harness, 'runner').path);
+    const startup = requireNativeEnvelope(spawnSync(process.execPath, [runner, '--harness', harness, '--hook', 'SessionStart'], { cwd: workspace, input: JSON.stringify(nativePayload(harness, 'SessionStart', 'startup')), encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment }), harness, 'startup');
+    if (startup?.hookSpecificOutput?.hookEventName !== 'SessionStart' || typeof startup?.hookSpecificOutput?.additionalContext !== 'string' || Object.hasOwn(startup, 'modelConsumption')) throw new Error('Packed ' + harness + ' startup runner did not return the allowed native envelope.');
+    const checkpoint = requireNativeEnvelope(spawnSync(process.execPath, [runner, '--harness', harness, '--hook', 'PreCompact'], { cwd: workspace, input: JSON.stringify(nativePayload(harness, 'PreCompact')), encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment }), harness, 'PreCompact');
+    if (Object.keys(checkpoint).length !== 0) throw new Error('Packed ' + harness + ' PreCompact runner must not emit recovery guidance before compact restart.');
+    const compactStart = requireNativeEnvelope(spawnSync(process.execPath, [runner, '--harness', harness, '--hook', 'SessionStart'], { cwd: workspace, input: JSON.stringify(nativePayload(harness, 'SessionStart', 'compact')), encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment }), harness, 'compact SessionStart');
+    if (compactStart?.hookSpecificOutput?.hookEventName !== 'SessionStart' || typeof compactStart?.hookSpecificOutput?.additionalContext !== 'string' || Object.hasOwn(compactStart, 'modelConsumption')) throw new Error('Packed ' + harness + ' compact-start runner did not return the allowed native guidance envelope.');
+  }
+}
+
+export async function verifyPackedRuntimeBehavior(options = {}) {
+  const rootDir = resolve(options.rootDir ?? DEFAULT_ROOT);
+  const inventory = await loadIntegrationInventory(rootDir);
+  const workspace = await mkdtemp(join(tmpdir(), 'thoth-packed-verify-'));
+  try {
+    const host = join(workspace, 'host');
+    const archiveDir = join(workspace, 'archive');
+    const extractDir = join(workspace, 'extract');
+    const packageRoot = join(host, 'node_modules', 'thoth-mem');
+    const environment = createStrictSubprocessEnvironment(workspace);
+    environment.THOTH_MEM_BIN = join(packageRoot, 'dist', 'index.js');
+    environment.THOTH_DATA_DIR = join(workspace, 'data');
+    await Promise.all([mkdir(host), mkdir(archiveDir), mkdir(extractDir)]);
+        await materializeExternalDependencyHost(rootDir, host);
+        await assertTemporaryTreeContained(host, 'Packed runtime dependency host');
+
+    const packed = process.platform === 'win32'
+      ? spawnSync('npm pack --ignore-scripts --offline --json --pack-destination "' + archiveDir + '"', { cwd: rootDir, encoding: 'utf8', windowsHide: true, shell: true, timeout: NPM_PACK_TIMEOUT_MS, env: environment })
+      : spawnSync('npm', ['pack', '--ignore-scripts', '--offline', '--json', '--pack-destination', archiveDir], { cwd: rootDir, encoding: 'utf8', windowsHide: true, shell: false, timeout: NPM_PACK_TIMEOUT_MS, env: environment });
+    if (packed.error?.code === 'ETIMEDOUT') throw new Error('npm pack timed out after ' + NPM_PACK_TIMEOUT_MS + 'ms while preparing packed runtime verification.');
+    if (packed.status !== 0) throw new Error('Unable to prepare packed runtime verification. ' + (packed.stderr || packed.error?.message || ''));
+    const archive = join(archiveDir, JSON.parse(packed.stdout)?.[0]?.filename ?? '');
+    const extracted = spawnSync(nativeTarCommand(), ['-xzf', archive, '-C', extractDir], { cwd: host, encoding: 'utf8', windowsHide: true, timeout: PACKED_RUNTIME_TIMEOUT_MS, shell: false, env: environment });
+    if (extracted.error?.code === 'ETIMEDOUT') throw new Error('Packed runtime archive extraction timed out after ' + PACKED_RUNTIME_TIMEOUT_MS + 'ms.');
+    if (extracted.status !== 0) throw new Error('Unable to extract packed runtime verification archive. ' + (extracted.stderr || extracted.error?.message || ''));
+    await mkdir(dirname(packageRoot), { recursive: true });
+    await cp(join(extractDir, 'package'), packageRoot, { recursive: true, dereference: true });
+
+    await assertTemporaryTreeContained(host, 'Packed runtime host');
+    const entryPath = environment.THOTH_MEM_BIN;
+
+    for (const harness of getDisposableHarnessMatrix(inventory)) {
+      const result = spawnSync(process.execPath, [entryPath, 'integration-event'], { cwd: workspace, input: JSON.stringify(packedRuntimeRequest(harness)), encoding: 'utf8', windowsHide: true, timeout: PACKED_RUNTIME_TIMEOUT_MS, shell: false, env: environment });
+      if (result.error?.code === 'ETIMEDOUT') throw new Error('Packed ' + harness + ' runtime probe timed out after ' + PACKED_RUNTIME_TIMEOUT_MS + 'ms.');
+      if (result.status !== 0) throw new Error('Packed ' + harness + ' runtime probe failed. ' + (result.stderr || result.error?.message || ''));
+      const response = JSON.parse(result.stdout);
+      if (!['confirmed', 'degraded'].includes(response.outcome) || !response.hostOutputDirective || response.deliveryState?.memoryConfirmation !== 'confirmed' || response.deliveryState?.modelConsumption !== 'unproven') throw new Error('Packed ' + harness + ' runtime probe did not preserve the required real-memory outcome boundary.');
+      await stat(join(environment.THOTH_DATA_DIR, 'thoth.db'));
+    }
+    verifyPackedNativeAssets(packageRoot, inventory, workspace, environment);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
 export async function verifyIntegrationPackage(options = {}) {
   const rootDir = resolve(options.rootDir ?? DEFAULT_ROOT);
   const inventory = await loadIntegrationInventory(rootDir);
   await validateInventoryPaths(rootDir, inventory);
+  validateDisposableHarnessMatrix(inventory);
   validateRequiredRoles(inventory);
   validateDiscoveryAnchors(inventory);
   await validateRuntimeDeclarations(rootDir, inventory);
   await validateNoExtraRuntimeAssets(rootDir, inventory);
   if (options.packageFiles) {
     verifyPackageFileList(options.packageFiles, inventory);
+  }
+  if (options.verifyPackedRuntime === true) {
+    await verifyPackedRuntimeBehavior({ rootDir });
   }
   return {
     assetCount: inventory.assets.length,
@@ -556,7 +875,8 @@ export async function verifyIntegrationPackage(options = {}) {
 }
 
 async function main() {
-  const result = await verifyIntegrationPackage();
+  const packageFiles = await verifyCurrentPackageFileList();
+  const result = await verifyIntegrationPackage({ packageFiles, verifyPackedRuntime: true });
   process.stdout.write(
     `Verified ${result.assetCount} native integration assets for ${result.harnesses.join(', ')}.\n`,
   );

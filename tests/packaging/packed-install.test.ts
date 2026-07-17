@@ -28,6 +28,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { HOST_EVIDENCE } from '../fixtures/integration/host-evidence.js';
+    import {
+      CLAUDE_LATER_USER_EDITS,
+      CLAUDE_MANAGER_PROBES,
+      CLAUDE_OWNERSHIP_STATES,
+      buildClaudeDisposableScopes,
+    } from '../fixtures/setup/claude-manager-evidence.js';
+import { HARNESSES, buildDisposableHarnesses, selectNativeStdoutEnvelope } from '../fixtures/packaging/disposable-harnesses.js';
+
 import { inspectAndPlanSetup } from '../../src/setup/engine.js';
 import type {
   CodexCommandExecutor,
@@ -48,7 +57,7 @@ interface InstalledPackageFixture {
   packageRoot: string;
   entryPath: string;
   npmEnv: NodeJS.ProcessEnv;
-  installMode: 'offline' | 'public-registry-fallback';
+  installMode: 'offline';
 }
 
 interface CliResult {
@@ -133,54 +142,19 @@ function runPnpm(
   return run('pnpm', args, options);
 }
 
-function isOfflineCacheMiss(diagnostic: string): boolean {
-  return /(?:^|[^A-Za-z0-9_])(?:ENOTCACHED|ERR_PNPM_NO_OFFLINE_(?:TARBALL|META))(?=$|[^A-Za-z0-9_])/
-    .test(diagnostic);
+function offlineDependencyInstallArguments(): string[] {
+  return ['install', '--offline', '--frozen-lockfile', '--prod'];
 }
 
-function pnpmInstallAttempts(tarball: string): {
-  offline: string[];
-  publicRegistryFallback: string[];
-} {
-  const installArgs = [
-    'add',
-    tarball,
-    '--ignore-scripts',
-    '--save-exact',
-    '--registry',
-    'https://registry.npmjs.org/',
-  ];
-  return {
-    offline: [...installArgs, '--offline'],
-    publicRegistryFallback: [...installArgs, '--offline=false'],
-  };
-}
+describe('packed install policy', () => {
+  it('requires a no-registry offline dependency install path', () => {
+    const args = offlineDependencyInstallArguments();
 
-describe('packed install retry policy', () => {
-  it.each([
-    ['npm cache miss', 'ENOTCACHED', true],
-    ['npm cache miss in an error line', 'npm ERR! code ENOTCACHED\n', true],
-    ['pnpm tarball cache miss', 'ERR_PNPM_NO_OFFLINE_TARBALL', true],
-    ['pnpm tarball cache miss with punctuation', 'ERR_PNPM_NO_OFFLINE_TARBALL: missing tarball', true],
-    ['pnpm metadata cache miss', 'ERR_PNPM_NO_OFFLINE_META', true],
-    ['pnpm metadata cache miss with whitespace', '  ERR_PNPM_NO_OFFLINE_META  ', true],
-    ['prefixed npm cache-miss lookalike', 'XENOTCACHED', false],
-    ['suffixed npm cache-miss lookalike', 'ENOTCACHED_EXTRA', false],
-    ['prefixed pnpm tarball lookalike', 'XERR_PNPM_NO_OFFLINE_TARBALL', false],
-    ['suffixed pnpm metadata lookalike', 'ERR_PNPM_NO_OFFLINE_META_EXTRA', false],
-    ['unrelated pnpm failure', 'ERR_PNPM_FETCH_500', false],
-  ])('classifies %s', (_label, diagnostic, shouldRetry) => {
-    expect(isOfflineCacheMiss(diagnostic)).toBe(shouldRetry);
-  });
-
-  it('keeps the initial attempt offline and the public-registry fallback online', () => {
-    const attempts = pnpmInstallAttempts('package.tgz');
-
-    expect(attempts.offline).toContain('--offline');
-    expect(attempts.offline).not.toContain('--offline=false');
-    expect(attempts.publicRegistryFallback).toContain('--offline=false');
-    expect(attempts.publicRegistryFallback).not.toContain('--offline');
-    expect(attempts.publicRegistryFallback).toContain('https://registry.npmjs.org/');
+    expect(args).toContain('--offline');
+    expect(args).toContain('--frozen-lockfile');
+    expect(args).not.toContain('--ignore-scripts');
+    expect(args).not.toContain('--registry');
+    expect(args).not.toContain('--offline=false');
   });
 });
 
@@ -204,7 +178,7 @@ async function packAndInstall(): Promise<InstalledPackageFixture> {
     mkdir(installRoot, { recursive: true }),
     mkdir(npmHome, { recursive: true }),
     writeFile(npmConfig, [
-      'ignore-scripts=true',
+      'ignore-scripts=false',
       'offline=true',
       'audit=false',
       'fund=false',
@@ -220,16 +194,35 @@ async function packAndInstall(): Promise<InstalledPackageFixture> {
     USERPROFILE: npmHome,
     npm_config_userconfig: npmConfig,
     npm_config_globalconfig: npmGlobalConfig,
-    npm_config_cache: join(homedir(), '.npm'),
-    npm_config_ignore_scripts: 'true',
+    npm_config_cache: join(root, 'npm cache'),
+    npm_config_offline: 'true',
+    XDG_CACHE_HOME: join(root, 'cache'),
+    npm_config_ignore_scripts: 'false',
     npm_config_audit: 'false',
     npm_config_fund: 'false',
     npm_config_save: 'false',
     npm_config_package_lock: 'false',
-    npm_config_registry: 'https://registry.npmjs.org/',
     NODE_PATH: '',
     THOTH_MEM_BIN: '',
   });
+  const sourceManifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as {
+    packageManager?: string;
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  await Promise.all([
+    writeFile(join(installRoot, 'package.json'), JSON.stringify({
+      name: 'thoth-packed-smoke-host',
+      private: true,
+      version: '1.0.0',
+      ...(sourceManifest.packageManager ? { packageManager: sourceManifest.packageManager } : {}),
+      ...(sourceManifest.dependencies ? { dependencies: sourceManifest.dependencies } : {}),
+      ...(sourceManifest.devDependencies ? { devDependencies: sourceManifest.devDependencies } : {}),
+    }), 'utf8'),
+    cp(join(repositoryRoot, 'pnpm-lock.yaml'), join(installRoot, 'pnpm-lock.yaml')),
+    cp(join(repositoryRoot, 'pnpm-workspace.yaml'), join(installRoot, 'pnpm-workspace.yaml')),
+  ]);
+
   const packed = runNpm([
     'pack',
     '--ignore-scripts',
@@ -243,25 +236,15 @@ async function packAndInstall(): Promise<InstalledPackageFixture> {
   expect(report).toHaveLength(1);
   const tarball = join(packRoot, report[0]!.filename);
 
-  await writeFile(join(installRoot, 'package.json'), JSON.stringify({
-    name: 'thoth-packed-smoke-host',
-    private: true,
-    version: '1.0.0',
-  }), 'utf8');
-  const installAttempts = pnpmInstallAttempts(tarball);
-  let installMode: InstalledPackageFixture['installMode'] = 'offline';
-  let installed = runPnpm(installAttempts.offline, { cwd: installRoot, env: npmEnv });
-  const installDiagnostic = `${installed.stdout ?? ''}\n${installed.stderr ?? ''}`;
-  if (
-    installed.status !== 0
-    && isOfflineCacheMiss(installDiagnostic)
-  ) {
-    installMode = 'public-registry-fallback';
-    installed = runPnpm(installAttempts.publicRegistryFallback, { cwd: installRoot, env: npmEnv });
-  }
-  expectCommandSucceeded(installed, 'script-disabled isolated pnpm tarball install');
-
+  const installMode: InstalledPackageFixture['installMode'] = 'offline';
+  const dependencies = runPnpm(offlineDependencyInstallArguments(), { cwd: installRoot, env: npmEnv });
+  expectCommandSucceeded(dependencies, 'isolated frozen offline dependency install');
+  const unpackRoot = join(root, 'unpacked tarball');
+  await mkdir(unpackRoot, { recursive: true });
+  const extracted = run('tar', ['-xzf', tarball, '-C', unpackRoot], { cwd: installRoot, env: npmEnv });
+  expectCommandSucceeded(extracted, 'isolated packed tarball extraction');
   const packageRoot = join(installRoot, 'node_modules', 'thoth-mem');
+  await cp(join(unpackRoot, 'package'), packageRoot, { recursive: true });
   const entryPath = join(packageRoot, 'dist', 'index.js');
   expect((await stat(entryPath)).isFile()).toBe(true);
   return { root, installRoot, packageRoot, entryPath, npmEnv, installMode };
@@ -311,7 +294,7 @@ function assertDisposableCodexHome(codexHome: string, activeCodexHome: string): 
 function runPackedCli(
   fixture: InstalledPackageFixture,
   args: readonly string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: { cwd: string; env: NodeJS.ProcessEnv; input?: string },
 ): CliResult {
   const result = run(process.execPath, [fixture.entryPath, ...args], options);
   let json: Record<string, unknown> | undefined;
@@ -326,6 +309,23 @@ function runPackedCli(
     stderr: result.stderr,
     ...(json ? { json } : {}),
   };
+}
+
+
+function packedNativeSessionStart(harness: 'codex' | 'claude'): Record<string, unknown> {
+  const shared = { session_id: 'packed-' + harness + '-session', transcript_path: harness === 'codex' ? null : '/tmp/packed-claude.jsonl', cwd: '/workspace/packed-thoth-mem', hook_event_name: 'SessionStart', source: 'startup' };
+  return harness === 'codex' ? { ...shared, model: 'gpt-5.6-codex', permission_mode: 'default' } : shared;
+}
+
+function packedNativeCompaction(harness: 'codex' | 'claude'): Record<string, unknown> {
+  const shared = { session_id: 'packed-' + harness + '-session', transcript_path: harness === 'codex' ? null : '/tmp/packed-claude.jsonl', cwd: '/workspace/packed-thoth-mem', hook_event_name: 'PreCompact', trigger: 'auto' };
+  return harness === 'codex' ? { ...shared, model: 'gpt-5.6-codex', turn_id: 'packed-turn' } : { ...shared, custom_instructions: '' };
+}
+
+function packedRuntimeClaim(harness: 'codex' | 'claude', eventMappingId: string, deliveryMappingId: string): Record<string, unknown> {
+  const fixtureHarness = harness === 'claude' ? 'claude-code' : harness;
+  const evidence = HOST_EVIDENCE.find((entry) => entry.harness === fixtureHarness)!;
+  return { payloadMappingId: evidence.payloadMappingId, assetExecutionMarker: evidence.activationMarker, eventMappingId, deliveryChannel: evidence.recovery.channel, deliveryMappingId, behaviorEvidenceMappingId: harness === 'codex' ? 'codex-command-hook-payload-v1' : 'claude-code-command-hook-payload-v1' };
 }
 
 async function directoryDigest(root: string): Promise<string> {
@@ -1027,9 +1027,17 @@ afterAll(async () => {
 });
 
 describe('packed OpenCode installation', () => {
+  it('uses a temporary cache and never configures a registry for packed installation', async () => {
+    const fixture = await getPackedFixture();
+
+    expect(fixture.npmEnv.npm_config_cache).toBe(join(fixture.root, 'npm cache'));
+    expect(fixture.npmEnv.XDG_CACHE_HOME).toBe(join(fixture.root, 'cache'));
+    expect(fixture.npmEnv.npm_config_registry).toBeUndefined();
+  }, PACKAGE_TIMEOUT_MS);
+
   it('installs global/project scopes from packed assets with zero-write plan and verified rerun', async () => {
     const fixture = await getPackedFixture();
-    expect(['offline', 'public-registry-fallback']).toContain(fixture.installMode);
+    expect(fixture.installMode).toBe('offline');
     const root = join(fixture.root, 'OpenCode harness homes with spaces');
     const globalRoot = join(root, 'global fixture');
     const projectRoot = join(root, 'project fixture with spaces');
@@ -1106,17 +1114,102 @@ describe('packed OpenCode installation', () => {
       }),
     });
     expectCommandSucceeded(runner, 'packed OpenCode runner');
-    expect(JSON.parse(runner.stdout)).toMatchObject({
-      protocolVersion: 1,
-      harness: 'opencode',
-      intent: 'enroll_session',
-      outcome: expect.stringMatching(/^(confirmed|failed|degraded|no_op)$/),
-    });
+    const runnerResponse = JSON.parse(runner.stdout);
+        expect(runnerResponse).toMatchObject({
+          protocolVersion: 1,
+          harness: 'opencode',
+          outcome: 'degraded',
+          retryable: false,
+        });
+        expect(runnerResponse).not.toHaveProperty('intent');
     expect(runner.stdout).not.toMatch(/unable to resolve the thoth-mem executable/i);
     await assertNoCheckoutReferences(fixture.packageRoot);
   }, PACKAGE_TIMEOUT_MS);
 });
 
+describe('packed disposable runtime evidence', () => {
+  it('executes every packed harness through the real six-tool memory port', async () => {
+        const fixture = await getPackedFixture();
+        const harnesses = buildDisposableHarnesses('packed-runtime-real-port');
+        try {
+          for (const harness of harnesses) {
+            const env = cliEnvironment(fixture, harness.home.root, { PATH: '', THOTH_MEM_BIN: fixture.entryPath });
+            const runtimeHarness = harness.harness === 'claude-code' ? 'claude' : harness.harness;
+            const unverified = runPackedCli(fixture, ['integration-event'], {
+              cwd: harness.home.root,
+              env,
+              input: JSON.stringify({ protocolVersion: 1, harness: runtimeHarness, event: { hook: 'SessionStart', payload: { session_id: 'packed-unverified' } } }),
+            });
+            expect(unverified.status, unverified.stderr).toBe(0);
+            expect(unverified.json).toMatchObject({ protocolVersion: 1, harness: runtimeHarness, outcome: 'degraded', retryable: false });
+            expect(unverified.json).not.toHaveProperty('hostOutputDirective');
+
+            if (runtimeHarness === 'opencode') {
+              const runner = join(fixture.packageRoot, 'integrations', 'shared', 'hook-runner.mjs');
+              const start = run(process.execPath, [runner, '--harness', 'opencode', '--hook', 'SessionStart'], {
+                cwd: harness.home.root, env,
+                input: JSON.stringify({ protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence: { payloadMappingId: 'opencode-session-payload-v1', assetExecutionMarker: 'opencode-activation-v1', eventMappingId: 'opencode-session-start-v1', deliveryChannel: 'opencode-protocol-output', deliveryMappingId: 'opencode-recovery-injection-v1', behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1', mutableOutputChannel: 'system' }, event: { type: 'experimental.chat.system.transform', id: 'packed-opencode-start', sequence: 1, input: { model: { providerID: 'fixture', modelID: 'packed' }, sessionID: 'packed-opencode-session' } }, context: { project: 'packed-project', directory: harness.home.root } }),
+              });
+              expectCommandSucceeded(start, 'packed OpenCode real memory start');
+              expect(JSON.parse(start.stdout)).toMatchObject({ outcome: expect.stringMatching(/^(confirmed|degraded)$/), hostOutputDirective: { purpose: 'recovery_context' }, deliveryState: { memoryConfirmation: 'confirmed', modelConsumption: 'unproven' } });
+              const compact = run(process.execPath, [runner, '--harness', 'opencode', '--hook', 'PreCompact'], {
+                cwd: harness.home.root, env,
+                input: JSON.stringify({ protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence: { payloadMappingId: 'opencode-session-payload-v1', assetExecutionMarker: 'opencode-activation-v1', eventMappingId: 'opencode-compaction-v1', deliveryChannel: 'opencode-protocol-output', deliveryMappingId: 'opencode-compaction-v1', behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1', mutableOutputChannel: 'context' }, event: { type: 'experimental.session.compacting', id: 'packed-opencode-compact', sequence: 2, input: { sessionID: 'packed-opencode-session' } }, context: { project: 'packed-project', directory: harness.home.root } }),
+              });
+              expectCommandSucceeded(compact, 'packed OpenCode real memory compaction');
+              expect(JSON.parse(compact.stdout)).toMatchObject({ outcome: expect.stringMatching(/^(confirmed|degraded)$/), hostOutputDirective: { purpose: 'post_compaction_guidance' }, deliveryState: { memoryConfirmation: 'confirmed', modelConsumption: 'unproven' } });
+            } else {
+              const nativeHarness = runtimeHarness as 'codex' | 'claude';
+              const runner = join(fixture.packageRoot, 'integrations', nativeHarness === 'claude' ? 'claude-code' : 'codex', 'runners', 'hook-runner.mjs');
+              const startup = run(process.execPath, [runner, '--harness', nativeHarness, '--hook', 'SessionStart'], { cwd: harness.home.root, env, input: JSON.stringify(packedNativeSessionStart(nativeHarness)) });
+                  expectCommandSucceeded(startup, 'packed ' + nativeHarness + ' SessionStart enrollment');
+                  expect(JSON.parse(startup.stdout)).toMatchObject({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expect.any(String) } });
+                  const checkpoint = run(process.execPath, [runner, '--harness', nativeHarness, '--hook', 'PreCompact'], { cwd: harness.home.root, env, input: JSON.stringify(packedNativeCompaction(nativeHarness)) });
+              expectCommandSucceeded(checkpoint, 'packed ' + nativeHarness + ' PreCompact checkpoint');
+              expect(JSON.parse(checkpoint.stdout)).toEqual({});
+              const compactStart = run(process.execPath, [runner, '--harness', nativeHarness, '--hook', 'SessionStart'], { cwd: harness.home.root, env, input: JSON.stringify({ ...packedNativeSessionStart(nativeHarness), source: 'compact' }) });
+              expectCommandSucceeded(compactStart, 'packed ' + nativeHarness + ' compact SessionStart recovery');
+              expect(JSON.parse(compactStart.stdout)).toMatchObject({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expect.any(String) } });
+              expect(JSON.parse(compactStart.stdout)).not.toHaveProperty('modelConsumption');
+            }
+            await expect(stat(join(env.THOTH_DATA_DIR!, 'thoth.db'))).resolves.toMatchObject({});
+          }
+          await assertNoCheckoutReferences(fixture.packageRoot);
+        } finally {
+          for (const harness of harnesses) expect(harness.cleanup()).toBe(true);
+        }
+      }, PACKAGE_TIMEOUT_MS);
+    });
+    function packedClaudeManagerSource(): string {
+  return String.raw`
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+const statePath = process.env.CLAUDE_FIXTURE_STATE;
+const state = existsSync(statePath)
+  ? JSON.parse(readFileSync(statePath, 'utf8'))
+  : { marketplace: false, plugin: false, mutations: [] };
+const key = args.filter((argument, index) => argument !== '--json' && argument !== '--scope' && args[index - 1] !== '--scope').join(' ');
+const save = () => writeFileSync(statePath, JSON.stringify(state));
+const ok = (text) => process.stdout.write(text);
+if (process.env.CLAUDE_FIXTURE_UNAVAILABLE === 'true' && key === '--version') { process.exitCode = 1; }
+else if (key === '--version') ok('claude-code 1.0.0');
+else if (key === 'plugin --help') ok('Commands: marketplace install list uninstall');
+else if (key === 'plugin marketplace --help') ok('Commands: add list remove');
+else if (key === 'plugin marketplace add --help') ok('Usage: claude plugin marketplace add <SOURCE> --scope <user|project>');
+else if (key === 'plugin marketplace list --help') ok('Usage: claude plugin marketplace list --scope <user|project> --json');
+else if (key === 'plugin marketplace remove --help') ok('Usage: claude plugin marketplace remove <NAME> --scope <user|project>');
+else if (key === 'plugin install --help') ok('Usage: claude plugin install <PLUGIN>@<MARKETPLACE> --scope <user|project>');
+else if (key === 'plugin list --help') ok('Usage: claude plugin list --scope <user|project> --json');
+else if (key === 'plugin uninstall --help') ok('Usage: claude plugin uninstall <PLUGIN>@<MARKETPLACE> --scope <user|project>');
+else if (key === 'plugin marketplace list') ok(JSON.stringify({ marketplaces: state.marketplace ? [{ name: 'thoth-mem', source: 'EremesNG/thoth-mem' }] : [] }));
+else if (key === 'plugin list') ok(JSON.stringify({ plugins: state.plugin ? [{ id: 'thoth-mem@thoth-mem', name: 'thoth-mem', marketplace: 'thoth-mem', enabled: true }] : [] }));
+else if (key === 'plugin marketplace add EremesNG/thoth-mem') { state.marketplace = true; state.mutations.push(key); save(); }
+else if (key === 'plugin install thoth-mem@thoth-mem') { state.plugin = true; state.mutations.push(key); save(); }
+else if (key === 'plugin uninstall thoth-mem@thoth-mem') { state.plugin = false; state.mutations.push(key); save(); }
+else if (key === 'plugin marketplace remove thoth-mem') { state.marketplace = false; state.mutations.push(key); save(); }
+else { process.exitCode = 64; }
+`;
+}
 async function writeNodeCliFixture(
   binRoot: string,
   name: 'codex' | 'claude',
@@ -1254,6 +1347,77 @@ if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
 `;
 }
 
+describe('packed Claude Code manager setup', () => {
+  it('preserves existing coexistence and rolls back only receipt-owned manager changes in disposable homes', async () => {
+    const fixture = await getPackedFixture();
+    const scopes = buildClaudeDisposableScopes('packed-claude-manager');
+    const scope = scopes.find((candidate) => candidate.scope === 'global')!;
+    const binRoot = join(scope.root, 'controlled-bin');
+    const statePath = join(scope.root, 'claude-state.json');
+    const launcher = await writeNodeCliFixture(binRoot, 'claude', packedClaudeManagerSource());
+    const env = cliEnvironment(fixture, scope.root, {
+      PATH: [binRoot, process.env.PATH ?? ''].join(delimiter),
+      CLAUDE_FIXTURE_STATE: statePath,
+    });
+    await writeFile(statePath, JSON.stringify({ marketplace: true, plugin: true, mutations: [] }), 'utf8');
+    try {
+      const coexistenceBefore = await directoryDigest(scope.root);
+      const coexistencePlan = runPackedCli(fixture, ['setup', 'claude-code', '--plan', '--json'], { cwd: scope.root, env });
+      expect(coexistencePlan.status, coexistencePlan.stderr).toBe(0);
+      expect(coexistencePlan.json).toMatchObject({ status: 'complete', changed: false, receipt: null });
+      expect(await directoryDigest(scope.root)).toBe(coexistenceBefore);
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ marketplace: true, plugin: true, mutations: [] });
+
+      const coexistenceApply = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      expect(coexistenceApply.status, coexistenceApply.stderr).toBe(0);
+      expect(coexistenceApply.json).toMatchObject({ status: 'complete', changed: false, receipt: null });
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ marketplace: true, plugin: true, mutations: [] });
+
+      await writeFile(statePath, JSON.stringify({ marketplace: false, plugin: false, mutations: [] }), 'utf8');
+      const settingsPath = join(env.HOME!, '.claude', 'settings.json');
+      await mkdir(dirname(settingsPath), { recursive: true });
+      await writeFile(settingsPath, JSON.stringify({ mcpServers: { 'thoth-mem': { command: 'manual' } } }), 'utf8');
+      const manualBefore = await readFile(settingsPath, 'utf8');
+      const manual = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      expect(manual.status).toBe(3);
+      expect(manual.json).toMatchObject({ status: 'requires_user_action', changed: false, receipt: null });
+      expect(await readFile(settingsPath, 'utf8')).toBe(manualBefore);
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ mutations: [] });
+      await rm(settingsPath);
+
+      const installed = runPackedCli(fixture, ['setup', 'claude-code', '--json'], { cwd: scope.root, env });
+      expect(installed.status, installed.stderr).toBe(0);
+      expect(installed.json).toMatchObject({ status: 'complete', changed: true, harness: 'claude-code', receipt: expect.any(String) });
+      const receipt = installed.json!.receipt as string;
+      await writeFile(settingsPath, JSON.stringify({ laterEdit: true }), 'utf8');
+      const rollback = runPackedCli(fixture, ['setup', 'claude-code', '--rollback', receipt, '--json'], { cwd: scope.root, env });
+      expect(rollback.status, rollback.stderr).toBe(0);
+      expect(rollback.json).toMatchObject({ status: 'complete', changed: true, receipt: null });
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ marketplace: false, plugin: false, mutations: [
+        'plugin marketplace add EremesNG/thoth-mem', 'plugin install thoth-mem@thoth-mem', 'plugin uninstall thoth-mem@thoth-mem', 'plugin marketplace remove thoth-mem',
+      ] });
+      expect(await readFile(settingsPath, 'utf8')).toContain('laterEdit');
+      const locks = await readdir(join(env.THOTH_DATA_DIR!, 'setup', 'locks')).catch(() => [] as string[]);
+      expect(locks.filter((name) => name.endsWith('.lock'))).toEqual([]);
+
+      const cacheSentinel = join(env.HOME!, '.claude', 'cache', 'sentinel.txt');
+      await mkdir(dirname(cacheSentinel), { recursive: true });
+      await writeFile(cacheSentinel, 'preserve-cache', 'utf8');
+      const unavailable = runPackedCli(fixture, ['setup', 'claude-code', '--json'], {
+        cwd: scope.root,
+        env: { ...env, CLAUDE_FIXTURE_UNAVAILABLE: 'true' },
+      });
+      expect(unavailable.status).toBe(3);
+      expect(unavailable.json).toMatchObject({ status: 'requires_user_action', changed: false, receipt: null });
+      expect(await readFile(cacheSentinel, 'utf8')).toBe('preserve-cache');
+      expect(JSON.parse(await readFile(statePath, 'utf8'))).toMatchObject({ marketplace: false, plugin: false });
+      await assertNoCheckoutReferences(fixture.packageRoot);
+      expect(launcher.command).toBeDefined();
+    } finally {
+      for (const disposable of scopes) expect(disposable.cleanup()).toBe(true);
+    }
+  }, PACKAGE_TIMEOUT_MS);
+});
 describe('packed Codex and Claude installation', () => {
   it('rejects overlapping simulated Codex homes before any setup side effect', async () => {
     const root = await mkdtemp(join(tmpdir(), 'thoth packed codex overlap guard '));
@@ -1359,7 +1523,7 @@ describe('packed Codex and Claude installation', () => {
 
   it('derives controlled Codex states without unproven global mutation', async () => {
     const fixture = await getPackedFixture();
-    expect(['offline', 'public-registry-fallback']).toContain(fixture.installMode);
+    expect(fixture.installMode).toBe('offline');
     const root = join(fixture.root, 'Codex fixtures with spaces');
     const binRoot = join(root, 'controlled bin');
     const unrelatedCwd = join(root, 'unrelated cwd');
@@ -1819,7 +1983,7 @@ describe('packed Codex and Claude installation', () => {
 
   it('validates and installs the accepted unqualified Claude plugin from the packed local marketplace', async () => {
     const fixture = await getPackedFixture();
-    expect(['offline', 'public-registry-fallback']).toContain(fixture.installMode);
+    expect(fixture.installMode).toBe('offline');
     const root = join(fixture.root, 'Claude fixture with spaces');
     const binRoot = join(root, 'controlled bin');
     const configRoot = join(root, 'claude config');
@@ -1881,12 +2045,9 @@ describe('packed Codex and Claude installation', () => {
       input: JSON.stringify({ session_id: 'packed-claude-root', project: unrelatedCwd }),
     });
     expectCommandSucceeded(runner, 'packed Claude runner');
-    expect(JSON.parse(runner.stdout)).toMatchObject({
-      protocolVersion: 1,
-      harness: 'claude',
-      intent: 'enroll_session',
-      outcome: expect.stringMatching(/^(confirmed|failed|degraded|no_op)$/),
-    });
+    const runnerResponse = JSON.parse(runner.stdout);
+        expect(runnerResponse).toEqual({});
+        expect(runnerResponse).not.toHaveProperty('intent');
     expect(runner.stdout).not.toMatch(/unable to resolve the thoth-mem executable/i);
     expect(isAbsolute(fixture.packageRoot)).toBe(true);
     expect(relative(fixture.packageRoot, pluginRoot).startsWith('..')).toBe(true);

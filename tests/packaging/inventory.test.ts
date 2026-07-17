@@ -17,6 +17,8 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { HARNESSES } from '../fixtures/packaging/disposable-harnesses.js';
+
 interface InventoryEntry {
   harness: string;
   role: string;
@@ -42,6 +44,9 @@ interface VerifierModule {
     packageFiles: readonly string[],
     inventory: InventoryDocument,
   ): void;
+  getDisposableHarnessMatrix(inventory: InventoryDocument): readonly string[];
+  verifyCurrentPackageFileList(options?: { rootDir?: string }): Promise<readonly string[]>;
+      createStrictSubprocessEnvironment(workspace: string): NodeJS.ProcessEnv;
 }
 
 interface SyncModule {
@@ -205,7 +210,68 @@ describe('canonical inventory', () => {
     });
   });
 
-  it('canonical inventory rejects a flat Codex MCP descriptor', async () => {
+  it('links the disposable harness matrix to the current packed file list', async () => {
+    const verifier = await importVerifier();
+    const inventory = await readJson<InventoryDocument>(inventoryPath);
+    const packageFiles = await verifier.verifyCurrentPackageFileList({ rootDir: repositoryRoot });
+
+    expect(verifier.getDisposableHarnessMatrix(inventory)).toEqual(['claude', 'codex', 'opencode']);
+    const verifierSource = await readFile(verifierPath, 'utf8');
+    expect(verifierSource).toContain('verifyPackedNativeAssets');
+    expect(verifierSource).toContain("getInventoryAsset(inventory, harness, 'runner')");
+    expect(() => verifier.verifyPackageFileList(packageFiles, inventory)).not.toThrow();
+    await expect(verifier.verifyIntegrationPackage({
+      rootDir: repositoryRoot,
+      packageFiles,
+    })).resolves.toMatchObject({ assetCount: 15 });
+  }, 30_000);
+
+  it('builds a strict subprocess environment without inherited credentials, proxy, registry, npm, or PATH overrides', async () => {
+        const verifier = await importVerifier();
+        const workspace = join(tmpdir(), 'thoth verifier strict environment');
+        const environment = verifier.createStrictSubprocessEnvironment(workspace);
+        const source = await readFile(verifierPath, 'utf8');
+
+        expect(environment.PATH).toBe(dirname(process.execPath));
+        expect(environment.HOME).toBe(join(workspace, 'home'));
+        expect(environment.USERPROFILE).toBe(join(workspace, 'home'));
+        expect(environment.XDG_CACHE_HOME).toBe(join(workspace, 'cache'));
+        expect(environment.npm_config_offline).toBe('true');
+        expect(environment.npm_config_registry).toBeUndefined();
+        expect(environment.HTTP_PROXY).toBeUndefined();
+        expect(environment.HTTPS_PROXY).toBeUndefined();
+        expect(environment.NPM_TOKEN).toBeUndefined();
+        expect(Object.keys(environment).some((key) => /token|auth|proxy|registry|credential|password|secret/i.test(key))).toBe(false);
+        expect(source).not.toContain('{ ...process.env');
+        expect(source).not.toContain("cp(join(rootDir, 'node_modules')");
+          });
+
+          it('materializes and validates the isolated dependency host before packing and keeps checkout paths out of post-pack runtime', async () => {
+            const source = await readFile(verifierPath, 'utf8');
+            const runtimeStart = source.indexOf('export async function verifyPackedRuntimeBehavior');
+            const runtimeEnd = source.indexOf('export async function verifyIntegrationPackage', runtimeStart);
+            expect(runtimeStart).toBeGreaterThanOrEqual(0);
+            expect(runtimeEnd).toBeGreaterThan(runtimeStart);
+            const runtime = source.slice(runtimeStart, runtimeEnd);
+            const materialized = runtime.indexOf('await materializeExternalDependencyHost(rootDir, host);');
+            const validated = runtime.indexOf("await assertTemporaryTreeContained(host, 'Packed runtime dependency host');");
+            const pack = runtime.indexOf('const packed = process.platform');
+            const archive = runtime.indexOf('const archive = join(archiveDir', pack);
+
+            expect(materialized).toBeGreaterThanOrEqual(0);
+            expect(validated).toBeGreaterThan(materialized);
+            expect(pack).toBeGreaterThan(validated);
+            expect(archive).toBeGreaterThan(pack);
+
+            const postPack = runtime.slice(archive);
+            expect(postPack).not.toContain('rootDir');
+            expect(postPack).not.toContain('resolvePackageRoot(');
+            expect(postPack).not.toContain('readPackageManifest(');
+            expect(postPack).not.toContain('createRequire(');
+          });
+
+
+      it('canonical inventory rejects a flat Codex MCP descriptor', async () => {
     const verifier = await importVerifier();
 
     await withPackageFixture(async (root) => {
@@ -465,6 +531,7 @@ describe('package publication allowlist', () => {
       cwd: repositoryRoot,
       encoding: 'utf8' as const,
       maxBuffer: 10 * 1024 * 1024,
+      timeout: 30_000,
     };
     const packed = process.platform === 'win32'
       ? spawnSync('npm pack --dry-run --ignore-scripts --json', {

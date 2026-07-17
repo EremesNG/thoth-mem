@@ -71,7 +71,7 @@ async function bundleNodeRuntime() {
 }
 
 async function verifyNativeAssets() {
-  await verifyIntegrationPackage({ rootDir: repoRoot });
+  await verifyIntegrationPackage({ rootDir: repoRoot, verifyPackedRuntime: true });
 }
 
 export async function runBuild(options = {}) {
