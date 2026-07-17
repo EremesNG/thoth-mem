@@ -97,7 +97,7 @@ Use managed setup for native OpenCode, Codex, or Claude Code integration. Global
 ```bash
 thoth-mem setup opencode
 thoth-mem setup codex --scope global --plan --json
-thoth-mem setup claude-code --scope global --plan --json
+thoth-mem setup claude --scope global --plan --json
 ```
 
 The same `--scope`, `--plan`, `--force`, `--rollback`, and `--json` controls apply to all managed harness setup commands.
@@ -177,7 +177,7 @@ For each host, inspect the zero-write plan first and review it before authorizin
 ```bash
 thoth-mem setup opencode --scope global --plan --json
 thoth-mem setup codex --scope global --plan --json
-thoth-mem setup claude-code --scope global --plan --json
+thoth-mem setup claude --scope global --plan --json
 ```
 
 Only after the reviewed plan is acceptable, explicitly authorize the mutating attempt with `--force`; keep machine-readable output:
@@ -185,7 +185,7 @@ Only after the reviewed plan is acceptable, explicitly authorize the mutating at
 ```bash
 thoth-mem setup opencode --scope global --force --json
 thoth-mem setup codex --scope global --force --json
-thoth-mem setup claude-code --scope global --force --json
+thoth-mem setup claude --scope global --force --json
 ```
 
 Inspect each native installation with the host's existing commands, where available:

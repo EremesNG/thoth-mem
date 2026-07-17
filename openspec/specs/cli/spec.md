@@ -4,7 +4,7 @@
 
 ### Requirement: CLI MUST Provide Managed Setup for OpenCode, Codex, and Claude Code
 The public CLI MUST accept `thoth-mem setup opencode`, `thoth-mem setup codex`,
-and `thoth-mem setup claude-code`. Each command MUST default to global scope
+and `thoth-mem setup claude`. Each command MUST default to global scope
 and MUST use the established explicit project-scope, plan-only, force, rollback,
 and JSON controls. Inspection, planning, mutation, verification, receipts, and
 rollback MUST remain confined to the selected harness and scope. Claude Code
@@ -38,7 +38,7 @@ project scope.
 - AND it MUST perform zero writes
 
 #### Scenario: Claude Code setup defaults to global scope
-- GIVEN the user runs `thoth-mem setup claude-code` without a scope option
+- GIVEN the user runs `thoth-mem setup claude` without a scope option
 - WHEN setup resolves its target
 - THEN it MUST select the detected global Claude Code scope
 - AND it MUST NOT write project-local configuration
@@ -388,7 +388,7 @@ When `plugin_manager` is selected, Codex setup MUST independently plan, attempt,
 - AND it MUST provide bounded precise retry or manual-completion guidance
 
 ### Requirement: Setup Results and Exit Codes MUST Be Deterministic
-Setup results and rollback MUST accept `claude-code` as a harness value while
+Setup results and rollback MUST accept `claude` as a harness value while
 preserving the exact `complete`, `failed`, `partial`, and
 `requires_user_action` statuses and their existing exit-code mappings. Claude
 Code results MUST expose only bounded diagnostics, ordered evidence-backed

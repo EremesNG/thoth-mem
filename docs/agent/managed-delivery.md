@@ -15,7 +15,8 @@ Owns bounded harness setup planning/mutation/verification, managed configuration
 
 ## Invariants and hazards
 
-- Setup covers public `opencode`, `codex`, and `claude-code`; public Claude naming maps to private runtime/inventory identity `claude` where current code defines it.
+- Public setup covers `opencode`, `codex`, and `claude`; the Claude setup/runtime contract uses `claude`.
+- Claude Code product-branded assets and modules retain names such as `claude-code-cli.ts` and `integrations/claude-code/**`.
 - Resolve a confined target and choose one immutable strategy before mutation. Plan/no-op paths remain read-only.
 - Mutations and rollback are limited to proven ownership. Receipts/checkpoints preserve unrelated and later user edits; ambiguity fails closed or requires operator action.
 - External command success alone is not proof of manager ownership or complete setup.
