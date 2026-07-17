@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   chmod,
   mkdir,
@@ -15,11 +15,12 @@ import {
   CAPABILITY_STATES,
   HARNESS_IDS,
   LIFECYCLE_INTENTS,
+  STATE_LIFECYCLE_INTENTS,
   type AdapterCapabilities,
   type Clock,
   type HarnessId,
   type LifecycleFileProtection,
-  type LifecycleIntent,
+  type StateLifecycleIntent,
 } from './types.js';
 
 export interface LifecycleStateLimits {
@@ -38,14 +39,38 @@ export const DEFAULT_LIFECYCLE_STATE_LIMITS: LifecycleStateLimits = {
   finalizedRetentionMs: 30 * 24 * 60 * 60 * 1_000,
 };
 
+export const DELIVERY_CONFIRMATION_EVENT_KIND = 'delivery_confirmation' as const;
+export type ConfirmedLifecycleEventKind = StateLifecycleIntent | typeof DELIVERY_CONFIRMATION_EVENT_KIND;
+
 export interface ConfirmedLifecycleEvent {
   key: string;
-  intent: LifecycleIntent;
+  intent: ConfirmedLifecycleEventKind;
   confirmedAt: string;
   canonicalPromptId?: number;
 }
 
-export interface LifecycleStateV1 {
+export const COMPACTION_GATE_TTL_MS = 5 * 60 * 1_000;
+
+    export interface CompactionGate {
+      version: 1;
+      authority: string;
+      sourceIdentity?: string;
+      status: 'confirmed' | 'reserved';
+      confirmedAt: string;
+      expiresAt: string;
+      reservationId?: string;
+    }
+
+    export interface CompactionGateAuthority {
+      authority: string;
+      sourceIdentity?: string;
+    }
+
+    export type CompactionGateReservation =
+      | { status: 'reserved'; reservationId: string }
+      | { status: 'missing' | 'expired' | 'mismatched' | 'ambiguous' };
+
+    export interface LifecycleStateV1 {
   schemaVersion: 1;
   harness: HarnessId;
   projectId: string;
@@ -55,7 +80,8 @@ export interface LifecycleStateV1 {
   confirmedEvents: ConfirmedLifecycleEvent[];
   terminal: { status: 'open' | 'pending' | 'confirmed'; confirmedAt?: string };
   dedupState: 'supported' | 'degraded';
-  updatedAt: string;
+  compactionGate?: CompactionGate;
+      updatedAt: string;
 }
 
 export interface LifecycleStateStoreOptions {
@@ -70,7 +96,7 @@ export interface LifecycleStateStoreOptions {
 }
 
 export interface EventKeyEvidence {
-  intent: LifecycleIntent;
+  intent: StateLifecycleIntent;
   actor: string;
   nativeEventId?: string;
   hostTimestamp?: string;
@@ -109,6 +135,11 @@ export interface LifecycleStateTransaction {
   confirmEnrollment(confirmedAt: string): void;
   confirmTerminal(confirmedAt: string): void;
   confirmEvent(event: ConfirmedLifecycleEvent): 'confirmed' | 'duplicate' | 'degraded';
+      invalidateCompactionGate(confirmedAt: string): void;
+      confirmCompactionGate(authority: CompactionGateAuthority, confirmedAt: string): void;
+      reserveCompactionGate(sourceIdentity: string | undefined, reservedAt: string): CompactionGateReservation;
+      releaseCompactionGate(reservationId: string, releasedAt: string): boolean;
+      consumeCompactionGate(reservationId: string, consumedAt: string): boolean;
 }
 
 export class LifecycleStateLockError extends Error {
@@ -250,14 +281,32 @@ function isTerminalState(value: unknown): value is LifecycleStateV1['terminal'] 
     : value.confirmedAt === undefined;
 }
 
-function isConfirmedEvent(value: unknown): value is ConfirmedLifecycleEvent {
+function isCompactionGate(value: unknown): value is CompactionGate {
+      if (!isRecord(value)
+        || value.version !== 1
+        || typeof value.authority !== 'string'
+        || !/^[a-f0-9]{64}$/.test(value.authority)
+        || (value.sourceIdentity !== undefined
+          && (typeof value.sourceIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(value.sourceIdentity)))
+        || (value.status !== 'confirmed' && value.status !== 'reserved')
+        || !isTimestamp(value.confirmedAt)
+        || !isTimestamp(value.expiresAt)) {
+        return false;
+      }
+      const hasReservation = typeof value.reservationId === 'string'
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.reservationId);
+      return value.status === 'reserved' ? hasReservation : value.reservationId === undefined;
+    }
+
+    function isConfirmedEvent(value: unknown): value is ConfirmedLifecycleEvent {
   if (!isRecord(value)) {
     return false;
   }
   return typeof value.key === 'string'
     && /^[a-f0-9]{64}$/.test(value.key)
     && typeof value.intent === 'string'
-    && (LIFECYCLE_INTENTS as readonly string[]).includes(value.intent)
+    && ((STATE_LIFECYCLE_INTENTS as readonly string[]).includes(value.intent)
+      || value.intent === DELIVERY_CONFIRMATION_EVENT_KIND)
     && isTimestamp(value.confirmedAt)
     && (value.canonicalPromptId === undefined
       || (typeof value.canonicalPromptId === 'number'
@@ -280,6 +329,7 @@ function isLifecycleState(value: unknown): value is LifecycleStateV1 {
     || !value.confirmedEvents.every(isConfirmedEvent)
     || !isTerminalState(value.terminal)
     || (value.dedupState !== 'supported' && value.dedupState !== 'degraded')
+        || (value.compactionGate !== undefined && !isCompactionGate(value.compactionGate))
     || !isTimestamp(value.updatedAt)) {
     return false;
   }
@@ -315,6 +365,152 @@ function isProcessAlive(pid: number): boolean {
       && 'code' in error
       && error.code === 'EPERM';
   }
+}
+
+export const DELIVERY_ATTEMPT_TTL_MS = 5 * 60 * 1_000;
+const MAX_DELIVERY_ATTEMPT_TOKEN_CODE_POINTS = 4_096;
+const MAX_DELIVERY_BINDING_CODE_POINTS = 512;
+const MAX_DELIVERY_MAPPING_CODE_POINTS = 128;
+const DELIVERY_CHANNELS = ['opencode-protocol-output', 'runner-stdout'] as const;
+export type DeliveryAttemptPurpose = 'recovery_context' | 'post_compaction_guidance';
+
+export interface DeliveryAttemptBinding {
+  eventMappingId: string;
+  deliveryChannel: typeof DELIVERY_CHANNELS[number];
+  deliveryMappingId: string;
+}
+
+export interface DeliveryAttemptIssue extends DeliveryAttemptBinding {
+  purpose: DeliveryAttemptPurpose;
+  directiveText: string;
+}
+
+export interface DeliveryAttemptConfirmation extends DeliveryAttemptBinding {
+  purpose: DeliveryAttemptPurpose;
+  directiveText: string;
+  deliveryAttempt: string;
+}
+
+export type DeliveryAttemptConfirmationResult =
+  | { outcome: 'confirmed' | 'no_op'; retryable: false }
+  | { outcome: 'failed'; retryable: boolean; reason: string };
+
+interface DeliveryAttemptClaims extends DeliveryAttemptBinding {
+  version: 1;
+  harness: HarnessId;
+  projectId: string;
+  rootSessionId: string;
+  purpose: DeliveryAttemptPurpose;
+  directiveSha256: string;
+  nonce: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+function isBoundedOpaque(value: unknown, maximum: number): value is string {
+  return typeof value === 'string'
+    && Array.from(value).length > 0
+    && Array.from(value).length <= maximum;
+}
+
+function isDeliveryMapping(value: unknown): value is string {
+  return isBoundedOpaque(value, MAX_DELIVERY_MAPPING_CODE_POINTS)
+    && /^[a-z0-9][a-z0-9.-]*$/.test(value);
+}
+
+function isDeliveryChannel(value: unknown): value is DeliveryAttemptBinding['deliveryChannel'] {
+  return value === 'opencode-protocol-output' || value === 'runner-stdout';
+}
+
+function isDeliveryPurpose(value: unknown): value is DeliveryAttemptPurpose {
+  return value === 'recovery_context' || value === 'post_compaction_guidance';
+}
+
+function isDeliveryDirective(value: unknown): value is string {
+  return typeof value === 'string'
+    && Array.from(value).length > 0
+    && Array.from(value).length <= 1_000;
+}
+
+function isDeliveryBinding(value: DeliveryAttemptBinding): boolean {
+  return isDeliveryMapping(value.eventMappingId)
+    && isDeliveryChannel(value.deliveryChannel)
+    && isDeliveryMapping(value.deliveryMappingId);
+}
+
+function directiveSha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+function deliveryAttemptSignature(secret: Buffer, encodedClaims: string): string {
+  return createHmac('sha256', secret).update(encodedClaims).digest('hex');
+}
+
+function parseDeliveryAttemptClaims(token: string, secret: Buffer): DeliveryAttemptClaims | undefined {
+  if (!isBoundedOpaque(token, MAX_DELIVERY_ATTEMPT_TOKEN_CODE_POINTS)) return undefined;
+  const pieces = token.split('.');
+  if (pieces.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(pieces[0]) || !/^[a-f0-9]{64}$/.test(pieces[1])) return undefined;
+  const expected = Buffer.from(deliveryAttemptSignature(secret, pieces[0]), 'hex');
+  const actual = Buffer.from(pieces[1], 'hex');
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(pieces[0], 'base64url').toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const keys = [
+    'version', 'harness', 'projectId', 'rootSessionId', 'purpose', 'eventMappingId', 'deliveryChannel',
+    'deliveryMappingId', 'directiveSha256', 'nonce', 'issuedAt', 'expiresAt',
+  ];
+  if (Object.keys(parsed).length !== keys.length || !keys.every((key) => Object.hasOwn(parsed, key))) return undefined;
+  if (parsed.version !== 1
+    || typeof parsed.harness !== 'string'
+    || !(HARNESS_IDS as readonly string[]).includes(parsed.harness)
+    || !isBoundedOpaque(parsed.projectId, MAX_DELIVERY_BINDING_CODE_POINTS)
+    || !isBoundedOpaque(parsed.rootSessionId, MAX_DELIVERY_BINDING_CODE_POINTS)
+    || !isDeliveryPurpose(parsed.purpose)
+    || !isDeliveryMapping(parsed.eventMappingId)
+    || !isDeliveryChannel(parsed.deliveryChannel)
+    || !isDeliveryMapping(parsed.deliveryMappingId)
+    || typeof parsed.directiveSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(parsed.directiveSha256)
+    || typeof parsed.nonce !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parsed.nonce)
+    || typeof parsed.issuedAt !== 'number'
+    || !Number.isSafeInteger(parsed.issuedAt)
+    || typeof parsed.expiresAt !== 'number'
+    || !Number.isSafeInteger(parsed.expiresAt)
+    || parsed.expiresAt - parsed.issuedAt !== DELIVERY_ATTEMPT_TTL_MS) return undefined;
+  return {
+    version: 1,
+    harness: parsed.harness as HarnessId,
+    projectId: parsed.projectId as string,
+    rootSessionId: parsed.rootSessionId as string,
+    purpose: parsed.purpose as DeliveryAttemptPurpose,
+    eventMappingId: parsed.eventMappingId as string,
+    deliveryChannel: parsed.deliveryChannel as DeliveryAttemptBinding['deliveryChannel'],
+    deliveryMappingId: parsed.deliveryMappingId as string,
+    directiveSha256: parsed.directiveSha256 as string,
+    nonce: parsed.nonce as string,
+    issuedAt: parsed.issuedAt as number,
+    expiresAt: parsed.expiresAt as number,
+  };
+}
+
+function deliveryStateError(error: unknown): DeliveryAttemptConfirmationResult {
+  const retryable = error instanceof LifecycleStateLockError
+    || (error instanceof Error
+      && 'code' in error
+      && ['EAGAIN', 'EBUSY', 'EIO', 'EMFILE', 'ENFILE', 'ENOSPC'].includes(String(error.code)));
+  return {
+    outcome: 'failed',
+    retryable,
+    reason: retryable
+      ? 'Delivery confirmation state is temporarily locked; retry the same attempt.'
+      : 'Delivery confirmation state could not be verified safely.',
+  };
 }
 
 class Transaction implements LifecycleStateTransaction {
@@ -381,9 +577,96 @@ class Transaction implements LifecycleStateTransaction {
     this.dirty = true;
     return degraded ? 'degraded' : 'confirmed';
   }
-}
 
-export class FileLifecycleStateStore {
+  invalidateCompactionGate(confirmedAt: string): void {
+        if (!this.state.compactionGate) {
+          return;
+        }
+        delete this.state.compactionGate;
+        this.state.updatedAt = confirmedAt;
+        this.dirty = true;
+      }
+
+      confirmCompactionGate(authority: CompactionGateAuthority, confirmedAt: string): void {
+        if (!/^[a-f0-9]{64}$/.test(authority.authority)
+          || (authority.sourceIdentity !== undefined && !/^[a-f0-9]{64}$/.test(authority.sourceIdentity))
+          || !isTimestamp(confirmedAt)) {
+          throw new LifecycleStateCorruptionError();
+        }
+        const confirmedAtMillis = Date.parse(confirmedAt);
+        this.state.compactionGate = {
+          version: 1,
+          authority: authority.authority,
+          ...(authority.sourceIdentity ? { sourceIdentity: authority.sourceIdentity } : {}),
+          status: 'confirmed',
+          confirmedAt,
+          expiresAt: new Date(confirmedAtMillis + COMPACTION_GATE_TTL_MS).toISOString(),
+        };
+        if (serializedBytes(this.state) > this.limits.maxStateBytes) {
+          throw new Error('Lifecycle state metadata exceeds the configured byte bound');
+        }
+        this.state.updatedAt = confirmedAt;
+        this.dirty = true;
+      }
+
+      reserveCompactionGate(sourceIdentity: string | undefined, reservedAt: string): CompactionGateReservation {
+        const gate = this.state.compactionGate;
+        if (!gate) {
+          return { status: 'missing' };
+        }
+        if (!isTimestamp(reservedAt)) {
+          throw new LifecycleStateCorruptionError();
+        }
+        if (Date.parse(gate.expiresAt) <= Date.parse(reservedAt)) {
+          delete this.state.compactionGate;
+          this.state.updatedAt = reservedAt;
+          this.dirty = true;
+          return { status: 'expired' };
+        }
+        if (gate.sourceIdentity !== sourceIdentity) {
+          return { status: 'mismatched' };
+        }
+        if (gate.status === 'reserved') {
+          return { status: 'ambiguous' };
+        }
+        const reservationId = randomUUID();
+        this.state.compactionGate = { ...gate, status: 'reserved', reservationId };
+        this.state.updatedAt = reservedAt;
+        this.dirty = true;
+        return { status: 'reserved', reservationId };
+      }
+
+      releaseCompactionGate(reservationId: string, releasedAt: string): boolean {
+        const gate = this.state.compactionGate;
+        if (!gate || gate.status !== 'reserved' || gate.reservationId !== reservationId || !isTimestamp(releasedAt)) {
+          return false;
+        }
+        this.state.compactionGate = {
+          version: gate.version,
+          authority: gate.authority,
+          ...(gate.sourceIdentity ? { sourceIdentity: gate.sourceIdentity } : {}),
+          status: 'confirmed',
+          confirmedAt: gate.confirmedAt,
+          expiresAt: gate.expiresAt,
+        };
+        this.state.updatedAt = releasedAt;
+        this.dirty = true;
+        return true;
+      }
+
+      consumeCompactionGate(reservationId: string, consumedAt: string): boolean {
+        const gate = this.state.compactionGate;
+        if (!gate || gate.status !== 'reserved' || gate.reservationId !== reservationId || !isTimestamp(consumedAt)) {
+          return false;
+        }
+        delete this.state.compactionGate;
+        this.state.updatedAt = consumedAt;
+        this.dirty = true;
+        return true;
+      }
+    }
+
+    export class FileLifecycleStateStore {
   private readonly clock: Clock;
   private readonly limits: LifecycleStateLimits;
   private readonly lockMetadataPort: LifecycleLockMetadataPort;
@@ -417,6 +700,94 @@ export class FileLifecycleStateStore {
       }))
       .digest('hex');
     return { status: 'stable', key, protection };
+  }
+
+  async createCompactionGateAuthority(
+        eventKey: string,
+        sourceIdentity?: string,
+      ): Promise<CompactionGateAuthority> {
+        if (!/^[a-f0-9]{64}$/.test(eventKey)
+          || (sourceIdentity !== undefined
+            && (Array.from(sourceIdentity).length === 0 || Array.from(sourceIdentity).length > MAX_DELIVERY_BINDING_CODE_POINTS))) {
+          throw new LifecycleStateCorruptionError();
+        }
+        const { secret } = await this.readOrCreateSecret();
+        return {
+          authority: eventKey,
+          ...(sourceIdentity
+            ? { sourceIdentity: createHmac('sha256', secret).update('compaction-gate-source:' + sourceIdentity).digest('hex') }
+            : {}),
+        };
+      }
+
+      async issueDeliveryAttempt(issue: DeliveryAttemptIssue): Promise<string> {
+    if (!isDeliveryBinding(issue) || !isDeliveryPurpose(issue.purpose) || !isDeliveryDirective(issue.directiveText)
+      || !isBoundedOpaque(this.options.projectId, MAX_DELIVERY_BINDING_CODE_POINTS)
+      || !isBoundedOpaque(this.options.rootSessionId, MAX_DELIVERY_BINDING_CODE_POINTS)) {
+      throw new LifecycleStateCorruptionError();
+    }
+    const { secret } = await this.readOrCreateSecret();
+    const issuedAt = this.clock.now().getTime();
+    const claims: DeliveryAttemptClaims = {
+      version: 1,
+      harness: this.options.harness,
+      projectId: this.options.projectId,
+      rootSessionId: this.options.rootSessionId,
+      purpose: issue.purpose,
+      eventMappingId: issue.eventMappingId,
+      deliveryChannel: issue.deliveryChannel,
+      deliveryMappingId: issue.deliveryMappingId,
+      directiveSha256: directiveSha256(issue.directiveText),
+      nonce: randomUUID(),
+      issuedAt,
+      expiresAt: issuedAt + DELIVERY_ATTEMPT_TTL_MS,
+    };
+    const encodedClaims = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
+    return encodedClaims + '.' + deliveryAttemptSignature(secret, encodedClaims);
+  }
+
+  async confirmDeliveryAttempt(input: DeliveryAttemptConfirmation): Promise<DeliveryAttemptConfirmationResult> {
+    if (!isDeliveryBinding(input) || !isDeliveryPurpose(input.purpose) || !isDeliveryDirective(input.directiveText)) {
+      return { outcome: 'failed', retryable: false, reason: 'Delivery confirmation payload is malformed.' };
+    }
+    try {
+      const { secret } = await this.readOrCreateSecret();
+      const claims = parseDeliveryAttemptClaims(input.deliveryAttempt, secret);
+      if (!claims) {
+        return { outcome: 'failed', retryable: false, reason: 'Delivery attempt signature is invalid.' };
+      }
+      if (this.clock.now().getTime() >= claims.expiresAt) {
+        return { outcome: 'failed', retryable: false, reason: 'Delivery attempt has expired.' };
+      }
+      if (claims.harness !== this.options.harness
+        || claims.projectId !== this.options.projectId
+        || claims.rootSessionId !== this.options.rootSessionId
+        || claims.purpose !== input.purpose
+        || claims.eventMappingId !== input.eventMappingId
+        || claims.deliveryChannel !== input.deliveryChannel
+        || claims.deliveryMappingId !== input.deliveryMappingId
+        || claims.directiveSha256 !== directiveSha256(input.directiveText)) {
+        return { outcome: 'failed', retryable: false, reason: 'Delivery attempt binding does not match this confirmation.' };
+      }
+      const key = createHmac('sha256', secret)
+        .update('delivery-confirmation:' + input.deliveryAttempt)
+        .digest('hex');
+      return await this.runExclusive(async (transaction) => {
+        if (transaction.hasConfirmedEvent(key)) {
+          return { outcome: 'no_op', retryable: false };
+        }
+        const outcome = transaction.confirmEvent({
+          key,
+          intent: DELIVERY_CONFIRMATION_EVENT_KIND,
+          confirmedAt: this.clock.now().toISOString(),
+        });
+        return outcome === 'duplicate'
+          ? { outcome: 'no_op', retryable: false }
+          : { outcome: 'confirmed', retryable: false };
+      });
+    } catch (error) {
+      return deliveryStateError(error);
+    }
   }
 
   async read(): Promise<LifecycleStateV1> {

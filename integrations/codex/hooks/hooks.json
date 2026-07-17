@@ -1,9 +1,9 @@
 {
-  "description": "Evidence-gated thoth-mem lifecycle hooks. Unsupported Codex hooks degrade without claiming success.",
+  "description": "Evidence-gated thoth-mem lifecycle hooks. Only verified native context envelopes reach stdout.",
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",

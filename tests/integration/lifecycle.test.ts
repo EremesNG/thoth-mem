@@ -13,9 +13,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
 
-import { createClaudeCodeCapabilities } from '../../src/integration/adapters/claude-code.js';
-import { createCodexCapabilities } from '../../src/integration/adapters/codex.js';
-import { createOpenCodeCapabilities } from '../../src/integration/adapters/opencode.js';
+
+
+
 import {
   CAPABILITY_STATES,
   LIFECYCLE_INTENTS,
@@ -30,7 +30,11 @@ import {
   MemoryIntegrationCore,
   planLifecycleEffects,
 } from '../../src/integration/core/lifecycle.js';
-import { sanitizeRootPromptCapture } from '../../src/integration/core/sanitizer.js';
+import {
+  MAX_PASSIVE_LEARNING_CODE_POINTS,
+  sanitizePassiveLearning,
+  sanitizeRootPromptCapture,
+} from '../../src/integration/core/sanitizer.js';
 import {
   MEMORY_TOOL_NAMES,
   callMemoryTool,
@@ -47,6 +51,7 @@ import {
   type LifecycleLockMetadataPort,
 } from '../../src/integration/core/state-store.js';
 import { Store } from '../../src/store/index.js';
+import { HOST_EVIDENCE } from '../fixtures/integration/host-evidence.js';
 
 const harnesses: HarnessId[] = ['opencode', 'codex', 'claude'];
 
@@ -227,9 +232,14 @@ describe('native integration lifecycle core', () => {
       transition: 'prompt_capture',
     }]);
     expect(plansByIntent.recall_guidance[0].effects).toEqual([{
-      kind: 'inject_protocol',
-      text: expect.stringContaining('mem_recall'),
-    }]);
+          kind: 'memory_call',
+          tool: 'mem_context',
+          input: {
+            project: 'host-neutral-project',
+            session_id: 'root-session',
+          },
+          transition: 'recovery_context',
+        }]);
     expect(plansByIntent.compact_session[0].effects).toEqual([{
       kind: 'memory_call',
       tool: 'mem_session',
@@ -240,6 +250,14 @@ describe('native integration lifecycle core', () => {
         summary: 'Checkpoint before compaction.',
       },
       transition: 'compaction',
+    }, {
+      kind: 'memory_call',
+      tool: 'mem_context',
+      input: {
+        project: 'host-neutral-project',
+        session_id: 'root-session',
+      },
+      transition: 'recovery_context',
     }]);
     expect(plansByIntent.finalize_session[0].effects).toEqual([{
       kind: 'memory_call',
@@ -276,6 +294,54 @@ describe('native integration lifecycle core', () => {
       'finalize_session',
     ]);
   });
+
+it('keeps unproven terminal finalization degraded without disabling independent lifecycle capabilities', () => {
+  const capabilities = supportedCapabilities('codex');
+  capabilities.finalize_session = {
+    state: 'degraded',
+    reason: 'No verified terminal trigger for this host version.',
+  };
+
+  const finalization = planLifecycleEffects(
+    eventForIntent('codex', 'finalize_session'),
+    capabilities,
+  );
+  expect(finalization).toMatchObject({
+    capabilityState: 'degraded',
+    effects: [{
+      kind: 'diagnostic',
+      diagnostic: {
+        capability: 'finalize_session',
+        outcome: 'degraded',
+        reason: 'No verified terminal trigger for this host version.',
+      },
+    }],
+  });
+  expect(finalization.effects.some((effect) => effect.kind === 'memory_call')).toBe(false);
+
+  expect(planLifecycleEffects(
+    eventForIntent('codex', 'enroll_session'),
+    capabilities,
+  ).effects.some((effect) => effect.kind === 'memory_call')).toBe(true);
+  expect(planLifecycleEffects(
+    eventForIntent('codex', 'compact_session'),
+    capabilities,
+  ).effects.some((effect) => effect.kind === 'memory_call')).toBe(true);
+  expect(planLifecycleEffects(
+    {
+      ...eventForIntent('codex', 'capture_passive_learning'),
+      actor: 'subagent',
+      content: 'Independent passive learning.',
+      passiveLearningEvidence: {
+        terminalMappingId: 'codex-terminal-learning-v1',
+        verifiedTerminalOutput: true,
+      },
+    },
+    capabilities,
+  ).effects.some((effect) => effect.kind === 'memory_call')).toBe(true);
+});
+
+
 
   it('sanitizes root prompt capture', () => {
     const rootPrompt = (content: string): NormalizedEvent => ({
@@ -1170,20 +1236,14 @@ describe('native integration lifecycle core', () => {
 
     try {
       const beforeEnablement = await readFixedOutputs();
-      createOpenCodeCapabilities({
-        verifiedEvents: [
-          'session.created',
-          'chat.message',
-          'experimental.chat.system.transform',
-          'experimental.session.compacting',
-        ],
-        verifiedFinalizationTrigger: 'session.completed',
-      });
-      const promptCapabilities = createCodexCapabilities({
-        verifiedHooks: { capture_root_prompt: 'UserPromptSubmit' },
-      });
-      createClaudeCodeCapabilities();
-      const afterEnablement = await readFixedOutputs();
+      const promptCapabilities: AdapterCapabilities = {
+            enroll_session: { state: 'unsupported', reason: 'Not exercised by this contract test.' },
+            capture_root_prompt: { state: 'supported', trigger: 'UserPromptSubmit' },
+            recall_guidance: { state: 'unsupported', reason: 'Not exercised by this contract test.' },
+            compact_session: { state: 'unsupported', reason: 'Not exercised by this contract test.' },
+            finalize_session: { state: 'unsupported', reason: 'Not exercised by this contract test.' },
+          };
+          const afterEnablement = await readFixedOutputs();
 
       expect(JSON.stringify(afterEnablement)).toBe(JSON.stringify(beforeEnablement));
 
@@ -1381,4 +1441,330 @@ describe('native integration lifecycle core', () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it('persists verified terminal subagent learning only as an observation and handles replay safely', async () => {
+    expect(typeof sanitizePassiveLearning).toBe('function');
+
+    const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+    if (!evidence) {
+      throw new Error('Expected standalone Claude Code host evidence');
+    }
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-passive-learning-'));
+    const capabilities = supportedCapabilities('claude');
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    const memoryPort: MemoryPort = {
+      async call(tool, input) {
+        calls.push({ tool, input });
+        return { confirmed: true, isError: false, text: 'Observation saved.' };
+      },
+      async close() {},
+    };
+    const stateStore = new FileLifecycleStateStore({
+      dataDir,
+      harness: 'claude',
+      projectId: 'passive-learning-project',
+      rootSessionId: 'passive-learning-session',
+      capabilities,
+    });
+        const publicPrefix = 'Reusable terminal learning. ';
+        const expectedContent = publicPrefix + 'x'.repeat(
+          MAX_PASSIVE_LEARNING_CODE_POINTS - Array.from(publicPrefix).length,
+        );
+        const core = new MemoryIntegrationCore({ capabilities, memoryPort, stateStore });
+        const passiveEvent: NormalizedEvent = {
+          harness: 'claude',
+          intent: 'capture_passive_learning',
+          actor: 'subagent',
+          isRootSession: true,
+          identity: {
+            sessionId: 'passive-learning-session',
+            project: 'passive-learning-project',
+          },
+          nativeEventId: 'terminal-subagent-output-1',
+          content: publicPrefix + '<private>PRIVATE-TERMINAL-SECRET</private>'
+            + 'x'.repeat(MAX_PASSIVE_LEARNING_CODE_POINTS),
+          nativeEvent: 'SessionEnd',
+          passiveLearningEvidence: {
+            terminalMappingId: evidence.terminal.mappingId,
+            verifiedTerminalOutput: true,
+          },
+        };
+
+        try {
+          expect(sanitizePassiveLearning(passiveEvent)).toEqual({
+            action: 'persist',
+            content: expectedContent,
+            truncated: true,
+            privacyDegraded: false,
+          });
+
+          const first = await core.handle(passiveEvent);
+          expect(first).toMatchObject({ outcome: 'degraded', intent: 'capture_passive_learning' });
+          expect(calls).toEqual([{
+            tool: 'mem_save',
+            input: expect.objectContaining({
+              kind: 'observation',
+              type: 'learning',
+              session_id: 'passive-learning-session',
+              project: 'passive-learning-project',
+              scope: 'project',
+              content: expectedContent,
+            }),
+          }]);
+          expect(calls[0]?.input.kind).not.toBe('prompt');
+          expect(JSON.stringify(calls)).not.toContain('PRIVATE-TERMINAL-SECRET');
+
+          const replay = await core.handle(passiveEvent);
+          expect(replay).toMatchObject({ outcome: 'no_op', retryable: false });
+          expect(calls).toHaveLength(1);
+
+          const { nativeEventId: _nativeEventId, ...missingStableEvent } = passiveEvent;
+          const missingStable = await core.handle(missingStableEvent);
+          expect(missingStable).toMatchObject({ outcome: 'degraded', retryable: false });
+          expect(missingStable.diagnostic?.reason).toContain('Stable event identity');
+          expect(calls).toHaveLength(2);
+        } finally {
+          rmSync(dataDir, { recursive: true, force: true });
+        }
+      });
+
+  it('retries a failed passive observation save before confirming the same event once', async () => {
+    const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+    if (!evidence) {
+      throw new Error('Expected standalone Claude Code host evidence');
+    }
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-passive-retry-'));
+    const capabilities = supportedCapabilities('claude');
+    let attempts = 0;
+    const memoryPort: MemoryPort = {
+      async call() {
+        attempts += 1;
+        return attempts === 1
+          ? { confirmed: false, isError: true, text: 'Temporary memory failure.' }
+          : { confirmed: true, isError: false, text: 'Observation saved.' };
+      },
+      async close() {},
+    };
+    const stateStore = new FileLifecycleStateStore({
+      dataDir,
+      harness: 'claude',
+      projectId: 'passive-retry-project',
+      rootSessionId: 'passive-retry-session',
+      capabilities,
+    });
+    const core = new MemoryIntegrationCore({ capabilities, memoryPort, stateStore });
+    const event: NormalizedEvent = {
+      harness: 'claude',
+      intent: 'capture_passive_learning',
+      actor: 'subagent',
+      isRootSession: true,
+      identity: { sessionId: 'passive-retry-session', project: 'passive-retry-project' },
+      nativeEventId: 'passive-retry-event',
+      content: 'Retryable terminal learning.',
+      nativeEvent: 'SessionEnd',
+      passiveLearningEvidence: {
+        terminalMappingId: evidence.terminal.mappingId,
+        verifiedTerminalOutput: true,
+      },
+    };
+
+    try {
+      await expect(core.handle(event)).resolves.toMatchObject({ outcome: 'failed', retryable: true });
+      await expect(core.handle(event)).resolves.toMatchObject({ outcome: 'confirmed', retryable: false });
+      await expect(core.handle(event)).resolves.toMatchObject({ outcome: 'no_op', retryable: false });
+      expect(attempts).toBe(2);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+
+  it('issues a private delivery attempt only after confirmed recovery memory and never after a memory failure', async () => {
+        const dataDir = mkdtempSync(join(tmpdir(), 'thoth-delivery-prepare-'));
+        const capabilities = supportedCapabilities('opencode');
+        const stateStore = new FileLifecycleStateStore({
+          dataDir,
+          harness: 'opencode',
+          projectId: 'host-neutral-project',
+          rootSessionId: 'root-session',
+          capabilities,
+        });
+        const memoryPort: MemoryPort = {
+          async call(tool) {
+            return {
+              confirmed: true,
+              isError: false,
+              text: tool === 'mem_context' ? 'Recovered context for delivery.' : 'Session enrolled.',
+            };
+          },
+          async close() {},
+        };
+        const core = new MemoryIntegrationCore({
+          capabilities,
+          memoryPort,
+          stateStore,
+          hostOutput: {
+            recovery: {
+              mappingId: 'opencode-recovery-injection-v1',
+              verifiedMappingId: 'opencode-recovery-injection-v1',
+              ready: true,
+            },
+          },
+        });
+        const prepareDelivery = Reflect.get(core, 'prepareDelivery');
+        expect(prepareDelivery).toBeTypeOf('function');
+        if (typeof prepareDelivery !== 'function') {
+          rmSync(dataDir, { recursive: true, force: true });
+          return;
+        }
+        const binding = {
+          eventMappingId: 'opencode-session-start-v1',
+          deliveryChannel: 'opencode-protocol-output',
+          deliveryMappingId: 'opencode-recovery-injection-v1',
+        };
+
+        try {
+      const prepare = prepareDelivery.bind(core) as (
+        event: NormalizedEvent,
+        binding: typeof binding,
+      ) => Promise<LifecycleResult & { deliveryAttempt?: string }>;
+      const prepared = await prepare(enrollmentEvent('opencode'), binding);
+      expect(prepared).toMatchObject({
+            outcome: 'confirmed',
+            hostOutputDirective: {
+              purpose: 'recovery_context',
+              text: 'Recovered context for delivery.',
+              deliveryMappingId: binding.deliveryMappingId,
+            },
+            deliveryAttempt: expect.any(String),
+            deliveryState: expect.objectContaining({
+              memoryConfirmation: 'confirmed',
+              outputReadiness: 'ready',
+              modelConsumption: 'unproven',
+            }),
+          });
+          expect(JSON.stringify(await stateStore.read())).not.toContain('Recovered context for delivery.');
+
+          const failedCore = new MemoryIntegrationCore({
+            capabilities,
+            memoryPort: {
+              async call() { return { confirmed: false, isError: true, text: 'Temporary memory failure.' }; },
+              async close() {},
+            },
+            stateStore,
+            hostOutput: {
+              recovery: {
+                mappingId: binding.deliveryMappingId,
+                verifiedMappingId: binding.deliveryMappingId,
+                ready: true,
+              },
+            },
+          });
+      const failedPrepare = Reflect.get(failedCore, 'prepareDelivery');
+      expect(failedPrepare).toBeTypeOf('function');
+      if (typeof failedPrepare !== 'function') {
+        return;
+      }
+      const prepareFailure = failedPrepare.bind(failedCore) as (
+        event: NormalizedEvent,
+        binding: typeof binding,
+      ) => Promise<LifecycleResult & { deliveryAttempt?: string }>;
+      const failed = await prepareFailure({
+        ...enrollmentEvent('opencode'),
+        nativeEventId: 'opencode-memory-failure',
+      }, binding);
+          expect(failed).toMatchObject({ outcome: 'failed', retryable: true });
+          expect(failed).not.toHaveProperty('hostOutputDirective');
+          expect(failed).not.toHaveProperty('deliveryAttempt');
+        } finally {
+          rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('confirms a signed delivery attempt once and rejects mismatched, expired, cross-session, and locked confirmations', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-delivery-confirm-'));
+    const capabilities = supportedCapabilities('opencode');
+    let currentTime = Date.parse('2026-07-16T12:00:00.000Z');
+    const clock: Clock = {
+      now: () => new Date(currentTime),
+      sleep: async () => {},
+    };
+    const options = {
+      dataDir,
+      harness: 'opencode' as const,
+      projectId: 'delivery-project',
+      rootSessionId: 'delivery-session',
+      capabilities,
+      clock,
+    };
+    const store = new FileLifecycleStateStore(options);
+    const binding = {
+      eventMappingId: 'opencode-session-start-v1',
+      deliveryChannel: 'opencode-protocol-output' as const,
+      deliveryMappingId: 'opencode-recovery-injection-v1',
+    };
+    const issue = {
+      ...binding,
+      purpose: 'recovery_context' as const,
+      directiveText: 'Recovered context for confirmation.',
+    };
+
+    try {
+      const deliveryAttempt = await store.issueDeliveryAttempt(issue);
+      const confirmation = { ...issue, deliveryAttempt };
+      await expect(store.confirmDeliveryAttempt(confirmation)).resolves.toEqual({
+        outcome: 'confirmed',
+        retryable: false,
+      });
+      await expect(store.confirmDeliveryAttempt(confirmation)).resolves.toEqual({
+        outcome: 'no_op',
+        retryable: false,
+      });
+      await expect(store.confirmDeliveryAttempt({ ...confirmation, directiveText: 'wrong directive' }))
+        .resolves.toMatchObject({ outcome: 'failed', retryable: false });
+
+      const crossSessionStore = new FileLifecycleStateStore({
+        ...options,
+        rootSessionId: 'different-root-session',
+      });
+      await expect(crossSessionStore.confirmDeliveryAttempt(confirmation))
+        .resolves.toMatchObject({ outcome: 'failed', retryable: false });
+
+      const expiringAttempt = await store.issueDeliveryAttempt(issue);
+      currentTime += 5 * 60 * 1_000;
+      await expect(store.confirmDeliveryAttempt({ ...issue, deliveryAttempt: expiringAttempt }))
+        .resolves.toMatchObject({ outcome: 'failed', retryable: false });
+
+      let releaseLock: (() => void) | undefined;
+      const lockReleased = new Promise<void>((resolve) => { releaseLock = resolve; });
+      let lockStarted: (() => void) | undefined;
+      const lockStartedPromise = new Promise<void>((resolve) => { lockStarted = resolve; });
+      const lockedStore = new FileLifecycleStateStore({
+        ...options,
+        rootSessionId: 'locked-session',
+        clock: {
+          now: () => new Date(),
+          sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+        },
+        limits: { lockTimeoutMs: 1, lockPollMs: 1 },
+        lockMetadataPort: {
+          async persist(file, metadata) {
+            await file.writeFile(JSON.stringify(metadata));
+            await file.sync();
+            lockStarted?.();
+          },
+        } satisfies LifecycleLockMetadataPort,
+      });
+      const lockedAttempt = await lockedStore.issueDeliveryAttempt(issue);
+      const heldLock = lockedStore.runExclusive(async () => { await lockReleased; });
+      await lockStartedPromise;
+      await expect(lockedStore.confirmDeliveryAttempt({ ...issue, deliveryAttempt: lockedAttempt }))
+        .resolves.toMatchObject({ outcome: 'failed', retryable: true });
+      releaseLock?.();
+      await heldLock;
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
 });

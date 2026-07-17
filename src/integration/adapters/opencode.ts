@@ -1,92 +1,26 @@
-import type {
-  AdapterCapabilities,
-  LifecycleIntent,
-  NormalizedEvent,
-} from '../core/types.js';
-import {
-  asRecord,
-  degraded,
-  dispatch,
-  findIntentByTrigger,
-  incomplete,
-  noOp,
-  normalizedIdentity,
-  readSequence,
-  readString,
-  supported,
-  unsupported,
-  type AdapterEventResult,
-} from './shared.js';
+import type { LifecycleIntent, NormalizedEvent } from '../core/types.js';
+    import {
+      assertResolverProducedAdapterCapabilities,
+      type ResolverProducedAdapterCapabilities,
+    } from '../runtime/capability-evidence.js';
+    import {
+      asRecord,
+      degraded,
+      dispatch,
+      findIntentByTrigger,
+      noOp,
+      normalizedIdentity,
+      readSequence,
+      readString,
+      type AdapterEventResult,
+    } from './shared.js';
 
-const OPENCODE_TRIGGERS = {
+    const OPENCODE_TRIGGERS = {
   enroll_session: 'session.created',
   capture_root_prompt: 'chat.message',
   recall_guidance: 'experimental.chat.system.transform',
   compact_session: 'experimental.session.compacting',
 } as const satisfies Partial<Record<LifecycleIntent, string>>;
-
-export interface OpenCodeCapabilityEvidence {
-  hostVersion?: string;
-  verifiedEvents?: readonly string[];
-  incompleteEvents?: readonly string[];
-  verifiedFinalizationTrigger?: string;
-  incompleteFinalizationTrigger?: string;
-}
-
-function eventCapability(
-  trigger: string,
-  verifiedEvents: ReadonlySet<string>,
-  incompleteEvents: ReadonlySet<string>,
-): ReturnType<typeof supported | typeof incomplete | typeof unsupported> {
-  if (verifiedEvents.has(trigger)) {
-    return supported(trigger);
-  }
-  if (incompleteEvents.has(trigger)) {
-    return incomplete(
-      trigger,
-      `The ${trigger} trigger is present, but its required payload fields are not verified.`,
-    );
-  }
-  return unsupported(`No verified OpenCode ${trigger} trigger is available.`);
-}
-
-export function createOpenCodeCapabilities(
-  evidence: OpenCodeCapabilityEvidence = {},
-): AdapterCapabilities {
-  const verifiedEvents = new Set(evidence.verifiedEvents ?? []);
-  const incompleteEvents = new Set(evidence.incompleteEvents ?? []);
-
-  return {
-    enroll_session: eventCapability(
-      OPENCODE_TRIGGERS.enroll_session,
-      verifiedEvents,
-      incompleteEvents,
-    ),
-    capture_root_prompt: eventCapability(
-      OPENCODE_TRIGGERS.capture_root_prompt,
-      verifiedEvents,
-      incompleteEvents,
-    ),
-    recall_guidance: eventCapability(
-      OPENCODE_TRIGGERS.recall_guidance,
-      verifiedEvents,
-      incompleteEvents,
-    ),
-    compact_session: eventCapability(
-      OPENCODE_TRIGGERS.compact_session,
-      verifiedEvents,
-      incompleteEvents,
-    ),
-    finalize_session: evidence.verifiedFinalizationTrigger
-      ? supported(evidence.verifiedFinalizationTrigger)
-      : evidence.incompleteFinalizationTrigger
-        ? incomplete(
-          evidence.incompleteFinalizationTrigger,
-          'A possible terminal trigger exists, but terminal payload evidence is incomplete.',
-        )
-        : unsupported('No verified terminal OpenCode event is available; session.deleted is cleanup only.'),
-  };
-}
 
 function knownIntent(nativeEvent: string): LifecycleIntent | undefined {
   return (Object.entries(OPENCODE_TRIGGERS) as Array<[LifecycleIntent, string]>)
@@ -150,8 +84,10 @@ function promptContent(nativeEvent: Record<string, unknown>): string | undefined
 
 export function normalizeOpenCodeEvent(
   input: unknown,
-  capabilities: AdapterCapabilities = createOpenCodeCapabilities(),
+  capabilities: ResolverProducedAdapterCapabilities,
 ): AdapterEventResult {
+  assertResolverProducedAdapterCapabilities(capabilities, 'opencode');
+
   const envelope = asRecord(input);
   const nativeEvent = asRecord(envelope?.event);
   const context = asRecord(envelope?.context);
