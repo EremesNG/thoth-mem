@@ -1,4 +1,5 @@
 import {
+  createHash,
   createHmac,
   randomBytes,
   randomUUID,
@@ -26,11 +27,14 @@ import {
 } from 'node:path';
 
 import type {
+  CodexSetupStrategy,
   SetupHarness,
   SetupScope,
   SetupStatus,
   SetupStepOutcome,
 } from './types.js';
+import type { CodexCliEvidence } from './codex-cli.js';
+import type { CodexManagedFragment } from './harnesses/codex.js';
 
 export type ReceiptFaultPoint =
   | 'key-stage'
@@ -56,7 +60,26 @@ export interface SetupReceiptStep {
   pre_hash?: string;
   post_hash?: string;
   backup_path?: string;
+  managed_fragment?: SetupReceiptManagedFragmentEvidence;
   diagnostic?: string;
+}
+
+export type SetupReceiptFragmentState =
+  | { state: 'absent' }
+  | { state: 'present'; sha256: string };
+
+export interface SetupReceiptManagedFragmentEvidence {
+  config_path: string;
+  owned_location: string;
+  operation: 'apply' | 'remove';
+  kind: CodexManagedFragment['kind'];
+  pre_state: SetupReceiptFragmentState;
+  post_state: SetupReceiptFragmentState;
+  restore: {
+    leading_separator: string;
+    before_text: string | null;
+    after_text: string;
+  };
 }
 
 export interface SetupReceiptV1 {
@@ -72,8 +95,61 @@ export interface SetupReceiptV1 {
   started_at: string;
   updated_at: string;
   steps: SetupReceiptStep[];
+  supersedes?: string;
   hmac_sha256: string;
 }
+
+export interface SetupReceiptExternalCheckpoint {
+  sequence: number;
+  id: 'codex-marketplace' | 'codex-plugin';
+  outcome: SetupStepOutcome;
+  observed_at: string;
+  diagnostic?: string;
+}
+
+export interface SetupReceiptV2ManagerEvidence {
+  initial_state: CodexCliEvidence['managerState'];
+  marketplace: {
+    name: 'thoth-mem';
+    source: 'EremesNG/thoth-mem';
+    pre_existing_verified: boolean;
+    created_by_attempt: boolean;
+    final_verified: boolean;
+  };
+  plugin: {
+    plugin_id: 'thoth-mem@thoth-mem';
+    name: 'thoth-mem';
+    marketplace_name: 'thoth-mem';
+    installed: boolean;
+    enabled: boolean;
+    pre_existing_verified: boolean;
+    created_by_attempt: boolean;
+    final_verified: boolean;
+  };
+  final_verified_at: string | null;
+}
+
+export interface SetupReceiptV2 {
+  schema_version: 2;
+  id: string;
+  operation: 'setup';
+  status: 'in_progress' | SetupStatus;
+  harness: 'codex';
+  scope: SetupScope;
+  target: string;
+  package_version: string;
+  force: boolean;
+  started_at: string;
+  updated_at: string;
+  steps: SetupReceiptStep[];
+  strategy: CodexSetupStrategy;
+  capability_evidence: CodexCliEvidence;
+  manager_evidence: SetupReceiptV2ManagerEvidence;
+  external_checkpoints: SetupReceiptExternalCheckpoint[];
+  hmac_sha256: string;
+}
+
+export type SetupReceipt = SetupReceiptV1 | SetupReceiptV2;
 
 export interface ReceiptPaths {
   receiptRoot: string;
@@ -87,20 +163,20 @@ export interface ReceiptPersistenceOptions {
   fault?: (event: ReceiptFaultEvent) => void | Promise<void>;
 }
 
-export type ReceiptWriteResult =
+export type ReceiptWriteResult<T extends SetupReceipt = SetupReceipt> =
   | {
       ok: true;
-      receipt: SetupReceiptV1;
+      receipt: T;
       keyProtection: 'enforced' | 'best_effort_windows';
     }
   | { ok: false; reason: string };
 
 export type ReceiptLoadResult =
-  | { ok: true; receipt: SetupReceiptV1 }
+  | { ok: true; receipt: SetupReceipt }
   | { ok: false; reason: string };
 
 export type ReceiptScanResult =
-  | { ok: true; receipts: Array<{ path: string; receipt: SetupReceiptV1 }> }
+  | { ok: true; receipts: Array<{ path: string; receipt: SetupReceipt }> }
   | { ok: false; reason: string };
 
 interface ReceiptKeyResult {
@@ -114,7 +190,7 @@ interface ReceiptKeyFailure {
   reason: string;
 }
 
-const RECEIPT_KEYS = [
+const RECEIPT_V1_KEYS = [
   'schema_version',
   'id',
   'operation',
@@ -127,6 +203,15 @@ const RECEIPT_KEYS = [
   'started_at',
   'updated_at',
   'steps',
+  'supersedes',
+  'hmac_sha256',
+] as const;
+const RECEIPT_V2_KEYS = [
+  ...RECEIPT_V1_KEYS.filter((key) => key !== 'hmac_sha256' && key !== 'supersedes'),
+  'strategy',
+  'capability_evidence',
+  'manager_evidence',
+  'external_checkpoints',
   'hmac_sha256',
 ] as const;
 const STEP_KEYS = [
@@ -139,11 +224,16 @@ const STEP_KEYS = [
   'pre_hash',
   'post_hash',
   'backup_path',
+  'managed_fragment',
   'diagnostic',
 ] as const;
 const HMAC_PATTERN = /^[0-9a-f]{64}$/;
 const RECEIPT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_RECEIPT_BYTES = 1024 * 1024;
+const MAX_RECEIPT_CHECKPOINTS = 256;
+const MAX_RECEIPT_DIAGNOSTIC_LENGTH = 512;
+const MAX_MANAGED_FRAGMENT_BYTES = 4 * 1024;
+const CODEX_MANAGED_OWNED_LOCATION = 'plugins.\"thoth-mem\".mcp_servers.\"thoth-mem\"';
 
 export function getReceiptKeyPath(dataDir: string): string {
   return join(dataDir, 'setup', 'receipt.key');
@@ -158,10 +248,74 @@ export function resolveSetupReceiptPaths(basePath: string, id: string): ReceiptP
   };
 }
 
+export function createCodexManagedFragmentReceiptEvidence(
+  configPath: string,
+  operation: SetupReceiptManagedFragmentEvidence['operation'],
+  fragment: CodexManagedFragment,
+): SetupReceiptManagedFragmentEvidence {
+  const beforeState: SetupReceiptFragmentState = fragment.beforeHash === null
+    ? { state: 'absent' }
+    : { state: 'present', sha256: fragment.beforeHash };
+  const afterState: SetupReceiptFragmentState = {
+    state: 'present',
+    sha256: fragment.afterHash,
+  };
+  const evidence: SetupReceiptManagedFragmentEvidence = {
+    config_path: configPath,
+    owned_location: fragment.ownedLocation,
+    operation,
+    kind: fragment.kind,
+    pre_state: operation === 'apply' ? beforeState : afterState,
+    post_state: operation === 'apply' ? afterState : beforeState,
+    restore: {
+      leading_separator: fragment.leadingSeparator,
+      before_text: fragment.beforeText,
+      after_text: fragment.afterText,
+    },
+  };
+  if (!isSetupReceiptManagedFragmentEvidence(evidence)) {
+    throw new Error('codex-managed-fragment-receipt-evidence-invalid');
+  }
+  return evidence;
+}
+
+export function codexManagedFragmentFromReceiptEvidence(
+  evidence: SetupReceiptManagedFragmentEvidence,
+): CodexManagedFragment {
+  if (!isSetupReceiptManagedFragmentEvidence(evidence)) {
+    throw new Error('codex-managed-fragment-receipt-evidence-invalid');
+  }
+  const beforeHash = evidence.restore.before_text === null
+    ? null
+    : fragmentHash(evidence.restore.before_text);
+  return {
+    kind: evidence.kind,
+    ownedLocation: evidence.owned_location,
+    leadingSeparator: evidence.restore.leading_separator,
+    beforeText: evidence.restore.before_text,
+    beforeHash,
+    afterText: evidence.restore.after_text,
+    afterHash: fragmentHash(evidence.restore.after_text),
+  };
+}
+
+type SetupReceiptV1Input = Omit<SetupReceiptV1, 'schema_version' | 'hmac_sha256'>
+  & Partial<Pick<SetupReceiptV1, 'schema_version' | 'hmac_sha256'>>;
+type SetupReceiptV2Input = Omit<SetupReceiptV2, 'hmac_sha256'>
+  & Partial<Pick<SetupReceiptV2, 'hmac_sha256'>>;
+
+export function createSetupReceipt(input: SetupReceiptV2Input): SetupReceiptV2;
+export function createSetupReceipt(input: SetupReceiptV1Input): SetupReceiptV1;
 export function createSetupReceipt(
-  input: Omit<SetupReceiptV1, 'schema_version' | 'hmac_sha256'>
-    & Partial<Pick<SetupReceiptV1, 'schema_version' | 'hmac_sha256'>>,
-): SetupReceiptV1 {
+  input: SetupReceiptV1Input | SetupReceiptV2Input,
+): SetupReceipt {
+  if (input.schema_version === 2) {
+    return {
+      ...input,
+      schema_version: 2,
+      hmac_sha256: '',
+    };
+  }
   return {
     ...input,
     schema_version: 1,
@@ -172,6 +326,21 @@ export function createSetupReceipt(
 export async function persistSetupReceipt(
   receiptPath: string,
   receipt: SetupReceiptV1,
+  options: ReceiptPersistenceOptions,
+): Promise<ReceiptWriteResult<SetupReceiptV1>>;
+export async function persistSetupReceipt(
+  receiptPath: string,
+  receipt: SetupReceiptV2,
+  options: ReceiptPersistenceOptions,
+): Promise<ReceiptWriteResult<SetupReceiptV2>>;
+export async function persistSetupReceipt(
+  receiptPath: string,
+  receipt: SetupReceipt,
+  options: ReceiptPersistenceOptions,
+): Promise<ReceiptWriteResult>;
+export async function persistSetupReceipt(
+  receiptPath: string,
+  receipt: SetupReceipt,
   options: ReceiptPersistenceOptions,
 ): Promise<ReceiptWriteResult> {
   if (!isSetupReceipt(receipt, true)) {
@@ -187,7 +356,7 @@ export async function persistSetupReceipt(
     return keyResult;
   }
 
-  const signedReceipt: SetupReceiptV1 = {
+  const signedReceipt: SetupReceipt = {
     ...receipt,
     hmac_sha256: signReceipt(receipt, keyResult.key),
   };
@@ -276,7 +445,7 @@ export async function scanSetupReceipts(
   if (receiptPaths.length === 0) {
     return { ok: true, receipts: [] };
   }
-  const receipts: Array<{ path: string; receipt: SetupReceiptV1 }> = [];
+  const receipts: Array<{ path: string; receipt: SetupReceipt }> = [];
   for (const receiptPath of receiptPaths) {
     const loaded = await loadSetupReceipt(receiptPath, {
       ...options,
@@ -290,7 +459,7 @@ export async function scanSetupReceipts(
   return { ok: true, receipts };
 }
 
-function signReceipt(receipt: SetupReceiptV1, key: Buffer): string {
+function signReceipt(receipt: SetupReceipt, key: Buffer): string {
   const { hmac_sha256: _ignored, ...unsignedReceipt } = receipt;
   return createHmac('sha256', key)
     .update(canonicalJson(unsignedReceipt), 'utf8')
@@ -314,8 +483,20 @@ function canonicalJson(value: unknown): string {
   return encoded;
 }
 
-function isSetupReceipt(value: unknown, allowBlankHmac: boolean): value is SetupReceiptV1 {
-  if (!isRecord(value) || !hasOnlyKeys(value, RECEIPT_KEYS)) {
+function isSetupReceipt(value: unknown, allowBlankHmac: boolean): value is SetupReceipt {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return value.schema_version === 1
+    ? isSetupReceiptV1(value, allowBlankHmac)
+    : value.schema_version === 2 && isSetupReceiptV2(value, allowBlankHmac);
+}
+
+function isSetupReceiptV1(
+  value: Record<string, unknown>,
+  allowBlankHmac: boolean,
+): boolean {
+  if (!hasAllowedKeys(value, RECEIPT_V1_KEYS)) {
     return false;
   }
   if (
@@ -330,7 +511,7 @@ function isSetupReceipt(value: unknown, allowBlankHmac: boolean): value is Setup
       'requires_user_action',
       'rolled_back',
     ])
-    || !isOneOf(value.harness, ['opencode', 'codex'])
+    || !isOneOf(value.harness, ['opencode', 'codex', 'claude'])
     || !isOneOf(value.scope, ['global', 'project'])
     || typeof value.target !== 'string'
     || !isAbsolute(value.target)
@@ -340,7 +521,9 @@ function isSetupReceipt(value: unknown, allowBlankHmac: boolean): value is Setup
     || !isIsoTimestamp(value.updated_at)
     || !Array.isArray(value.steps)
     || value.steps.length > 128
-    || !value.steps.every(isSetupReceiptStep)
+    || !value.steps.every((step) => isSetupReceiptStep(step, false))
+    || (value.supersedes !== undefined
+      && (!isReceiptId(value.supersedes) || value.supersedes === value.id))
     || typeof value.hmac_sha256 !== 'string'
     || !(HMAC_PATTERN.test(value.hmac_sha256) || (allowBlankHmac && value.hmac_sha256 === ''))
   ) {
@@ -349,7 +532,160 @@ function isSetupReceipt(value: unknown, allowBlankHmac: boolean): value is Setup
   return true;
 }
 
-function isSetupReceiptStep(value: unknown): value is SetupReceiptStep {
+function isSetupReceiptV2(
+  value: Record<string, unknown>,
+  allowBlankHmac: boolean,
+): boolean {
+  if (!hasOnlyKeys(value, RECEIPT_V2_KEYS)) {
+    return false;
+  }
+  if (
+    value.schema_version !== 2
+    || !isReceiptId(value.id)
+    || value.operation !== 'setup'
+    || !isOneOf(value.status, [
+      'in_progress',
+      'complete',
+      'failed',
+      'partial',
+      'requires_user_action',
+    ])
+    || value.harness !== 'codex'
+    || !isOneOf(value.scope, ['global', 'project'])
+    || typeof value.target !== 'string'
+    || !isAbsolute(value.target)
+    || !isNonEmptyString(value.package_version)
+    || typeof value.force !== 'boolean'
+    || !isIsoTimestamp(value.started_at)
+    || !isIsoTimestamp(value.updated_at)
+    || !Array.isArray(value.steps)
+    || value.steps.length > 128
+    || !value.steps.every((step) => isSetupReceiptStep(step, true))
+    || !isOneOf(value.strategy, ['plugin_manager', 'legacy_filesystem'])
+    || !isCodexCapabilityEvidence(value.capability_evidence, value.scope)
+    || !isSetupReceiptManagerEvidence(value.manager_evidence)
+    || !isExternalCheckpointLedger(value.external_checkpoints)
+    || typeof value.hmac_sha256 !== 'string'
+    || !(HMAC_PATTERN.test(value.hmac_sha256) || (allowBlankHmac && value.hmac_sha256 === ''))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isCodexCapabilityEvidence(value: unknown, scope: unknown): value is CodexCliEvidence {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['version', 'capabilities', 'managerState'])) {
+    return false;
+  }
+  const version = value.version;
+  const capabilities = value.capabilities;
+  if (
+    !isRecord(version)
+    || !hasOnlyKeys(version, ['value', 'classification'])
+    || !(version.value === null || isBoundedString(version.value, 64))
+    || !isOneOf(version.classification, ['tested', 'untested', 'unknown'])
+    || !isRecord(capabilities)
+    || !hasOnlyKeys(capabilities, ['scope', 'marketplace', 'plugin', 'complete'])
+    || capabilities.scope !== scope
+    || !isOperationCapabilityEvidence(capabilities.marketplace)
+    || !isOperationCapabilityEvidence(capabilities.plugin)
+    || typeof capabilities.complete !== 'boolean'
+    || !isOneOf(value.managerState, ['absent', 'compatible', 'partial', 'unclassifiable'])
+  ) {
+    return false;
+  }
+  const marketplace = capabilities.marketplace as Record<string, unknown>;
+  const plugin = capabilities.plugin as Record<string, unknown>;
+  return capabilities.complete === (
+    marketplace.mutation === true
+    && marketplace.verification === true
+    && plugin.mutation === true
+    && plugin.verification === true
+  );
+}
+
+function isOperationCapabilityEvidence(value: unknown): boolean {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['mutation', 'verification', 'format'])
+    && typeof value.mutation === 'boolean'
+    && typeof value.verification === 'boolean'
+    && (value.format === null || isOneOf(value.format, ['json', 'legacy']));
+}
+
+function isSetupReceiptManagerEvidence(value: unknown): value is SetupReceiptV2ManagerEvidence {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, ['initial_state', 'marketplace', 'plugin', 'final_verified_at'])
+    || !isOneOf(value.initial_state, ['absent', 'compatible', 'partial', 'unclassifiable'])
+    || !(value.final_verified_at === null || isIsoTimestamp(value.final_verified_at))
+  ) {
+    return false;
+  }
+  const marketplace = value.marketplace;
+  const plugin = value.plugin;
+  if (
+    !isRecord(marketplace)
+    || !hasOnlyKeys(marketplace, [
+      'name',
+      'source',
+      'pre_existing_verified',
+      'created_by_attempt',
+      'final_verified',
+    ])
+    || marketplace.name !== 'thoth-mem'
+    || marketplace.source !== 'EremesNG/thoth-mem'
+    || !isManagerOutcomeEvidence(marketplace)
+    || !isRecord(plugin)
+    || !hasOnlyKeys(plugin, [
+      'plugin_id',
+      'name',
+      'marketplace_name',
+      'installed',
+      'enabled',
+      'pre_existing_verified',
+      'created_by_attempt',
+      'final_verified',
+    ])
+    || plugin.plugin_id !== 'thoth-mem@thoth-mem'
+    || plugin.name !== 'thoth-mem'
+    || plugin.marketplace_name !== 'thoth-mem'
+    || typeof plugin.installed !== 'boolean'
+    || typeof plugin.enabled !== 'boolean'
+    || !isManagerOutcomeEvidence(plugin)
+  ) {
+    return false;
+  }
+  return plugin.final_verified === (plugin.installed === true && plugin.enabled === true)
+    && (value.final_verified_at === null
+      || (marketplace.final_verified === true && plugin.final_verified === true));
+}
+
+function isManagerOutcomeEvidence(value: Record<string, unknown>): boolean {
+  return typeof value.pre_existing_verified === 'boolean'
+    && typeof value.created_by_attempt === 'boolean'
+    && typeof value.final_verified === 'boolean'
+    && !(value.pre_existing_verified && value.created_by_attempt)
+    && (!value.created_by_attempt || value.final_verified === true);
+}
+
+function isExternalCheckpointLedger(value: unknown): value is SetupReceiptExternalCheckpoint[] {
+  return Array.isArray(value)
+    && value.length <= MAX_RECEIPT_CHECKPOINTS
+    && value.every((checkpoint, index) => (
+      isRecord(checkpoint)
+      && hasAllowedKeys(checkpoint, ['sequence', 'id', 'outcome', 'observed_at', 'diagnostic'])
+      && checkpoint.sequence === index + 1
+      && isOneOf(checkpoint.id, ['codex-marketplace', 'codex-plugin'])
+      && isOneOf(checkpoint.outcome, ['planned', 'skipped', 'confirmed', 'failed', 'unavailable'])
+      && isIsoTimestamp(checkpoint.observed_at)
+      && optionalBoundedString(checkpoint, 'diagnostic', MAX_RECEIPT_DIAGNOSTIC_LENGTH)
+    ));
+}
+
+function isSetupReceiptStep(
+  value: unknown,
+  allowManagedFragment: boolean,
+): value is SetupReceiptStep {
   if (!isRecord(value) || !hasAllowedKeys(value, STEP_KEYS)) {
     return false;
   }
@@ -360,13 +696,109 @@ function isSetupReceiptStep(value: unknown): value is SetupReceiptStep {
   ) {
     return false;
   }
+  const managedFragment = value.managed_fragment;
+  if (
+    managedFragment !== undefined
+    && (
+      !allowManagedFragment
+      || value.kind !== 'filesystem'
+      || value.pre_hash !== undefined
+      || value.post_hash !== undefined
+      || !isSetupReceiptManagedFragmentEvidence(managedFragment)
+      || value.path !== managedFragment.config_path
+      || value.owned_key !== managedFragment.owned_location
+    )
+  ) {
+    return false;
+  }
   return optionalString(value, 'owned_key')
     && optionalAbsolutePath(value, 'path')
     && (value.external_scope === undefined || isOneOf(value.external_scope, ['global', 'project']))
     && optionalString(value, 'pre_hash')
     && optionalString(value, 'post_hash')
     && optionalAbsolutePath(value, 'backup_path')
-    && optionalString(value, 'diagnostic');
+    && optionalBoundedString(value, 'diagnostic', MAX_RECEIPT_DIAGNOSTIC_LENGTH);
+}
+
+function isSetupReceiptManagedFragmentEvidence(
+  value: unknown,
+): value is SetupReceiptManagedFragmentEvidence {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, [
+      'config_path',
+      'owned_location',
+      'operation',
+      'kind',
+      'pre_state',
+      'post_state',
+      'restore',
+    ])
+    || typeof value.config_path !== 'string'
+    || !isAbsolute(value.config_path)
+    || value.owned_location !== CODEX_MANAGED_OWNED_LOCATION
+    || !isOneOf(value.operation, ['apply', 'remove'])
+    || !isOneOf(value.kind, ['insert', 'replace'])
+    || !isSetupReceiptFragmentState(value.pre_state)
+    || !isSetupReceiptFragmentState(value.post_state)
+    || !isRecord(value.restore)
+    || !hasOnlyKeys(value.restore, [
+      'leading_separator',
+      'before_text',
+      'after_text',
+    ])
+    || !isOneOf(value.restore.leading_separator, ['', '\n', '\r\n'])
+    || !(value.restore.before_text === null || isBoundedFragmentText(value.restore.before_text))
+    || !isBoundedFragmentText(value.restore.after_text)
+    || (value.kind === 'insert' && value.restore.before_text !== null)
+    || (value.kind === 'replace' && (
+      value.restore.before_text === null
+      || value.restore.leading_separator !== ''
+    ))
+  ) {
+    return false;
+  }
+  const beforeState: SetupReceiptFragmentState = value.restore.before_text === null
+    ? { state: 'absent' }
+    : { state: 'present', sha256: fragmentHash(value.restore.before_text) };
+  const afterState: SetupReceiptFragmentState = {
+    state: 'present',
+    sha256: fragmentHash(value.restore.after_text),
+  };
+  return value.operation === 'apply'
+    ? fragmentStatesEqual(value.pre_state, beforeState)
+      && fragmentStatesEqual(value.post_state, afterState)
+    : fragmentStatesEqual(value.pre_state, afterState)
+      && fragmentStatesEqual(value.post_state, beforeState);
+}
+
+function isSetupReceiptFragmentState(value: unknown): value is SetupReceiptFragmentState {
+  if (!isRecord(value) || !isOneOf(value.state, ['absent', 'present'])) {
+    return false;
+  }
+  return value.state === 'absent'
+    ? hasOnlyKeys(value, ['state'])
+    : hasOnlyKeys(value, ['state', 'sha256'])
+      && typeof value.sha256 === 'string'
+      && HMAC_PATTERN.test(value.sha256);
+}
+
+function fragmentStatesEqual(
+  left: SetupReceiptFragmentState,
+  right: SetupReceiptFragmentState,
+): boolean {
+  return left.state === right.state
+    && (left.state === 'absent'
+      || (right.state === 'present' && left.sha256 === right.sha256));
+}
+
+function isBoundedFragmentText(value: unknown): value is string {
+  return typeof value === 'string'
+    && Buffer.byteLength(value, 'utf8') <= MAX_MANAGED_FRAGMENT_BYTES;
+}
+
+function fragmentHash(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -397,6 +829,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return isNonEmptyString(value) && value.length <= maxLength;
+}
+
 function isReceiptId(value: unknown): value is string {
   return typeof value === 'string' && RECEIPT_ID_PATTERN.test(value);
 }
@@ -414,6 +850,14 @@ function isIsoTimestamp(value: unknown): value is string {
 
 function optionalString(value: Record<string, unknown>, key: string): boolean {
   return value[key] === undefined || isNonEmptyString(value[key]);
+}
+
+function optionalBoundedString(
+  value: Record<string, unknown>,
+  key: string,
+  maxLength: number,
+): boolean {
+  return value[key] === undefined || isBoundedString(value[key], maxLength);
 }
 
 function optionalAbsolutePath(value: Record<string, unknown>, key: string): boolean {

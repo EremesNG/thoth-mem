@@ -18,6 +18,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { HOST_EVIDENCE } from '../fixtures/integration/host-evidence.js';
+        import { assertResolverProducedAdapterCapabilities } from '../../src/integration/runtime/capability-evidence.js';
+    import { MemoryIntegrationCore } from '../../src/integration/core/lifecycle.js';
+    import type { MemoryPort } from '../../src/integration/core/memory-port.js';
+    import { FileLifecycleStateStore } from '../../src/integration/core/state-store.js';
+    import type {
+      AdapterCapabilities,
+      LifecycleResult,
+      NormalizedEvent,
+    } from '../../src/integration/core/types.js';
+
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 const runtimeModulePath = join(repositoryRoot, 'src/integration/runtime/hook-command.ts');
 const integrationEventModulePath = join(
@@ -27,6 +38,20 @@ const integrationEventModulePath = join(
 const canonicalRunnerPath = join(repositoryRoot, 'integrations/shared/hook-runner.mjs');
 const packageVersion = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')).version as string;
 
+function claudeRuntimeClaim(): Record<string, unknown> {
+  const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+  if (!evidence) {
+    throw new Error('Expected standalone Claude Code host evidence');
+  }
+  return {
+    hostVersion: evidence.versionFamily,
+    payloadMappingId: evidence.payloadMappingId,
+    assetExecutionMarker: evidence.activationMarker,
+    eventMappingId: evidence.activation.mappingId,
+    deliveryChannel: evidence.recovery.channel,
+    deliveryMappingId: evidence.recovery.mappingId,
+  };
+}
 async function importHookCommand(): Promise<Record<string, unknown>> {
   expect(existsSync(runtimeModulePath), 'src/integration/runtime/hook-command.ts must exist').toBe(true);
   return import(`${pathToFileURL(runtimeModulePath).href}?test=${randomUUID()}`);
@@ -87,7 +112,7 @@ function readJsonFixture(relativePath: string): Record<string, any> {
 }
 
 describe('portable JSON hook command', () => {
-  it('normalizes through one adapter and delegates lifecycle execution without inventing success', async () => {
+  it('normalizes an evidence-backed session start and delegates lifecycle execution', async () => {
     const runtime = await importHookCommand();
     const executeHookCommand = runtime.executeHookCommand as (
       input: string,
@@ -98,31 +123,33 @@ describe('portable JSON hook command', () => {
     const response = await executeHookCommand(JSON.stringify({
       protocolVersion: 1,
       harness: 'claude',
+      capabilityEvidence: claudeRuntimeClaim(),
       event: {
-        hook: 'UserPromptSubmit',
+        hook: 'SessionStart',
         payload: {
           session_id: 'root-session',
           project: 'thoth-mem',
-          prompt: 'Root prompt.',
-          hook_event_id: 'prompt-1',
+          source: 'startup',
+          hook_event_id: 'start-1',
         },
       },
     }), async (event, capabilities) => {
-      calls.push({ event, capabilities });
+      assertResolverProducedAdapterCapabilities(capabilities, 'claude');
+          expect(Object.isFrozen(capabilities)).toBe(true);
+          calls.push({ event, capabilities });
       return {
         outcome: 'confirmed',
         retryable: false,
         harness: 'claude',
-        intent: 'capture_root_prompt',
+        intent: 'enroll_session',
       };
     });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].event).toMatchObject({
       harness: 'claude',
-      intent: 'capture_root_prompt',
-      actor: 'root_user',
-      content: 'Root prompt.',
+      intent: 'enroll_session',
+      actor: 'system',
     });
     expect(Object.keys(calls[0].capabilities)).toEqual([
       'enroll_session',
@@ -134,7 +161,7 @@ describe('portable JSON hook command', () => {
     expect(response).toEqual({
       protocolVersion: 1,
       harness: 'claude',
-      intent: 'capture_root_prompt',
+      intent: 'enroll_session',
       outcome: 'confirmed',
       retryable: false,
     });
@@ -154,8 +181,168 @@ describe('portable JSON hook command', () => {
     });
     expect(JSON.stringify(unknownCodex)).not.toContain('confirmed');
   });
+  it('resolves bounded runtime claims before adapter execution and fails closed otherwise', async () => {
+    const runtime = await importHookCommand();
+    const executeHookCommand = runtime.executeHookCommand as (
+      input: string,
+      executor: (event: Record<string, unknown>, capabilities: Record<string, unknown>) => Promise<any>,
+    ) => Promise<any>;
+    const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+    if (!evidence) {
+      throw new Error('Expected standalone Claude Code host evidence');
+    }
+    const claim = {
+      hostVersion: evidence.versionFamily,
+      payloadMappingId: evidence.payloadMappingId,
+      assetExecutionMarker: evidence.activationMarker,
+      eventMappingId: evidence.activation.mappingId,
+      deliveryChannel: evidence.recovery.channel,
+      deliveryMappingId: evidence.recovery.mappingId,
+    };
+    const request = (capabilityEvidence?: Record<string, unknown>) => JSON.stringify({
+      protocolVersion: 1,
+      harness: 'claude',
+      ...(capabilityEvidence === undefined ? {} : { capabilityEvidence }),
+      event: {
+        hook: 'SessionStart',
+        payload: { session_id: 'resolver-session', source: 'startup' },
+      },
+    });
+    let rejectedExecutorCalls = 0;
 
-  it('returns bounded privacy-safe errors for invalid JSON and executor failure', async () => {
+    for (const [name, capabilityEvidence] of [
+      ['omitted evidence', undefined],
+      ['raw payload', { ...claim, rawPayload: 'SECRET-RAW-PAYLOAD' }],
+      ['self-asserted supported', { ...claim, supported: true }],
+      ['self-asserted verified events', { ...claim, verifiedEvents: ['SessionStart'] }],
+      [
+        'overlapping compaction mapping',
+        {
+          ...claim,
+          deliveryChannel: evidence.compaction.channel,
+          deliveryMappingId: evidence.compaction.mappingId,
+        },
+      ],
+      ['unknown version', { ...claim, hostVersion: 'unknown-runtime-version' }],
+      ['mismatched payload', { ...claim, payloadMappingId: 'claude-code-other-payload-v1' }],
+    ] as const) {
+      const result = await executeHookCommand(request(capabilityEvidence), async () => {
+        rejectedExecutorCalls += 1;
+        throw new Error('must not execute');
+      });
+      expect(result, name).toMatchObject({ outcome: 'degraded', retryable: false });
+      expect(JSON.stringify(result), name).not.toContain('SECRET-RAW-PAYLOAD');
+    }
+    expect(rejectedExecutorCalls).toBe(0);
+
+    let confirmedExecutorCalls = 0;
+    const confirmed = await executeHookCommand(request(claim), async (event, capabilities) => {
+      confirmedExecutorCalls += 1;
+      expect(event).toMatchObject({ harness: 'claude', intent: 'enroll_session' });
+      expect(capabilities.enroll_session).toMatchObject({ state: 'supported' });
+      return {
+        outcome: 'confirmed',
+        retryable: false,
+        harness: 'claude',
+        intent: 'enroll_session',
+      };
+    });
+    expect(confirmed).toMatchObject({ outcome: 'confirmed', retryable: false });
+    expect(confirmedExecutorCalls).toBe(1);  });
+
+  it('finalizes a verified Claude SessionEnd once through the real core and rejects Stop', async () => {
+        const runtime = await importHookCommand();
+        const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+        if (!evidence) {
+          throw new Error('Expected standalone Claude Code host evidence');
+        }
+        const dataDir = mkdtempSync(join(tmpdir(), 'thoth-claude-session-end-'));
+        const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+        const memoryPort: MemoryPort = {
+          async call(tool, input) {
+            calls.push({ tool, input });
+            return { confirmed: true, isError: false, text: 'Session summary saved.' };
+          },
+          async close() {},
+        };
+        const stateStore = new FileLifecycleStateStore({
+          dataDir,
+          harness: 'claude',
+          projectId: 'claude-terminal-project',
+          rootSessionId: 'claude-terminal-session',
+          capabilities: {
+            enroll_session: { state: 'unsupported' },
+            capture_root_prompt: { state: 'unsupported' },
+            recall_guidance: { state: 'unsupported' },
+            compact_session: { state: 'unsupported' },
+            finalize_session: { state: 'supported', trigger: 'SessionEnd' },
+          },
+        });
+        let core: MemoryIntegrationCore | undefined;
+        const executor = async (
+          event: NormalizedEvent,
+          capabilities: AdapterCapabilities,
+        ): Promise<LifecycleResult> => {
+          if (!core) {
+            core = new MemoryIntegrationCore({ capabilities, memoryPort, stateStore });
+          }
+          return core.handle(event);
+        };
+        const executeHookCommand = runtime.executeHookCommand as (
+          input: string,
+          callback: typeof executor,
+        ) => Promise<unknown>;
+        const capabilityEvidence = {
+          hostVersion: evidence.versionFamily,
+          payloadMappingId: evidence.payloadMappingId,
+          assetExecutionMarker: evidence.activationMarker,
+          eventMappingId: evidence.terminal.mappingId,
+          deliveryChannel: evidence.terminal.channel,
+          deliveryMappingId: evidence.terminal.mappingId,
+        };
+        const request = (hook: 'SessionEnd' | 'Stop', eventId: string) => JSON.stringify({
+          protocolVersion: 1,
+          harness: 'claude',
+          capabilityEvidence,
+          event: {
+            hook,
+            payload: {
+              session_id: 'claude-terminal-session',
+              project: 'claude-terminal-project',
+              summary: 'Verified terminal summary.',
+              hook_event_id: eventId,
+            },
+          },
+        });
+        try {
+          const first = await executeHookCommand(request('SessionEnd', 'claude-end-1'), executor);
+          expect(first).toMatchObject({
+            harness: 'claude',
+            intent: 'finalize_session',
+            outcome: 'confirmed',
+            retryable: false,
+          });
+          expect(calls).toEqual([{
+            tool: 'mem_session',
+            input: {
+              action: 'summary',
+              id: 'claude-terminal-session',
+              project: 'thoth-mem',
+              content: 'Session finalized.',
+            },
+          }]);
+          const duplicate = await executeHookCommand(request('SessionEnd', 'claude-end-1'), executor);
+          expect(duplicate).toMatchObject({ outcome: 'no_op', retryable: false });
+          expect(calls).toHaveLength(1);
+          const stop = await executeHookCommand(request('Stop', 'claude-stop-1'), executor);
+          expect(stop).toMatchObject({ harness: 'claude', outcome: 'no_op', retryable: false });
+          expect(stop).not.toHaveProperty('intent');
+          expect(calls).toHaveLength(1);
+        } finally {
+          rmSync(dataDir, { recursive: true, force: true });
+        }
+      });
+      it('returns bounded privacy-safe errors for invalid JSON and executor failure', async () => {
     const runtime = await importHookCommand();
     const executeHookCommand = runtime.executeHookCommand as (input: string, executor: (...args: any[]) => Promise<any>) => Promise<any>;
 
@@ -192,17 +379,21 @@ describe('portable JSON hook command', () => {
     const failed = await executeHookCommand(JSON.stringify({
       protocolVersion: 1,
       harness: 'claude',
+      capabilityEvidence: claudeRuntimeClaim(),
       event: {
-        hook: 'Stop',
-        payload: { session_id: 'root-session', summary: 'PRIVATE-SUMMARY' },
+        hook: 'SessionStart',
+        payload: {
+          session_id: 'root-session',
+          source: 'startup',
+          summary: 'PRIVATE-SUMMARY',
+        },
       },
     }), async (): Promise<any> => {
       throw new Error('transport contains PRIVATE-SUMMARY');
-    });
-    expect(failed).toMatchObject({
+    });    expect(failed).toMatchObject({
       protocolVersion: 1,
       harness: 'claude',
-      intent: 'finalize_session',
+      intent: 'enroll_session',
       outcome: 'failed',
       retryable: true,
     });
@@ -466,11 +657,13 @@ describe('portable JSON hook command', () => {
     const request = JSON.stringify({
       protocolVersion: 1,
       harness: 'claude',
+      capabilityEvidence: claudeRuntimeClaim(),
       event: {
-        hook: 'UserPromptSubmit',
+        hook: 'SessionStart',
         payload: {
           session_id: 'root-session',
-          prompt: 'SECRET-EXECUTOR-PROMPT',
+          source: 'startup',
+          summary: 'SECRET-EXECUTOR-PROMPT',
         },
       },
     });
@@ -484,7 +677,7 @@ describe('portable JSON hook command', () => {
           outcome: 'SECRET-future',
           retryable: false,
           harness: 'claude',
-          intent: 'capture_root_prompt',
+          intent: 'enroll_session',
         },
       },
       {
@@ -493,7 +686,7 @@ describe('portable JSON hook command', () => {
           outcome: 'confirmed',
           retryable: false,
           harness: 'codex',
-          intent: 'capture_root_prompt',
+          intent: 'enroll_session',
         },
       },
       {
@@ -511,7 +704,7 @@ describe('portable JSON hook command', () => {
           outcome: 'confirmed',
           retryable: 'SECRET-false',
           harness: 'claude',
-          intent: 'capture_root_prompt',
+          intent: 'enroll_session',
         },
       },
     ];
@@ -521,7 +714,7 @@ describe('portable JSON hook command', () => {
       expect(result, invalid.name).toMatchObject({
         protocolVersion: 1,
         harness: 'claude',
-        intent: 'capture_root_prompt',
+        intent: 'enroll_session',
         outcome: 'failed',
         retryable: true,
       });
@@ -535,19 +728,278 @@ describe('portable JSON hook command', () => {
       outcome: 'confirmed',
       retryable: false,
       harness: 'claude',
-      intent: 'capture_root_prompt',
+      intent: 'enroll_session',
     }));
     expect(confirmed).toEqual({
       protocolVersion: 1,
       harness: 'claude',
-      intent: 'capture_root_prompt',
+      intent: 'enroll_session',
       outcome: 'confirmed',
       retryable: false,
     });
   });
 });
 
-describe('package-internal integration event command', () => {
+describe('private OpenCode delivery operations', () => {
+  it('accepts only the exact behavior-evidence system payload for prepare_delivery and passes its eligible mapping privately', async () => {
+        const runtime = await importHookCommand();
+        const executeHookCommand = runtime.executeHookCommand as (
+          input: string,
+          executor: (
+            event: unknown,
+            capabilities: unknown,
+            execution: unknown,
+          ) => Promise<Record<string, unknown>>,
+        ) => Promise<Record<string, unknown>>;
+        const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+        if (!openCode) throw new Error('Expected OpenCode host evidence');
+        const capabilityEvidence = {
+          payloadMappingId: openCode.payloadMappingId,
+          assetExecutionMarker: openCode.activationMarker,
+          eventMappingId: openCode.activation.mappingId,
+          deliveryChannel: openCode.recovery.channel,
+          deliveryMappingId: openCode.recovery.mappingId,
+          behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+          mutableOutputChannel: 'system',
+        };
+        let execution: unknown;
+        const response = await executeHookCommand(JSON.stringify({
+          protocolVersion: 1,
+          operation: 'prepare_delivery',
+          harness: 'opencode',
+          capabilityEvidence,
+          context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+          event: {
+            type: 'experimental.chat.system.transform',
+            input: {
+              sessionID: 'root-session',
+              model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+            },
+          },
+        }), async (_event, _capabilities, executionContext) => {
+          execution = executionContext;
+          return {
+            outcome: 'confirmed',
+            retryable: false,
+            harness: 'opencode',
+            intent: 'recall_guidance',
+          };
+        });
+
+        expect(execution).toMatchObject({
+          operation: 'prepare_delivery',
+          mapping: {
+            eventMappingId: openCode.activation.mappingId,
+            deliveryChannel: openCode.recovery.channel,
+            deliveryMappingId: openCode.recovery.mappingId,
+          },
+        });
+        expect(response).toMatchObject({
+          protocolVersion: 1,
+          operation: 'prepare_delivery',
+          harness: 'opencode',
+          intent: 'recall_guidance',
+          outcome: 'confirmed',
+          retryable: false,
+        });
+
+        let malformedCalls = 0;
+        const malformed = await executeHookCommand(JSON.stringify({
+          protocolVersion: 1,
+          operation: 'prepare_delivery',
+          harness: 'opencode',
+          capabilityEvidence,
+          context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+          event: { type: 'experimental.chat.system.transform', input: { sessionID: 'root-session' } },
+        }), async () => {
+          malformedCalls += 1;
+          return {
+            outcome: 'confirmed',
+            retryable: false,
+            harness: 'opencode',
+            intent: 'recall_guidance',
+          };
+        });
+        expect(malformed).toMatchObject({ outcome: 'degraded', retryable: false });
+    expect(malformedCalls).toBe(0);
+  });
+
+  it('validates the official system and compacting callback shapes independently', async () => {
+    const runtime = await importHookCommand();
+    const executeHookCommand = runtime.executeHookCommand as (
+      input: string,
+      executor: (event: unknown, capabilities: unknown, execution: unknown) => Promise<Record<string, unknown>>,
+    ) => Promise<Record<string, unknown>>;
+    const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+    if (!openCode) throw new Error('Expected OpenCode host evidence');
+    const capabilityEvidence = {
+      payloadMappingId: openCode.payloadMappingId,
+      assetExecutionMarker: openCode.activationMarker,
+      eventMappingId: openCode.activation.mappingId,
+      deliveryChannel: openCode.recovery.channel,
+      deliveryMappingId: openCode.recovery.mappingId,
+      behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+      mutableOutputChannel: 'system',
+    };
+    const systemRequest = (input: Record<string, unknown>) => JSON.stringify({
+      protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence,
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+      event: { type: 'experimental.chat.system.transform', input },
+    });
+    let forwardedEvent: unknown;
+    const realisticModel = await executeHookCommand(systemRequest({
+      sessionID: 'root-session',
+      model: { providerID: 'openai', modelID: 'gpt-5.6-terra', configuration: { reasoning: 'high' } },
+    }), async (event) => {
+      forwardedEvent = event;
+      return { outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'recall_guidance' };
+    });
+    expect(realisticModel).toMatchObject({ outcome: 'confirmed', retryable: false });
+    expect(JSON.stringify(forwardedEvent)).not.toContain('configuration');
+    expect(JSON.stringify(forwardedEvent)).not.toContain('modelID');
+
+    let missingIdentityCalls = 0;
+    const noSession = await executeHookCommand(systemRequest({
+      model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+    }), async () => {
+      missingIdentityCalls += 1;
+      return { outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'recall_guidance' };
+    });
+    expect(noSession).toMatchObject({
+      outcome: 'degraded',
+      retryable: false,
+      diagnostic: expect.stringContaining('root-session identity'),
+    });
+    expect(missingIdentityCalls).toBe(0);
+
+    for (const model of [{}, [], null]) {
+      const malformedModel = await executeHookCommand(systemRequest({ sessionID: 'root-session', model }),
+        async () => ({ outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'recall_guidance' }));
+      expect(malformedModel).toMatchObject({ outcome: 'degraded', retryable: false });
+    }
+
+    const compactEvidence = { ...capabilityEvidence, eventMappingId: openCode.compaction.mappingId, deliveryMappingId: openCode.compaction.mappingId, mutableOutputChannel: 'context' };
+    let compactExecution: unknown;
+    const compact = await executeHookCommand(JSON.stringify({
+      protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence: compactEvidence,
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+      event: { type: 'experimental.session.compacting', input: { sessionID: 'root-session' } },
+    }), async (_event, _capabilities, execution) => {
+      compactExecution = execution;
+      return { outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'compact_session' };
+    });
+    expect(compact).toMatchObject({ operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed' });
+    expect(compactExecution).toMatchObject({
+      operation: 'prepare_delivery',
+      prepareDeliveryAuthorization: expect.any(Object),
+      mapping: { eventMappingId: openCode.compaction.mappingId, deliveryMappingId: openCode.compaction.mappingId },
+    });
+
+    let invalidCompactCalls = 0;
+    for (const input of [{}, { sessionID: '' }]) {
+      const invalidCompact = await executeHookCommand(JSON.stringify({
+        protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence: compactEvidence,
+        event: { type: 'experimental.session.compacting', input },
+      }), async () => {
+        invalidCompactCalls += 1;
+        return { outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'compact_session' };
+      });
+      expect(invalidCompact).toMatchObject({ outcome: 'degraded', retryable: false });
+    }
+    expect(invalidCompactCalls).toBe(0);
+
+    let normalCalls = 0;
+    const normal = await executeHookCommand(JSON.stringify({
+      protocolVersion: 1, harness: 'opencode', capabilityEvidence,
+      event: { type: 'experimental.chat.system.transform', input: {
+        sessionID: 'root-session', model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+      } },
+    }), async () => {
+      normalCalls += 1;
+      return { outcome: 'confirmed', retryable: false, harness: 'opencode', intent: 'recall_guidance' };
+    });
+    expect(normal).toMatchObject({ outcome: 'degraded', retryable: false });
+    expect(normalCalls).toBe(0);
+  });
+
+  it('passes a strictly validated private confirmation to state-only execution and rejects mismatched directive facts', async () => {
+    const runtime = await importHookCommand();
+    const executeHookCommand = runtime.executeHookCommand as (
+      input: string,
+      executor: (
+        event: unknown,
+        capabilities: unknown,
+        execution: unknown,
+      ) => Promise<Record<string, unknown>>,
+    ) => Promise<Record<string, unknown>>;
+    const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+    if (!openCode) throw new Error('Expected OpenCode host evidence');
+    const capabilityEvidence = {
+      payloadMappingId: openCode.payloadMappingId,
+      assetExecutionMarker: openCode.activationMarker,
+      eventMappingId: openCode.activation.mappingId,
+      deliveryChannel: openCode.recovery.channel,
+      deliveryMappingId: openCode.recovery.mappingId,
+      behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+      mutableOutputChannel: 'system',
+    };
+    const directive = {
+      purpose: 'recovery_context',
+      deliveryMappingId: openCode.recovery.mappingId,
+      text: 'Recovered context',
+    };
+    const request = {
+      protocolVersion: 1,
+      operation: 'confirm_delivery',
+      harness: 'opencode',
+      capabilityEvidence,
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+      event: {
+        type: 'experimental.chat.system.transform',
+        input: {
+          sessionID: 'root-session',
+          model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+        },
+      },
+      hostOutputDirective: directive,
+      deliveryAttempt: `${Buffer.from('{"version":1}').toString('base64url')}.${'a'.repeat(64)}`,
+    };
+    let execution: unknown;
+    const response = await executeHookCommand(JSON.stringify(request), async (_event, _capabilities, context) => {
+      execution = context;
+      return {
+        outcome: 'confirmed',
+        retryable: false,
+        harness: 'opencode',
+        intent: 'recall_guidance',
+      };
+    });
+    expect(execution).toMatchObject({
+      operation: 'confirm_delivery',
+      hostOutputDirective: directive,
+      deliveryAttempt: request.deliveryAttempt,
+    });
+    expect(response).toMatchObject({ operation: 'confirm_delivery', outcome: 'confirmed', retryable: false });
+
+    let mismatchedCalls = 0;
+    const mismatched = await executeHookCommand(JSON.stringify({
+      ...request,
+      hostOutputDirective: { ...directive, deliveryMappingId: openCode.compaction.mappingId },
+    }), async () => {
+      mismatchedCalls += 1;
+      return {
+        outcome: 'confirmed',
+        retryable: false,
+        harness: 'opencode',
+        intent: 'recall_guidance',
+      };
+    });
+    expect(mismatched).toMatchObject({ outcome: 'degraded', retryable: false });
+    expect(mismatchedCalls).toBe(0);
+  });
+});
+
+    describe('package-internal integration event command', () => {
   it('runs the production core through injected resources and closes the selected data-dir port', async () => {
     const runtime = await importIntegrationEventCommand();
     const executeIntegrationEvent = runtime.executeIntegrationEvent as (
@@ -561,7 +1013,14 @@ describe('package-internal integration event command', () => {
     const request = JSON.stringify({
       protocolVersion: 1,
       harness: 'claude',
-      capabilityEvidence: { availableHooks: ['SessionStart'] },
+      capabilityEvidence: {
+            hostVersion: 'claude-code-1.x',
+            payloadMappingId: 'claude-code-session-payload-v1',
+            assetExecutionMarker: 'claude-code-activation-v1',
+            eventMappingId: 'claude-code-session-start-v1',
+            deliveryChannel: 'runner-stdout',
+            deliveryMappingId: 'claude-code-recovery-injection-v1',
+          },
       event: {
         hook: 'SessionStart',
         payload: {
@@ -607,6 +1066,11 @@ describe('package-internal integration event command', () => {
                 harness: event.harness,
                 intent: event.intent,
                 effects: [],
+                hostOutputDirective: {
+                  purpose: 'recovery_context',
+                  text: 'Recovered integration-event guidance.',
+                  deliveryMappingId: 'claude-session-start-context',
+                },
               };
             },
           };
@@ -622,13 +1086,18 @@ describe('package-internal integration event command', () => {
         intent: 'enroll_session',
         outcome: 'confirmed',
         retryable: false,
+        hostOutputDirective: {
+          purpose: 'recovery_context',
+          text: 'Recovered integration-event guidance.',
+          deliveryMappingId: 'claude-session-start-context',
+        },
       },
     });
     expect(selectedDataDir).toBe(dataDir);
     expect(stateOptions).toMatchObject({
       dataDir,
       harness: 'claude',
-      projectId: 'project-id',
+      projectId: 'project-with-spaces',
       rootSessionId: 'root-session',
       capabilities: expect.any(Object),
     });
@@ -637,6 +1106,129 @@ describe('package-internal integration event command', () => {
       'core:enroll_session',
       'port:closed',
     ]);
+  });
+
+  it('derives prepare-delivery output from confirmed memory through the default core without test-only host output', async () => {
+    const runtime = await importIntegrationEventCommand();
+    const executeIntegrationEvent = runtime.executeIntegrationEvent as (
+      input: string, options: Record<string, unknown>,
+    ) => Promise<{ exitCode: number; response: Record<string, unknown> }>;
+    const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+    if (!openCode) throw new Error('Expected OpenCode host evidence');
+    const request = (sessionID: string) => JSON.stringify({
+      protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode',
+      capabilityEvidence: {
+        payloadMappingId: openCode.payloadMappingId, assetExecutionMarker: openCode.activationMarker,
+        eventMappingId: openCode.activation.mappingId, deliveryChannel: openCode.recovery.channel,
+        deliveryMappingId: openCode.recovery.mappingId, behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+        mutableOutputChannel: 'system',
+      },
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+      event: { id: 'callback-' + sessionID, sequence: 1, type: 'experimental.chat.system.transform', input: {
+        sessionID, model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+      } },
+    });
+    const successDataDir = mkdtempSync(join(tmpdir(), 'thoth-default-prepare-success-'));
+    const failureDataDir = mkdtempSync(join(tmpdir(), 'thoth-default-prepare-failure-'));
+    const successfulCalls: string[] = [];
+    try {
+      const success = await executeIntegrationEvent(request('default-success'), {
+        dataDir: successDataDir,
+        dependencies: {
+          resolveDataDir: (requested: string | undefined) => requested!,
+          createMemoryPort: async () => ({
+            call: async (tool: string) => {
+              successfulCalls.push(tool);
+              return { confirmed: true, isError: false, text: tool === 'mem_context' ? 'Recovered production context.' : 'Memory confirmed.' };
+            },
+            close: async () => undefined,
+          }),
+        },
+      });
+      expect(success.exitCode).toBe(0);
+      expect(success.response).toMatchObject({
+        operation: 'prepare_delivery', outcome: 'confirmed', retryable: false,
+        hostOutputDirective: { purpose: 'recovery_context', text: 'Recovered production context.', deliveryMappingId: openCode.recovery.mappingId },
+        deliveryAttempt: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/),
+        deliveryState: { activation: 'eligible', memoryConfirmation: 'confirmed', outputReadiness: 'ready', outputSupport: 'eligible', modelConsumption: 'unproven' },
+      });
+      expect(successfulCalls).toEqual(['mem_session', 'mem_context']);
+
+      const failure = await executeIntegrationEvent(request('default-failure'), {
+        dataDir: failureDataDir,
+        dependencies: {
+          resolveDataDir: (requested: string | undefined) => requested!,
+          createMemoryPort: async () => ({
+            call: async () => ({ confirmed: false, isError: true, text: 'Memory unavailable.' }),
+            close: async () => undefined,
+          }),
+        },
+      });
+      expect(failure.response).toMatchObject({ operation: 'prepare_delivery', outcome: 'failed', retryable: true });
+      expect(failure.response).not.toHaveProperty('hostOutputDirective');
+      expect(failure.response).not.toHaveProperty('deliveryAttempt');
+    } finally {
+      rmSync(successDataDir, { recursive: true, force: true });
+      rmSync(failureDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('handles two distinct OpenCode compactions through the default core and leaves missing callback identity degraded', async () => {
+    const runtime = await importIntegrationEventCommand();
+    const executeIntegrationEvent = runtime.executeIntegrationEvent as (
+      input: string, options: Record<string, unknown>,
+    ) => Promise<{ exitCode: number; response: Record<string, unknown> }> ;
+    const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+    if (!openCode) throw new Error('Expected OpenCode host evidence');
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-default-compaction-callbacks-'));
+    const calls: string[] = [];
+    let contextNumber = 0;
+    const request = (id?: string, sequence?: number) => JSON.stringify({
+      protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode',
+      capabilityEvidence: {
+        payloadMappingId: openCode.payloadMappingId, assetExecutionMarker: openCode.activationMarker,
+        eventMappingId: openCode.compaction.mappingId, deliveryChannel: openCode.compaction.channel,
+        deliveryMappingId: openCode.compaction.mappingId, behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1',
+        mutableOutputChannel: 'context',
+      },
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+      event: { ...(id ? { id } : {}), ...(sequence ? { sequence } : {}), type: 'experimental.session.compacting', input: { sessionID: 'root-session' } },
+    });
+    try {
+      const options = {
+        dataDir,
+        dependencies: {
+          resolveDataDir: (requested: string | undefined) => requested!,
+          createMemoryPort: async () => ({
+            call: async (tool: string) => {
+              calls.push(tool);
+              return { confirmed: true, isError: false, text: tool === 'mem_context' ? 'Compaction context ' + (++contextNumber) : 'Checkpoint confirmed.' };
+            },
+            close: async () => undefined,
+          }),
+        },
+      };
+      const first = await executeIntegrationEvent(request('callback-one', 1), options);
+      const second = await executeIntegrationEvent(request('callback-two', 2), options);
+      expect(first.response).toMatchObject({
+        operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
+        hostOutputDirective: { purpose: 'post_compaction_guidance', text: 'Compaction context 1', deliveryMappingId: openCode.compaction.mappingId },
+        deliveryAttempt: expect.any(String),
+      });
+      expect(second.response).toMatchObject({
+        operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
+        hostOutputDirective: { purpose: 'post_compaction_guidance', text: 'Compaction context 2', deliveryMappingId: openCode.compaction.mappingId },
+        deliveryAttempt: expect.any(String),
+      });
+      expect(first.response.deliveryAttempt).not.toBe(second.response.deliveryAttempt);
+      expect(calls).toEqual(['mem_session', 'mem_context', 'mem_session', 'mem_context']);
+
+      const missingIdentity = await executeIntegrationEvent(request(), options);
+      expect(missingIdentity.response).toMatchObject({ operation: 'prepare_delivery', outcome: 'degraded', retryable: false });
+      expect(missingIdentity.response).not.toHaveProperty('deliveryAttempt');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('fails closed for malformed and oversized stdin without echoing input or creating resources', async () => {
@@ -735,14 +1327,8 @@ process.exitCode = child.status ?? 1;
         },
       });
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(parseRunnerOutput(result)).toMatchObject({
-        protocolVersion: 1,
-        harness: 'claude',
-        intent: 'enroll_session',
-        outcome: expect.stringMatching(/^(confirmed|degraded)$/),
-      });
-      expect(result.stdout).not.toMatch(/unable to resolve/i);
-      expect(existsSync(join(dataDir, 'thoth.db'))).toBe(true);
+      expect(parseRunnerOutput(result)).toEqual({});
+          expect(result.stdout).not.toMatch(/unable to resolve|outcome|hostOutputDirective/i);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -812,13 +1398,8 @@ describe('portable Node hook runner', () => {
       });
       expect(result.status).toBe(0);
       const output = parseRunnerOutput(result);
-      expect(output.label, JSON.stringify(output)).toBe('managed');
-      expect(output.argv).toEqual(['integration-event']);
-      expect(output.input).toEqual({
-        protocolVersion: 1,
-        harness: 'claude',
-        event: { hook: 'UserPromptSubmit', payload },
-      });
+      expect(output).toEqual({});
+          expect(JSON.stringify(output)).not.toContain('managed');
       expect(existsSync(join(unrelatedCwd, 'not-executed'))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -844,8 +1425,7 @@ describe('portable Node hook runner', () => {
         env: { ...process.env, THOTH_MEM_BIN: envRuntime, PATH: '' },
       });
       expect(fromEnv.status).toBe(0);
-      const envOutput = parseRunnerOutput(fromEnv);
-      expect(envOutput.label, JSON.stringify(envOutput)).toBe('env');
+      expect(parseRunnerOutput(fromEnv)).toEqual({});
 
       const fromPath = runRunner(runnerPath, { session_id: 'root' }, {
         args: ['--harness', 'codex', '--hook', 'SessionStart'],
@@ -856,7 +1436,7 @@ describe('portable Node hook runner', () => {
         },
       });
       expect(fromPath.status).toBe(0);
-      expect(parseRunnerOutput(fromPath).label).toBe('path');
+          expect(parseRunnerOutput(fromPath)).toEqual({});
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -876,15 +1456,8 @@ describe('portable Node hook runner', () => {
       });
       expect(result.status).toBe(0);
       const output = parseRunnerOutput(result);
-      expect(output).toMatchObject({
-        protocolVersion: 1,
-        outcome: 'degraded',
-        retryable: true,
-        diagnostic: expect.stringContaining('thoth-mem'),
-        manualAction: expect.stringContaining('install'),
-      });
-      expect(JSON.stringify(output)).not.toContain('SECRET-RUNNER-PROMPT');
-      expect(JSON.stringify(output).length).toBeLessThanOrEqual(1_000);
+      expect(output).toEqual({});
+          expect(JSON.stringify(output)).not.toContain('SECRET-RUNNER-PROMPT');
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -975,9 +1548,10 @@ describe('native plugin assets', () => {
     expect(codexMcpDescriptorExists).toBe(true);
 
     expect(codexMcp).toEqual({
-      'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+      mcpServers: {
+        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+      },
     });
-    expect(codexMcp).not.toHaveProperty('mcpServers');
     expect(claudeMcp).toEqual({
       mcpServers: {
         'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
@@ -986,12 +1560,16 @@ describe('native plugin assets', () => {
     expect(JSON.stringify(codexHooks)).toContain('${PLUGIN_ROOT}/runners/hook-runner.mjs');
     expect(JSON.stringify(claudeHooks)).toContain('${CLAUDE_PLUGIN_ROOT}/runners/hook-runner.mjs');
     expect(Object.keys(claudeHooks.hooks)).toEqual([
-      'SessionStart',
-      'UserPromptSubmit',
-      'PreCompact',
-      'Stop',
-    ]);
-    expect(claudeHooks.hooks).not.toHaveProperty('SubagentStop');
+          'SessionStart',
+          'UserPromptSubmit',
+          'PreCompact',
+          'Stop',
+          'SessionEnd',
+          'SubagentStop',
+        ]);
+        expect(claudeHooks.hooks.SessionStart[0].matcher).toContain('compact');
+        expect(claudeHooks.hooks.SessionEnd[0].hooks[0].command).toContain('--hook SessionEnd');
+        expect(claudeHooks.hooks.SubagentStop[0].hooks[0].command).toContain('--hook SubagentStop');
     const codexHooksJson = JSON.stringify(codexHooks);
     const claudeHooksJson = JSON.stringify(claudeHooks);
     expect(codexHooksJson).not.toContain('outcome=confirmed');
@@ -1078,22 +1656,14 @@ describe('native plugin assets', () => {
         cwd: unrelatedCwd,
         args: ['--harness', 'codex', '--hook', 'SessionStart'],
       }));
-      const claude = parseRunnerOutput(runRunner(claudeRunner, { session_id: 'root' }, {
+      const claude = parseRunnerOutput(runRunner(claudeRunner, { session_id: 'root', source: 'resume' }, {
         env,
         cwd: unrelatedCwd,
         args: ['--harness', 'claude', '--hook', 'SessionStart'],
       }));
 
-      expect(codex.input).toEqual({
-        protocolVersion: 1,
-        harness: 'codex',
-        event: { hook: 'SessionStart', payload: { session_id: 'root' } },
-      });
-      expect(claude.input).toEqual({
-        protocolVersion: 1,
-        harness: 'claude',
-        event: { hook: 'SessionStart', payload: { session_id: 'root' } },
-      });
+      expect(codex).toEqual({});
+          expect(claude).toEqual({});
       expect(dirname(codexRunner)).not.toBe(process.cwd());
       expect(dirname(claudeRunner)).not.toBe(process.cwd());
     } finally {

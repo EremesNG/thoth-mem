@@ -1,6 +1,7 @@
 import type {Readable} from 'node:stream';
 
 import {getConfig, resolveDataDir} from '../../config.js';
+import {isPrivatePrepareDeliveryAuthorization} from './capability-evidence.js';
 import {MemoryIntegrationCore, resolveLifecycleIdentity} from '../core/lifecycle.js';
 import type {MemoryPort} from '../core/memory-port.js';
 import {McpMemoryPort} from '../core/mcp-memory-port.js';
@@ -10,6 +11,7 @@ import {
 } from '../core/state-store.js';
 import type {
     AdapterCapabilities,
+    HostOutputReadiness,
     LifecycleResult,
     NormalizedEvent,
 } from '../core/types.js';
@@ -17,6 +19,7 @@ import {
     executeHookCommand,
     HOOK_PROTOCOL_VERSION,
     type HookCommandResponse,
+    type HookExecutionContext,
     type HookExecutionResult,
 } from './hook-command.js';
 
@@ -25,7 +28,15 @@ const MAX_INTEGRATION_EVENT_INPUT_BYTES = 1_048_576;
 interface IntegrationCore {
     handle(event: NormalizedEvent): Promise<Pick<
         LifecycleResult,
-        'outcome' | 'retryable' | 'harness' | 'intent'
+        'outcome' | 'retryable' | 'harness' | 'intent' | 'hostOutputDirective' | 'deliveryAttempt' | 'deliveryState'
+    >>;
+
+    prepareDelivery?(
+        event: NormalizedEvent,
+        binding: HookExecutionContext['mapping'],
+    ): Promise<Pick<
+        LifecycleResult,
+        'outcome' | 'retryable' | 'harness' | 'intent' | 'hostOutputDirective' | 'deliveryAttempt' | 'deliveryState'
     >>;
 }
 
@@ -41,6 +52,7 @@ interface IntegrationEventDependencies {
         memoryPort: MemoryPort;
         stateStore: FileLifecycleStateStore;
         rootIdentity: NormalizedEvent['identity'];
+        hostOutput?: HostOutputReadiness;
     }): IntegrationCore;
 }
 
@@ -95,37 +107,121 @@ function dependencies(
     return {...defaultDependencies, ...overrides};
 }
 
-async function executeProductionEvent(
+function privatePrepareHostOutput(
+    event: NormalizedEvent,
+    execution: HookExecutionContext,
+): HostOutputReadiness | undefined {
+    if (execution.operation !== 'prepare_delivery'
+      || !isPrivatePrepareDeliveryAuthorization(execution.prepareDeliveryAuthorization)) {
+      return undefined;
+    }
+    const mapping = {
+      mappingId: execution.mapping.deliveryMappingId,
+      verifiedMappingId: execution.mapping.deliveryMappingId,
+      ready: true,
+    };
+    if (event.intent === 'recall_guidance') return { recovery: mapping };
+    if (event.intent === 'compact_session') return { postCompaction: mapping };
+    return undefined;
+}
+
+
+    function nativeBehaviorHostOutput(
+        event: NormalizedEvent,
+        execution: HookExecutionContext,
+    ): HostOutputReadiness | undefined {
+        if (!execution.behaviorEligible || execution.mapping.deliveryChannel !== 'runner-stdout') {
+            return undefined;
+        }
+        const mapping = {
+            mappingId: execution.mapping.deliveryMappingId,
+            verifiedMappingId: execution.mapping.deliveryMappingId,
+            ready: true,
+        };
+        if (event.intent === 'enroll_session' || event.intent === 'recall_guidance') return {recovery: mapping};
+        if (event.intent === 'compact_session') return {postCompaction: mapping};
+        return undefined;
+    }
+
+    async function executeProductionEvent(
     event: NormalizedEvent,
     capabilities: AdapterCapabilities,
+    execution: HookExecutionContext,
     options: ExecuteIntegrationEventOptions,
 ): Promise<HookExecutionResult> {
     const ports = dependencies(options.dependencies);
     const identity = resolveLifecycleIdentity(event);
     const dataDir = ports.resolveDataDir(options.dataDir);
-    const memoryPort = await ports.createMemoryPort(dataDir);
-
-    try {
-        const stateStore = ports.createStateStore({
-            dataDir,
-            harness: event.harness,
-            projectId: identity.projectId,
-            rootSessionId: identity.rootSessionId,
-            capabilities,
+    const stateStore = ports.createStateStore({
+        dataDir,
+        harness: event.harness,
+        projectId: identity.projectId,
+        rootSessionId: identity.rootSessionId,
+        capabilities,
+    });
+    if (execution.operation === 'confirm_delivery') {
+        const directive = execution.hostOutputDirective;
+        const deliveryAttempt = execution.deliveryAttempt;
+        if (!directive || !deliveryAttempt) {
+            return {
+                outcome: 'failed',
+                retryable: false,
+                harness: event.harness,
+                intent: event.intent,
+            };
+        }
+        const confirmation = await stateStore.confirmDeliveryAttempt({
+            eventMappingId: execution.mapping.eventMappingId,
+            deliveryChannel: execution.mapping.deliveryChannel,
+            deliveryMappingId: execution.mapping.deliveryMappingId,
+            purpose: directive.purpose,
+            directiveText: directive.text,
+            deliveryAttempt,
         });
-        const core = ports.createCore({
-            capabilities,
-            memoryPort,
-            stateStore,
-            rootIdentity: event.identity,
-        });
-        const result = await core.handle(event);
         return {
-            outcome: result.outcome,
-            retryable: result.retryable,
-            harness: result.harness,
-            intent: result.intent,
+            outcome: confirmation.outcome,
+            retryable: confirmation.retryable,
+            harness: event.harness,
+            intent: event.intent,
+            deliveryState: {
+                activation: 'eligible',
+                memoryConfirmation: 'confirmed',
+                outputReadiness: 'ready',
+                outputSupport: confirmation.outcome === 'confirmed' || confirmation.outcome === 'no_op'
+                    ? 'confirmed'
+                    : 'eligible',
+                localEmission: 'emitted',
+                modelConsumption: 'unproven',
+            },
         };
+    }
+
+    const memoryPort = await ports.createMemoryPort(dataDir);
+        try {
+            const hostOutput = privatePrepareHostOutput(event, execution)
+                ?? nativeBehaviorHostOutput(event, execution);
+            const core = ports.createCore({
+                capabilities,
+                memoryPort,
+                stateStore,
+                rootIdentity: event.identity,
+                ...(hostOutput ? {hostOutput} : {}),
+            });
+const result = execution.operation === 'prepare_delivery' && core.prepareDelivery
+    ? await core.prepareDelivery(event, execution.mapping)
+    : await core.handle(event);
+return {
+    outcome: result.outcome,
+    retryable: result.retryable,
+    harness: result.harness,
+    intent: result.intent,
+    ...(result.hostOutputDirective
+        ? { hostOutputDirective: result.hostOutputDirective }
+        : {}),
+    ...(result.deliveryState ? { deliveryState: result.deliveryState } : {}),
+    ...(result.deliveryAttempt ? { deliveryAttempt: result.deliveryAttempt } : {}),
+};
+
     } finally {
         await memoryPort.close();
     }
@@ -137,7 +233,7 @@ export async function executeIntegrationEvent(
 ): Promise<IntegrationEventCommandResult> {
     const response = await executeHookCommand(
         input,
-        (event, capabilities) => executeProductionEvent(event, capabilities, options),
+        (event, capabilities, execution) => executeProductionEvent(event, capabilities, execution, options),
     );
     return {exitCode: 0, response};
 }

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import BetterSqlite3 from 'better-sqlite3';
 import { computeHash, checkDuplicate, incrementDuplicate } from '../../src/utils/dedup.js';
 import { PRAGMAS, SCHEMA_SQL } from '../../src/store/schema.js';
+import { INTERNAL_LIFECYCLE_INTENTS, LIFECYCLE_INTENTS } from '../../src/integration/core/types.js';
+import { HOST_EVIDENCE } from '../fixtures/integration/host-evidence.js';
 
 describe('computeHash', () => {
   it('returns the same hash for the same content', () => {
@@ -20,6 +22,19 @@ describe('computeHash', () => {
     const hash = computeHash('deterministic content');
     expect(hash).toBe(computeHash('deterministic content'));
   });
+
+  it('keeps the passive-learning intent internal while fixture-derived replay evidence stays deterministic', async () => {
+    expect(INTERNAL_LIFECYCLE_INTENTS).toEqual(['capture_passive_learning']);
+
+    const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+    if (!evidence) {
+      throw new Error('Expected standalone Claude Code host evidence');
+    }
+    const replayEvidence = 'claude:' + evidence.terminal.mappingId + ':terminal-subagent-output';
+    expect(replayEvidence).toBe('claude:' + evidence.terminal.mappingId + ':terminal-subagent-output');
+    expect(LIFECYCLE_INTENTS).not.toContain('capture_passive_learning');
+  });
+
 });
 
 describe('checkDuplicate', () => {

@@ -101,6 +101,22 @@ describe('mem_save tool (via Store)', () => {
     expect(result.content[0].text).not.toContain('Identity fallback:');
   });
 
+  it('keeps identical root prompts in one canonical row within the dedupe window', async () => {
+    const input = {
+      kind: 'prompt',
+      content: 'The root prompt must remain canonical',
+      session_id: 'canonical-session',
+      project: 'canonical-project',
+    };
+
+    const first = await invokeMemSave(input);
+    const second = await invokeMemSave(input);
+
+    expect(first.content[0].text).toContain('Prompt saved (prompt ID:');
+    expect(second.content[0].text).toBe(first.content[0].text);
+    expect(store.recentPrompts(10, 'canonical-project', 'canonical-session')).toHaveLength(1);
+  });
+
   it('handler reports fallback identity for prompt saves without explicit identity', async () => {
     const result = await invokeMemSave({
       kind: 'prompt',

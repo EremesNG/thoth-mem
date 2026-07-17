@@ -1,26 +1,22 @@
-import type {
-  AdapterCapabilities,
-  Capability,
-  LifecycleIntent,
-  NormalizedEvent,
-} from '../core/types.js';
-import {
-  asRecord,
-  degraded,
-  dispatch,
-  findIntentByTrigger,
-  incomplete,
-  isDelegatedPayload,
-  noOp,
-  normalizedIdentity,
-  readSequence,
-  readString,
-  supported,
-  unsupported,
-  type AdapterEventResult,
-} from './shared.js';
+import type { LifecycleIntent, NormalizedEvent } from '../core/types.js';
+    import {
+      assertResolverProducedAdapterCapabilities,
+      type ResolverProducedAdapterCapabilities,
+    } from '../runtime/capability-evidence.js';
+    import {
+      asRecord,
+      degraded,
+      dispatch,
+      findIntentByTrigger,
+      isDelegatedPayload,
+      noOp,
+      normalizedIdentity,
+      readSequence,
+      readString,
+      type AdapterEventResult,
+    } from './shared.js';
 
-const CODEX_CONVENTIONAL_HOOKS: Record<string, LifecycleIntent> = {
+    const CODEX_CONVENTIONAL_HOOKS: Record<string, LifecycleIntent> = {
   SessionStart: 'enroll_session',
   UserPromptSubmit: 'capture_root_prompt',
   SessionStartContext: 'recall_guidance',
@@ -28,44 +24,22 @@ const CODEX_CONVENTIONAL_HOOKS: Record<string, LifecycleIntent> = {
   Stop: 'finalize_session',
 };
 
-export interface IncompleteCodexHook {
-  trigger: string;
-  reason: string;
-}
+function compactionGateFor(
+      hook: string,
+      intent: LifecycleIntent,
+      payload: Record<string, unknown>,
+    ): NormalizedEvent['compactionGate'] | undefined {
+      const sourceIdentity = readString(payload, 'transcript_path', 'thread_id', 'threadId');
+      if (hook === 'PreCompact' && intent === 'compact_session') {
+        return { phase: 'checkpoint', ...(sourceIdentity ? { sourceIdentity } : {}) };
+      }
+      if (hook === 'SessionStart' && intent === 'recall_guidance' && readString(payload, 'source') === 'compact') {
+        return { phase: 'resume', ...(sourceIdentity ? { sourceIdentity } : {}) };
+      }
+      return undefined;
+    }
 
-export interface CodexCapabilityEvidence {
-  verifiedHooks?: Partial<Record<LifecycleIntent, string>>;
-  incompleteHooks?: Partial<Record<LifecycleIntent, IncompleteCodexHook>>;
-}
-
-function codexCapability(
-  intent: LifecycleIntent,
-  evidence: CodexCapabilityEvidence,
-): Capability {
-  const verifiedTrigger = evidence.verifiedHooks?.[intent];
-  if (verifiedTrigger) {
-    return supported(verifiedTrigger);
-  }
-  const incompleteHook = evidence.incompleteHooks?.[intent];
-  if (incompleteHook) {
-    return incomplete(incompleteHook.trigger, incompleteHook.reason);
-  }
-  return unsupported(`No verified Codex hook is available for ${intent}.`);
-}
-
-export function createCodexCapabilities(
-  evidence: CodexCapabilityEvidence = {},
-): AdapterCapabilities {
-  return {
-    enroll_session: codexCapability('enroll_session', evidence),
-    capture_root_prompt: codexCapability('capture_root_prompt', evidence),
-    recall_guidance: codexCapability('recall_guidance', evidence),
-    compact_session: codexCapability('compact_session', evidence),
-    finalize_session: codexCapability('finalize_session', evidence),
-  };
-}
-
-function eventMetadata(payload: Record<string, unknown>): Pick<
+    function eventMetadata(payload: Record<string, unknown>): Pick<
   NormalizedEvent,
   'nativeEventId' | 'hostTimestamp' | 'hostSequence'
 > {
@@ -81,8 +55,10 @@ function eventMetadata(payload: Record<string, unknown>): Pick<
 
 export function normalizeCodexEvent(
   input: unknown,
-  capabilities: AdapterCapabilities = createCodexCapabilities(),
+  capabilities: ResolverProducedAdapterCapabilities,
 ): AdapterEventResult {
+  assertResolverProducedAdapterCapabilities(capabilities, 'codex');
+
   const envelope = asRecord(input);
   const hook = readString(envelope, 'hook');
   const payload = asRecord(envelope?.payload);
@@ -94,7 +70,9 @@ export function normalizeCodexEvent(
     );
   }
 
-  const intent = findIntentByTrigger(capabilities, hook) ?? CODEX_CONVENTIONAL_HOOKS[hook];
+  const intent = hook === 'SessionStart' && readString(payload, 'source') === 'compact'
+        ? 'recall_guidance'
+        : findIntentByTrigger(capabilities, hook) ?? CODEX_CONVENTIONAL_HOOKS[hook];
   if (!intent) {
     return noOp(`Codex hook ${hook} has no verified lifecycle mapping.`);
   }
@@ -121,40 +99,41 @@ export function normalizeCodexEvent(
     );
   }
 
-  const project = readString(payload, 'project', 'project_id');
-  const cwd = readString(payload, 'cwd', 'directory');
-  const baseEvent = {
-    harness: 'codex' as const,
-    intent,
-    actor: 'system' as const,
-    isRootSession: true,
-    identity: normalizedIdentity(sessionId, project, cwd),
-    ...eventMetadata(payload),
-    nativeEvent: hook,
-  };
+  if (hook === 'SessionStart') {
+        const source = readString(payload, 'source');
+        if (source && !['startup', 'resume', 'clear', 'compact'].includes(source)) {
+          return degraded(
+            'codex',
+            intent,
+            'SessionStart source is missing or is not a verified lifecycle source.',
+          );
+        }
+      }
 
-  if (intent === 'capture_root_prompt') {
-    if (readString(payload, 'role', 'actor') !== 'user') {
-      return degraded(
-        'codex',
+      const cwd = readString(payload, 'cwd');
+      const baseEvent = {
+        harness: 'codex' as const,
         intent,
-        'The Codex prompt hook does not prove a root-user actor.',
-      );
-    }
-    const content = readString(payload, 'prompt', 'content');
-    if (!content) {
-      return degraded(
-        'codex',
-        intent,
-        'The Codex prompt hook contains no verified user prompt text.',
-      );
-    }
-    return dispatch({ ...baseEvent, actor: 'root_user', content });
-  }
+        actor: 'system' as const,
+        isRootSession: true,
+        identity: normalizedIdentity(sessionId, undefined, cwd),
+        ...eventMetadata(payload),
+        nativeEvent: hook,
+            ...(compactionGateFor(hook, intent, payload) ? { compactionGate: compactionGateFor(hook, intent, payload) } : {}),
+      };
 
-  const content = readString(payload, 'summary', 'content');
-  return dispatch({
-    ...baseEvent,
-    ...(content ? { content } : {}),
-  });
+      if (intent === 'capture_root_prompt') {
+        const content = readString(payload, 'prompt');
+        if (!content) {
+          return degraded(
+            'codex',
+            intent,
+            'The Codex prompt hook contains no verified user prompt text.',
+          );
+        }
+        return dispatch({ ...baseEvent, actor: 'root_user', content });
+      }
+
+      return dispatch(baseEvent);
+
 }

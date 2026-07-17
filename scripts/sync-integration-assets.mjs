@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   getInventoryAsset,
   loadIntegrationInventory,
+  validateDisposableHarnessMatrix,
   resolveContainedPath,
 } from './verify-integration-package.mjs';
 
@@ -43,6 +44,7 @@ export async function syncIntegrationAssets(options = {}) {
   }
   const changedPaths = [];
   const inventory = await loadIntegrationInventory(root);
+  validateDisposableHarnessMatrix(inventory);
   const versionedAssets = [
     getInventoryAsset(inventory, 'codex', 'plugin'),
     getInventoryAsset(inventory, 'claude', 'marketplace'),

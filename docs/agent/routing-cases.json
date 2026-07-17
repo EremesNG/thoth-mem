@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "precedence": [
+    "explicit_authoritative_path",
+    "behavior_owner",
+    "public_contract_owner",
+    "affected_overlays",
+    "evidence_fallback"
+  ],
+  "cases": [
+    {
+      "id": "topic-key-upsert",
+      "task": "Fix topic-key updates that lose observation revision history.",
+      "expected_primary": "persistence-retrieval",
+      "expected_first_read": "docs/agent/persistence-retrieval.md",
+      "expected_overlays": [],
+      "expected_code_roots": ["src/store/", "src/utils/topic-key.ts"],
+      "expected_test_roots": ["tests/store/", "tests/utils/topic-key.test.ts"]
+    },
+    {
+      "id": "http-contract-dashboard-consumer",
+      "task": "Add an index health field to the HTTP response and show it in the observatory.",
+      "expected_primary": "mcp-cli-http-surfaces",
+      "expected_first_read": "docs/agent/surfaces.md",
+      "expected_overlays": ["dashboard-ui"],
+      "expected_code_roots": ["src/http-routes.ts", "src/http-openapi.ts", "dashboard/src/"],
+      "expected_test_roots": ["tests/http-viz.test.ts", "tests/dashboard/"]
+    },
+    {
+      "id": "native-compaction",
+      "task": "Correct Codex compaction recovery so a checkpoint is consumed only after verified delivery.",
+      "expected_primary": "native-lifecycle-integrations",
+      "expected_first_read": "docs/agent/native-lifecycle.md",
+      "expected_overlays": [],
+      "expected_code_roots": ["src/integration/"],
+      "expected_test_roots": ["tests/integration/"]
+    },
+    {
+      "id": "inventory-runner-release",
+      "task": "Add a published native runner asset and enforce it in the packed package verifier.",
+      "expected_primary": "managed-setup-packaging-release",
+      "expected_first_read": "docs/agent/managed-delivery.md",
+      "expected_overlays": ["native-lifecycle-integrations"],
+      "expected_code_roots": ["integrations/inventory.json", "scripts/verify-integration-package.mjs", "integrations/"],
+      "expected_test_roots": ["tests/packaging/"]
+    },
+    {
+      "id": "explicit-dashboard-path",
+      "task": "Fix history navigation in dashboard/src/router.tsx.",
+      "expected_primary": "dashboard-ui",
+      "expected_first_read": "docs/agent/dashboard.md",
+      "expected_overlays": [],
+      "expected_code_roots": ["dashboard/src/router.tsx"],
+      "expected_test_roots": ["tests/dashboard/"]
+    },
+    {
+      "id": "unknown-symbol-fallback",
+      "task": "Investigate an unfamiliar symbol named QueueLeaseCoordinator.",
+      "expected_primary": "fallback",
+      "expected_first_read": "docs/agent/index.md",
+      "expected_overlays": [],
+      "expected_code_roots": [],
+      "expected_test_roots": [],
+      "notes": "Search the exact symbol, imports, registrations, and tests before selecting or adding a route."
+    }
+  ]
+}

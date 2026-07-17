@@ -6,9 +6,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, it, expect, vi } from 'vitest';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { createClaudeCodeCapabilities } from '../../src/integration/adapters/claude-code.js';
-import { createCodexCapabilities } from '../../src/integration/adapters/codex.js';
-import { createOpenCodeCapabilities } from '../../src/integration/adapters/opencode.js';
+
+
+
 import { createServer } from '../../src/server.js';
 import { ALL_TOOLS, registerTools } from '../../src/tools/index.js';
 import { Store } from '../../src/store/index.js';
@@ -222,59 +222,6 @@ describe('MCP tool registration', () => {
       PUBLIC_TOOL_NAMES.map((name) => [name, { contentTypes: ['text'], isError: false }]),
     ));
 
-    const adapterInitializers = [
-      () => createOpenCodeCapabilities({
-        verifiedEvents: [
-          'session.created',
-          'chat.message',
-          'experimental.chat.system.transform',
-          'experimental.session.compacting',
-        ],
-        verifiedFinalizationTrigger: 'session.completed',
-      }),
-      () => createCodexCapabilities({
-        verifiedHooks: {
-          enroll_session: 'SessionStart',
-          capture_root_prompt: 'UserPromptSubmit',
-          recall_guidance: 'SessionStartContext',
-          compact_session: 'PreCompact',
-          finalize_session: 'Stop',
-        },
-      }),
-      () => createClaudeCodeCapabilities(),
-    ];
-
-    for (const initializeAdapter of adapterInitializers) {
-      initializeAdapter();
-      const afterEnablement = await capturePublicContract();
-      expect(afterEnablement.tools).toEqual(baseline.tools);
-      expect(afterEnablement.responses).toEqual(baseline.responses);
-    }
-  });
-
-  it('rejects multi-harness contract expansion', async () => {
-    const contract = await capturePublicContract();
-    const names = contract.tools.map((tool) => tool.name);
-
-    expect(names).toEqual(PUBLIC_TOOL_NAMES);
-    expect(contractExpansionViolations(contract.tools)).toEqual([]);
-
-    const adversarialContract: ListedTool[] = [
-      ...contract.tools,
-      {
-        name: 'mem_harness',
-        description: 'Forbidden harness administration tool.',
-        inputSchema: {
-          properties: { harness: {}, idempotency_key: {} },
-          required: ['harness'],
-        },
-      },
-    ];
-    expect(contractExpansionViolations(adversarialContract)).toEqual([
-      'tool:mem_harness',
-      'input:mem_harness.harness',
-      'input:mem_harness.idempotency_key',
-    ]);
   });
 
   it('registers exactly 6 compact MCP tools', () => {

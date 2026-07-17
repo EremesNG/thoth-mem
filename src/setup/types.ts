@@ -1,6 +1,7 @@
-export type SetupHarness = 'opencode' | 'codex';
+export type SetupHarness = 'opencode' | 'codex' | 'claude';
 export type SetupScope = 'global' | 'project';
 export type SetupStatus = 'complete' | 'failed' | 'partial' | 'requires_user_action';
+export type CodexSetupStrategy = 'plugin_manager' | 'legacy_filesystem';
 export type SetupStepOutcome = 'planned' | 'skipped' | 'confirmed' | 'failed' | 'unavailable';
 export type SetupExitCode = 0 | 1 | 2 | 3;
 
