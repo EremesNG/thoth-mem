@@ -142,34 +142,8 @@ async function listTypeScriptModules(root: string): Promise<string[]> {
 }
 
 describe('canonical inventory', () => {
-  it('documentation and codemap inventory follows native assets and transition boundaries', async () => {
-    const inventory = await readJson<InventoryDocument>(inventoryPath);
-    const [readme, rootCodemap, sourceCodemap, integrationModules, setupModules] = await Promise.all([
-      readFile(join(repositoryRoot, 'README.md'), 'utf8'),
-      readFile(join(repositoryRoot, 'codemap.md'), 'utf8'),
-      readFile(join(repositoryRoot, 'src', 'codemap.md'), 'utf8'),
-      listTypeScriptModules(join(repositoryRoot, 'src', 'integration')),
-      listTypeScriptModules(join(repositoryRoot, 'src', 'setup')),
-    ]);
-    const repositoryDocumentation = `${readme}\n${rootCodemap}\n${sourceCodemap}`;
-
-    for (const asset of inventory.assets) {
-      expect(repositoryDocumentation, `missing documented native asset ${asset.path}`)
-        .toContain(`\`${asset.path}\``);
-    }
-    for (const modulePath of [...integrationModules, ...setupModules]) {
-      expect(sourceCodemap, `missing documented source module ${modulePath}`)
-        .toContain(`\`${modulePath}\``);
-    }
-    for (const releaseModule of [
-      'integrations/inventory.json',
-      'scripts/sync-integration-assets.mjs',
-      'scripts/verify-integration-package.mjs',
-      'scripts/build.mjs',
-    ]) {
-      expect(rootCodemap, `missing documented release module ${releaseModule}`)
-        .toContain(`\`${releaseModule}\``);
-    }
+  it('documentation inventory follows native assets and transition boundaries', async () => {
+    const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8');
 
     expect(readme).toContain('## Transitioning to native harness integration');
     expect(readme).toContain('### Manual MCP fallback');

@@ -1,176 +1,65 @@
 # AGENTS.md
 
-IMPORTANT: Prefer `webstorm-index` MCP tools for all project file navigation tasks, including text search, file search, file reading, and refactoring. This rule applies to the root agent and every delegated sub-agent. If `webstorm-index` is unavailable, returns errors, lacks the required capability, produces incomplete results, or otherwise blocks progress, the agent may use other available tools as a fallback. When doing so, it should use the least invasive suitable tool and resume using `webstorm-index` once it becomes practical.
+This repository is `thoth-mem`, a TypeScript/ESM persistent-memory service for coding agents. It stores prompts, observations, sessions, retrieval indexes, and derived graph data in SQLite; exposes a six-tool MCP server plus CLI and optional HTTP/dashboard surfaces; and packages opt-in native lifecycle integrations for OpenCode, Codex, and Claude Code.
 
+This file is the canonical repository-wide agent guide for `C:\DEV\Proyectos\Webstorm\thoth-mem`. Load task-specific detail from [`docs/agent/index.md`](docs/agent/index.md); do not read every linked document by default.
 
-## Scope
+## Navigation and context
 
-- This file applies to the entire repository at `C:\DEV\Proyectos\Webstorm\thoth`.
-- Use it as the default operating guide for coding agents working here.
-- Prefer small, focused changes over wide refactors.
-- Match existing patterns in the file you touch before introducing new ones.
+1. Classify the task by behavior, then select one primary route in the context router.
+2. Prefer `webstorm-index` MCP tools for project text/file search, reading, navigation, and refactoring. This applies to root and delegated agents.
+3. Check index readiness before indexed operations. If the index is unavailable, errors, lacks a capability, or returns incomplete results, use the least invasive fallback and resume indexed navigation when practical.
+4. Search named paths, symbols, imports, registrations, and nearby tests before broad reading.
+5. Read the smallest relevant runtime entrypoints, registrations/imports, and tests first. Expand only to answer a concrete unresolved question.
+6. Exclude `.claude/worktrees/`, vendored or local skills under `.agents/skills/` and `skills/`, dependency/build/generated output, and archived `openspec/changes/archive/` from routine exploration unless the task targets them.
+7. Ask subagents for conclusions, inspected paths/symbols, relevant checks, risks, and unresolved questions—not raw logs, full files, or unfiltered searches.
 
-## Repository Snapshot
+The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoint. Skill-owned `AGENTS.md` files under `.agents/skills/` are local skill assets, not nested project rules. No `CLAUDE.md`, Copilot instruction file, `.cursorrules`, or `.cursor/rules/` project bridge is currently maintained; do not add or duplicate client instructions without evidence that a client needs one.
 
-- Package manager: `pnpm` (`pnpm-lock.yaml` is present).
-- Runtime: Node.js `>=18`.
-- Stack: TypeScript, ESM, `tsc`, `vitest`, SQLite via `better-sqlite3`, `zod`.
+## Repository map
 
-## Project Layout
+- `src/store/`, `src/retrieval/`, `src/indexing/`, `src/sync/`: durable memory, recall, derived indexes, maintenance, and synchronization.
+- `src/tools/`, `src/index.ts`, `src/server.ts`, `src/cli.ts`, `src/http-*.ts`: MCP, process, CLI, and HTTP surfaces.
+- `src/integration/` and `integrations/`: host-neutral lifecycle logic and published native harness assets.
+- `src/setup/`, `scripts/`, package/plugin manifests: managed setup, packaging, verification, and release preparation.
+- `dashboard/`: React/Vite operations console consumed by the HTTP bridge.
+- `tests/`: Vitest suites organized by behavior; `docs/agent/`: on-demand agent context.
+- `dist/`: generated output; never edit directly.
 
-- `src/index.ts` - CLI entrypoint and shutdown handling.
-- `src/server.ts` / `src/config.ts` - server bootstrap and env-driven config.
-- `src/store/` - SQLite schema, persistence, search, and data types.
-- `src/tools/` - one MCP tool registration per file; `src/utils/` - focused helpers.
-- `tests/` - Vitest suites by domain; `dist/` - compiled output, never edit directly.
+## Verified baseline
 
-## Build, Test, and Dev Commands
+- Package manager: pnpm `11.1.3`; Node.js runtime floor: `>=18`.
+- Stack: strict TypeScript, Node16 ESM, Vitest, SQLite via `better-sqlite3`, zod; dashboard uses React and Vite.
+- Common scripts from `package.json`: `pnpm install`, `pnpm run dev`, `pnpm run build`, `pnpm test`, `pnpm run test:watch`, and `pnpm run prepublishOnly`.
+- There is no root lint script. Do not invent or claim `pnpm run lint`; use only checks verified in manifests or CI.
+- Detailed test selection and verification rules are owned by [`docs/agent/testing.md`](docs/agent/testing.md).
 
-Use the existing pnpm scripts first.
+## Universal working rules
 
-```bash
-pnpm install
-pnpm run dev
-pnpm run build
-pnpm test
-pnpm run test:watch
-```
+- Read each touched file before editing it. Match its existing patterns and formatting.
+- Prefer small, focused changes. Fix bugs minimally and do not refactor unrelated modules.
+- Preserve unrelated and concurrent working-tree changes; review the diff before finishing.
+- Do not edit generated output, copy secrets or private operational data into docs/code, or claim a check passed unless it ran.
+- Keep source relative imports ESM-compatible with explicit `.js` extensions. Never suppress type errors with `as any`, `@ts-ignore`, or `@ts-expect-error`.
+- Every `request_user_input` call must omit `autoResolutionMs` entirely, including `null` or `undefined`.
+- Treat install, setup, migration, deployment, publication, release, and real-host smoke as stateful operations requiring task-specific scope and authorization. A documentation or discovery task does not authorize them.
+- Update routed documentation only when a durable, non-obvious fact changes. Keep commands aligned with manifests and CI.
 
-- `pnpm run dev` - runs `tsx watch src/index.ts` for local development.
-- `pnpm run build` - compiles `src/` to `dist/` with TypeScript.
-- `pnpm test` - runs the full Vitest suite once.
-- `pnpm run test:watch` - starts Vitest in watch mode.
-- `pnpm run prepublishOnly` - repository release gate; runs build and tests.
+For coding style, module organization, naming, error boundaries, and type rules, load the [engineering overlay](docs/agent/engineering.md). For privacy, FTS, schema, taxonomy, deduplication, and topic-key invariants, load the [persistence and retrieval route](docs/agent/persistence-retrieval.md).
 
-## Single-Test and Focused-Test Commands
+## Change workflow
 
-There is no dedicated pnpm script for a single test file, so use Vitest directly or pass args through `pnpm test`.
+1. Confirm scope, the primary route, and only the overlays the change actually touches.
+2. Inspect existing contracts and nearest tests before editing.
+3. Implement the requested behavior without expanding ownership.
+4. Run the narrowest relevant check first, then broader checks required by [`docs/agent/testing.md`](docs/agent/testing.md).
+5. Review status and diff for unrelated, generated, dependency, worktree, or secret material.
+6. Report completed behavior, files changed, checks run, failures, and remaining uncertainty.
 
-Run one test file:
+## Definition of done
 
-```bash
-pnpm test -- tests/tools/mem-save.test.ts
-```
-
-Equivalent direct Vitest form:
-
-```bash
-pnpm exec vitest run tests/tools/mem-save.test.ts
-```
-
-Run one named test inside a file:
-
-```bash
-pnpm exec vitest run tests/tools/mem-save.test.ts -t "saves a new observation and returns created action"
-```
-
-Useful notes:
-
-- Test discovery is `tests/**/*.test.ts`.
-- Tests use a 10 second timeout from `vitest.config.ts`.
-- Most storage tests instantiate `new Store(':memory:')` for isolation.
-
-## Lint and Typecheck Reality
-
-- There is currently no lint script in `package.json`.
-- Do not invent `pnpm run lint` in automation unless you add and document it.
-- For verification, use `pnpm run build` and `pnpm test` as the current baseline.
-- If you need a type-only check without emit, prefer `pnpm exec tsc --noEmit` as an ad hoc command, but note it is not a packaged script.
-
-## Existing Agent-Instruction Files
-
-- No repository-level `AGENTS.md` existed before this file.
-- No `.cursor/rules/` directory was found.
-- No `.cursorrules` file was found.
-- No `.github/copilot-instructions.md` file was found.
-- If any of those files appear later, merge their repository-specific guidance into this file.
-
-## Repository Map
-
-A full codemap is available at `codemap.md` in the project root.
-
-Before working on any task, read `codemap.md` to understand:
-- Project architecture and entry points
-- Directory responsibilities and design patterns
-- Data flow and integration points between modules
-
-For deep work on a specific folder, also read that folder's `codemap.md`.
-
-## TypeScript and Module Rules
-
-- The repo is ESM-first: `"type": "module"` in `package.json`.
-- `tsconfig.json` uses `module: "Node16"` and `moduleResolution: "Node16"`.
-- `src/` is the compiler root; `tests/` are excluded from build output.
-- Keep relative TypeScript imports using explicit `.js` extensions in source files, e.g. `../store/index.js`.
-- Use `import type` for type-only imports when possible.
-- Prefer explicit exported interfaces and types for stable data shapes; keep nullability explicit with `| null`.
-- Do not suppress type errors with `as any`, `@ts-ignore`, or `@ts-expect-error`.
-
-## Import and File Organization Conventions
-
-- Prefer this order when editing imports:
-  1. Node built-ins via `node:`
-  2. External packages
-  3. Internal relative imports
-- Separate type-only imports from value imports when it improves clarity.
-- Tool files in `src/tools/` should stay focused on one MCP tool registration.
-- Keep files small and single-purpose, especially under `src/tools/` and `src/utils/`.
-
-## Formatting Conventions
-
-- Use the formatting style already present in the file you touch.
-- Semicolons are standard across the repository.
-- Single quotes are the dominant style in `store`, `utils`, and tests.
-- Some bootstrap and MCP registration files currently use double quotes; do not reformat unrelated lines just to normalize quotes.
-- Keep lines readable rather than aggressively compressed.
-- Add comments only when a block is non-obvious.
-
-## Naming Conventions
-
-- Classes: `PascalCase` (`Store`).
-- Interfaces and type aliases: `PascalCase` (`ThothConfig`, `SaveObservationInput`).
-- Functions and variables: `camelCase` (`getConfig`, `resolveDataDir`, `sanitizeFTS`).
-- Exported constant taxonomies: `UPPER_SNAKE_CASE` (`OBSERVATION_TYPES`).
-- Tool implementation files: `kebab-case` matching tool names (`mem-save.ts`, `mem-context.ts`).
-- Test files: mirror the domain and end in `.test.ts`.
-
-## Error Handling Conventions
-
-- Throw regular `Error` objects for unrecoverable internal failures.
-- Catch errors at process or tool boundaries and return clear text messages.
-- MCP tool handlers commonly return `{ isError: true, content: [...] }` on failure.
-- The CLI entrypoint writes fatal startup errors to `stderr` and exits with status `1`.
-- Close the store on shutdown, and prefer warnings over silent content truncation.
-
-## Data and Security Conventions
-
-- Sanitize persisted private content before storage; see `stripPrivateTags()` behavior.
-- Sanitize FTS queries before passing them to SQLite FTS5; see `sanitizeFTS()`.
-- Keep schema changes idempotent and consistent with the SQL CHECK constraints and FTS triggers.
-- Respect the existing observation taxonomy and preserve deduplication and topic-key upsert behavior.
-
-## Testing Conventions
-
-- Use Vitest APIs: `describe`, `it`, `expect`, `beforeEach`, `afterEach`.
-- Prefer deterministic tests with in-memory SQLite over filesystem state when possible.
-- Keep test names behavior-focused and specific.
-- When adding tests, place them in the nearest matching `tests/` subdirectory.
-- Mirror production import paths with `.js` extensions in test files too.
-- Close stores and clean temp directories in teardown.
-
-## Agent Working Rules for This Repo
-
-- Read the touched file before editing it.
-- Every `request_user_input` call MUST omit the `autoResolutionMs` parameter entirely; never set it to any value, including `null` or `undefined`, so the question has no expiration and the user can take as long as needed to respond.
-- Fix bugs minimally; do not refactor unrelated modules during a bugfix.
-- Do not edit `dist/` directly.
-- Do not claim a new lint command exists unless you also add it to `package.json`.
-- When documenting commands, prefer commands already codified in `package.json`.
-- Before finishing code changes, run the narrowest relevant test first, then broader verification as needed.
-- If you change build behavior, test discovery, schema logic, or tool registration, run `pnpm run build` and `pnpm test`.
-
-## Good Defaults
-
-- Start with `pnpm test -- <target-file>` for the area you changed, then escalate to `pnpm test` for shared logic.
-- Run `pnpm run build` for TypeScript API, module, or export changes.
-- Keep docs and agent instructions aligned with actual scripts and config files.
+- The requested behavior or analysis is complete and remains within scope.
+- Relevant focused checks pass; required broader checks pass, or exact failures and unexecuted checks are reported.
+- Public contracts, persistence behavior, packaging inventory, and durable documentation are updated when the change requires them.
+- Cleanup responsibilities are preserved, and the final diff contains no unrelated, generated, dependency, or secret material.
+- Assumptions and unresolved uncertainty are explicit.
