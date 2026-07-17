@@ -67,6 +67,12 @@ const PACKED_RUNTIME_TIMEOUT_MS = 30_000;
       };
     }
 
+    export function createArchiveExtractionEnvironment(strictEnvironment, hostPath = process.env.PATH) {
+      const extractionEnvironment = { ...strictEnvironment };
+      if (hostPath) extractionEnvironment.PATH = hostPath;
+      return extractionEnvironment;
+    }
+
     function packageTarget(nodeModules, packageName) {
       if (!PACKAGE_NAME_PATTERN.test(packageName)) {
         throw new Error('Runtime dependency has an unsafe package name: "' + packageName + '".');
@@ -818,6 +824,7 @@ export async function verifyPackedRuntimeBehavior(options = {}) {
     const extractDir = join(workspace, 'extract');
     const packageRoot = join(host, 'node_modules', 'thoth-mem');
     const environment = createStrictSubprocessEnvironment(workspace);
+    const extractionEnvironment = createArchiveExtractionEnvironment(environment);
     environment.THOTH_MEM_BIN = join(packageRoot, 'dist', 'index.js');
     environment.THOTH_DATA_DIR = join(workspace, 'data');
     await Promise.all([mkdir(host), mkdir(archiveDir), mkdir(extractDir)]);
@@ -830,7 +837,7 @@ export async function verifyPackedRuntimeBehavior(options = {}) {
     if (packed.error?.code === 'ETIMEDOUT') throw new Error('npm pack timed out after ' + NPM_PACK_TIMEOUT_MS + 'ms while preparing packed runtime verification.');
     if (packed.status !== 0) throw new Error('Unable to prepare packed runtime verification. ' + (packed.stderr || packed.error?.message || ''));
     const archive = join(archiveDir, JSON.parse(packed.stdout)?.[0]?.filename ?? '');
-    const extracted = spawnSync(nativeTarCommand(), ['-xzf', archive, '-C', extractDir], { cwd: host, encoding: 'utf8', windowsHide: true, timeout: PACKED_RUNTIME_TIMEOUT_MS, shell: false, env: environment });
+    const extracted = spawnSync(nativeTarCommand(), ['-xzf', archive, '-C', extractDir], { cwd: host, encoding: 'utf8', windowsHide: true, timeout: PACKED_RUNTIME_TIMEOUT_MS, shell: false, env: extractionEnvironment });
     if (extracted.error?.code === 'ETIMEDOUT') throw new Error('Packed runtime archive extraction timed out after ' + PACKED_RUNTIME_TIMEOUT_MS + 'ms.');
     if (extracted.status !== 0) throw new Error('Unable to extract packed runtime verification archive. ' + (extracted.stderr || extracted.error?.message || ''));
     await mkdir(dirname(packageRoot), { recursive: true });

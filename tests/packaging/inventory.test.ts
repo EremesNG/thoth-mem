@@ -47,6 +47,10 @@ interface VerifierModule {
   getDisposableHarnessMatrix(inventory: InventoryDocument): readonly string[];
   verifyCurrentPackageFileList(options?: { rootDir?: string }): Promise<readonly string[]>;
       createStrictSubprocessEnvironment(workspace: string): NodeJS.ProcessEnv;
+  createArchiveExtractionEnvironment(
+    strictEnvironment: NodeJS.ProcessEnv,
+    hostPath?: string,
+  ): NodeJS.ProcessEnv;
 }
 
 interface SyncModule {
@@ -218,6 +222,34 @@ describe('canonical inventory', () => {
         expect(Object.keys(environment).some((key) => /token|auth|proxy|registry|credential|password|secret/i.test(key))).toBe(false);
         expect(source).not.toContain('{ ...process.env');
         expect(source).not.toContain("cp(join(rootDir, 'node_modules')");
+          });
+
+          it('isolates archive extraction PATH from strict subprocess probes without copying host environment', async () => {
+            const verifier = await importVerifier();
+            const workspace = join(tmpdir(), 'thoth verifier archive environment');
+            const strictEnvironment = verifier.createStrictSubprocessEnvironment(workspace);
+            const strictSnapshot = { ...strictEnvironment };
+            const extractionPath = join(workspace, 'host-tools');
+            const extractionEnvironment = verifier.createArchiveExtractionEnvironment(
+              strictEnvironment,
+              extractionPath,
+            );
+            const source = await readFile(verifierPath, 'utf8');
+            const runtimeStart = source.indexOf('export async function verifyPackedRuntimeBehavior');
+            const runtimeEnd = source.indexOf('export async function verifyIntegrationPackage', runtimeStart);
+            const runtime = source.slice(runtimeStart, runtimeEnd);
+
+            expect(extractionEnvironment).not.toBe(strictEnvironment);
+            expect(extractionEnvironment.PATH).toBe(extractionPath);
+            expect(strictEnvironment).toEqual(strictSnapshot);
+            expect(Object.keys(extractionEnvironment).sort()).toEqual(Object.keys(strictEnvironment).sort());
+            expect(extractionEnvironment).not.toHaveProperty('NPM_TOKEN');
+            expect(extractionEnvironment).not.toHaveProperty('HTTP_PROXY');
+            expect(extractionEnvironment).not.toHaveProperty('HTTPS_PROXY');
+            expect(runtime).toContain('createArchiveExtractionEnvironment(environment)');
+            const extractionSpawn = runtime.match(/const extracted = spawnSync\([\s\S]*?\n/);
+            expect(extractionSpawn?.[0]).toContain('env: extractionEnvironment');
+            expect(extractionSpawn?.[0]).not.toContain('env: environment');
           });
 
           it('materializes and validates the isolated dependency host before packing and keeps checkout paths out of post-pack runtime', async () => {
