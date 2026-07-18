@@ -36,6 +36,18 @@
         "The trace handles degraded semantic recall with exactly one bounded supported fallback/retry, then follows context recall and selected mem_get for record 801 using the supplied limits and bounds.",
         "The trace states that a failed fallback must be reported as degraded or unsupported without claiming recovered continuity, and makes no live thoth-mem call or memory/session mutation claim."
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "Prepare a non-mutating identity decision trace for an agent-owned semantic summary. The hypothetical harness exposes the stable ID of the root session as `task-42` under its native field `threadId`, and the current repository path is `/workspace/memory-service`. Explain which value becomes `mem_session.id`, which value becomes `session_id` for other memory tools, which project name becomes `project`, and why the agent must reason about those meanings rather than search for host variables literally named `session_id` or `project`. Do not call any live thoth-mem tool or claim a summary was saved. Return only the proposed decision trace.",
+      "expected_output": "A concise trace that maps the stable root session ID to the existing MCP identity parameters, derives the project name from the repository directory, and does not depend on same-named harness variables.",
+      "files": [],
+      "expectations": [
+        "The trace uses `task-42` exactly as `mem_session.id` and as `session_id` for other memory tools.",
+        "The trace derives project `memory-service` from the `/workspace/memory-service` repository directory and passes that name as `project`.",
+        "The trace explains that `threadId` is a harness-native field carrying the root session ID and does not require host variables literally named `session_id` or `project`.",
+        "The trace rejects per-turn identifiers and invented fallback sessions as substitutes for root continuity, and makes no persistence claim or live tool call."
+      ]
     }
   ]
 }

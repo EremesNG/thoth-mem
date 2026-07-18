@@ -258,7 +258,6 @@ const NATIVE_HOOK_MAPPINGS = Object.freeze({
     SessionStart: Object.freeze({ eventMappingId: 'claude-code-session-start-v1', deliveryMappingId: 'claude-code-recovery-injection-v1' }),
     UserPromptSubmit: Object.freeze({ eventMappingId: 'claude-code-user-prompt-v1', deliveryMappingId: 'claude-code-user-prompt-injection-v1' }),
     PreCompact: Object.freeze({ eventMappingId: 'claude-code-compaction-v1', deliveryMappingId: 'claude-code-compaction-v1' }),
-    SessionEnd: Object.freeze({ eventMappingId: 'claude-code-session-end-v1', deliveryMappingId: 'claude-code-session-end-v1' }),
     SubagentStop: Object.freeze({ eventMappingId: 'claude-subagent-stop-passive-v1', deliveryMappingId: 'claude-subagent-stop-passive-v1' }),
   }),
 });
@@ -444,7 +443,6 @@ function expectedNativeIntent(request) {
   if (hook === 'UserPromptSubmit') return 'capture_root_prompt';
   if (hook === 'PreCompact') return 'compact_session';
   if (request.harness === 'claude' && hook === 'SubagentStop') return 'capture_passive_learning';
-  if (hook === 'SessionEnd' || (request.harness === 'codex' && hook === 'Stop')) return 'finalize_session';
   if (['codex', 'claude'].includes(request.harness) && hook === 'SessionStart' && payload?.source === 'compact') return 'recall_guidance';
   return 'enroll_session';
 }
@@ -632,11 +630,16 @@ export async function dispatchHookRequest(request, options = {}) {
 export async function main() {
   const args = parseArguments(process.argv.slice(2));
   const nativeHarness = args.harness === 'codex' || args.harness === 'claude';
+  const semanticSummaryHook = nativeHarness && (args.hook === 'Stop' || args.hook === 'SessionEnd');
   let input;
   try {
     input = await readBoundedStdin(process.stdin);
   } catch {
     process.stdout.write(JSON.stringify(nativeHarness ? {} : degraded('Hook stdin exceeded the bounded input limit.', false)) + '\n');
+    return;
+  }
+  if (semanticSummaryHook) {
+    process.stdout.write('{}\n');
     return;
   }
   const wrapped = protocolRequest(input, args);

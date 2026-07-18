@@ -1146,6 +1146,16 @@ describe('packed disposable runtime evidence', () => {
 
             if (runtimeHarness === 'opencode') {
               const runner = join(fixture.packageRoot, 'integrations', 'shared', 'hook-runner.mjs');
+              const enrollment = run(process.execPath, [runner, '--harness', 'opencode', '--hook', 'session.created'], {
+                cwd: harness.home.root, env,
+                input: JSON.stringify({ protocolVersion: 1, harness: 'opencode', capabilityEvidence: { payloadMappingId: 'opencode-session-payload-v1', assetExecutionMarker: 'opencode-activation-v1', eventMappingId: 'opencode-session-created-v1', deliveryChannel: 'none', deliveryMappingId: 'opencode-session-side-effect-v1', behaviorEvidenceMappingId: 'opencode-plugin-init-side-effect-v1' }, event: { type: 'session.created', id: 'packed-opencode-session', properties: { info: { id: 'packed-opencode-session' } } }, context: { project: 'packed-project', directory: harness.home.root } }),
+              });
+              expectCommandSucceeded(enrollment, 'packed OpenCode real memory enrollment');
+              expect(JSON.parse(enrollment.stdout)).toMatchObject({
+                intent: 'enroll_session',
+                outcome: expect.stringMatching(/^(confirmed|degraded)$/),
+                retryable: false,
+              });
               const start = run(process.execPath, [runner, '--harness', 'opencode', '--hook', 'SessionStart'], {
                 cwd: harness.home.root, env,
                 input: JSON.stringify({ protocolVersion: 1, operation: 'prepare_delivery', harness: 'opencode', capabilityEvidence: { payloadMappingId: 'opencode-session-payload-v1', assetExecutionMarker: 'opencode-activation-v1', eventMappingId: 'opencode-session-start-v1', deliveryChannel: 'opencode-protocol-output', deliveryMappingId: 'opencode-recovery-injection-v1', behaviorEvidenceMappingId: 'opencode-plugin-init-mutation-v1', mutableOutputChannel: 'system' }, event: { type: 'experimental.chat.system.transform', id: 'packed-opencode-start', sequence: 1, input: { model: { providerID: 'fixture', modelID: 'packed' }, sessionID: 'packed-opencode-session' } }, context: { project: 'packed-project', directory: harness.home.root } }),

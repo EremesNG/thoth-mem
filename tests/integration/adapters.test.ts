@@ -65,6 +65,31 @@ function claimFor(
       return resolution;
     }
 
+    function resolvedOpenCodeNormalCapabilities(
+      eventMappingId: string,
+      deliveryMappingId: string,
+    ): any {
+      const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+      if (!evidence) throw new Error('Expected OpenCode evidence');
+      const resolution = resolveRuntimeCapabilityEvidence('opencode', {
+        hostVersion: evidence.versionFamily,
+        payloadMappingId: evidence.payloadMappingId,
+        assetExecutionMarker: evidence.activationMarker,
+        eventMappingId,
+        deliveryChannel: 'none',
+        deliveryMappingId,
+      });
+      if (resolution.status !== 'supported') throw new Error('Expected supported OpenCode normal mapping');
+      return resolution;
+    }
+
+    function resolvedOpenCodePromptCapabilities(): any {
+      return resolvedOpenCodeNormalCapabilities(
+        'opencode-user-prompt-v1',
+        'opencode-user-prompt-side-effect-v1',
+      );
+    }
+
     describe('resolver authority API', () => {
       it('exposes no adapter resolver, registrar, or mint from shared', () => {
         expect(adapterShared).not.toHaveProperty('resolveAdapterCapabilities');
@@ -118,6 +143,49 @@ function claimFor(
         expect(Object.isFrozen(first.runtimeCapabilities.activation)).toBe(true);
       });
 
+      it('normalizes each verified native root-session identity without sharing a native field name', async () => {
+        const [openCode, codex, claude] = await Promise.all([
+          importRequiredModule('src/integration/adapters/opencode.ts'),
+          importRequiredModule('src/integration/adapters/codex.ts'),
+          importRequiredModule('src/integration/adapters/claude-code.ts'),
+        ]);
+        const openCodeEvidence = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+        const codexEvidence = HOST_EVIDENCE.find((entry) => entry.harness === 'codex');
+        const claudeEvidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+        if (!openCodeEvidence || !codexEvidence || !claudeEvidence) throw new Error('Expected host evidence');
+
+        const normalized = [
+          (openCode.normalizeOpenCodeEvent as (input: unknown, caps: unknown) => any)(
+            {
+              event: { type: 'session.created', properties: { info: { id: 'opencode-root' } } },
+              context: { project: 'identity-project' },
+            },
+            resolvedOpenCodeNormalCapabilities(
+              'opencode-session-created-v1',
+              'opencode-session-side-effect-v1',
+            ).adapterCapabilities,
+          ),
+          (codex.normalizeCodexEvent as (input: unknown, caps: unknown) => any)(
+            { hook: 'SessionStart', payload: { session_id: 'codex-root', source: 'startup' } },
+            resolvedCapabilities(codexEvidence).adapterCapabilities,
+          ),
+          (claude.normalizeClaudeCodeEvent as (input: unknown, caps: unknown) => any)(
+            { hook: 'SessionStart', payload: { session_id: 'claude-root', source: 'startup' } },
+            resolvedCapabilities(claudeEvidence).adapterCapabilities,
+          ),
+        ];
+
+        expect(normalized.map((result) => result.event.identity.sessionId)).toEqual([
+          'opencode-root',
+          'codex-root',
+          'claude-root',
+        ]);
+        for (const result of normalized) {
+          expect(result).toMatchObject({ action: 'dispatch', event: { isRootSession: true } });
+          expect(result.event.identity).not.toHaveProperty('rootId');
+        }
+      });
+
       it('normalizes Codex and Claude compact starts as gated recall guidance while ordinary starts remain enrollment', async () => {
         const [openCode, codex, claude] = await Promise.all([
           importRequiredModule('src/integration/adapters/opencode.ts'),
@@ -131,7 +199,10 @@ function claimFor(
 
         expect((openCode.normalizeOpenCodeEvent as (input: unknown, caps: unknown) => any)(
           { event: { type: 'session.created', properties: { info: { id: 'root' } } } },
-          resolvedCapabilities(openCodeEvidence).adapterCapabilities,
+          resolvedOpenCodeNormalCapabilities(
+            'opencode-session-created-v1',
+            'opencode-session-side-effect-v1',
+          ).adapterCapabilities,
         )).toMatchObject({ action: 'dispatch', event: { intent: 'enroll_session' } });
         expect((codex.normalizeCodexEvent as (input: unknown, caps: unknown) => any)(
           { hook: 'SessionStart', payload: { session_id: 'root' } },
@@ -172,20 +243,73 @@ function claimFor(
               { hook: 'SessionStart', payload: { session_id: 'root', source: 'startup' } },
               resolvedCapabilities(claudeEvidence).adapterCapabilities,
             )).toMatchObject({ action: 'dispatch', event: { intent: 'enroll_session' } });
-            const terminal = resolvedCapabilities(claudeEvidence, claudeEvidence.terminal, claudeEvidence.terminal);
         expect((claude.normalizeClaudeCodeEvent as (input: unknown, caps: unknown) => any)(
-          { hook: 'SessionEnd', payload: { session_id: 'root' } }, terminal.adapterCapabilities,
-        )).toMatchObject({ action: 'dispatch', event: { intent: 'finalize_session' } });
-        expect((claude.normalizeClaudeCodeEvent as (input: unknown, caps: unknown) => any)(
-          { hook: 'Stop', payload: { session_id: 'root' } }, terminal.adapterCapabilities,
+          { hook: 'SessionEnd', payload: { session_id: 'root' } },
+          resolvedCapabilities(claudeEvidence).adapterCapabilities,
         )).toMatchObject({ action: 'return', outcome: 'no_op' });
+        expect((claude.normalizeClaudeCodeEvent as (input: unknown, caps: unknown) => any)(
+          { hook: 'Stop', payload: { session_id: 'root' } },
+          resolvedCapabilities(claudeEvidence).adapterCapabilities,
+        )).toMatchObject({ action: 'return', outcome: 'no_op' });
+      });
+
+      it('normalizes only trusted root OpenCode text parts and never falls back to summaries', async () => {
+        const openCode = await importRequiredModule('src/integration/adapters/opencode.ts');
+        const capabilities = resolvedOpenCodePromptCapabilities().adapterCapabilities;
+        const normalize = openCode.normalizeOpenCodeEvent as (input: unknown, caps: unknown) => any;
+        const event = {
+          type: 'chat.message',
+          id: 'message-1',
+          input: { sessionID: 'root-session', messageID: 'message-1', rootSession: true },
+          output: {
+            message: {
+              id: 'message-1',
+              sessionID: 'root-session',
+              role: 'user',
+              summary: { title: 'DERIVED SUMMARY', body: 'MUST NOT PERSIST' },
+            },
+            parts: [
+              { id: 'part-1', sessionID: 'root-session', messageID: 'message-1', type: 'text', text: 'hazlo' },
+              { id: 'part-2', sessionID: 'root-session', messageID: 'message-1', type: 'text', text: 'SYNTHETIC', synthetic: true },
+              { id: 'part-3', sessionID: 'root-session', messageID: 'message-1', type: 'text', text: 'IGNORED', ignored: true },
+              { id: 'part-4', sessionID: 'root-session', messageID: 'other-message', type: 'text', text: 'MISMATCHED' },
+            ],
+          },
+        };
+
+        expect(normalize({ event, context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' } }, capabilities))
+          .toMatchObject({
+            action: 'dispatch',
+            event: {
+              intent: 'capture_root_prompt',
+              actor: 'root_user',
+              isRootSession: true,
+              nativeEventId: 'message-1',
+              content: 'hazlo',
+            },
+          });
+        expect(normalize({
+          event: {
+            ...event,
+            input: { sessionID: 'root-session', messageID: 'message-1' },
+          },
+        }, capabilities)).toMatchObject({ action: 'return', outcome: 'degraded' });
+        expect(normalize({
+          event: {
+            ...event,
+            output: {
+              message: event.output.message,
+              parts: [],
+            },
+          },
+        }, capabilities)).toMatchObject({ action: 'return', outcome: 'degraded' });
       });
       it('maps only resolver-proven Claude SubagentStop output to passive learning without finalizing the root session', async () => {
         const claude = await importRequiredModule('src/integration/adapters/claude-code.ts');
         const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
         if (!evidence) throw new Error('Expected Claude evidence');
         const passiveResolution = resolvedCapabilities(evidence, evidence.passiveLearning, evidence.passiveLearning);
-        const terminalResolution = resolvedCapabilities(evidence, evidence.terminal, evidence.terminal);
+        const nonPassiveResolution = resolvedCapabilities(evidence);
         const input = {
           hook: 'SubagentStop',
           id: 'claude-subagent-stop-stable-id',
@@ -227,7 +351,7 @@ function claimFor(
         for (const secret of ['123e4567-e89b-42d3-a456-426614174000', 'ADAPTER-OPTIONAL-DESCRIPTION', 'ADAPTER-OPTIONAL-COMMAND', 'ADAPTER-OPTIONAL-SCHEDULE', 'ADAPTER-OPTIONAL-PROMPT']) {
           expect(JSON.stringify(projected)).not.toContain(secret);
         }
-        expect(normalize(input, terminalResolution.adapterCapabilities, terminalResolution)).toMatchObject({
+        expect(normalize(input, nonPassiveResolution.adapterCapabilities, nonPassiveResolution)).toMatchObject({
           action: 'return',
           outcome: 'degraded',
           intent: 'capture_passive_learning',
@@ -265,6 +389,8 @@ function claimFor(
         dispatch: async (request: unknown) => {
           emitted.push(request);
           if ((request as { operation?: string }).operation === 'prepare_delivery') {
+            const eventType = (request as { event?: { type?: string } }).event?.type;
+            const compacting = eventType === 'experimental.session.compacting';
             return {
               protocolVersion: 1,
               operation: 'prepare_delivery',
@@ -272,29 +398,57 @@ function claimFor(
               retryable: false,
               deliveryAttempt: `${Buffer.from('{"version":1}').toString('base64url')}.${'a'.repeat(64)}`,
               hostOutputDirective: {
-                purpose: 'recovery_context',
+                purpose: compacting ? 'post_compaction_guidance' : 'recovery_context',
                 text: 'Recovered copied-install context.',
-                deliveryMappingId: 'opencode-recovery-injection-v1',
+                deliveryMappingId: compacting
+                  ? 'opencode-compaction-v1'
+                  : 'opencode-recovery-injection-v1',
               },
             };
           }
           if ((request as { operation?: string }).operation === 'confirm_delivery') {
             return { protocolVersion: 1, operation: 'confirm_delivery', outcome: 'confirmed', retryable: false };
           }
-          return { protocolVersion: 1, outcome: 'no_op', retryable: false };
+          const eventType = (request as { event?: { type?: string } }).event?.type;
+          return {
+            protocolVersion: 1,
+            harness: 'opencode',
+            intent: eventType === 'session.created' ? 'enroll_session' : 'capture_root_prompt',
+            outcome: 'confirmed',
+            retryable: false,
+          };
         },
       });
-      const hooks = await plugin({ directory: '/unrelated working directory', project: 'thoth-mem', client: { app: { log: async () => undefined } } });
+      const hooks = await plugin({
+        directory: '/unrelated working directory',
+        project: { id: 'project-1', worktree: '/workspace/thoth-mem' },
+        client: {
+          app: { log: async () => undefined },
+          session: {
+            get: async () => ({ data: { id: 'root-session' } }),
+          },
+        },
+      });
 
       await hooks.event({
         event: {
           type: 'session.created',
+          id: 'session-created-event',
           properties: { info: { id: 'root-session' } },
         },
       });
       await hooks['chat.message'](
-        { sessionID: 'root-session' },
-        { message: { role: 'user' }, parts: [{ type: 'text', text: 'Root prompt' }] },
+        { sessionID: 'root-session', messageID: 'message-1' },
+        {
+          message: { id: 'message-1', sessionID: 'root-session', role: 'user' },
+          parts: [{
+            id: 'part-1',
+            sessionID: 'root-session',
+            messageID: 'message-1',
+            type: 'text',
+            text: 'Root prompt',
+          }],
+        },
       );
       await hooks['experimental.session.compacting'](
         { sessionID: 'root-session' },
@@ -307,14 +461,17 @@ function claimFor(
         },
       });
 
-      expect(emitted).toHaveLength(3);
+      expect(emitted).toHaveLength(4);
       expect(emitted).toEqual(expect.arrayContaining([
         expect.objectContaining({ protocolVersion: 1, harness: 'opencode' }),
       ]));
-      expect(emitted.map((entry: any) => entry.event.type)).toEqual([
+      expect(emitted.filter((entry: any) => !entry.operation).map((entry: any) => entry.event.type)).toEqual([
         'session.created',
         'chat.message',
-        'experimental.session.compacting',
+      ]);
+      expect(emitted.filter((entry: any) => entry.operation).map((entry: any) => entry.operation)).toEqual([
+        'prepare_delivery',
+        'confirm_delivery',
       ]);
       for (const entry of emitted as any[]) {
         expect(entry).toMatchObject({

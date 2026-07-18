@@ -799,15 +799,11 @@ async handle(event: NormalizedEvent): Promise<LifecycleResult> {
         }
       }
 
-      async prepareDelivery(
+  async prepareDelivery(
     event: NormalizedEvent,
     binding: DeliveryAttemptBinding,
   ): Promise<LifecycleResult> {
-    const preparationEvent: NormalizedEvent = {
-      ...event,
-      intent: event.intent === 'recall_guidance' ? 'enroll_session' : event.intent,
-    };
-    const handled = await this.handle(preparationEvent);
+    const handled = await this.handle(event);
     const result: LifecycleResult = { ...handled, intent: event.intent };
     const directive = result.hostOutputDirective;
     if (result.outcome !== 'confirmed' || !directive || result.deliveryState?.memoryConfirmation !== 'confirmed'

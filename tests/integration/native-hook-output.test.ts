@@ -38,7 +38,6 @@ const mappings: Record<NativeHarness, Partial<Record<NativeHook, Mapping>>> = {
     SessionStart: { eventMappingId: 'claude-code-session-start-v1', deliveryMappingId: 'claude-code-recovery-injection-v1' },
     UserPromptSubmit: { eventMappingId: 'claude-code-user-prompt-v1', deliveryMappingId: 'claude-code-user-prompt-injection-v1' },
     PreCompact: { eventMappingId: 'claude-code-compaction-v1', deliveryMappingId: 'claude-code-compaction-v1' },
-    SessionEnd: { eventMappingId: 'claude-code-session-end-v1', deliveryMappingId: 'claude-code-session-end-v1' },
     SubagentStop: { eventMappingId: 'claude-subagent-stop-passive-v1', deliveryMappingId: 'claude-subagent-stop-passive-v1' },
   },
 };
@@ -83,7 +82,6 @@ function expectedIntent(harness: NativeHarness, hook: NativeHook, payload: Recor
   if (harness === 'claude' && hook === 'SubagentStop') return 'capture_passive_learning';
   if (hook === 'UserPromptSubmit') return 'capture_root_prompt';
   if (hook === 'PreCompact') return 'compact_session';
-  if (hook === 'SessionEnd' || (harness === 'codex' && hook === 'Stop')) return 'finalize_session';
   if ((harness === 'codex' || harness === 'claude') && hook === 'SessionStart' && payload.source === 'compact') return 'recall_guidance';
   return 'enroll_session';
 }
@@ -169,7 +167,9 @@ function runRunner(
 
 describe('native Codex and Claude hook stdout', () => {
   it('accepts only official hook schemas and forwards bounded eligibility claims without invented facts', () => {
-    for (const entry of officialPayloads()) {
+    for (const entry of officialPayloads().filter((candidate) => (
+      candidate.hook !== 'Stop' && candidate.hook !== 'SessionEnd'
+    ))) {
       const { output, request } = runRunner(
         entry.harness,
         entry.hook,
@@ -221,6 +221,35 @@ describe('native Codex and Claude hook stdout', () => {
       expect(output).toEqual(entry.hook === 'SessionStart'
         ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: entry.harness + ' recovered context.' } }
         : {});
+    }
+  });
+
+  it('does not spawn memory work for semantic agent-owned terminal hooks', () => {
+    for (const entry of officialPayloads().filter((candidate) => (
+      candidate.hook === 'Stop' || candidate.hook === 'SessionEnd'
+    ))) {
+      const root = mkdtempSync(join(tmpdir(), 'thoth-native-hook-terminal-'));
+      temporaryRoots.push(root);
+      const capturePath = join(root, 'request.json');
+      const runtimePath = writeFakeRuntime(
+        root,
+        actualChildResponse(entry.harness, entry.hook, entry.payload),
+        capturePath,
+      );
+      const result = spawnSync(
+        process.execPath,
+        [canonicalRunnerPath, '--harness', entry.harness, '--hook', entry.hook],
+        {
+          input: JSON.stringify(entry.payload),
+          encoding: 'utf8',
+          shell: false,
+          timeout: 5_000,
+          env: { ...process.env, THOTH_MEM_BIN: runtimePath, PATH: '' },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({});
+      expect(existsSync(capturePath)).toBe(false);
     }
   });
 

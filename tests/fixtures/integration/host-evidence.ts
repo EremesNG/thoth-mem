@@ -140,10 +140,10 @@ export const HOSTS = ['opencode', 'codex', 'claude-code'] as const;
           'claude-subagent-stop-passive-v1',
           'passive-learning:claude-code:subagent-stop',
         ),
-        terminal: supportedCapability(
-          'runner-stdout',
-          'claude-code-session-end-v1',
-          'terminal:claude-code:session-end',
+        terminal: unavailableCapability(
+          'unsupported',
+          'claude-code-semantic-summary-v1',
+          'terminal:claude-code:semantic-agent-owned',
         ),
       },
     ];

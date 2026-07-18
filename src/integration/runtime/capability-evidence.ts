@@ -9,6 +9,7 @@ import type {
     export const RUNTIME_DELIVERY_CHANNELS = [
       'opencode-protocol-output',
       'runner-stdout',
+      'none',
     ] as const;
     export type RuntimeDeliveryChannel = typeof RUNTIME_DELIVERY_CHANNELS[number];
 
@@ -69,12 +70,16 @@ import type {
       capabilities: ResolverProducedAdapterCapabilities;
       authorization: PrivatePrepareDeliveryAuthorization;
     }
+    export interface AuthorizedOpenCodeNormalEffect {
+      capabilities: ResolverProducedAdapterCapabilities<'opencode'>;
+    }
 
     const ELIGIBLE_RESOLUTION_PROVENANCE = new WeakMap<object, {
       harness: 'opencode';
       authorization: PrivatePrepareDeliveryAuthorization;
     }>();
     const PRIVATE_PREPARE_DELIVERY_AUTHORIZATIONS = new WeakSet<object>();
+    const OPENCODE_NORMAL_EFFECT_RESOLUTIONS = new WeakSet<object>();
 
     function mintPrivatePrepareDeliveryAuthorization(): PrivatePrepareDeliveryAuthorization {
       const authorization = Object.freeze({});
@@ -198,7 +203,13 @@ import type {
 
     const VERIFIED_RUNTIME_MAPPINGS = deepFreeze<readonly VerifiedRuntimeMapping[]>([
       mapping('opencode', 'opencode-session-start-v1', 'opencode-protocol-output', 'opencode-recovery-injection-v1', capabilities({
-        enroll_session: 'session.created', recall_guidance: 'experimental.chat.system.transform',
+        recall_guidance: 'experimental.chat.system.transform',
+      })),
+      mapping('opencode', 'opencode-session-created-v1', 'none', 'opencode-session-side-effect-v1', capabilities({
+        enroll_session: 'session.created',
+      })),
+      mapping('opencode', 'opencode-user-prompt-v1', 'none', 'opencode-user-prompt-side-effect-v1', capabilities({
+        capture_root_prompt: 'chat.message',
       })),
       mapping('opencode', 'opencode-compaction-v1', 'opencode-protocol-output', 'opencode-compaction-v1', capabilities({
         compact_session: 'experimental.session.compacting',
@@ -213,7 +224,6 @@ import type {
       })),
       mapping('claude', 'claude-code-user-prompt-v1', 'runner-stdout', 'claude-code-user-prompt-injection-v1', capabilities({ capture_root_prompt: 'UserPromptSubmit' })),
           mapping('claude', 'claude-code-compaction-v1', 'runner-stdout', 'claude-code-compaction-v1', capabilities({ compact_session: 'PreCompact' })),
-      mapping('claude', 'claude-code-session-end-v1', 'runner-stdout', 'claude-code-session-end-v1', capabilities({ finalize_session: 'SessionEnd' })),
       mapping('claude', 'claude-subagent-stop-passive-v1', 'runner-stdout', 'claude-subagent-stop-passive-v1', capabilities({})),
     ]);
 
@@ -235,6 +245,8 @@ import type {
 
     const RUNTIME_CAPABILITIES_BY_EVENT = deepFreeze<Record<string, ResolvedRuntimeCapabilities>>({
       'opencode-session-start-v1': runtimeCapabilities({ activation: 'opencode-session-start-v1', recovery: 'opencode-recovery-injection-v1' }),
+      'opencode-session-created-v1': runtimeCapabilities({ activation: 'opencode-session-created-v1' }),
+      'opencode-user-prompt-v1': runtimeCapabilities({}),
       'opencode-compaction-v1': runtimeCapabilities({ recovery: 'opencode-compaction-v1', compaction: 'opencode-compaction-v1' }),
       'codex-session-start-v1': runtimeCapabilities({ activation: 'codex-session-start-v1', recovery: 'codex-recovery-injection-v1' }),
       'codex-user-prompt-v1': runtimeCapabilities({}),
@@ -242,7 +254,6 @@ import type {
       'claude-code-session-start-v1': runtimeCapabilities({ activation: 'claude-code-session-start-v1', recovery: 'claude-code-recovery-injection-v1' }),
       'claude-code-user-prompt-v1': runtimeCapabilities({}),
            'claude-code-compaction-v1': runtimeCapabilities({ recovery: 'claude-code-compaction-v1', compaction: 'claude-code-compaction-v1' }),
-      'claude-code-session-end-v1': runtimeCapabilities({ terminal: 'claude-code-session-end-v1' }),
       'claude-subagent-stop-passive-v1': runtimeCapabilities({ passiveLearning: 'claude-subagent-stop-passive-v1' }),
     });
 
@@ -260,7 +271,7 @@ import type {
         && /^[a-z0-9][a-z0-9.-]*$/.test(value);
     }
     function isDeliveryChannel(value: unknown): value is RuntimeDeliveryChannel {
-      return value === 'opencode-protocol-output' || value === 'runner-stdout';
+      return value === 'opencode-protocol-output' || value === 'runner-stdout' || value === 'none';
     }
     function parseClaim(value: unknown): RuntimeCapabilityClaim | undefined {
       if (!isRecord(value) || Object.keys(value).length !== CLAIM_KEYS.length || !CLAIM_KEYS.every((key) => Object.hasOwn(value, key))
@@ -310,6 +321,49 @@ function parseOpenCodeBehaviorEvidenceClaim(value: unknown): OpenCodeBehaviorEvi
     deliveryChannel: value.deliveryChannel,
     deliveryMappingId: value.deliveryMappingId,
     mutableOutputChannel: value.mutableOutputChannel,
+  };
+}
+
+const OPENCODE_NORMAL_EFFECT_MAPPINGS = [
+  { eventMappingId: 'opencode-session-created-v1', deliveryMappingId: 'opencode-session-side-effect-v1' },
+  { eventMappingId: 'opencode-user-prompt-v1', deliveryMappingId: 'opencode-user-prompt-side-effect-v1' },
+] as const;
+
+interface OpenCodeNormalEffectClaim {
+  payloadMappingId: string;
+  assetExecutionMarker: string;
+  eventMappingId: string;
+  deliveryChannel: 'none';
+  deliveryMappingId: string;
+  behaviorEvidenceMappingId: 'opencode-plugin-init-side-effect-v1';
+}
+
+function parseOpenCodeNormalEffectClaim(value: unknown): OpenCodeNormalEffectClaim | undefined {
+  const keys = [
+    'payloadMappingId', 'assetExecutionMarker', 'eventMappingId',
+    'deliveryChannel', 'deliveryMappingId', 'behaviorEvidenceMappingId',
+  ];
+  if (!isRecord(value)
+    || Object.keys(value).length !== keys.length
+    || !keys.every((key) => Object.hasOwn(value, key))
+    || value.behaviorEvidenceMappingId !== 'opencode-plugin-init-side-effect-v1'
+    || value.deliveryChannel !== 'none'
+    || !isBoundedIdentifier(value.payloadMappingId)
+    || !isBoundedIdentifier(value.assetExecutionMarker)
+    || !isBoundedIdentifier(value.eventMappingId)
+    || !isBoundedIdentifier(value.deliveryMappingId)) return undefined;
+  const mapping = OPENCODE_NORMAL_EFFECT_MAPPINGS.find((candidate) => (
+    candidate.eventMappingId === value.eventMappingId
+    && candidate.deliveryMappingId === value.deliveryMappingId
+  ));
+  if (!mapping) return undefined;
+  return {
+    payloadMappingId: value.payloadMappingId,
+    assetExecutionMarker: value.assetExecutionMarker,
+    eventMappingId: value.eventMappingId,
+    deliveryChannel: value.deliveryChannel,
+    deliveryMappingId: value.deliveryMappingId,
+    behaviorEvidenceMappingId: value.behaviorEvidenceMappingId,
   };
 }
 
@@ -380,10 +434,56 @@ function parseOpenCodeBehaviorEvidenceClaim(value: unknown): OpenCodeBehaviorEvi
         : undefined;
     }
 
+    export function authorizeOpenCodeNormalEffect(
+      harness: HarnessId,
+      resolution: RuntimeCapabilityResolution,
+    ): AuthorizedOpenCodeNormalEffect | undefined {
+      if (harness !== 'opencode'
+        || resolution.status !== 'eligible'
+        || !OPENCODE_NORMAL_EFFECT_RESOLUTIONS.has(resolution)) return undefined;
+      const verified = VERIFIED_RUNTIME_MAPPINGS.find((candidate) => (
+        candidate.harness === 'opencode'
+        && candidate.deliveryChannel === 'none'
+        && candidate.eventMappingId === resolution.mapping.eventMappingId
+        && candidate.deliveryMappingId === resolution.mapping.deliveryMappingId
+      ));
+      return verified
+        ? deepFreeze({ capabilities: mintAdapterCapabilities('opencode', verified.adapterCapabilities) })
+        : undefined;
+    }
+
     export function resolveRuntimeCapabilityEvidence(
       harness: HarnessId,
       value: unknown,
     ): RuntimeCapabilityResolution {
+      const normalEffectClaim = harness === 'opencode'
+        ? parseOpenCodeNormalEffectClaim(value)
+        : undefined;
+      if (normalEffectClaim) {
+        const verified = VERIFIED_RUNTIME_MAPPINGS.find((candidate) => (
+          candidate.harness === 'opencode'
+          && candidate.payloadMappingId === normalEffectClaim.payloadMappingId
+          && candidate.assetExecutionMarker === normalEffectClaim.assetExecutionMarker
+          && candidate.eventMappingId === normalEffectClaim.eventMappingId
+          && candidate.deliveryChannel === normalEffectClaim.deliveryChannel
+          && candidate.deliveryMappingId === normalEffectClaim.deliveryMappingId
+        ));
+        if (!verified) {
+          return { status: 'degraded', reason: 'OpenCode side-effect evidence does not match a verified host mapping.' };
+        }
+        const resolution = mintRuntimeCapabilityResolution('opencode', {
+          status: 'eligible' as const,
+          mapping: deepFreeze({
+            eventMappingId: verified.eventMappingId,
+            deliveryChannel: verified.deliveryChannel,
+            deliveryMappingId: verified.deliveryMappingId,
+          }),
+          adapterCapabilities: mintAdapterCapabilities('opencode', capabilities({})),
+          runtimeCapabilities: deepFreeze(runtimeCapabilities({})),
+        });
+        OPENCODE_NORMAL_EFFECT_RESOLUTIONS.add(resolution);
+        return resolution;
+      }
             const behaviorClaim = harness === 'opencode' ? parseOpenCodeBehaviorEvidenceClaim(value) : undefined;
       if (behaviorClaim) {
         const verified = VERIFIED_RUNTIME_MAPPINGS.find((candidate) => candidate.harness === 'opencode'

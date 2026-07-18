@@ -30,8 +30,6 @@ import type { LifecycleIntent, NormalizedEvent } from '../core/types.js';
       return 'capture_root_prompt';
     case 'PreCompact':
       return 'compact_session';
-    case 'SessionEnd':
-          return 'finalize_session';
     default:
       return undefined;
   }
@@ -224,8 +222,8 @@ export function normalizeClaudeCodeEvent(
   if (hook === 'SubagentStop') {
         return normalizeClaudeSubagentStop(envelope, payload, resolution);
       }
-      if (hook === 'Stop') {
-        return noOp('Stop is turn-scoped and cannot confirm Claude Code session finalization.');
+      if (hook === 'Stop' || hook === 'SessionEnd') {
+        return noOp(`${hook} does not own the agent's semantic session summary.`);
       }
 
   const intent = intentForClaudeHook(hook, payload);
