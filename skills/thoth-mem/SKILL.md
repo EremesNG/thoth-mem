@@ -1,70 +1,136 @@
 ---
 name: thoth-mem
-description: Use thoth-mem as persistent memory through its compact six-tool MCP surface while preserving root ownership, privacy, stable identity, and truthful lifecycle outcomes.
+description: >
+  Use thoth-mem whenever an agent needs persistent project memory: resume prior work,
+  recall or save durable lessons, preserve root session continuity, handle compaction
+  or finalization, or recover truthfully when semantic memory is degraded. Do not use
+  it for generic SQLite work, setup, sync, migration, dashboard, or HTTP administration
+  unless the task specifically concerns agent memory behavior.
 ---
 
-# thoth-mem Usage
+# thoth-mem memory recipe
 
-Use exactly these six MCP tools:
+Use the six MCP tools deliberately: `mem_save`, `mem_recall`, `mem_context`,
+`mem_get`, `mem_project`, and `mem_session`. Keep setup and administration
+outside the MCP memory workflow.
 
-- `mem_recall`
-- `mem_save`
-- `mem_context`
-- `mem_get`
-- `mem_project`
-- `mem_session`
+## 1. Classify the intent
 
-Administrative, setup, sync, and harness operations stay outside MCP.
+Choose the smallest workflow that fits:
 
-| Workflow | Tool |
-| --- | --- |
-| Fused retrieval | `mem_recall` |
-| Durable observations, prompts, and summaries | `mem_save` |
-| Bounded recent continuity | `mem_context` |
-| Exact record or timeline fetch | `mem_get` |
-| Project, topic, graph, and health navigation | `mem_project` |
-| Root session start, checkpoint, and summary | `mem_session` |
+- Resume or investigate earlier work: recall first.
+- Preserve a reusable decision, root cause, convention, or discovery: save an observation.
+- Inspect wider project history, topics, graph evidence, communities, or health: navigate the project.
+- Start, checkpoint, or summarize continuity: use the root lifecycle workflow.
+- For setup, sync, migration, rebuild, or dashboard operations, leave this recipe and use the authorized administrative surface.
 
-## Ownership, privacy, and identity
+## 2. Confirm identity and ownership
 
-The root/orchestrator owns session lifecycle, prompt capture, and continuity summaries. Subagents must not start, checkpoint, or summarize the root session and must not save prompts.
+Resolve the stable root `session_id` and `project` before memory work. Keep them
+unchanged across turns and compactions; never substitute a per-turn identifier or
+invent a fallback session.
 
-Save only real root-user intent. Generated prompts must not be saved as user intent. Exclude assistant, tool, subagent, handoff, and scaffolding traffic, and remove content inside `<private>` tags before persistence.
+The root/orchestrator owns session lifecycle, real user-prompt capture, and
+continuity summaries. Subagents must not start, checkpoint, summarize, or
+finalize the root session. A subagent may use explicitly delegated
+project/session scope for bounded reads or durable observations, but it must not:
 
-Use stable `session_id` and `project` identity on supported operations. When either is unavailable, expose the limitation and do not invent a fallback session that claims durable continuity.
+- start, checkpoint, summarize, or finalize the root session;
+- save prompts or generated handoffs as user intent;
+- claim root continuity after an unconfirmed call.
 
-## Root start protocol
+If stable identity is unavailable, state the limitation and continue without
+claiming durable session continuity.
 
-1. Start the root memory session with its stable identity and working directory.
-2. Load bounded recent continuity for that same project and session.
-3. Read a project summary only when broader history matters.
-4. Use compact recall before architecture or implementation work that may overlap earlier decisions.
-5. Save only the actual user request as prompt intent.
+## 3. Start or resume boundedly
 
-## Recall and save flow
+For a new root session:
 
-Use the bounded recall funnel:
+1. Call `mem_session(action="start")` with stable identity and working context.
+2. Continue only after the result is confirmed.
+3. Save only the real root-user request as prompt intent.
+4. Read recent continuity with a bounded `mem_context` when it is useful.
 
-1. `mem_recall(mode="compact")` scans candidate evidence.
-2. `mem_recall(mode="context")` expands only the strongest hits.
-3. `mem_get(id=...)` fetches only selected full records; request a bounded timeline only when chronology matters.
+For overlapping decisions or older work, use the recall funnel:
 
-Use `mem_context` for recent continuity and `mem_project` for project summaries, topics, graph views, and health. Use `mem_save` for durable observations, real root-user prompts, and root-owned summaries. Durable observations should state **What**, **Why**, **Where**, and any non-obvious **Learned** detail.
+1. Call `mem_recall(mode="compact")` with project/session/topic/type/time filters
+   and a small limit.
+2. Call `mem_recall(mode="context")` only for the strongest candidates.
+3. Call `mem_get` only for selected IDs. Set `kind`, `offset`, and
+   `max_length`; request `include_timeline` with bounded `before`/`after`
+   only when chronology changes the decision.
 
-Recall is fused by default. Keep limits bounded, use exact project/session/topic filters when available, and expand only the strongest candidates. Fetch a timeline only when chronology changes the decision.
+Separate recalled facts from inference. Report missing, stale, contradictory, or
+insufficient evidence instead of expanding into an unbounded dump.
 
-Project navigation supports lists, summaries, topics, one topic, graph views, and health. Keep graph navigation bounded and follow returned continuation data rather than requesting an unbounded project dump.
+## 4. Save only durable, privacy-safe memory
 
-Save decisions, architecture, bug fixes with root cause, patterns, configuration changes, discoveries, and non-obvious learnings. Use a stable topic key for evolving facts. Do not save credentials, raw logs without a durable lesson, whole transcripts, or obvious facts already present in the repository.
+Before `mem_save`, remove content inside `<private>...</private>` and exclude
+credentials, complete transcripts, raw logs without a lesson, assistant/tool
+traffic, and generated agent or subagent prompts. Generated prompts must not be
+stored as user intent.
 
-## Lifecycle truth
+Save an observation when future work benefits from it. Prefer a stable
+`topic_key` for facts that evolve, an accurate type, and compact content:
 
-Capability states are `supported`, `degraded`, and `unsupported`. Advance lifecycle state only after confirmed MCP success; a failed or indeterminate call stays retryable.
+- **What** changed or was learned.
+- **Why** it matters.
+- **Where** it applies.
+- **Learned** captures the non-obvious constraint or reusable lesson.
 
-Compaction is explicit and retry-safe: checkpoint only for a verified root compaction event, and leave failure eligible for retry. Finalization is explicit and retry-safe: summarize only for a verified root terminal event and never infer completion from partial state.
+Use prompt storage only for real root-user intent. Use session-summary storage
+only when the root owns that lifecycle result. Do not report persistence until
+the call confirms success.
 
-A duplicate event is suppressed using stable event identity. Distinct intentional events remain separate lifecycle effects, while byte-identical same-session prompts inside the existing 30-second window may resolve to one canonical prompt row. Event identity must not change that storage rule.
+## 5. Navigate the project and graph
 
-Manual recovery stays visible for every degraded or unsupported capability. One unavailable capability must not disable unrelated supported memory operations.
+Use `mem_project` for bounded project lists, summaries, topics, one topic,
+graph views, or health. Supply `project` whenever the selected action requires
+it and use `limit`/`max_chars` instead of requesting the whole project.
 
-Before meaningful root work ends, persist one root-owned summary containing the goal, instructions, discoveries, completed work, next steps, and relevant files. Do not claim it was saved unless the memory call was confirmed.
+To inspect committed graph communities, call:
+
+```text
+mem_project(
+  action="graph",
+  project="<project>",
+  navigation="community",
+  limit=5,
+  max_chars=2000
+)
+```
+
+Community navigation needs no focus node. It returns state, freshness, bounded
+summaries, `community=<id>`, coverage, and source observation IDs such as
+`obs:42`. Use a returned source ID or an observation ID from recall with
+`mem_get(kind="observation", id=42)`. Use `focus_node_id="obs:42"` only when
+switching to bounded `navigation="neighborhood"`.
+
+Treat “no committed community summaries” and degraded community state as real
+results. Do not invent a community or present inspection output as a synthesized
+global answer.
+
+## 6. Preserve lifecycle truth
+
+Treat each capability as `supported`, `degraded`, or `unsupported`.
+
+- Checkpoint only for a verified root compaction event.
+- Summarize only for a verified root terminal event.
+- Advance lifecycle state only after confirmed MCP success, including confirmed
+  `mem_session` success.
+- Keep failed or indeterminate effects eligible for one bounded retry.
+- If retry or fallback fails, report the degraded/unsupported state and the
+  manual recovery path; never claim the effect occurred.
+- Keep unrelated supported memory operations available when one capability is degraded.
+
+Compaction is explicit and retry-safe: checkpoint only for a verified root compaction event. Finalization is explicit and retry-safe: summarize only for a verified root terminal event. A duplicate event is suppressed by stable event identity; byte-identical same-session prompts within the existing 30-second window may resolve to one canonical prompt row. Keep manual recovery visible for every degraded or unsupported capability.
+
+Before meaningful root work ends, propose one concise summary with the goal,
+instructions, discoveries, completed work, next steps, and relevant files.
+Persist it only through the root-owned lifecycle path.
+
+## Final response
+
+State what was recalled or saved, which identity and bounds were used, and which
+results were confirmed. Distinguish durable evidence from inference and say
+plainly when memory was unavailable, degraded, unsupported, or not written.

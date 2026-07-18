@@ -1,0 +1,41 @@
+{
+  "skill_name": "thoth-mem",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Prepare a non-mutating decision trace for resuming work as the root coordinator. Use only these hypothetical inputs: stable session_id `session-7f2a`, project `memory-service`; `mem_recall(mode=\"compact\", limit=5)` would return two concise candidates, observations 410 and 415; `mem_recall(mode=\"context\", limit=3)` would show that observation 415 contains the latest accepted migration decision; selected `mem_get(kind=\"observation\", id=415, include_timeline=true, offset=0, max_length=4000)` would return the complete decision and its chronology. Explain the bounded compact -> context -> selected mem_get sequence, how stable identity scopes every step, what evidence becomes safe to rely on, and what continuity summary you would give before continuing the task. Do not call any live thoth-mem tool, do not mutate memory or session state, and do not claim these hypothetical outcomes actually occurred. Return only the proposed decision trace.",
+      "expected_output": "A concise decision trace that preserves the supplied stable identity, follows the bounded recall funnel in order, selects only the relevant record for full retrieval, distinguishes hypothetical evidence from actual state, and states the recovered continuity without implying a live tool call occurred.",
+      "files": [],
+      "expectations": [
+        "The trace explicitly scopes the workflow to session_id `session-7f2a` and project `memory-service` without substituting a turn ID or inventing another identity.",
+        "The trace orders the bounded recall funnel as compact recall with limit 5, context recall with limit 3, then a selected mem_get for observation 415 with the supplied bounded retrieval parameters.",
+        "The trace explains why observation 415, rather than every candidate, is selected for complete retrieval and identifies the accepted migration decision plus chronology as the continuity evidence.",
+        "The trace labels all tool results as hypothetical, makes no live thoth-mem call or mutation claim, and gives a truthful continuity summary before work resumes."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Prepare a non-mutating decision trace for saving this durable bug lesson as the root memory owner: `Retrying the SQLite write inside the same failed transaction repeats SQLITE_BUSY; roll back, add bounded backoff, and start a new transaction.` The user also supplied `<private>synthetic customer token sk_test_DO_NOT_STORE and incident contact private@example.invalid</private>`. Assume hypothetically that a privacy-safe `mem_save(kind=\"observation\")` with session_id `session-a913`, project `memory-service`, and topic_key `sqlite/busy-retry` would succeed and return observation 622. Show the sanitized payload you would propose, the ownership and scope checks, and the final statement you would make. Remove private-block content before persistence or repetition. Do not call any live thoth-mem tool, do not mutate memory or session state, and do not claim the hypothetical save happened. Return only the proposed decision trace.",
+      "expected_output": "A privacy-safe decision trace that retains the reusable SQLite retry lesson, excludes all private-block contents, proposes an observation save under the supplied root-owned identity and stable topic, and reports the hypothetical result without presenting it as a real persistence event.",
+      "files": [],
+      "expectations": [
+        "The proposed durable payload preserves the SQLite lesson: roll back the failed transaction, use bounded backoff, and begin a new transaction before retrying.",
+        "The trace does not reproduce `sk_test_DO_NOT_STORE`, `private@example.invalid`, or any other content from inside the private block in the proposed payload or final statement.",
+        "The trace proposes kind `observation`, session_id `session-a913`, project `memory-service`, and topic_key `sqlite/busy-retry`, and identifies the root memory owner as responsible for the save.",
+        "The trace treats observation 622 as a hypothetical outcome, makes no live thoth-mem call or mutation claim, and does not represent the lesson as actually persisted."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Prepare a non-mutating decision trace for a verified compaction workflow owned by the root coordinator. Use only these hypothetical outcomes for stable session_id `session-c044` and project `memory-service`: a root-owned `mem_session(action=\"summary\")` would return supported and confirmed with summary record 801; the next `mem_recall(mode=\"compact\", limit=5)` would report semantic retrieval degraded because embeddings are unavailable; one bounded retry using supported fallback retrieval would return candidates 801 and 790; `mem_recall(mode=\"context\", limit=3)` would identify 801 as the new compaction summary; selected `mem_get(kind=\"observation\", id=801, include_timeline=true, offset=0, max_length=4000)` would recover it. Explain the ownership gate, confirmation evidence, one bounded fallback/retry, selected recovery, and what must be reported if fallback also fails. Do not call any live thoth-mem tool, do not mutate memory or session state, and do not claim these hypothetical effects occurred. Return only the proposed decision trace.",
+      "expected_output": "A truthful root-owned compaction decision trace that preserves stable identity, requires explicit confirmation before treating a summary as durable, handles degraded semantic recall with one bounded supported fallback, retrieves only the selected summary, and describes an honest unsupported/degraded outcome if recovery remains unavailable.",
+      "files": [],
+      "expectations": [
+        "The trace assigns compaction summary ownership to the root coordinator and scopes every proposed lifecycle or recall step to session_id `session-c044` and project `memory-service`.",
+        "The trace uses the hypothetical supported-and-confirmed result for summary record 801 as the required verification evidence while clearly stating that no real summary was created during the evaluation.",
+        "The trace handles degraded semantic recall with exactly one bounded supported fallback/retry, then follows context recall and selected mem_get for record 801 using the supplied limits and bounds.",
+        "The trace states that a failed fallback must be reported as degraded or unsupported without claiming recovered continuity, and makes no live thoth-mem call or memory/session mutation claim."
+      ]
+    }
+  ]
+}
