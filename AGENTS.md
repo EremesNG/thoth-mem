@@ -7,7 +7,7 @@ This file is the canonical repository-wide agent guide for `C:\DEV\Proyectos\Web
 ## Navigation and context
 
 1. Classify the task by behavior, then select one primary route in the context router.
-2. Prefer `webstorm-index` MCP tools for project text/file search, reading, navigation, and refactoring. This applies to root and delegated agents.
+2. Prefer `webstorm-index` MCP tools for all project file navigation tasks, including text search, file search, file reading, and refactoring. This rule applies to the root agent and every delegated sub-agent. If `webstorm-index` is unavailable, returns errors, lacks the required capability, produces incomplete results, or otherwise blocks progress, the agent may use other available tools as a fallback. When doing so, it should use the least invasive suitable tool and resume using `webstorm-index` once it becomes practical.
 3. Check index readiness before indexed operations. If the index is unavailable, errors, lacks a capability, or returns incomplete results, use the least invasive fallback and resume indexed navigation when practical.
 4. Search named paths, symbols, imports, registrations, and nearby tests before broad reading.
 5. Read the smallest relevant runtime entrypoints, registrations/imports, and tests first. Expand only to answer a concrete unresolved question.
@@ -44,6 +44,7 @@ The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoin
 - Every `request_user_input` call must omit `autoResolutionMs` entirely, including `null` or `undefined`.
 - Treat install, setup, migration, deployment, publication, release, and real-host smoke as stateful operations requiring task-specific scope and authorization. A documentation or discovery task does not authorize them.
 - Update routed documentation only when a durable, non-obvious fact changes. Keep commands aligned with manifests and CI.
+- Do not consider backward compatibility. Ignore legacy code/ libraries.
 
 For coding style, module organization, naming, error boundaries, and type rules, load the [engineering overlay](docs/agent/engineering.md). For privacy, FTS, schema, taxonomy, deduplication, and topic-key invariants, load the [persistence and retrieval route](docs/agent/persistence-retrieval.md).
 
