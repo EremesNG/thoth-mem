@@ -363,7 +363,10 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                 intent: 'recall_guidance',
                 outcome: 'degraded',
                 retryable: false,
-                hostOutputDirective: { purpose: 'recovery_context', text: 'Recovered Codex compact guidance.' },
+                hostOutputDirective: {
+                  purpose: 'recovery_context',
+                  text: 'Recovered Codex compact guidance.',
+                },
                 deliveryState: { modelConsumption: 'unproven' },
               });
               expect(calls).toEqual(['mem_session', 'mem_context']);
@@ -598,7 +601,10 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                       expect(resumed.response.deliveryState?.modelConsumption).toBe('unproven');
                   expect(resumed.response).toMatchObject({
                     intent: 'recall_guidance',
-                    hostOutputDirective: { purpose: 'recovery_context', text: 'Recovered compact guidance.' },
+                    hostOutputDirective: {
+                      purpose: 'recovery_context',
+                      text: 'Recovered compact guidance.',
+                    },
                   });
                   expect(calls).toEqual(['mem_context']);
                   calls.length = 0;

@@ -162,7 +162,7 @@ function privatePrepareHostOutput(
     if (execution.operation === 'confirm_delivery') {
         const directive = execution.hostOutputDirective;
         const deliveryAttempt = execution.deliveryAttempt;
-        if (!directive || !deliveryAttempt) {
+        if (!directive || !deliveryAttempt || execution.mapping.deliveryChannel === 'none') {
             return {
                 outcome: 'failed',
                 retryable: false,

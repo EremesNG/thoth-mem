@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+    import * as capabilityAuthority from '../../src/integration/runtime/capability-evidence.js';
     import {
       assertResolverProducedAdapterCapabilities,
       authorizePrivatePrepareDelivery,
@@ -84,7 +85,7 @@ import { describe, expect, it } from 'vitest';
         expect(() => assertResolverProducedAdapterCapabilities(result.adapterCapabilities, 'opencode')).toThrow(/opencode/i);
       });
 
-      it('returns distinct deeply frozen matrices for identical claims and preserves Claude SessionEnd', () => {
+      it('returns distinct deeply frozen matrices and keeps Claude SessionEnd outside native finalization', () => {
         const claude = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
         if (!claude) throw new Error('Expected Claude evidence');
         const first = resolveRuntimeCapabilityEvidence('claude', claimFor(claude));
@@ -101,12 +102,8 @@ import { describe, expect, it } from 'vitest';
           'claude',
           claimFor(claude, claude.terminal, claude.terminal),
         );
-        expect(terminal).toMatchObject({
-          status: 'supported',
-          mapping: { eventMappingId: 'claude-code-session-end-v1' },
-          runtimeCapabilities: { terminal: { state: 'supported', mappingId: 'claude-code-session-end-v1' } },
-          adapterCapabilities: { finalize_session: { state: 'supported', trigger: 'SessionEnd' } },
-        });
+        expect(terminal).toMatchObject({ status: 'degraded' });
+        expect(terminal).not.toHaveProperty('adapterCapabilities');
       });
 
       it('resolves the Claude SubagentStop passive mapping independently from terminal finalization', () => {
@@ -201,5 +198,51 @@ it('accepts only the explicit OpenCode behavior-evidence mapping when hostVersio
   expect(resolveRuntimeCapabilityEvidence('codex', claim)).toMatchObject({ status: 'degraded' });
   expect(resolveRuntimeCapabilityEvidence('opencode', { ...claim, behaviorEvidenceMappingId: 'unverified' }))
     .toMatchObject({ status: 'degraded' });
+});
+
+it('authorizes exact OpenCode normal side effects without inventing hostVersion', () => {
+  expect(capabilityAuthority).toHaveProperty('authorizeOpenCodeNormalEffect');
+  const authorizeOpenCodeNormalEffect = (capabilityAuthority as Record<string, unknown>)
+    .authorizeOpenCodeNormalEffect as typeof authorizePrivatePrepareDelivery;
+  const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+  if (!openCode) throw new Error('Expected OpenCode evidence');
+  const claims = [
+    {
+      eventMappingId: 'opencode-session-created-v1',
+      deliveryMappingId: 'opencode-session-side-effect-v1',
+      expectedCapability: 'enroll_session',
+    },
+    {
+      eventMappingId: 'opencode-user-prompt-v1',
+      deliveryMappingId: 'opencode-user-prompt-side-effect-v1',
+      expectedCapability: 'capture_root_prompt',
+    },
+  ] as const;
+
+  for (const candidate of claims) {
+    const claim = {
+      payloadMappingId: openCode.payloadMappingId,
+      assetExecutionMarker: openCode.activationMarker,
+      eventMappingId: candidate.eventMappingId,
+      deliveryChannel: 'none',
+      deliveryMappingId: candidate.deliveryMappingId,
+      behaviorEvidenceMappingId: 'opencode-plugin-init-side-effect-v1',
+    };
+    const eligible = resolveRuntimeCapabilityEvidence('opencode', claim);
+    expect(eligible).toMatchObject({
+      status: 'eligible',
+      mapping: {
+        eventMappingId: candidate.eventMappingId,
+        deliveryChannel: 'none',
+        deliveryMappingId: candidate.deliveryMappingId,
+      },
+    });
+    if (eligible.status !== 'eligible') throw new Error('Expected eligible OpenCode side effect');
+    const authorized = authorizeOpenCodeNormalEffect('opencode', eligible);
+    expect(authorized?.capabilities[candidate.expectedCapability]).toMatchObject({ state: 'supported' });
+    expect(authorizePrivatePrepareDelivery('opencode', eligible)).toBeUndefined();
+    expect(authorizeOpenCodeNormalEffect('claude', eligible)).toBeUndefined();
+    expect(authorizeOpenCodeNormalEffect('opencode', structuredClone(eligible))).toBeUndefined();
+  }
 });
     });

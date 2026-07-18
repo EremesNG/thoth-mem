@@ -36,28 +36,6 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/hook-runner.mjs\" --harness claude --hook Stop",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/hook-runner.mjs\" --harness claude --hook SessionEnd",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "SubagentStop": [
       {
         "hooks": [

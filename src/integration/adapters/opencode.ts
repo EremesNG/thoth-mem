@@ -31,7 +31,12 @@ function eventMetadata(nativeEvent: Record<string, unknown>): Pick<
   NormalizedEvent,
   'nativeEventId' | 'hostTimestamp' | 'hostSequence'
 > {
-  const nativeEventId = readString(nativeEvent, 'id', 'eventID', 'eventId', 'messageID');
+  const input = asRecord(nativeEvent.input);
+  const output = asRecord(nativeEvent.output);
+  const message = asRecord(output?.message);
+  const nativeEventId = readString(nativeEvent, 'id', 'eventID', 'eventId', 'messageID')
+    ?? readString(input, 'messageID')
+    ?? readString(message, 'id');
   const hostTimestamp = readString(nativeEvent, 'timestamp', 'time');
   const hostSequence = readSequence(nativeEvent, 'sequence', 'seq');
 
@@ -59,27 +64,26 @@ function rootSessionEvidence(
   };
 }
 
-function promptContent(nativeEvent: Record<string, unknown>): string | undefined {
+function promptContent(
+  nativeEvent: Record<string, unknown>,
+  rootSessionId: string,
+  messageId: string,
+): string | undefined {
   const output = asRecord(nativeEvent.output);
   const parts = Array.isArray(output?.parts) ? output.parts : [];
   const content = parts
     .map(asRecord)
-    .filter((part): part is Record<string, unknown> => part?.type === 'text')
+    .filter((part): part is Record<string, unknown> => (
+      part?.type === 'text'
+      && part.synthetic !== true
+      && part.ignored !== true
+      && readString(part, 'sessionID') === rootSessionId
+      && readString(part, 'messageID') === messageId
+    ))
     .map((part) => readString(part, 'text') ?? '')
     .join('\n')
     .trim();
-
-  if (content.length > 0) {
-    return content;
-  }
-
-  const message = asRecord(output?.message);
-  const summary = asRecord(message?.summary);
-  const fallback = [readString(summary, 'title'), readString(summary, 'body')]
-    .filter((value): value is string => Boolean(value))
-    .join('\n')
-    .trim();
-  return fallback.length > 0 ? fallback : undefined;
+  return content.length > 0 ? content : undefined;
 }
 
 export function normalizeOpenCodeEvent(
@@ -149,16 +153,31 @@ export function normalizeOpenCodeEvent(
   };
 
   if (intent === 'capture_root_prompt') {
+    const eventInput = asRecord(nativeEvent.input);
     const output = asRecord(nativeEvent.output);
     const message = asRecord(output?.message);
-    if (readString(message, 'role') !== 'user') {
+    const messageId = readString(eventInput, 'messageID');
+    const explicitEventId = readString(nativeEvent, 'id');
+    if (eventInput?.rootSession !== true) {
       return degraded(
         'opencode',
         intent,
-        'The chat.message payload does not prove a root-user actor.',
+        'The chat.message payload does not explicitly prove root-session ownership.',
       );
     }
-    const content = promptContent(nativeEvent);
+    if (readString(message, 'role') !== 'user'
+      || !messageId
+      || readString(message, 'id') !== messageId
+      || readString(message, 'sessionID') !== root.sessionId
+      || readString(eventInput, 'sessionID') !== root.sessionId
+      || (explicitEventId !== undefined && explicitEventId !== messageId)) {
+      return degraded(
+        'opencode',
+        intent,
+        'The chat.message payload does not prove one matching root-user message.',
+      );
+    }
+    const content = promptContent(nativeEvent, root.sessionId, messageId);
     if (!content) {
       return degraded(
         'opencode',

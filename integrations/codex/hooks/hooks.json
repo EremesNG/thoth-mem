@@ -35,17 +35,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/runners/hook-runner.mjs\" --harness codex --hook Stop",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

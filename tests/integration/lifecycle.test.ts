@@ -147,11 +147,17 @@ describe('native integration lifecycle core', () => {
       /real root-user intent/i,
       /generated prompts?.*(?:must not|never|do not)/i,
       /<private>/i,
-      /stable.*session_id.*project/i,
+      /stable root session ID.*project name/is,
+      /native field.*runtime label/is,
+      /project name.*(?:repository|workspace).*directory/is,
+      /mem_session.*id.*root session ID/is,
+      /session_id.*same root session ID/is,
       /supported.*degraded.*unsupported/i,
       /confirmed MCP success/i,
       /compaction.*retry-safe/i,
-      /finalization.*retry-safe/i,
+      /native enrollment.*prompt capture.*do not repeat/is,
+      /semantic session summary.*agent-owned/is,
+      /without waiting for a terminal hook/i,
       /duplicate event.*30-second.*canonical prompt row/is,
       /manual.*(?:degraded|unsupported)/i,
     ];
@@ -162,7 +168,16 @@ describe('native integration lifecycle core', () => {
       for (const marker of semanticMarkers) {
         expect.soft(guidance, `${name} must match ${marker}`).toMatch(marker);
       }
+      expect.soft(guidance, `${name} must not introduce a root_id protocol`)
+        .not.toMatch(/\broot_id\b/);
+      expect.soft(guidance, `${name} must not introduce an injected identity declaration`)
+        .not.toContain('THOTH_MEMORY_IDENTITY');
+      expect.soft(guidance, `${name} must not require a terminal hook for semantic summary`)
+        .not.toMatch(/summarize only (?:on|for) a verified root terminal event/i);
     }
+
+    expect(artifacts.get('root skill')).toBe(artifacts.get('Codex skill'));
+    expect(artifacts.get('root skill')).toBe(artifacts.get('Claude Code skill'));
 
     const memoryProtocol = protocol.createMemoryProtocol(supportedCapabilities('codex'));
     expect(memoryProtocol.systemInstructions()).toBe(protocol.SERVER_MEMORY_PROTOCOL_INSTRUCTIONS);

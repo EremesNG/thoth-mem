@@ -250,98 +250,52 @@ describe('portable JSON hook command', () => {
     expect(confirmed).toMatchObject({ outcome: 'confirmed', retryable: false });
     expect(confirmedExecutorCalls).toBe(1);  });
 
-  it('finalizes a verified Claude SessionEnd once through the real core and rejects Stop', async () => {
-        const runtime = await importHookCommand();
-        const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
-        if (!evidence) {
-          throw new Error('Expected standalone Claude Code host evidence');
-        }
-        const dataDir = mkdtempSync(join(tmpdir(), 'thoth-claude-session-end-'));
-        const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
-        const memoryPort: MemoryPort = {
-          async call(tool, input) {
-            calls.push({ tool, input });
-            return { confirmed: true, isError: false, text: 'Session summary saved.' };
-          },
-          async close() {},
-        };
-        const stateStore = new FileLifecycleStateStore({
-          dataDir,
-          harness: 'claude',
-          projectId: 'claude-terminal-project',
-          rootSessionId: 'claude-terminal-session',
-          capabilities: {
-            enroll_session: { state: 'unsupported' },
-            capture_root_prompt: { state: 'unsupported' },
-            recall_guidance: { state: 'unsupported' },
-            compact_session: { state: 'unsupported' },
-            finalize_session: { state: 'supported', trigger: 'SessionEnd' },
-          },
-        });
-        let core: MemoryIntegrationCore | undefined;
-        const executor = async (
-          event: NormalizedEvent,
-          capabilities: AdapterCapabilities,
-        ): Promise<LifecycleResult> => {
-          if (!core) {
-            core = new MemoryIntegrationCore({ capabilities, memoryPort, stateStore });
-          }
-          return core.handle(event);
-        };
-        const executeHookCommand = runtime.executeHookCommand as (
-          input: string,
-          callback: typeof executor,
-        ) => Promise<unknown>;
-        const capabilityEvidence = {
-          hostVersion: evidence.versionFamily,
-          payloadMappingId: evidence.payloadMappingId,
-          assetExecutionMarker: evidence.activationMarker,
-          eventMappingId: evidence.terminal.mappingId,
-          deliveryChannel: evidence.terminal.channel,
-          deliveryMappingId: evidence.terminal.mappingId,
-        };
-        const request = (hook: 'SessionEnd' | 'Stop', eventId: string) => JSON.stringify({
-          protocolVersion: 1,
-          harness: 'claude',
-          capabilityEvidence,
-          event: {
-            hook,
-            payload: {
-              session_id: 'claude-terminal-session',
-              project: 'claude-terminal-project',
-              summary: 'Verified terminal summary.',
-              hook_event_id: eventId,
-            },
-          },
-        });
-        try {
-          const first = await executeHookCommand(request('SessionEnd', 'claude-end-1'), executor);
-          expect(first).toMatchObject({
-            harness: 'claude',
-            intent: 'finalize_session',
-            outcome: 'confirmed',
-            retryable: false,
-          });
-          expect(calls).toEqual([{
-            tool: 'mem_session',
-            input: {
-              action: 'summary',
-              id: 'claude-terminal-session',
-              project: 'thoth-mem',
-              content: 'Session finalized.',
-            },
-          }]);
-          const duplicate = await executeHookCommand(request('SessionEnd', 'claude-end-1'), executor);
-          expect(duplicate).toMatchObject({ outcome: 'no_op', retryable: false });
-          expect(calls).toHaveLength(1);
-          const stop = await executeHookCommand(request('Stop', 'claude-stop-1'), executor);
-          expect(stop).toMatchObject({ harness: 'claude', outcome: 'no_op', retryable: false });
-          expect(stop).not.toHaveProperty('intent');
-          expect(calls).toHaveLength(1);
-        } finally {
-          rmSync(dataDir, { recursive: true, force: true });
-        }
-      });
+  it('keeps Claude SessionEnd and Stop outside native semantic finalization', async () => {
+    const runtime = await importHookCommand();
+    const evidence = HOST_EVIDENCE.find((entry) => entry.harness === 'claude-code');
+    if (!evidence) throw new Error('Expected standalone Claude Code host evidence');
+    const executeHookCommand = runtime.executeHookCommand as (
+      input: string,
+      callback: (...args: unknown[]) => Promise<Record<string, unknown>>,
+    ) => Promise<Record<string, unknown>>;
+    let executorCalls = 0;
+    const executor = async () => {
+      executorCalls += 1;
+      return {
+        outcome: 'confirmed',
+        retryable: false,
+        harness: 'claude',
+        intent: 'finalize_session',
+      };
+    };
+    const request = (hook: 'SessionEnd' | 'Stop') => JSON.stringify({
+      protocolVersion: 1,
+      harness: 'claude',
+      capabilityEvidence: {
+        hostVersion: evidence.versionFamily,
+        payloadMappingId: evidence.payloadMappingId,
+        assetExecutionMarker: evidence.activationMarker,
+        eventMappingId: evidence.terminal.mappingId,
+        deliveryChannel: evidence.terminal.channel,
+        deliveryMappingId: evidence.terminal.mappingId,
+      },
+      event: {
+        hook,
+        id: `${hook}-1`,
+        payload: { session_id: 'claude-terminal-session', reason: 'clear' },
+      },
+    });
+
+    await expect(executeHookCommand(request('SessionEnd'), executor)).resolves.toMatchObject({
+      outcome: 'degraded',
+      retryable: false,
+    });
+    await expect(executeHookCommand(request('Stop'), executor)).resolves.toMatchObject({
+      outcome: 'degraded',
+      retryable: false,
+    });
+    expect(executorCalls).toBe(0);
+  });
       it('returns bounded privacy-safe errors for invalid JSON and executor failure', async () => {
     const runtime = await importHookCommand();
     const executeHookCommand = runtime.executeHookCommand as (input: string, executor: (...args: any[]) => Promise<any>) => Promise<any>;
@@ -737,6 +691,111 @@ describe('portable JSON hook command', () => {
       outcome: 'confirmed',
       retryable: false,
     });
+  });
+});
+
+describe('normal OpenCode lifecycle side effects', () => {
+  it('accepts only the exact projected root prompt payload and authorizes its normal side effect', async () => {
+    const runtime = await importHookCommand();
+    const executeHookCommand = runtime.executeHookCommand as (
+      input: string,
+      executor: (
+        event: any,
+        capabilities: AdapterCapabilities,
+        execution: any,
+      ) => Promise<Record<string, unknown>>,
+    ) => Promise<Record<string, unknown>>;
+    const openCode = HOST_EVIDENCE.find((entry) => entry.harness === 'opencode');
+    if (!openCode) throw new Error('Expected OpenCode host evidence');
+    const validEvent = {
+      type: 'chat.message',
+      id: 'message-1',
+      input: { sessionID: 'root-session', messageID: 'message-1', rootSession: true },
+      output: {
+        message: { id: 'message-1', sessionID: 'root-session', role: 'user' },
+        parts: [{
+          id: 'part-1',
+          sessionID: 'root-session',
+          messageID: 'message-1',
+          type: 'text',
+          text: 'hazlo',
+        }],
+      },
+    };
+    const request = (event: unknown) => JSON.stringify({
+      protocolVersion: 1,
+      harness: 'opencode',
+      capabilityEvidence: {
+        payloadMappingId: openCode.payloadMappingId,
+        assetExecutionMarker: openCode.activationMarker,
+        eventMappingId: 'opencode-user-prompt-v1',
+        deliveryChannel: 'none',
+        deliveryMappingId: 'opencode-user-prompt-side-effect-v1',
+        behaviorEvidenceMappingId: 'opencode-plugin-init-side-effect-v1',
+      },
+      event,
+      context: { project: 'thoth-mem', directory: '/workspace/thoth-mem' },
+    });
+    let executorCalls = 0;
+    const executor = async (event: any, capabilities: AdapterCapabilities, execution: any) => {
+      executorCalls += 1;
+      expect(capabilities.capture_root_prompt).toMatchObject({ state: 'supported', trigger: 'chat.message' });
+      expect(execution).toMatchObject({
+        operation: 'normal',
+        behaviorEligible: true,
+        mapping: {
+          eventMappingId: 'opencode-user-prompt-v1',
+          deliveryChannel: 'none',
+          deliveryMappingId: 'opencode-user-prompt-side-effect-v1',
+        },
+      });
+      expect(event).toMatchObject({
+        intent: 'capture_root_prompt',
+        actor: 'root_user',
+        nativeEventId: 'message-1',
+        content: 'hazlo',
+      });
+      return {
+        outcome: 'confirmed',
+        retryable: false,
+        harness: 'opencode',
+        intent: 'capture_root_prompt',
+      };
+    };
+
+    await expect(executeHookCommand(request(validEvent), executor)).resolves.toMatchObject({
+      outcome: 'confirmed',
+      intent: 'capture_root_prompt',
+    });
+    expect(executorCalls).toBe(1);
+
+    const invalidEvents = [
+      {
+        ...validEvent,
+        output: {
+          ...validEvent.output,
+          message: { ...validEvent.output.message, summary: { title: 'derived' } },
+        },
+      },
+      {
+        ...validEvent,
+        output: {
+          ...validEvent.output,
+          parts: [{ ...validEvent.output.parts[0], synthetic: true }],
+        },
+      },
+      {
+        ...validEvent,
+        id: 'different-message',
+      },
+    ];
+    for (const invalid of invalidEvents) {
+      await expect(executeHookCommand(request(invalid), executor)).resolves.toMatchObject({
+        outcome: 'degraded',
+        retryable: false,
+      });
+    }
+    expect(executorCalls).toBe(1);
   });
 });
 
@@ -1148,11 +1207,15 @@ describe('private OpenCode delivery operations', () => {
       expect(success.exitCode).toBe(0);
       expect(success.response).toMatchObject({
         operation: 'prepare_delivery', outcome: 'confirmed', retryable: false,
-        hostOutputDirective: { purpose: 'recovery_context', text: 'Recovered production context.', deliveryMappingId: openCode.recovery.mappingId },
+        hostOutputDirective: {
+          purpose: 'recovery_context',
+          text: 'Recovered production context.',
+          deliveryMappingId: openCode.recovery.mappingId,
+        },
         deliveryAttempt: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/),
         deliveryState: { activation: 'eligible', memoryConfirmation: 'confirmed', outputReadiness: 'ready', outputSupport: 'eligible', modelConsumption: 'unproven' },
       });
-      expect(successfulCalls).toEqual(['mem_session', 'mem_context']);
+      expect(successfulCalls).toEqual(['mem_context']);
 
       const failure = await executeIntegrationEvent(request('default-failure'), {
         dataDir: failureDataDir,
@@ -1212,12 +1275,20 @@ describe('private OpenCode delivery operations', () => {
       const second = await executeIntegrationEvent(request('callback-two', 2), options);
       expect(first.response).toMatchObject({
         operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
-        hostOutputDirective: { purpose: 'post_compaction_guidance', text: 'Compaction context 1', deliveryMappingId: openCode.compaction.mappingId },
+        hostOutputDirective: {
+          purpose: 'post_compaction_guidance',
+          text: 'Compaction context 1',
+          deliveryMappingId: openCode.compaction.mappingId,
+        },
         deliveryAttempt: expect.any(String),
       });
       expect(second.response).toMatchObject({
         operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
-        hostOutputDirective: { purpose: 'post_compaction_guidance', text: 'Compaction context 2', deliveryMappingId: openCode.compaction.mappingId },
+        hostOutputDirective: {
+          purpose: 'post_compaction_guidance',
+          text: 'Compaction context 2',
+          deliveryMappingId: openCode.compaction.mappingId,
+        },
         deliveryAttempt: expect.any(String),
       });
       expect(first.response.deliveryAttempt).not.toBe(second.response.deliveryAttempt);
@@ -1559,21 +1630,25 @@ describe('native plugin assets', () => {
     });
     expect(JSON.stringify(codexHooks)).toContain('${PLUGIN_ROOT}/runners/hook-runner.mjs');
     expect(JSON.stringify(claudeHooks)).toContain('${CLAUDE_PLUGIN_ROOT}/runners/hook-runner.mjs');
+    expect(Object.keys(codexHooks.hooks)).toEqual([
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreCompact',
+    ]);
     expect(Object.keys(claudeHooks.hooks)).toEqual([
-          'SessionStart',
-          'UserPromptSubmit',
-          'PreCompact',
-          'Stop',
-          'SessionEnd',
-          'SubagentStop',
-        ]);
-        expect(claudeHooks.hooks.SessionStart[0].matcher).toContain('compact');
-        expect(claudeHooks.hooks.SessionEnd[0].hooks[0].command).toContain('--hook SessionEnd');
-        expect(claudeHooks.hooks.SubagentStop[0].hooks[0].command).toContain('--hook SubagentStop');
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreCompact',
+      'SubagentStop',
+    ]);
+    expect(claudeHooks.hooks.SessionStart[0].matcher).toContain('compact');
+    expect(claudeHooks.hooks.SubagentStop[0].hooks[0].command).toContain('--hook SubagentStop');
     const codexHooksJson = JSON.stringify(codexHooks);
     const claudeHooksJson = JSON.stringify(claudeHooks);
     expect(codexHooksJson).not.toContain('outcome=confirmed');
     expect(claudeHooksJson).not.toContain('outcome=confirmed');
+    expect(codexHooksJson).not.toMatch(/--hook (?:Stop|SessionEnd)/);
+    expect(claudeHooksJson).not.toMatch(/--hook (?:Stop|SessionEnd)/);
 
     const assertHookPaths = (
       hooks: any,

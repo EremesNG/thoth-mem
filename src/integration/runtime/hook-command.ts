@@ -13,6 +13,7 @@ import {
         import { normalizeOpenCodeEvent } from '../adapters/opencode.js';
         import type { AdapterEventResult } from '../adapters/shared.js';
         import {
+          authorizeOpenCodeNormalEffect,
           authorizePrivatePrepareDelivery,
           resolveRuntimeCapabilityEvidence,
           type PrivatePrepareDeliveryAuthorization,
@@ -157,6 +158,76 @@ import {
       return hasExactOpenCodeSystemPayload(request) || hasExactOpenCodeCompactingPayload(request);
     }
 
+    function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+      return Object.keys(value).length === keys.length
+        && keys.every((key) => Object.hasOwn(value, key));
+    }
+
+    function hasExactOpenCodeSessionCreatedPayload(request: HookCommandRequest): boolean {
+      if (request.harness !== 'opencode' || !isRecord(request.event)
+        || request.event.type !== 'session.created'
+        || !hasExactKeys(request.event, ['type', 'id', 'properties'])
+        || !isBoundedModelIdentifier(request.event.id)
+        || !isRecord(request.event.properties)
+        || !hasExactKeys(request.event.properties, ['info'])
+        || !isRecord(request.event.properties.info)) return false;
+      const info = request.event.properties.info;
+      const infoKeys = Object.hasOwn(info, 'parentID') ? ['id', 'parentID'] : ['id'];
+      return hasExactKeys(info, infoKeys)
+        && info.id === request.event.id
+        && isBoundedModelIdentifier(info.id)
+        && (!Object.hasOwn(info, 'parentID') || isBoundedModelIdentifier(info.parentID));
+    }
+
+    function hasExactOpenCodePromptPayload(request: HookCommandRequest): boolean {
+      if (request.harness !== 'opencode' || !isRecord(request.event)
+        || request.event.type !== 'chat.message'
+        || !hasExactKeys(request.event, ['type', 'id', 'input', 'output'])
+        || !isBoundedModelIdentifier(request.event.id)
+        || !isRecord(request.event.input)
+        || !hasExactKeys(request.event.input, ['sessionID', 'messageID', 'rootSession'])
+        || !isBoundedModelIdentifier(request.event.input.sessionID)
+        || request.event.input.messageID !== request.event.id
+        || request.event.input.rootSession !== true
+        || !isRecord(request.event.output)
+        || !hasExactKeys(request.event.output, ['message', 'parts'])
+        || !isRecord(request.event.output.message)
+        || !hasExactKeys(request.event.output.message, ['id', 'sessionID', 'role'])
+        || request.event.output.message.id !== request.event.id
+        || request.event.output.message.sessionID !== request.event.input.sessionID
+        || request.event.output.message.role !== 'user'
+        || !Array.isArray(request.event.output.parts)
+        || request.event.output.parts.length === 0
+        || request.event.output.parts.length > 128) return false;
+      const sessionID = request.event.input.sessionID;
+      const messageID = request.event.id;
+      const parts = request.event.output.parts;
+      return parts.every((value) => {
+        if (!isRecord(value) || !hasExactKeys(value, ['id', 'sessionID', 'messageID', 'type', 'text'])) {
+          return false;
+        }
+        return isBoundedModelIdentifier(value.id)
+          && value.sessionID === sessionID
+          && value.messageID === messageID
+          && value.type === 'text'
+          && typeof value.text === 'string'
+          && Array.from(value.text).length > 0;
+      });
+    }
+
+    function hasExactOpenCodeNormalPayload(
+      request: HookCommandRequest,
+      mapping: ResolvedRuntimeMapping,
+    ): boolean {
+      if (mapping.eventMappingId === 'opencode-session-created-v1') {
+        return hasExactOpenCodeSessionCreatedPayload(request);
+      }
+      if (mapping.eventMappingId === 'opencode-user-prompt-v1') {
+        return hasExactOpenCodePromptPayload(request);
+      }
+      return true;
+    }
+
     function isDeliveryAttempt(value: unknown): value is string {
       return typeof value === 'string'
         && Array.from(value).length > 0
@@ -270,11 +341,19 @@ import {
           try {
             const resolution = resolveRuntimeCapabilityEvidence(request.harness, request.capabilityEvidence);
             if (resolution.status === 'degraded') return degradedResponse(resolution.reason, request.harness);
+                const authorizedNormalEffect = request.operation === 'normal'
+                  ? authorizeOpenCodeNormalEffect(request.harness, resolution)
+                  : undefined;
                 nativeBehaviorEligible = request.operation === 'normal'
                   && resolution.status === 'eligible'
-                  && (request.harness === 'codex' || request.harness === 'claude');
+                  && (request.harness === 'codex' || request.harness === 'claude' || Boolean(authorizedNormalEffect));
                 if (request.operation === 'normal' && resolution.status !== 'supported' && !nativeBehaviorEligible) {
-                  return degradedResponse('OpenCode behavior evidence is eligible only for private delivery preparation.', request.harness);
+                  return degradedResponse('Behavior evidence is not authorized for this normal lifecycle effect.', request.harness);
+                }
+                if (request.operation === 'normal'
+                  && request.harness === 'opencode'
+                  && !hasExactOpenCodeNormalPayload(request, resolution.mapping)) {
+                  return degradedResponse('OpenCode normal lifecycle effects require an exact bounded projected payload.', request.harness);
                 }
                 if (request.operation !== 'normal' && resolution.status !== 'eligible') {
               return degradedResponse('Private delivery operations require exact eligible OpenCode behavior evidence.', request.harness);
@@ -284,7 +363,7 @@ import {
               : undefined;
             prepareDeliveryAuthorization = authorizedPreparation?.authorization;
             const adapterCapabilities = request.operation === 'normal'
-              ? resolution.adapterCapabilities
+              ? authorizedNormalEffect?.capabilities ?? resolution.adapterCapabilities
               : authorizedPreparation?.capabilities;
             if (!adapterCapabilities || (request.operation !== 'normal' && !prepareDeliveryAuthorization)) {
               return degradedResponse('Private delivery authorization is unavailable for this resolved OpenCode behavior mapping.', request.harness);

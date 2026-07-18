@@ -4,11 +4,13 @@ import { readFile } from 'node:fs/promises';
     import { dispatchHookRequest } from '../shared/hook-runner.mjs';
 
     const MEMORY_PROTOCOL_URL = new URL('./memory-protocol.md', import.meta.url);
-    const BEHAVIOR_EVIDENCE_MAPPING_ID = 'opencode-plugin-init-mutation-v1';
+    const PRIVATE_BEHAVIOR_EVIDENCE_MAPPING_ID = 'opencode-plugin-init-mutation-v1';
+    const SIDE_EFFECT_BEHAVIOR_EVIDENCE_MAPPING_ID = 'opencode-plugin-init-side-effect-v1';
     const MAX_IDENTIFIER_CODE_POINTS = 128;
     const MAX_DIRECTIVE_CODE_POINTS = 1_000;
     const MAX_OUTPUT_ENTRIES = 128;
     const MAX_CONFIRM_ATTEMPTS = 3;
+    const MAX_PROMPT_PARTS = 128;
     const MAPPINGS = Object.freeze({
       'experimental.chat.system.transform': Object.freeze({
         eventMappingId: 'opencode-session-start-v1',
@@ -19,6 +21,18 @@ import { readFile } from 'node:fs/promises';
         eventMappingId: 'opencode-compaction-v1',
         deliveryMappingId: 'opencode-compaction-v1',
         mutableOutputChannel: 'context',
+      }),
+    });
+    const SIDE_EFFECT_MAPPINGS = Object.freeze({
+      'session.created': Object.freeze({
+        eventMappingId: 'opencode-session-created-v1',
+        deliveryMappingId: 'opencode-session-side-effect-v1',
+        intent: 'enroll_session',
+      }),
+      'chat.message': Object.freeze({
+        eventMappingId: 'opencode-user-prompt-v1',
+        deliveryMappingId: 'opencode-user-prompt-side-effect-v1',
+        intent: 'capture_root_prompt',
       }),
     });
 
@@ -72,6 +86,29 @@ function hasExactInput(type, input) {
       }
     }
 
+    function projectName(context) {
+      if (typeof context?.project === 'string' && !/[\\/]/.test(context.project)) {
+        return context.project;
+      }
+      const project = isRecord(context?.project) ? context.project : undefined;
+      const candidates = [project?.worktree, context?.worktree, context?.directory, context?.project];
+      for (const candidate of candidates) {
+        if (typeof candidate !== 'string') continue;
+        const normalized = candidate.replace(/[\\/]+$/, '');
+        const name = normalized.split(/[\\/]/).filter(Boolean).at(-1);
+        if (name) return name;
+      }
+      return undefined;
+    }
+
+    function requestContext(context) {
+      const project = projectName(context);
+      return {
+        ...(project ? { project } : {}),
+        ...(typeof context?.directory === 'string' ? { directory: context.directory } : {}),
+      };
+    }
+
     function request(type, payload, context, mapping, operation, delivery, callbackEvidence) {
       return {
         protocolVersion: 1,
@@ -83,18 +120,99 @@ function hasExactInput(type, input) {
           eventMappingId: mapping.eventMappingId,
           deliveryChannel: 'opencode-protocol-output',
           deliveryMappingId: mapping.deliveryMappingId,
-          behaviorEvidenceMappingId: BEHAVIOR_EVIDENCE_MAPPING_ID,
+          behaviorEvidenceMappingId: PRIVATE_BEHAVIOR_EVIDENCE_MAPPING_ID,
           mutableOutputChannel: mapping.mutableOutputChannel,
         } } : {}),
         event: { type, ...payload, ...(callbackEvidence ?? {}) },
-        context: {
-          ...(context.project ? { project: context.project } : {}),
-          ...(context.directory ? { directory: context.directory } : {}),
-        },
+        context: requestContext(context),
         ...(delivery ? {
           hostOutputDirective: delivery.directive,
           deliveryAttempt: delivery.attempt,
         } : {}),
+      };
+    }
+
+    function sideEffectRequest(event, context, mapping) {
+      return {
+        protocolVersion: 1,
+        harness: 'opencode',
+        capabilityEvidence: {
+          payloadMappingId: 'opencode-session-payload-v1',
+          assetExecutionMarker: 'opencode-activation-v1',
+          eventMappingId: mapping.eventMappingId,
+          deliveryChannel: 'none',
+          deliveryMappingId: mapping.deliveryMappingId,
+          behaviorEvidenceMappingId: SIDE_EFFECT_BEHAVIOR_EVIDENCE_MAPPING_ID,
+        },
+        event,
+        context: requestContext(context),
+      };
+    }
+
+    function confirmedEffect(response, intent) {
+      return isRecord(response)
+        && response.protocolVersion === 1
+        && response.harness === 'opencode'
+        && response.intent === intent
+        && (response.outcome === 'confirmed' || response.outcome === 'no_op')
+        && response.retryable === false;
+    }
+
+    function classifySessionInfo(info, expectedId) {
+      if (!isRecord(info) || !isBoundedIdentifier(info.id)
+        || (expectedId !== undefined && info.id !== expectedId)) return undefined;
+      if (!Object.hasOwn(info, 'parentID')) return 'root';
+      return isBoundedIdentifier(info.parentID) ? 'delegated' : undefined;
+    }
+
+    function projectedUserMessage(input, output) {
+      if (!isRecord(input) || !isRecord(output)
+        || !isBoundedIdentifier(input.sessionID)
+        || !isBoundedIdentifier(input.messageID)
+        || !isRecord(output.message)
+        || output.message.role !== 'user'
+        || output.message.id !== input.messageID
+        || output.message.sessionID !== input.sessionID
+        || !Array.isArray(output.parts)
+        || output.parts.length > MAX_PROMPT_PARTS) return undefined;
+      const parts = output.parts.flatMap((part) => {
+        if (!isRecord(part)
+          || part.type !== 'text'
+          || part.synthetic === true
+          || part.ignored === true
+          || !isBoundedIdentifier(part.id)
+          || part.sessionID !== input.sessionID
+          || part.messageID !== input.messageID
+          || typeof part.text !== 'string'
+          || Array.from(part.text).length === 0) return [];
+        return [{
+          id: part.id,
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          type: 'text',
+          text: part.text,
+        }];
+      });
+      if (parts.length === 0) return undefined;
+      return {
+        sessionID: input.sessionID,
+        event: {
+          type: 'chat.message',
+          id: input.messageID,
+          input: {
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            rootSession: true,
+          },
+          output: {
+            message: {
+              id: input.messageID,
+              sessionID: input.sessionID,
+              role: 'user',
+            },
+            parts,
+          },
+        },
       };
     }
 
@@ -170,15 +288,76 @@ function hasExactInput(type, input) {
         const protocol = await readFile(MEMORY_PROTOCOL_URL, 'utf8');
         const log = logger(context);
         const initialized = await writeMarker(log, 'opencode_behavior_evidence_initialized', {
-          behaviorEvidenceMappingId: BEHAVIOR_EVIDENCE_MAPPING_ID,
+          behaviorEvidenceMappingId: PRIVATE_BEHAVIOR_EVIDENCE_MAPPING_ID,
+          sideEffectBehaviorEvidenceMappingId: SIDE_EFFECT_BEHAVIOR_EVIDENCE_MAPPING_ID,
         });
-    const emit = async (type, payload = {}) => { await dispatch(request(type, payload, context)); };
-    let deliverySequence = 0;
-    const emitDirective = async (type, input, output, purpose, mutate) => {
-      const mapping = MAPPINGS[type];
-      if (!initialized || !mapping || deliverySequence >= Number.MAX_SAFE_INTEGER) return;
-      if (!hasExactInput(type, input)) return;
-      const callbackEvidence = { id: randomUUID(), sequence: ++deliverySequence };
+        const sessionKinds = new Map();
+        const enrolledSessions = new Set();
+        const enrollmentAttempts = new Map();
+        const emitEffect = async (event, mapping) => {
+          let response;
+          try {
+            response = await dispatch(sideEffectRequest(event, context, mapping));
+          } catch {
+            response = undefined;
+          }
+          if (confirmedEffect(response, mapping.intent)) return true;
+          await writeMarker(log, 'opencode_memory_effect_degraded', {
+            intent: mapping.intent,
+            eventMappingId: mapping.eventMappingId,
+          });
+          return false;
+        };
+        const ensureEnrollment = async (sessionID) => {
+          if (enrolledSessions.has(sessionID)) return true;
+          const existing = enrollmentAttempts.get(sessionID);
+          if (existing) return existing;
+          const attempt = (async () => {
+            const confirmed = await emitEffect({
+              type: 'session.created',
+              id: sessionID,
+              properties: { info: { id: sessionID } },
+            }, SIDE_EFFECT_MAPPINGS['session.created']);
+            if (confirmed) enrolledSessions.add(sessionID);
+            return confirmed;
+          })();
+          enrollmentAttempts.set(sessionID, attempt);
+          try {
+            return await attempt;
+          } finally {
+            enrollmentAttempts.delete(sessionID);
+          }
+        };
+        const resolveSessionKind = async (sessionID) => {
+          const known = sessionKinds.get(sessionID);
+          if (known) return known;
+          const get = context?.client?.session?.get;
+          if (typeof get !== 'function') return undefined;
+          let response;
+          try {
+            response = await get.call(context.client.session, {
+              path: { id: sessionID },
+              ...(typeof context.directory === 'string'
+                ? { query: { directory: context.directory } }
+                : {}),
+            });
+          } catch {
+            await writeMarker(log, 'opencode_memory_effect_degraded', {
+              intent: 'classify_root_session',
+            });
+            return undefined;
+          }
+          const info = isRecord(response) ? response.data : undefined;
+          const kind = classifySessionInfo(info, sessionID);
+          if (kind) sessionKinds.set(sessionID, kind);
+          return kind;
+        };
+        let deliverySequence = 0;
+        const emitDirective = async (type, input, output, purpose, mutate) => {
+          const mapping = MAPPINGS[type];
+          if (!initialized || !mapping || deliverySequence >= Number.MAX_SAFE_INTEGER) return;
+          if (!hasExactInput(type, input)) return;
+          const callbackEvidence = { id: randomUUID(), sequence: ++deliverySequence };
           let response;
           try {
             response = await dispatch(request(type, { input }, context, mapping, 'prepare_delivery', undefined, callbackEvidence));
@@ -203,9 +382,31 @@ function hasExactInput(type, input) {
 
         return {
           event: async ({ event }) => {
-            if (event?.type === 'session.created') await emit('session.created', event);
+            if (!isRecord(event)) return;
+            const properties = isRecord(event.properties) ? event.properties : undefined;
+            const info = isRecord(properties?.info) ? properties.info : undefined;
+            const sessionID = isBoundedIdentifier(info?.id) ? info.id : undefined;
+            if (event.type === 'session.deleted') {
+              if (sessionID) {
+                sessionKinds.delete(sessionID);
+                enrolledSessions.delete(sessionID);
+                enrollmentAttempts.delete(sessionID);
+              }
+              return;
+            }
+            if (event.type !== 'session.created' || !sessionID) return;
+            const kind = classifySessionInfo(info, sessionID);
+            if (!kind) return;
+            sessionKinds.set(sessionID, kind);
+            if (kind === 'root') await ensureEnrollment(sessionID);
           },
-          'chat.message': async (input, output) => { await emit('chat.message', { input, output }); },
+          'chat.message': async (input, output) => {
+            const projected = projectedUserMessage(input, output);
+            if (!projected) return;
+            if (await resolveSessionKind(projected.sessionID) !== 'root') return;
+            if (!await ensureEnrollment(projected.sessionID)) return;
+            await emitEffect(projected.event, SIDE_EFFECT_MAPPINGS['chat.message']);
+          },
           'experimental.chat.system.transform': async (input, output) => {
             await emitDirective('experimental.chat.system.transform', input, output, 'recovery_context',
               (target, text) => mutateSystem(target, protocol, text));

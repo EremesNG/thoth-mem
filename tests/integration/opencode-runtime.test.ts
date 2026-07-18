@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import type { MemoryPort } from '../../src/integration/core/memory-port.js';
+import { executeIntegrationEvent } from '../../src/integration/runtime/integration-event-command.js';
 import { HOST_EVIDENCE } from '../fixtures/integration/host-evidence.js';
 
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -17,12 +20,17 @@ type DirectivePurpose = 'recovery_context' | 'post_compaction_guidance';
 interface HookResponse {
   protocolVersion: 1;
   operation?: 'prepare_delivery' | 'confirm_delivery';
-  outcome: 'confirmed';
-  retryable: false;
+  harness?: 'opencode';
+  intent?: 'enroll_session' | 'capture_root_prompt' | 'recall_guidance' | 'compact_session';
+  outcome: 'confirmed' | 'no_op' | 'failed' | 'degraded';
+  retryable: boolean;
+  diagnostic?: string;
   hostOutputDirective?: { purpose: DirectivePurpose; text: string; deliveryMappingId: string };
   deliveryAttempt?: string;
 }
 interface OpenCodeHooks {
+  event(input: { event: Record<string, unknown> }): Promise<void>;
+  'chat.message'(input: Record<string, unknown>, output: Record<string, unknown>): Promise<void>;
   'experimental.chat.system.transform'(input: { sessionID?: string; model?: unknown }, output: { system: string[] }): Promise<void>;
   'experimental.session.compacting'(input: { sessionID?: string }, output: { context: string[]; prompt?: string }): Promise<void>;
 }
@@ -52,6 +60,251 @@ function modelInput(sessionID = 'root-session'): { sessionID: string; model: { p
 function occurrences(text: string, fragment: string): number {
   return text.split(fragment).length - 1;
 }
+
+function sessionInfo(id: string, parentID?: string): Record<string, unknown> {
+  return {
+    id,
+    projectID: 'project-1',
+    directory: 'C:\\workspace\\thoth-mem',
+    ...(parentID ? { parentID } : {}),
+    title: parentID ? 'Explore subagent' : 'Root session',
+    version: '1.18.3',
+    time: { created: 1, updated: 1 },
+  };
+}
+
+function pluginContext(
+  sessions: Map<string, Record<string, unknown>> = new Map(),
+  logs: unknown[] = [],
+): Record<string, unknown> {
+  return {
+    directory: 'C:\\workspace\\thoth-mem',
+    worktree: 'C:\\workspace\\thoth-mem',
+    project: {
+      id: 'project-1',
+      worktree: 'C:\\workspace\\thoth-mem',
+      time: { created: 1 },
+    },
+    serverUrl: new URL('http://127.0.0.1:4096'),
+    $: () => undefined,
+    client: {
+      app: { log: async (entry: unknown) => { logs.push(entry); } },
+      session: {
+        get: async ({ path }: { path: { id: string } }) => ({ data: sessions.get(path.id) }),
+      },
+    },
+  };
+}
+
+function userMessage(
+  sessionID: string,
+  messageID: string,
+  parts: Array<Record<string, unknown>>,
+): { input: Record<string, unknown>; output: Record<string, unknown> } {
+  return {
+    input: {
+      sessionID,
+      messageID,
+      agent: 'orchestrator',
+      model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+      variant: 'default',
+    },
+    output: {
+      message: {
+        id: messageID,
+        sessionID,
+        role: 'user',
+        time: { created: 1 },
+        agent: 'orchestrator',
+        model: { providerID: 'openai', modelID: 'gpt-5.6-terra' },
+      },
+      parts,
+    },
+  };
+}
+
+function textPart(
+  sessionID: string,
+  messageID: string,
+  id: string,
+  text: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { id, sessionID, messageID, type: 'text', text, ...extra };
+}
+
+describe('OpenCode normal lifecycle side effects', () => {
+  it('persists start then root prompt once through plugin, resolver, adapter, and core', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'thoth-opencode-prompt-'));
+    const calls: Array<{ tool: string; input: Record<string, unknown> }> = [];
+    const requests: Record<string, unknown>[] = [];
+    const memoryPort: MemoryPort = {
+      async call(tool, input) {
+        calls.push({ tool, input });
+        return tool === 'mem_save'
+          ? { confirmed: true, isError: false, text: 'Prompt saved.', reference: { kind: 'prompt', id: 41 } }
+          : { confirmed: true, isError: false, text: 'Session started.' };
+      },
+      async close() {},
+    };
+
+    try {
+      const createOpenCodePlugin = await loadPlugin();
+      const root = sessionInfo('root-session');
+      const hooks = await createOpenCodePlugin({
+        dispatch: async (request) => {
+          requests.push(request as Record<string, unknown>);
+          const result = await executeIntegrationEvent(JSON.stringify(request), {
+            dataDir,
+            dependencies: {
+              resolveDataDir: () => dataDir,
+              createMemoryPort: async () => memoryPort,
+            },
+          });
+          return result.response as HookResponse;
+        },
+      })(pluginContext(new Map([['root-session', root]])));
+
+      await hooks.event({ event: { type: 'session.created', properties: { info: root } } });
+      const message = userMessage('root-session', 'message-1', [
+        textPart('root-session', 'message-1', 'part-1', 'hazlo'),
+      ]);
+      const original = structuredClone(message.output);
+      await hooks['chat.message'](message.input, message.output);
+      await hooks['chat.message'](message.input, message.output);
+
+      expect(message.output).toEqual(original);
+      expect(calls).toEqual([
+        {
+          tool: 'mem_session',
+          input: {
+            action: 'start',
+            id: 'root-session',
+            project: 'thoth-mem',
+            directory: 'C:\\workspace\\thoth-mem',
+          },
+        },
+        {
+          tool: 'mem_save',
+          input: {
+            kind: 'prompt',
+            content: 'hazlo',
+            session_id: 'root-session',
+            project: 'thoth-mem',
+          },
+        },
+      ]);
+      expect(requests.map((request) => (request.event as { type?: string }).type))
+        .toEqual(['session.created', 'chat.message', 'chat.message']);
+      expect(requests[0]).toMatchObject({
+        capabilityEvidence: {
+          eventMappingId: 'opencode-session-created-v1',
+          deliveryChannel: 'none',
+          deliveryMappingId: 'opencode-session-side-effect-v1',
+          behaviorEvidenceMappingId: 'opencode-plugin-init-side-effect-v1',
+        },
+        context: { project: 'thoth-mem', directory: 'C:\\workspace\\thoth-mem' },
+      });
+      expect(requests[1]).toMatchObject({
+        event: {
+          type: 'chat.message',
+          id: 'message-1',
+          input: { sessionID: 'root-session', messageID: 'message-1', rootSession: true },
+        },
+        capabilityEvidence: {
+          eventMappingId: 'opencode-user-prompt-v1',
+          deliveryChannel: 'none',
+          deliveryMappingId: 'opencode-user-prompt-side-effect-v1',
+        },
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers root classification, skips delegated and generated text, and projects only trusted parts', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const logs: unknown[] = [];
+    const sessions = new Map([
+      ['root-session', sessionInfo('root-session')],
+      ['child-session', sessionInfo('child-session', 'root-session')],
+    ]);
+    const createOpenCodePlugin = await loadPlugin();
+    const hooks = await createOpenCodePlugin({
+      dispatch: async (request) => {
+        requests.push(request as Record<string, unknown>);
+        const type = ((request as { event?: { type?: string } }).event?.type);
+        return {
+          protocolVersion: 1,
+          harness: 'opencode',
+          intent: type === 'session.created' ? 'enroll_session' : 'capture_root_prompt',
+          outcome: 'confirmed',
+          retryable: false,
+        };
+      },
+    })(pluginContext(sessions, logs));
+
+    const generated = userMessage('root-session', 'generated-1', [
+      textPart('root-session', 'generated-1', 'generated-part', 'GENERATED', { synthetic: true }),
+    ]);
+    await hooks['chat.message'](generated.input, generated.output);
+
+    const child = userMessage('child-session', 'child-1', [
+      textPart('child-session', 'child-1', 'child-part', 'delegated prompt'),
+    ]);
+    await hooks['chat.message'](child.input, child.output);
+
+    const root = userMessage('root-session', 'root-1', [
+      textPart('root-session', 'root-1', 'trusted', 'sí'),
+      textPart('root-session', 'root-1', 'synthetic', 'SYNTHETIC', { synthetic: true }),
+      textPart('root-session', 'root-1', 'ignored', 'IGNORED', { ignored: true }),
+      textPart('root-session', 'other-message', 'mismatch', 'MISMATCH'),
+    ]);
+    await hooks['chat.message'](root.input, root.output);
+
+    expect(requests.map((request) => (request.event as { type?: string }).type))
+      .toEqual(['session.created', 'chat.message']);
+    expect(requests[1]).toMatchObject({
+      event: {
+        id: 'root-1',
+        output: {
+          message: { id: 'root-1', sessionID: 'root-session', role: 'user' },
+          parts: [{
+            id: 'trusted',
+            sessionID: 'root-session',
+            messageID: 'root-1',
+            type: 'text',
+            text: 'sí',
+          }],
+        },
+      },
+    });
+    expect(JSON.stringify(requests)).not.toMatch(/GENERATED|delegated prompt|SYNTHETIC|IGNORED|MISMATCH/);
+  });
+
+  it('fails open and retries enrollment after an unconfirmed dispatch', async () => {
+    const attempts: string[] = [];
+    const logs: unknown[] = [];
+    const root = sessionInfo('root-session');
+    const createOpenCodePlugin = await loadPlugin();
+    const hooks = await createOpenCodePlugin({
+      dispatch: async (request) => {
+        attempts.push(((request as { event?: { type?: string } }).event?.type) ?? 'unknown');
+        throw new Error('memory unavailable');
+      },
+    })(pluginContext(new Map([['root-session', root]]), logs));
+
+    await expect(hooks.event({ event: { type: 'session.created', properties: { info: root } } }))
+      .resolves.toBeUndefined();
+    const message = userMessage('root-session', 'message-1', [
+      textPart('root-session', 'message-1', 'part-1', 'retry me'),
+    ]);
+    await expect(hooks['chat.message'](message.input, message.output)).resolves.toBeUndefined();
+
+    expect(attempts).toEqual(['session.created', 'session.created']);
+    expect(JSON.stringify(logs)).toContain('opencode_memory_effect_degraded');
+  });
+});
 
 describe('OpenCode runtime behavior-evidence binding', () => {
   it('omits unavailable hostVersion and awaits structured initialization and emission logs', async () => {

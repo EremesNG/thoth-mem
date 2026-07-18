@@ -26,9 +26,17 @@ Choose the smallest workflow that fits:
 
 ## 2. Confirm identity and ownership
 
-Resolve the stable root `session_id` and `project` before memory work. Keep them
-unchanged across turns and compactions; never substitute a per-turn identifier or
-invent a fallback session.
+Resolve the stable root session ID before memory work, and use the current project
+name. The root session ID is the harness's stable identifier for the root session,
+regardless of the native field or runtime label that carries it. The project name
+is simply the name of the project being worked on; when it is not already explicit,
+derive it from the repository or workspace directory name.
+
+When calling `mem_session`, its `id` parameter receives the root session ID and its
+`project` parameter receives the project name. When another memory tool exposes a
+`session_id` parameter, pass the same root session ID. Keep the root session ID and
+project name unchanged across turns and compactions; never substitute a turn,
+message, prompt, agent, or tool-call identifier.
 
 The root/orchestrator owns session lifecycle, real user-prompt capture, and
 continuity summaries. Subagents must not start, checkpoint, summarize, or
@@ -39,16 +47,22 @@ project/session scope for bounded reads or durable observations, but it must not
 - save prompts or generated handoffs as user intent;
 - claim root continuity after an unconfirmed call.
 
-If stable identity is unavailable, state the limitation and continue without
-claiming durable session continuity.
+If the stable root session ID is unavailable, state the limitation and continue
+without claiming durable session continuity. Do not infer it from nearby identifiers
+or invent a fallback session.
 
 ## 3. Start or resume boundedly
 
 For a new root session:
 
-1. Call `mem_session(action="start")` with stable identity and working context.
-2. Continue only after the result is confirmed.
-3. Save only the real root-user request as prompt intent.
+1. When native enrollment and prompt capture are confirmed, do not repeat the
+   same start or prompt write manually.
+2. If native enrollment is degraded or unsupported, call
+   `mem_session(action="start", id="<root-session-id>", project="<project-name>")` with
+   working context, and continue only after the result is confirmed.
+3. If native prompt capture is degraded or unsupported, save only the real
+   root-user request as prompt intent with `session_id="<root-session-id>"`, then
+   confirm the write.
 4. Read recent continuity with a bounded `mem_context` when it is useful.
 
 For overlapping decisions or older work, use the recall funnel:
@@ -93,7 +107,7 @@ To inspect committed graph communities, call:
 ```text
 mem_project(
   action="graph",
-  project="<project>",
+  project="<project-name>",
   navigation="community",
   limit=5,
   max_chars=2000
@@ -115,7 +129,10 @@ global answer.
 Treat each capability as `supported`, `degraded`, or `unsupported`.
 
 - Checkpoint only for a verified root compaction event.
-- Summarize only for a verified root terminal event.
+- Treat a semantic session summary as agent-owned. Persist it when meaningful
+  root work is actually complete, without waiting for a terminal hook.
+- Persist that summary with `mem_session(action="summary", id="<root-session-id>",
+  project="<project-name>", content="...")`.
 - Advance lifecycle state only after confirmed MCP success, including confirmed
   `mem_session` success.
 - Keep failed or indeterminate effects eligible for one bounded retry.
@@ -123,14 +140,21 @@ Treat each capability as `supported`, `degraded`, or `unsupported`.
   manual recovery path; never claim the effect occurred.
 - Keep unrelated supported memory operations available when one capability is degraded.
 
-Compaction is explicit and retry-safe: checkpoint only for a verified root compaction event. Finalization is explicit and retry-safe: summarize only for a verified root terminal event. A duplicate event is suppressed by stable event identity; byte-identical same-session prompts within the existing 30-second window may resolve to one canonical prompt row. Keep manual recovery visible for every degraded or unsupported capability.
+Compaction is explicit and retry-safe: checkpoint only for a verified root
+compaction event. A semantic session summary is agent-owned; a turn-scoped Stop
+or process-exit callback does not prove semantic completion. A duplicate event
+is suppressed by stable event identity; byte-identical same-session prompts
+within the existing 30-second window may resolve to one canonical prompt row.
+Keep manual recovery visible for every degraded or unsupported capability.
 
-Before meaningful root work ends, propose one concise summary with the goal,
-instructions, discoveries, completed work, next steps, and relevant files.
-Persist it only through the root-owned lifecycle path.
+Before meaningful root work ends, decide whether the work has reached a useful
+semantic boundary. If it has, persist one concise summary with the goal,
+instructions, discoveries, completed work, next steps, and relevant files
+through the root-owned lifecycle path.
 
 ## Final response
 
-State what was recalled or saved, which identity and bounds were used, and which
-results were confirmed. Distinguish durable evidence from inference and say
-plainly when memory was unavailable, degraded, unsupported, or not written.
+State what was recalled or saved, which root session ID, project name, and bounds
+were used, and which results were confirmed. Distinguish durable evidence from
+inference and say plainly when memory was unavailable, degraded, unsupported,
+or not written.

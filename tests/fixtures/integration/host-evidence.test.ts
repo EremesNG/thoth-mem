@@ -43,7 +43,10 @@ import { describe, expect, it } from 'vitest';
         });
         expect(HOST_EVIDENCE.find((evidence) => evidence.harness === 'opencode')?.terminal.status).toBe('unsupported');
         expect(HOST_EVIDENCE.find((evidence) => evidence.harness === 'codex')?.terminal.status).toBe('degraded');
-        expect(HOST_EVIDENCE.find((evidence) => evidence.harness === 'claude-code')?.terminal.status).toBe('supported');
+        expect(HOST_EVIDENCE.find((evidence) => evidence.harness === 'claude-code')?.terminal).toMatchObject({
+          status: 'unsupported',
+          mappingId: 'claude-code-semantic-summary-v1',
+        });
       });
 
       it('fails closed when the host version or payload mapping is unknown', () => {
