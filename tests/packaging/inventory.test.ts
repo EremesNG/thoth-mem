@@ -568,6 +568,19 @@ describe('package publication allowlist', () => {
 });
 
 describe('build release verification', () => {
+  it('release commands force the version lifecycle that synchronizes plugin manifests', async () => {
+    const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
+
+    expect(manifest.scripts.version).toBe(
+      'pnpm run integration:sync && pnpm run integration:verify',
+    );
+    for (const releaseType of ['patch', 'minor', 'major']) {
+      expect(manifest.scripts[`release:${releaseType}`]).toBe(
+        `npm version ${releaseType} --ignore-scripts=false && git push --follow-tags`,
+      );
+    }
+  });
+
   it('build release verification always runs the read-only verifier after bundling', async () => {
     const source = await readFile(buildPath, 'utf8');
     expect(source).toContain('export async function runBuild');
