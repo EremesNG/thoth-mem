@@ -746,7 +746,7 @@ async function hasClaudePackageIdentity(paths: SetupPaths): Promise<boolean> {
             && plugins.length === 1
             && isRecord(plugins[0])
             && plugins[0].name === 'thoth-mem'
-            && plugins[0].source === './integrations/claude-code';
+            && plugins[0].source === './plugin';
     } catch {
         return false;
     }

@@ -79,13 +79,20 @@ export async function syncIntegrationAssets(options = {}) {
     { kind: 'file' },
   )).targetPath;
   const canonicalRunner = await readFile(canonicalRunnerPath);
-  for (const runnerPath of [
-    getInventoryAsset(inventory, 'codex', 'runner').path,
-    getInventoryAsset(inventory, 'claude', 'runner').path,
-  ]) {
-    const path = (await resolveContainedPath(root, runnerPath, runnerPath, { kind: 'file' })).targetPath;
-    await writeIfChanged(path, canonicalRunner, changedPaths, root);
-  }
+  const sharedRunnerPath = getInventoryAsset(inventory, 'shared', 'runner').path;
+  const sharedRunner = (await resolveContainedPath(root, sharedRunnerPath, sharedRunnerPath, { kind: 'file' })).targetPath;
+  await writeIfChanged(sharedRunner, canonicalRunner, changedPaths, root);
+
+  const canonicalSkillPath = 'skills/thoth-mem/SKILL.md';
+  const canonicalSkill = await readFile((await resolveContainedPath(
+    root,
+    canonicalSkillPath,
+    'canonical thoth-mem skill',
+    { kind: 'file' },
+  )).targetPath);
+  const sharedSkillPath = getInventoryAsset(inventory, 'shared', 'skill').path;
+  const sharedSkill = (await resolveContainedPath(root, sharedSkillPath, sharedSkillPath, { kind: 'file' })).targetPath;
+  await writeIfChanged(sharedSkill, canonicalSkill, changedPaths, root);
 
   return { changedPaths };
 }

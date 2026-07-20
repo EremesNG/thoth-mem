@@ -425,7 +425,7 @@ function seedPackagedAssets(fileSystem: FakeSetupFileSystem, paths: SetupPaths):
     fileSystem.file(join(paths.sourceAssetsPath, 'plugin.mjs'), 'packaged-opencode-plugin');
     fileSystem.file(join(paths.sourceSharedPath, 'hook-runner.mjs'), 'packaged-hook-runner');
   } else {
-    fileSystem.file(join(paths.sourceAssetsPath, '.mcp.json'), 'packaged-codex-mcp');
+    fileSystem.file(join(paths.sourceAssetsPath, 'codex.mcp.json'), 'packaged-codex-mcp');
   }
 }
 
@@ -453,7 +453,7 @@ function seedManagedSetup(
     fileSystem.file(join(paths.assetPath, 'shared', 'hook-runner.mjs'), 'packaged-hook-runner');
     fileSystem.file(paths.pluginEntryPath, 'export { default } from \'./.thoth-mem/opencode/plugin.mjs\';\n');
   } else {
-    fileSystem.file(join(paths.assetPath, '.mcp.json'), 'packaged-codex-mcp');
+    fileSystem.file(join(paths.assetPath, 'codex.mcp.json'), 'packaged-codex-mcp');
   }
   fileSystem.file(
     join(paths.assetPath, 'thoth-mem.installation.json'),
@@ -967,7 +967,7 @@ describe('inspects and plans with zero writes', () => {
       assetPath: join(projectPath, '.codex', 'plugins', 'thoth-mem'),
       pluginEntryPath: join(projectPath, '.codex', 'plugins', 'thoth-mem'),
       metadataPath: join(projectPath, '.codex', 'plugins', 'thoth-mem', '.thoth-mem-managed.json'),
-      sourceAssetsPath: join(ROOTS.packageRoot, 'integrations', 'codex'),
+      sourceAssetsPath: join(ROOTS.packageRoot, 'plugin'),
       sourceSharedPath: null,
     });
   });

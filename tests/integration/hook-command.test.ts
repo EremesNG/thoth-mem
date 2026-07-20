@@ -1536,20 +1536,18 @@ describe('portable Node hook runner', () => {
 });
 
 describe('native plugin assets', () => {
-  it('parses descriptors, resolves plugin-local paths, and keeps runner copies canonical', () => {
+  it('parses both descriptors from one shared plugin bundle and keeps its runner canonical', () => {
     const requiredFiles = [
       '.agents/plugins/marketplace.json',
       '.claude-plugin/marketplace.json',
-      'integrations/codex/.codex-plugin/plugin.json',
-      'integrations/codex/.mcp.json',
-      'integrations/codex/hooks/hooks.json',
-      'integrations/codex/runners/hook-runner.mjs',
-      'integrations/codex/skills/thoth-mem/SKILL.md',
-      'integrations/claude-code/.claude-plugin/plugin.json',
-      'integrations/claude-code/.mcp.json',
-      'integrations/claude-code/hooks/hooks.json',
-      'integrations/claude-code/runners/hook-runner.mjs',
-      'integrations/claude-code/skills/thoth-mem/SKILL.md',
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/codex.mcp.json',
+      'plugin/hooks/codex-hooks.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/.mcp.json',
+      'plugin/hooks/hooks.json',
+      'plugin/runners/hook-runner.mjs',
+      'plugin/skills/thoth-mem/SKILL.md',
       'integrations/shared/hook-runner.mjs',
     ];
     for (const relativePath of requiredFiles) {
@@ -1558,16 +1556,16 @@ describe('native plugin assets', () => {
 
     const codexMarketplace = readJsonFixture('.agents/plugins/marketplace.json');
     const claudeMarketplace = readJsonFixture('.claude-plugin/marketplace.json');
-    const codexPlugin = readJsonFixture('integrations/codex/.codex-plugin/plugin.json');
-    const claudePlugin = readJsonFixture('integrations/claude-code/.claude-plugin/plugin.json');
-    const codexHooks = readJsonFixture('integrations/codex/hooks/hooks.json');
-    const claudeHooks = readJsonFixture('integrations/claude-code/hooks/hooks.json');
-    const codexMcp = readJsonFixture('integrations/codex/.mcp.json');
-    const claudeMcp = readJsonFixture('integrations/claude-code/.mcp.json');
+    const codexPlugin = readJsonFixture('plugin/.codex-plugin/plugin.json');
+    const claudePlugin = readJsonFixture('plugin/.claude-plugin/plugin.json');
+    const codexHooks = readJsonFixture('plugin/hooks/codex-hooks.json');
+    const claudeHooks = readJsonFixture('plugin/hooks/hooks.json');
+    const codexMcp = readJsonFixture('plugin/codex.mcp.json');
+    const claudeMcp = readJsonFixture('plugin/.mcp.json');
 
     expect(codexMarketplace.plugins[0]).toMatchObject({
       name: 'thoth-mem',
-      source: { source: 'local', path: './integrations/codex' },
+      source: { source: 'local', path: './plugin' },
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
@@ -1575,15 +1573,15 @@ describe('native plugin assets', () => {
     });
     expect(claudeMarketplace.plugins[0]).toMatchObject({
       name: 'thoth-mem',
-      source: './integrations/claude-code',
+      source: './plugin',
       version: packageVersion,
     });
     expect(codexPlugin).toMatchObject({
       name: 'thoth-mem',
       version: packageVersion,
       skills: './skills/',
-      hooks: './hooks/hooks.json',
-      mcpServers: './.mcp.json',
+      hooks: './hooks/codex-hooks.json',
+      mcpServers: './codex.mcp.json',
       interface: {
         displayName: 'thoth-mem Persistent Memory',
         shortDescription: 'Privacy-safe root-session memory and bounded recall.',
@@ -1604,12 +1602,13 @@ describe('native plugin assets', () => {
       repositoryRoot,
       claudeMarketplace.plugins[0].source,
     );
-    expect(codexMarketplaceRoot).toBe(join(repositoryRoot, 'integrations/codex'));
-    expect(claudeMarketplaceRoot).toBe(join(repositoryRoot, 'integrations/claude-code'));
+    expect(codexMarketplaceRoot).toBe(join(repositoryRoot, 'plugin'));
+    expect(claudeMarketplaceRoot).toBe(join(repositoryRoot, 'plugin'));
+    expect(codexMarketplaceRoot).toBe(claudeMarketplaceRoot);
     expect(existsSync(resolve(repositoryRoot, codexMarketplace.plugins[0].source.path))).toBe(true);
     expect(existsSync(resolve(repositoryRoot, claudeMarketplace.plugins[0].source))).toBe(true);
-    expect(existsSync(resolve(join(repositoryRoot, 'integrations/codex'), codexPlugin.hooks))).toBe(true);
-    const codexPluginRoot = join(repositoryRoot, 'integrations/codex');
+    expect(existsSync(resolve(join(repositoryRoot, 'plugin'), codexPlugin.hooks))).toBe(true);
+    const codexPluginRoot = join(repositoryRoot, 'plugin');
     expect(existsSync(resolve(codexPluginRoot, codexPlugin.skills))).toBe(true);
     const codexMcpDescriptorPath = resolve(
       codexPluginRoot,
@@ -1673,21 +1672,18 @@ describe('native plugin assets', () => {
     };
     assertHookPaths(
       codexHooks,
-      join(repositoryRoot, 'integrations/codex'),
+      join(repositoryRoot, 'plugin'),
       'PLUGIN_ROOT',
       'codex',
     );
     assertHookPaths(
       claudeHooks,
-      join(repositoryRoot, 'integrations/claude-code'),
+      join(repositoryRoot, 'plugin'),
       'CLAUDE_PLUGIN_ROOT',
       'claude',
     );
 
-    for (const skillPath of [
-      'integrations/codex/skills/thoth-mem/SKILL.md',
-      'integrations/claude-code/skills/thoth-mem/SKILL.md',
-    ]) {
+    for (const skillPath of ['plugin/skills/thoth-mem/SKILL.md']) {
       const skill = readFileSync(join(repositoryRoot, skillPath), 'utf8');
       for (const tool of [
         'mem_recall',
@@ -1704,21 +1700,16 @@ describe('native plugin assets', () => {
     }
 
     const canonicalRunner = readFileSync(canonicalRunnerPath);
-    expect(readFileSync(join(repositoryRoot, 'integrations/codex/runners/hook-runner.mjs'))).toEqual(canonicalRunner);
-    expect(readFileSync(join(repositoryRoot, 'integrations/claude-code/runners/hook-runner.mjs'))).toEqual(canonicalRunner);
+    expect(readFileSync(join(repositoryRoot, 'plugin/runners/hook-runner.mjs'))).toEqual(canonicalRunner);
   });
 
-  it('executes both plugin-local runner copies through the same protocol', () => {
+  it('executes the shared plugin-local runner through both native protocols', () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'thoth native runner '));
     const installedRoot = join(tempRoot, 'installed plugin roots with spaces');
-    const codexRoot = join(installedRoot, 'codex');
-    const claudeRoot = join(installedRoot, 'claude-code');
-    cpSync(join(repositoryRoot, 'integrations/codex'), codexRoot, { recursive: true });
-    cpSync(join(repositoryRoot, 'integrations/claude-code'), claudeRoot, { recursive: true });
-    const codexRunner = join(codexRoot, 'runners/hook-runner.mjs');
-    const claudeRunner = join(claudeRoot, 'runners/hook-runner.mjs');
-    expect(existsSync(codexRunner), 'Codex runner copy must exist').toBe(true);
-    expect(existsSync(claudeRunner), 'Claude runner copy must exist').toBe(true);
+    const pluginRoot = join(installedRoot, 'plugin');
+    cpSync(join(repositoryRoot, 'plugin'), pluginRoot, { recursive: true });
+    const runner = join(pluginRoot, 'runners/hook-runner.mjs');
+    expect(existsSync(runner), 'Shared runner must exist').toBe(true);
     const runtimePath = join(tempRoot, 'runtime with spaces', 'thoth-mem.mjs');
     const unrelatedCwd = join(tempRoot, 'unrelated cwd');
     mkdirSync(unrelatedCwd, { recursive: true });
@@ -1726,12 +1717,12 @@ describe('native plugin assets', () => {
 
     try {
       const env = { ...process.env, THOTH_MEM_BIN: runtimePath, PATH: '' };
-      const codex = parseRunnerOutput(runRunner(codexRunner, { session_id: 'root' }, {
+      const codex = parseRunnerOutput(runRunner(runner, { session_id: 'root' }, {
         env,
         cwd: unrelatedCwd,
         args: ['--harness', 'codex', '--hook', 'SessionStart'],
       }));
-      const claude = parseRunnerOutput(runRunner(claudeRunner, { session_id: 'root', source: 'resume' }, {
+      const claude = parseRunnerOutput(runRunner(runner, { session_id: 'root', source: 'resume' }, {
         env,
         cwd: unrelatedCwd,
         args: ['--harness', 'claude', '--hook', 'SessionStart'],
@@ -1739,8 +1730,7 @@ describe('native plugin assets', () => {
 
       expect(codex).toEqual({});
           expect(claude).toEqual({});
-      expect(dirname(codexRunner)).not.toBe(process.cwd());
-      expect(dirname(claudeRunner)).not.toBe(process.cwd());
+      expect(dirname(runner)).not.toBe(process.cwd());
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

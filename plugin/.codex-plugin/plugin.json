@@ -10,8 +10,8 @@
   "license": "MIT",
   "keywords": ["memory", "mcp", "sessions", "context"],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/codex-hooks.json",
+  "mcpServers": "./codex.mcp.json",
   "interface": {
     "displayName": "thoth-mem Persistent Memory",
     "shortDescription": "Privacy-safe root-session memory and bounded recall.",

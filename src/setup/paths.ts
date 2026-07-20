@@ -66,6 +66,19 @@ function resolveProjectRoot(request: SetupRequest, cwd: string): string {
     : resolve(cwd, projectPath);
 }
 
+function resolveSourceAssetsPath(
+  harness: SetupRequest['harness'],
+  packageRoot: string,
+): string {
+  if (harness === 'claude') {
+    return join(packageRoot, '.claude-plugin');
+  }
+  if (harness === 'codex') {
+    return join(packageRoot, 'plugin');
+  }
+  return join(packageRoot, 'integrations', harness);
+}
+
 export function resolveSetupPaths(
   request: SetupRequest,
   roots: SetupRoots,
@@ -135,9 +148,7 @@ export function resolveSetupPaths(
     assetPath,
     pluginEntryPath,
     metadataPath: join(assetPath, '.thoth-mem-managed.json'),
-    sourceAssetsPath: request.harness === 'claude'
-      ? join(packageRoot, '.claude-plugin')
-      : join(packageRoot, 'integrations', request.harness),
+    sourceAssetsPath: resolveSourceAssetsPath(request.harness, packageRoot),
     sourceSharedPath: request.harness === 'opencode'
       ? join(packageRoot, 'integrations', 'shared')
       : null,

@@ -100,6 +100,12 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 async function createPackageFixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'thoth inventory fixture '));
   await cp(join(repositoryRoot, 'integrations'), join(root, 'integrations'), { recursive: true });
+  await cp(join(repositoryRoot, 'plugin'), join(root, 'plugin'), { recursive: true });
+  await mkdir(join(root, 'skills', 'thoth-mem'), { recursive: true });
+  await cp(
+    join(repositoryRoot, 'skills', 'thoth-mem', 'SKILL.md'),
+    join(root, 'skills', 'thoth-mem', 'SKILL.md'),
+  );
   await mkdir(join(root, '.agents', 'plugins'), { recursive: true });
   await mkdir(join(root, '.claude-plugin'), { recursive: true });
   await cp(join(repositoryRoot, '.agents', 'plugins', 'marketplace.json'), join(root, '.agents', 'plugins', 'marketplace.json'));
@@ -162,28 +168,53 @@ describe('canonical inventory', () => {
     expect(commandBlocks.filter((block) => /Engram|thoth-agents/i.test(block))).toEqual([]);
   });
 
-  it('canonical inventory owns the complete 15-asset topology exactly once', async () => {
+  it('canonical inventory owns one shared Codex and Claude plugin bundle', async () => {
     const verifier = await importVerifier();
     const inventory = await readJson<InventoryDocument>(inventoryPath);
+    const codexMarketplace = await readJson<{
+      plugins: Array<{ source: { path: string } }>;
+    }>(join(repositoryRoot, '.agents', 'plugins', 'marketplace.json'));
+    const claudeMarketplace = await readJson<{
+      plugins: Array<{ source: string }>;
+    }>(join(repositoryRoot, '.claude-plugin', 'marketplace.json'));
 
     expect(inventory).toMatchObject({ schemaVersion: 1 });
-    expect(inventory.assets).toHaveLength(15);
-    expect(new Set(inventory.assets.map((asset) => asset.path)).size).toBe(15);
+    expect(inventory.assets).toHaveLength(13);
+    expect(new Set(inventory.assets.map((asset) => asset.path)).size).toBe(13);
     expect(new Set(inventory.assets.map((asset) => asset.harness))).toEqual(
-      new Set(['opencode', 'codex', 'claude']),
+      new Set(['opencode', 'codex', 'claude', 'shared']),
     );
     for (const asset of inventory.assets) {
       expect(asset).toEqual({
-        harness: expect.stringMatching(/^(opencode|codex|claude)$/),
+        harness: expect.stringMatching(/^(opencode|codex|claude|shared)$/),
         role: expect.any(String),
         path: expect.any(String),
       });
       expect(asset.role).not.toBe('');
       expect(asset.path).not.toBe('');
     }
+    expect(codexMarketplace.plugins[0]?.source.path).toBe('./plugin');
+    expect(claudeMarketplace.plugins[0]?.source).toBe('./plugin');
+    expect(
+      inventory.assets
+        .filter((asset) => asset.path.startsWith('plugin/'))
+        .map((asset) => asset.path),
+    ).toEqual([
+      'plugin/.codex-plugin/plugin.json',
+      'plugin/codex.mcp.json',
+      'plugin/hooks/codex-hooks.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/.mcp.json',
+      'plugin/hooks/hooks.json',
+      'plugin/runners/hook-runner.mjs',
+      'plugin/skills/thoth-mem/SKILL.md',
+    ]);
+    expect(await readdir(join(repositoryRoot, 'integrations'))).not.toEqual(
+      expect.arrayContaining(['codex', 'claude-code']),
+    );
 
     await expect(verifier.verifyIntegrationPackage({ rootDir: repositoryRoot })).resolves.toEqual({
-      assetCount: 15,
+      assetCount: 13,
       harnesses: ['claude', 'codex', 'opencode'],
     });
   });
@@ -196,12 +227,12 @@ describe('canonical inventory', () => {
     expect(verifier.getDisposableHarnessMatrix(inventory)).toEqual(['claude', 'codex', 'opencode']);
     const verifierSource = await readFile(verifierPath, 'utf8');
     expect(verifierSource).toContain('verifyPackedNativeAssets');
-    expect(verifierSource).toContain("getInventoryAsset(inventory, harness, 'runner')");
+    expect(verifierSource).toContain("getInventoryAsset(inventory, 'shared', 'runner')");
     expect(() => verifier.verifyPackageFileList(packageFiles, inventory)).not.toThrow();
     await expect(verifier.verifyIntegrationPackage({
       rootDir: repositoryRoot,
       packageFiles,
-    })).resolves.toMatchObject({ assetCount: 15 });
+    })).resolves.toMatchObject({ assetCount: 13 });
   }, 30_000);
 
   it('builds a strict subprocess environment without inherited credentials, proxy, registry, npm, or PATH overrides', async () => {
@@ -281,7 +312,7 @@ describe('canonical inventory', () => {
     const verifier = await importVerifier();
 
     await withPackageFixture(async (root) => {
-      const path = join(root, 'integrations', 'codex', '.mcp.json');
+      const path = join(root, 'plugin', 'codex.mcp.json');
       await writeJson(path, {
         'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
       });
@@ -315,18 +346,18 @@ describe('canonical inventory', () => {
     await withPackageFixture(async (root) => {
       const path = join(root, 'integrations', 'inventory.json');
       const inventory = await readJson<InventoryDocument>(path);
-      const removed = inventory.assets.find((asset) => asset.harness === 'claude' && asset.role === 'skill');
+      const removed = inventory.assets.find((asset) => asset.harness === 'shared' && asset.role === 'skill');
       expect(removed).toBeDefined();
       inventory.assets = inventory.assets.filter((asset) => asset !== removed);
       await writeJson(path, inventory);
       await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
-        .rejects.toThrow(/claude.*skill.*missing from inventory/i);
+        .rejects.toThrow(/shared.*skill.*missing from inventory/i);
     });
 
     await withPackageFixture(async (root) => {
-      const hooksPath = join(root, 'integrations', 'codex', 'hooks', 'alternate.json');
+      const hooksPath = join(root, 'plugin', 'hooks', 'alternate.json');
       await writeJson(hooksPath, { hooks: {} });
-      const pluginPath = join(root, 'integrations', 'codex', '.codex-plugin', 'plugin.json');
+      const pluginPath = join(root, 'plugin', '.codex-plugin', 'plugin.json');
       const plugin = await readJson<Record<string, unknown>>(pluginPath);
       plugin.hooks = './hooks/alternate.json';
       await writeJson(pluginPath, plugin);
@@ -335,15 +366,15 @@ describe('canonical inventory', () => {
     });
 
     await withPackageFixture(async (root) => {
-      const extraPath = join(root, 'integrations', 'codex', 'runners', 'extra-runner.mjs');
+      const extraPath = join(root, 'plugin', 'extra-runner.mjs');
       await writeFile(extraPath, 'export {};\n', 'utf8');
       await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
-        .rejects.toThrow(/codex.*extra required runtime asset.*extra-runner\.mjs/i);
+        .rejects.toThrow(/shared.*extra required runtime asset.*extra-runner\.mjs/i);
     });
 
     await withPackageFixture(async (root) => {
       const original = join(root, '.agents', 'plugins', 'marketplace.json');
-      const relocated = join(root, 'integrations', 'codex', 'marketplace.json');
+      const relocated = join(root, 'plugin', 'marketplace.json');
       await rename(original, relocated);
       const path = join(root, 'integrations', 'inventory.json');
       const inventory = await readJson<InventoryDocument>(path);
@@ -351,7 +382,7 @@ describe('canonical inventory', () => {
         (asset) => asset.harness === 'codex' && asset.role === 'marketplace',
       );
       expect(marketplace).toBeDefined();
-      marketplace!.path = 'integrations/codex/marketplace.json';
+      marketplace!.path = 'plugin/marketplace.json';
       await writeJson(path, inventory);
       await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
         .rejects.toThrow(/codex marketplace.*discovery anchor/i);
@@ -362,63 +393,64 @@ describe('canonical inventory', () => {
     const verifier = await importVerifier();
 
     await withPackageFixture(async (root) => {
-      const originalHooks = join(root, 'integrations', 'codex', 'hooks', 'hooks.json');
-      const relocatedHooks = join(root, 'integrations', 'codex', 'lifecycle', 'hooks.json');
+      const originalHooks = join(root, 'plugin', 'hooks', 'codex-hooks.json');
+      const relocatedHooks = join(root, 'plugin', 'lifecycle', 'codex-hooks.json');
       await mkdir(dirname(relocatedHooks), { recursive: true });
       await rename(originalHooks, relocatedHooks);
 
-      const pluginPath = join(root, 'integrations', 'codex', '.codex-plugin', 'plugin.json');
+      const pluginPath = join(root, 'plugin', '.codex-plugin', 'plugin.json');
       const plugin = await readJson<Record<string, unknown>>(pluginPath);
-      plugin.hooks = './lifecycle/hooks.json';
+      plugin.hooks = './lifecycle/codex-hooks.json';
       await writeJson(pluginPath, plugin);
 
       const path = join(root, 'integrations', 'inventory.json');
       const inventory = await readJson<InventoryDocument>(path);
       const hooks = inventory.assets.find((asset) => asset.harness === 'codex' && asset.role === 'hooks');
       expect(hooks).toBeDefined();
-      hooks!.path = 'integrations/codex/lifecycle/hooks.json';
+      hooks!.path = 'plugin/lifecycle/codex-hooks.json';
       await writeJson(path, inventory);
 
       await expect(verifier.verifyIntegrationPackage({ rootDir: root })).resolves.toMatchObject({
-        assetCount: 15,
+        assetCount: 13,
       });
     });
   });
 });
 
 describe('version and path integrity', () => {
-  it('version and path integrity synchronizes exact manifest versions and canonical runner copies idempotently', async () => {
+  it('version and path integrity synchronizes exact manifest versions and shared assets idempotently', async () => {
     const sync = await importSync();
     const verifier = await importVerifier();
 
     await withPackageFixture(async (root) => {
       const synchronizedPaths = [
-        'integrations/codex/.codex-plugin/plugin.json',
+        'plugin/.codex-plugin/plugin.json',
         '.claude-plugin/marketplace.json',
-        'integrations/claude-code/.claude-plugin/plugin.json',
-        'integrations/codex/runners/hook-runner.mjs',
-        'integrations/claude-code/runners/hook-runner.mjs',
+        'plugin/.claude-plugin/plugin.json',
+        'plugin/runners/hook-runner.mjs',
+        'plugin/skills/thoth-mem/SKILL.md',
       ];
       const initialHash = await hashFiles(root, synchronizedPaths);
       await sync.syncIntegrationAssets({ rootDir: root });
       expect(await hashFiles(root, synchronizedPaths)).toBe(initialHash);
       const packageManifest = await readJson<PackageManifest>(join(root, 'package.json'));
-      const codexPluginPath = join(root, 'integrations', 'codex', '.codex-plugin', 'plugin.json');
+      const codexPluginPath = join(root, 'plugin', '.codex-plugin', 'plugin.json');
       const codexPlugin = await readJson<Record<string, unknown>>(codexPluginPath);
       codexPlugin.version = '0.0.0-stale';
       codexPlugin.preserved = { unrelated: true };
       await writeJson(codexPluginPath, codexPlugin);
-      await writeFile(join(root, 'integrations', 'codex', 'runners', 'hook-runner.mjs'), 'stale\n', 'utf8');
+      await writeFile(join(root, 'plugin', 'runners', 'hook-runner.mjs'), 'stale\n', 'utf8');
+      await writeFile(join(root, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'stale\n', 'utf8');
 
       await sync.syncIntegrationAssets({ rootDir: root });
       const synchronizedPlugin = await readJson<Record<string, unknown>>(codexPluginPath);
       expect(synchronizedPlugin.version).toBe(packageManifest.version);
       expect(synchronizedPlugin.preserved).toEqual({ unrelated: true });
       const canonicalRunner = await readFile(join(root, 'integrations', 'shared', 'hook-runner.mjs'));
-      expect(await readFile(join(root, 'integrations', 'codex', 'runners', 'hook-runner.mjs')))
+      expect(await readFile(join(root, 'plugin', 'runners', 'hook-runner.mjs')))
         .toEqual(canonicalRunner);
-      expect(await readFile(join(root, 'integrations', 'claude-code', 'runners', 'hook-runner.mjs')))
-        .toEqual(canonicalRunner);
+      expect(await readFile(join(root, 'plugin', 'skills', 'thoth-mem', 'SKILL.md')))
+        .toEqual(await readFile(join(root, 'skills', 'thoth-mem', 'SKILL.md')));
       const synchronizedHash = await hashFiles(root, synchronizedPaths);
       await sync.syncIntegrationAssets({ rootDir: root });
       expect(await hashFiles(root, synchronizedPaths)).toBe(synchronizedHash);
@@ -432,7 +464,7 @@ describe('version and path integrity', () => {
 
     for (const version of ['0.0.0', `^${packageManifest.version}`]) {
       await withPackageFixture(async (root) => {
-        const path = join(root, 'integrations', 'claude-code', '.claude-plugin', 'plugin.json');
+        const path = join(root, 'plugin', '.claude-plugin', 'plugin.json');
         const manifest = await readJson<Record<string, unknown>>(path);
         manifest.version = version;
         await writeJson(path, manifest);
@@ -442,7 +474,7 @@ describe('version and path integrity', () => {
     }
 
     await withPackageFixture(async (root) => {
-      const path = join(root, 'integrations', 'codex', '.codex-plugin', 'plugin.json');
+      const path = join(root, 'plugin', '.codex-plugin', 'plugin.json');
       const manifest = await readJson<Record<string, unknown>>(path);
       manifest.name = 'not-thoth-mem';
       await writeJson(path, manifest);
@@ -454,11 +486,11 @@ describe('version and path integrity', () => {
   it('version and path integrity rejects absolute, traversal, missing, and link-escaping declarations before use', async () => {
     const verifier = await importVerifier();
     const unsafePaths = [
-      '/outside/integrations/codex',
-      'C:\\outside\\integrations\\codex',
-      '../outside/integrations/codex',
-      '..\\outside\\integrations\\codex',
-      './integrations/missing-codex',
+      '/outside/plugin',
+      'C:\\outside\\plugin',
+      '../outside/plugin',
+      '..\\outside\\plugin',
+      './missing-plugin',
     ];
 
     for (const unsafePath of unsafePaths) {
@@ -501,14 +533,14 @@ describe('version and path integrity', () => {
 
     await withPackageFixture(async (root) => {
       const outside = await mkdtemp(join(tmpdir(), 'thoth inventory outside '));
-      const link = join(root, 'integrations', 'codex-link');
+      const link = join(root, 'plugin-link');
       try {
         await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
         const path = join(root, '.agents', 'plugins', 'marketplace.json');
         const marketplace = await readJson<{
           plugins: Array<{ source: { path: string } }>;
         }>(path);
-        marketplace.plugins[0].source.path = './integrations/codex-link';
+        marketplace.plugins[0].source.path = './plugin-link';
         await writeJson(path, marketplace);
         await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
           .rejects.toThrow(/real path.*escapes/i);
@@ -525,6 +557,7 @@ describe('package publication allowlist', () => {
     const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
     expect(manifest.files).toEqual(expect.arrayContaining([
       'integrations',
+      'plugin',
       '.agents/plugins/marketplace.json',
       '.claude-plugin/marketplace.json',
     ]));
@@ -561,7 +594,7 @@ describe('package publication allowlist', () => {
       inventory,
     )).toThrow(/duplicate package file/i);
     expect(() => verifier.verifyPackageFileList(
-      [...packageFiles, 'integrations/codex/extra-runtime.mjs'],
+      [...packageFiles, 'plugin/extra-runtime.mjs'],
       inventory,
     )).toThrow(/extra required runtime asset/i);
   });
@@ -611,7 +644,7 @@ describe('build release verification', () => {
         'integrations/inventory.json',
         ...inventory.assets.map((asset) => asset.path),
       ];
-      const pluginPath = join(root, 'integrations', 'codex', '.codex-plugin', 'plugin.json');
+      const pluginPath = join(root, 'plugin', '.codex-plugin', 'plugin.json');
       const plugin = await readJson<Record<string, unknown>>(pluginPath);
       plugin.version = 'stale';
       await writeJson(pluginPath, plugin);

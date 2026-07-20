@@ -279,7 +279,7 @@ async function runControlledCodexSetup(
     json: false,
   };
   fixture.paths = resolveSetupPaths(request, fixture.roots);
-  await mkdir(join(fixture.roots.packageRoot, 'integrations', 'codex'), { recursive: true });
+  await mkdir(join(fixture.roots.packageRoot, 'plugin'), { recursive: true });
   return inspectAndPlanSetup(request, {
     roots: fixture.roots,
     dataDir: fixture.dataDir,
@@ -301,9 +301,9 @@ async function installLegacyCodex(
   id = 'legacy-v2',
 ): Promise<SetupResult> {
   state.version = 'codex-cli 0.145.0';
-  await mkdir(join(fixture.roots.packageRoot, 'integrations', 'codex'), { recursive: true });
+  await mkdir(join(fixture.roots.packageRoot, 'plugin'), { recursive: true });
   await writeFile(
-    join(fixture.roots.packageRoot, 'integrations', 'codex', '.mcp.json'),
+    join(fixture.roots.packageRoot, 'plugin', 'codex.mcp.json'),
     '{"mcpServers":{}}\n',
     'utf8',
   );
@@ -529,7 +529,7 @@ describe('Codex dual-state migration and strategy rollback', () => {
       const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
       const legacy = await installLegacyCodex(fixture, state, 'signed-proof-v2');
       expect(legacy.status).toBe('complete');
-      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+      await rm(join(fixture.roots.packageRoot, 'plugin'), {
         recursive: true,
         force: true,
       });
@@ -547,7 +547,7 @@ describe('Codex dual-state migration and strategy rollback', () => {
     await withTemporaryFixture(async (fixture) => {
       const state: ControlledCodexState = { marketplace: false, plugin: false, mutations: [] };
       const legacy = await installLegacyCodex(fixture, state, 'stale-proof-v2');
-      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+      await rm(join(fixture.roots.packageRoot, 'plugin'), {
         recursive: true,
         force: true,
       });
@@ -793,7 +793,7 @@ describe('Codex dual-state migration and strategy rollback', () => {
         `${await readFile(fixture.paths.configPath, 'utf8')}\n[plugins."foreign-before@market"]\nenabled = true\n`,
         'utf8',
       );
-      await rm(join(fixture.roots.packageRoot, 'integrations', 'codex'), {
+      await rm(join(fixture.roots.packageRoot, 'plugin'), {
         recursive: true,
         force: true,
       });
@@ -889,7 +889,7 @@ describe('Codex dual-state migration and strategy rollback', () => {
     {
       name: 'drifted owned content',
       mutate: async (fixture: SetupFixture) => writeFile(
-        join(fixture.paths.assetPath, '.mcp.json'),
+        join(fixture.paths.assetPath, 'codex.mcp.json'),
         '{"drifted":true}\n',
         'utf8',
       ),

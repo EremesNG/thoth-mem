@@ -509,7 +509,7 @@ async function withCodexFixture<T>(
     json: false,
   };
   const paths = resolveSetupPaths(request, roots);
-  const source = join(packageRoot, 'integrations', 'codex');
+  const source = join(packageRoot, 'plugin');
   await mkdir(join(source, '.codex-plugin'), { recursive: true });
   await mkdir(join(source, 'skills', 'thoth-mem'), { recursive: true });
   await writeFile(
@@ -517,7 +517,7 @@ async function withCodexFixture<T>(
     '{"name":"thoth-mem","version":"0.0.0"}\n',
     'utf8',
   );
-  await writeFile(join(source, '.mcp.json'), '{}\n', 'utf8');
+  await writeFile(join(source, 'codex.mcp.json'), '{}\n', 'utf8');
   await writeFile(join(source, 'skills', 'thoth-mem', 'SKILL.md'), '# thoth-mem\n', 'utf8');
 
   try {

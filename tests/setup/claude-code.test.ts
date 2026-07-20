@@ -178,10 +178,10 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
         },
     };
     await mkdir(join(fixture.roots.packageRoot, '.claude-plugin'), {recursive: true});
-    await mkdir(join(fixture.roots.packageRoot, 'integrations', 'claude-code'), {recursive: true});
+    await mkdir(join(fixture.roots.packageRoot, 'plugin'), {recursive: true});
     await writeFile(
         join(fixture.roots.packageRoot, '.claude-plugin', 'marketplace.json'),
-        JSON.stringify({name: 'thoth-mem', plugins: [{name: 'thoth-mem', source: './integrations/claude-code'}]}),
+        JSON.stringify({name: 'thoth-mem', plugins: [{name: 'thoth-mem', source: './plugin'}]}),
         'utf8',
     );
     try {

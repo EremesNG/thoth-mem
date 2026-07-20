@@ -392,10 +392,15 @@ async function createSourceSetupFixture(
   const root = await mkdtemp(join(tmpdir(), 'thoth metadata source contract '));
   const packageRoot = join(root, 'installed package with spaces');
   const executablePath = join(packageRoot, 'dist', 'index.js');
+  const sourceSegments = harness === 'codex'
+    ? ['plugin']
+    : harness === 'claude'
+      ? ['.claude-plugin']
+      : ['integrations', 'opencode'];
   const copies = [
     cp(
-      join(repositoryRoot, 'integrations', harness),
-      join(packageRoot, 'integrations', harness),
+      join(repositoryRoot, ...sourceSegments),
+      join(packageRoot, ...sourceSegments),
       { recursive: true },
     ),
     mkdir(dirname(executablePath), { recursive: true }),
@@ -1170,7 +1175,7 @@ describe('packed disposable runtime evidence', () => {
               expect(JSON.parse(compact.stdout)).toMatchObject({ outcome: expect.stringMatching(/^(confirmed|degraded)$/), hostOutputDirective: { purpose: 'post_compaction_guidance' }, deliveryState: { memoryConfirmation: 'confirmed', modelConsumption: 'unproven' } });
             } else {
               const nativeHarness = runtimeHarness as 'codex' | 'claude';
-              const runner = join(fixture.packageRoot, 'integrations', nativeHarness === 'claude' ? 'claude-code' : 'codex', 'runners', 'hook-runner.mjs');
+              const runner = join(fixture.packageRoot, 'plugin', 'runners', 'hook-runner.mjs');
               const startup = run(process.execPath, [runner, '--harness', nativeHarness, '--hook', 'SessionStart'], { cwd: harness.home.root, env, input: JSON.stringify(packedNativeSessionStart(nativeHarness)) });
                   expectCommandSucceeded(startup, 'packed ' + nativeHarness + ' SessionStart enrollment');
                   expect(JSON.parse(startup.stdout)).toMatchObject({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: expect.any(String) } });
@@ -1493,7 +1498,7 @@ describe('packed Codex and Claude installation', () => {
     }
   });
 
-  it('publishes one canonical Codex identity and content graph from the packed artifact', async () => {
+  it('publishes one shared Codex and Claude identity graph from the packed artifact', async () => {
     const fixture = await getPackedFixture();
     const packageManifest = JSON.parse(
       await readFile(join(fixture.packageRoot, 'package.json'), 'utf8'),
@@ -1504,16 +1509,16 @@ describe('packed Codex and Claude installation', () => {
     const marketplace = JSON.parse(
       await readFile(join(fixture.packageRoot, '.agents', 'plugins', 'marketplace.json'), 'utf8'),
     ) as { name: string; plugins: Array<{ name: string; source: { source: string; path: string } }> };
-    const pluginRoot = join(fixture.packageRoot, 'integrations', 'codex');
+    const pluginRoot = join(fixture.packageRoot, 'plugin');
     const plugin = JSON.parse(
       await readFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
     ) as Record<string, unknown>;
-    const mcp = JSON.parse(await readFile(join(pluginRoot, '.mcp.json'), 'utf8')) as {
+    const mcp = JSON.parse(await readFile(join(pluginRoot, 'codex.mcp.json'), 'utf8')) as {
       mcpServers: {
         'thoth-mem': { command: string; args: string[] };
       };
     };
-    const hooks = await readFile(join(pluginRoot, 'hooks', 'hooks.json'), 'utf8');
+    const hooks = await readFile(join(pluginRoot, 'hooks', 'codex-hooks.json'), 'utf8');
     const runner = await readFile(join(pluginRoot, 'runners', 'hook-runner.mjs'), 'utf8');
     const canonicalRunner = await readFile(
       join(fixture.packageRoot, 'integrations', 'shared', 'hook-runner.mjs'),
@@ -1526,15 +1531,15 @@ describe('packed Codex and Claude installation', () => {
       name: 'thoth-mem',
       plugins: [expect.objectContaining({
         name: 'thoth-mem',
-        source: { source: 'local', path: './integrations/codex' },
+        source: { source: 'local', path: './plugin' },
       })],
     }));
     expect(plugin).toMatchObject({
       name: 'thoth-mem',
       version: getVersion(),
       skills: './skills/',
-      hooks: './hooks/hooks.json',
-      mcpServers: './.mcp.json',
+      hooks: './hooks/codex-hooks.json',
+      mcpServers: './codex.mcp.json',
     });
     expect(mcp).toEqual({
       mcpServers: {
@@ -1543,16 +1548,18 @@ describe('packed Codex and Claude installation', () => {
     });
     expect(hooks).toContain('${PLUGIN_ROOT}/runners/hook-runner.mjs');
     expect(runner).toBe(canonicalRunner);
-    expect(skill).toMatch(/^---\nname: thoth-mem\n/);
+    expect(skill).toMatch(/^---\r?\nname: thoth-mem\r?\n/);
     expect(skill).toContain('mem_recall');
     expect(skill).toContain('mem_session');
     expect(inventory.assets.filter((asset) => asset.harness === 'codex')).toEqual([
       { harness: 'codex', role: 'marketplace', path: '.agents/plugins/marketplace.json' },
-      { harness: 'codex', role: 'plugin', path: 'integrations/codex/.codex-plugin/plugin.json' },
-      { harness: 'codex', role: 'mcp', path: 'integrations/codex/.mcp.json' },
-      { harness: 'codex', role: 'hooks', path: 'integrations/codex/hooks/hooks.json' },
-      { harness: 'codex', role: 'runner', path: 'integrations/codex/runners/hook-runner.mjs' },
-      { harness: 'codex', role: 'skill', path: 'integrations/codex/skills/thoth-mem/SKILL.md' },
+      { harness: 'codex', role: 'plugin', path: 'plugin/.codex-plugin/plugin.json' },
+      { harness: 'codex', role: 'mcp', path: 'plugin/codex.mcp.json' },
+      { harness: 'codex', role: 'hooks', path: 'plugin/hooks/codex-hooks.json' },
+    ]);
+    expect(inventory.assets.filter((asset) => asset.harness === 'shared')).toEqual([
+      { harness: 'shared', role: 'runner', path: 'plugin/runners/hook-runner.mjs' },
+      { harness: 'shared', role: 'skill', path: 'plugin/skills/thoth-mem/SKILL.md' },
     ]);
     await assertNoCheckoutReferences(fixture.packageRoot);
   }, PACKAGE_TIMEOUT_MS);
@@ -1903,13 +1910,13 @@ describe('packed Codex and Claude installation', () => {
     });
     for (const relativeAsset of [
       '.codex-plugin/plugin.json',
-      '.mcp.json',
-      'hooks/hooks.json',
+      'codex.mcp.json',
+      'hooks/codex-hooks.json',
       'runners/hook-runner.mjs',
       'skills/thoth-mem/SKILL.md',
     ]) {
       expect(await readFile(join(assetRoot, relativeAsset), 'utf8')).toBe(
-        await readFile(join(fixture.packageRoot, 'integrations', 'codex', relativeAsset), 'utf8'),
+        await readFile(join(fixture.packageRoot, 'plugin', relativeAsset), 'utf8'),
       );
     }
 
@@ -1989,7 +1996,7 @@ describe('packed Codex and Claude installation', () => {
     });
     expect(ambiguousLegacy.status, ambiguousLegacy.stderr).toBe(0);
     const ambiguousAssetRoot = join(ambiguousEnv.CODEX_HOME!, 'plugins', 'thoth-mem');
-    const ambiguousMcp = join(ambiguousAssetRoot, '.mcp.json');
+    const ambiguousMcp = join(ambiguousAssetRoot, 'codex.mcp.json');
     await writeFile(ambiguousMcp, '{"drifted":true}\n', 'utf8');
     await writeCodexDiscoveryFixture(
       ambiguousBin,

@@ -8,7 +8,7 @@
       "name": "thoth-mem",
       "source": {
         "source": "local",
-        "path": "./integrations/codex"
+        "path": "./plugin"
       },
       "policy": {
         "installation": "AVAILABLE",

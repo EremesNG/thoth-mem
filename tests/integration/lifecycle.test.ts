@@ -126,16 +126,9 @@ describe('native integration lifecycle core', () => {
         readFileSync(join(projectRoot, 'integrations', 'opencode', 'memory-protocol.md'), 'utf8'),
       ],
       [
-        'Codex skill',
+        'Shared Codex/Claude skill',
         readFileSync(
-          join(projectRoot, 'integrations', 'codex', 'skills', 'thoth-mem', 'SKILL.md'),
-          'utf8',
-        ),
-      ],
-      [
-        'Claude Code skill',
-        readFileSync(
-          join(projectRoot, 'integrations', 'claude-code', 'skills', 'thoth-mem', 'SKILL.md'),
+          join(projectRoot, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'),
           'utf8',
         ),
       ],
@@ -176,8 +169,9 @@ describe('native integration lifecycle core', () => {
         .not.toMatch(/summarize only (?:on|for) a verified root terminal event/i);
     }
 
-    expect(artifacts.get('root skill')).toBe(artifacts.get('Codex skill'));
-    expect(artifacts.get('root skill')).toBe(artifacts.get('Claude Code skill'));
+    expect(artifacts.get('root skill')).toBe(
+      artifacts.get('Shared Codex/Claude skill'),
+    );
 
     const memoryProtocol = protocol.createMemoryProtocol(supportedCapabilities('codex'));
     expect(memoryProtocol.systemInstructions()).toBe(protocol.SERVER_MEMORY_PROTOCOL_INSTRUCTIONS);

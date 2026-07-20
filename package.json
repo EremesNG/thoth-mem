@@ -21,6 +21,7 @@
     "config.schema.json",
     "README.md",
     "integrations",
+    "plugin",
     ".agents/plugins/marketplace.json",
     ".claude-plugin/marketplace.json"
   ],

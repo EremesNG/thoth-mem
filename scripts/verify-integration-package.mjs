@@ -30,6 +30,8 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIRECTORY, '..');
 const INVENTORY_PATH = 'integrations/inventory.json';
 const HARNESSES = new Set(['opencode', 'codex', 'claude']);
+const INVENTORY_OWNERS = new Set([...HARNESSES, 'shared']);
+const SHARED_PLUGIN_ROOT = 'plugin';
 const NPM_PACK_TIMEOUT_MS = 30_000;
 const PACKED_RUNTIME_TIMEOUT_MS = 30_000;
     const EXTERNAL_RUNTIME_PACKAGES = Object.freeze([
@@ -177,8 +179,9 @@ const PACKED_RUNTIME_TIMEOUT_MS = 30_000;
 
 const REQUIRED_ROLES = Object.freeze({
   opencode: Object.freeze(['plugin', 'instruction', 'runner']),
-  codex: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks', 'runner', 'skill']),
-  claude: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks', 'runner', 'skill']),
+  codex: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks']),
+  claude: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks']),
+  shared: Object.freeze(['runner', 'skill']),
 });
 const DISCOVERY_ANCHORS = Object.freeze([
   { harness: 'opencode', role: 'plugin', path: 'integrations/opencode/plugin.mjs' },
@@ -242,11 +245,14 @@ export async function resolveContainedPath(rootDir, declaredPath, label, options
 }
 
 function describeOwner(path) {
-  if (path.startsWith('integrations/codex/') || path === '.agents/plugins/marketplace.json') {
+  if (path === '.agents/plugins/marketplace.json') {
     return 'codex';
   }
-  if (path.startsWith('integrations/claude-code/') || path === '.claude-plugin/marketplace.json') {
+  if (path === '.claude-plugin/marketplace.json') {
     return 'claude';
+  }
+  if (path.startsWith(`${SHARED_PLUGIN_ROOT}/`)) {
+    return 'shared';
   }
   return 'opencode';
 }
@@ -267,6 +273,7 @@ async function collectFiles(root) {
   }
 
   await visit(join(root, 'integrations'));
+  await visit(join(root, SHARED_PLUGIN_ROOT));
   files.push('.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json');
   return files.filter((path) => path !== INVENTORY_PATH).sort();
 }
@@ -290,7 +297,7 @@ function parseInventory(value) {
     if (keys.join(',') !== 'harness,path,role') {
       throw new Error(`Inventory entry ${index} must contain exactly harness, role, and path.`);
     }
-    if (!HARNESSES.has(asset.harness)) {
+    if (!INVENTORY_OWNERS.has(asset.harness)) {
       throw new Error(`Invalid harness "${String(asset.harness)}" at inventory entry ${index}.`);
     }
     if (typeof asset.role !== 'string' || asset.role.length === 0) {
@@ -324,7 +331,11 @@ async function validateInventoryPaths(root, inventory) {
 }
 
 export function getDisposableHarnessMatrix(inventory) {
-  return [...new Set(inventory.assets.map((asset) => asset.harness))].sort();
+  return [...new Set(
+    inventory.assets
+      .map((asset) => asset.harness)
+      .filter((harness) => HARNESSES.has(harness)),
+  )].sort();
 }
 
 export function validateDisposableHarnessMatrix(inventory) {
@@ -476,7 +487,7 @@ async function validateHookManifest(root, pluginRoot, hooks, inventory, harness,
           pluginRoot,
           runnerPath,
           inventory,
-          harness,
+          'shared',
           'runner',
           `${harness} hook runner`,
         );
@@ -530,12 +541,16 @@ async function validateRuntimeDeclarations(root, inventory) {
   const codexMarketplacePlugin = requireObject(codexMarketplace.plugins[0], 'Codex marketplace plugin');
   assertPluginIdentity(codexMarketplacePlugin.name, 'Codex marketplace plugin');
   const codexSource = requireObject(codexMarketplacePlugin.source, 'Codex marketplace source');
+  const codexSourcePath = requireString(codexSource.path, 'Codex marketplace source path');
   const codexRoot = (await resolveContainedPath(
     root,
-    requireString(codexSource.path, 'Codex marketplace source path'),
+    codexSourcePath,
     'Codex marketplace source',
     { kind: 'directory' },
   )).targetPath;
+  if (codexSourcePath !== `./${SHARED_PLUGIN_ROOT}`) {
+    throw new Error(`Codex marketplace must resolve the shared plugin root "./${SHARED_PLUGIN_ROOT}".`);
+  }
 
   const claudeMarketplace = requireObject(
     await readJson(join(root, claudeMarketplaceAsset.path), 'Claude marketplace'),
@@ -548,12 +563,19 @@ async function validateRuntimeDeclarations(root, inventory) {
   const claudeMarketplacePlugin = requireObject(claudeMarketplace.plugins[0], 'Claude marketplace plugin');
   assertPluginIdentity(claudeMarketplacePlugin.name, 'Claude marketplace plugin');
   assertExactVersion(claudeMarketplacePlugin.version, packageVersion, 'Claude marketplace plugin');
+  const claudeSourcePath = requireString(claudeMarketplacePlugin.source, 'Claude marketplace source');
   const claudeRoot = (await resolveContainedPath(
     root,
-    requireString(claudeMarketplacePlugin.source, 'Claude marketplace source'),
+    claudeSourcePath,
     'Claude marketplace source',
     { kind: 'directory' },
   )).targetPath;
+  if (claudeSourcePath !== `./${SHARED_PLUGIN_ROOT}`) {
+    throw new Error(`Claude marketplace must resolve the shared plugin root "./${SHARED_PLUGIN_ROOT}".`);
+  }
+  if (codexRoot !== claudeRoot) {
+    throw new Error('Codex and Claude marketplaces must resolve one shared plugin root.');
+  }
 
   const codexPluginPath = join(codexRoot, '.codex-plugin', 'plugin.json');
   const codexPlugin = requireObject(await readJson(codexPluginPath, 'Codex plugin'), 'Codex plugin');
@@ -595,7 +617,7 @@ async function validateRuntimeDeclarations(root, inventory) {
     root,
     inventory,
     join(codexSkills.targetPath, 'thoth-mem', 'SKILL.md'),
-    'codex',
+    'shared',
     'skill',
   );
 
@@ -621,7 +643,6 @@ async function validateRuntimeDeclarations(root, inventory) {
   for (const [relativePath, role] of [
     ['.mcp.json', 'mcp'],
     ['hooks/hooks.json', 'hooks'],
-    ['skills/thoth-mem/SKILL.md', 'skill'],
   ]) {
     await resolveDeclaredAsset(
       root,
@@ -633,6 +654,15 @@ async function validateRuntimeDeclarations(root, inventory) {
       `Claude ${role}`,
     );
   }
+  await resolveDeclaredAsset(
+    root,
+    claudeRoot,
+    'skills/thoth-mem/SKILL.md',
+    inventory,
+    'shared',
+    'skill',
+    'Shared plugin skill',
+  );
   const claudeMcpPath = join(claudeRoot, '.mcp.json');
   const claudeMcp = requireObject(await readJson(claudeMcpPath, 'Claude MCP'), 'Claude MCP');
   const claudeServers = requireObject(claudeMcp.mcpServers, 'Claude MCP servers');
@@ -693,6 +723,7 @@ export function verifyPackageFileList(packageFiles, inventory) {
   const inventoryPaths = new Set(inventory.assets.map((asset) => asset.path));
   for (const path of files) {
     const isNativeAsset = path.startsWith('integrations/')
+      || path.startsWith(`${SHARED_PLUGIN_ROOT}/`)
       || path === '.agents/plugins/marketplace.json'
       || path === '.claude-plugin/marketplace.json';
     if (isNativeAsset && path !== INVENTORY_PATH && !inventoryPaths.has(path)) {
@@ -804,7 +835,7 @@ function verifyPackedNativeAssets(packageRoot, inventory, workspace, environment
   if (!Array.isArray(opencodeOutput.system) || !Array.isArray(opencodeOutput.context) || opencodeOutput.system.length === 0 || opencodeOutput.context.length === 0 || JSON.stringify(opencodeOutput).includes('modelConsumption')) throw new Error('Packed OpenCode plugin did not emit verified startup and compact guidance safely.');
 
   for (const harness of getDisposableHarnessMatrix(inventory).filter((value) => value !== 'opencode')) {
-    const runner = join(packageRoot, getInventoryAsset(inventory, harness, 'runner').path);
+    const runner = join(packageRoot, getInventoryAsset(inventory, 'shared', 'runner').path);
     const startup = requireNativeEnvelope(spawnSync(process.execPath, [runner, '--harness', harness, '--hook', 'SessionStart'], { cwd: workspace, input: JSON.stringify(nativePayload(harness, 'SessionStart', 'startup')), encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment }), harness, 'startup');
     if (startup?.hookSpecificOutput?.hookEventName !== 'SessionStart' || typeof startup?.hookSpecificOutput?.additionalContext !== 'string' || Object.hasOwn(startup, 'modelConsumption')) throw new Error('Packed ' + harness + ' startup runner did not return the allowed native envelope.');
     const checkpoint = requireNativeEnvelope(spawnSync(process.execPath, [runner, '--harness', harness, '--hook', 'PreCompact'], { cwd: workspace, input: JSON.stringify(nativePayload(harness, 'PreCompact')), encoding: 'utf8', windowsHide: true, shell: false, timeout: PACKED_RUNTIME_TIMEOUT_MS, env: environment }), harness, 'PreCompact');
@@ -877,7 +908,7 @@ export async function verifyIntegrationPackage(options = {}) {
   }
   return {
     assetCount: inventory.assets.length,
-    harnesses: [...new Set(inventory.assets.map((asset) => asset.harness))].sort(),
+    harnesses: getDisposableHarnessMatrix(inventory),
   };
 }
 

@@ -24,27 +24,17 @@
     {
       "harness": "codex",
       "role": "plugin",
-      "path": "integrations/codex/.codex-plugin/plugin.json"
+      "path": "plugin/.codex-plugin/plugin.json"
     },
     {
       "harness": "codex",
       "role": "mcp",
-      "path": "integrations/codex/.mcp.json"
+      "path": "plugin/codex.mcp.json"
     },
     {
       "harness": "codex",
       "role": "hooks",
-      "path": "integrations/codex/hooks/hooks.json"
-    },
-    {
-      "harness": "codex",
-      "role": "runner",
-      "path": "integrations/codex/runners/hook-runner.mjs"
-    },
-    {
-      "harness": "codex",
-      "role": "skill",
-      "path": "integrations/codex/skills/thoth-mem/SKILL.md"
+      "path": "plugin/hooks/codex-hooks.json"
     },
     {
       "harness": "claude",
@@ -54,27 +44,27 @@
     {
       "harness": "claude",
       "role": "plugin",
-      "path": "integrations/claude-code/.claude-plugin/plugin.json"
+      "path": "plugin/.claude-plugin/plugin.json"
     },
     {
       "harness": "claude",
       "role": "mcp",
-      "path": "integrations/claude-code/.mcp.json"
+      "path": "plugin/.mcp.json"
     },
     {
       "harness": "claude",
       "role": "hooks",
-      "path": "integrations/claude-code/hooks/hooks.json"
+      "path": "plugin/hooks/hooks.json"
     },
     {
-      "harness": "claude",
+      "harness": "shared",
       "role": "runner",
-      "path": "integrations/claude-code/runners/hook-runner.mjs"
+      "path": "plugin/runners/hook-runner.mjs"
     },
     {
-      "harness": "claude",
+      "harness": "shared",
       "role": "skill",
-      "path": "integrations/claude-code/skills/thoth-mem/SKILL.md"
+      "path": "plugin/skills/thoth-mem/SKILL.md"
     }
   ]
 }
