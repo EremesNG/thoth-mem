@@ -23,6 +23,20 @@ const MAX_CHILD_OUTPUT_BYTES = 65_536;
 const CHILD_TIMEOUT_MS = 10_000;
 const MANAGED_METADATA_FILENAME = 'thoth-mem.installation.json';
 const LEGACY_MANAGED_METADATA_FILENAME = '.thoth-mem-managed.json';
+const SAFE_SPAWN_ERROR_CODES = new Set([
+  'EACCES',
+  'EAGAIN',
+  'EFTYPE',
+  'EINTR',
+  'EINVAL',
+  'EIO',
+  'ENOENT',
+  'ENOEXEC',
+  'ENOMEM',
+  'ENOTDIR',
+  'EPERM',
+]);
+const WINDOWS_SHELL_META_CHARACTERS = /([()\][%!^"`<>&|;, *?])/g;
 
 function bounded(value, maximum = 500) {
   return Array.from(value).slice(0, maximum).join('');
@@ -36,6 +50,24 @@ function degraded(diagnostic, retryable = true) {
     diagnostic: bounded(diagnostic),
     manualAction: 'install thoth-mem and rerun managed setup.',
   };
+}
+
+function safeSpawnErrorCode(error) {
+  let code;
+  if (typeof error === 'string') {
+    code = error;
+  } else if (error && typeof error === 'object' && 'code' in error) {
+    code = error.code;
+  }
+  return typeof code === 'string' && SAFE_SPAWN_ERROR_CODES.has(code)
+    ? code
+    : undefined;
+}
+
+function spawnFailure(error) {
+  const errorCode = safeSpawnErrorCode(error);
+  const detail = errorCode ? ` (${errorCode})` : '';
+  return degraded(`thoth-mem could not be started${detail}; no memory success was confirmed.`);
 }
 
 function isFile(path) {
@@ -113,7 +145,21 @@ function validatedManagedExecutable(metadataPath) {
   return realpathSync.native(metadata.executable);
 }
 
-function nodeInvocation(executable) {
+function windowsShimSibling(executable) {
+  if (process.platform !== 'win32' || extname(executable) !== '') {
+    return executable;
+  }
+  for (const extension of ['.exe', '.cmd', '.bat']) {
+    const candidate = `${executable}${extension}`;
+    if (isFile(candidate)) {
+      return candidate;
+    }
+  }
+  return executable;
+}
+
+function nodeInvocation(unresolvedExecutable) {
+  const executable = windowsShimSibling(unresolvedExecutable);
   const extension = extname(executable).toLowerCase();
   if (['.js', '.mjs', '.cjs'].includes(extension)) {
     return { command: process.execPath, args: [executable] };
@@ -157,7 +203,14 @@ function managedExecutable(runnerPath) {
 function pathExecutable(env) {
   const pathValue = env.PATH ?? env.Path ?? env.path ?? '';
   const names = process.platform === 'win32'
-    ? ['thoth-mem', 'thoth-mem.exe', 'thoth-mem.mjs', 'thoth-mem.js']
+    ? [
+        'thoth-mem.exe',
+        'thoth-mem.cmd',
+        'thoth-mem.bat',
+        'thoth-mem.mjs',
+        'thoth-mem.js',
+        'thoth-mem',
+      ]
     : ['thoth-mem', 'thoth-mem.mjs', 'thoth-mem.js'];
 
   for (const directory of pathValue.split(delimiter)) {
@@ -551,13 +604,68 @@ function protocolRequest(input, args) {
   };
 }
 
-function execute(command, request) {
+// Keep the published runner dependency-free while matching cmd.exe's required escaping.
+function escapeWindowsCommand(value) {
+  return value.replace(WINDOWS_SHELL_META_CHARACTERS, '^$1');
+}
+
+function escapeWindowsArgument(value) {
+  let escaped = `${value}`;
+  escaped = escaped.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
+  escaped = escaped.replace(/(?=(\\+?)?)\1$/, '$1$1');
+  escaped = `"${escaped}"`;
+  return escaped.replace(WINDOWS_SHELL_META_CHARACTERS, '^$1');
+}
+
+function windowsCommandShell(env) {
+  const systemRoot = env.SystemRoot
+    ?? env.SYSTEMROOT
+    ?? env.WINDIR
+    ?? process.env.SystemRoot
+    ?? process.env.WINDIR
+    ?? 'C:\\Windows';
+  return env.ComSpec
+    ?? env.COMSPEC
+    ?? env.comspec
+    ?? process.env.ComSpec
+    ?? join(systemRoot, 'System32', 'cmd.exe');
+}
+
+function executableInvocation(command, args, env) {
+  if (process.platform !== 'win32' || !/\.(?:bat|cmd)$/i.test(command)) {
+    return { command, args, windowsVerbatimArguments: false };
+  }
+  const shellCommand = [
+    escapeWindowsCommand(command),
+    ...args.map(escapeWindowsArgument),
+  ].join(' ');
+  return {
+    command: windowsCommandShell(env),
+    args: ['/d', '/s', '/c', `"${shellCommand}"`],
+    windowsVerbatimArguments: true,
+  };
+}
+
+function execute(command, request, env) {
   return new Promise((resolveResult) => {
-    const child = spawn(command.command, [...command.args, 'integration-event'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-      windowsHide: true,
-    });
+    const invocation = executableInvocation(
+      command.command,
+      [...command.args, 'integration-event'],
+      env,
+    );
+    let child;
+    try {
+      child = spawn(invocation.command, invocation.args, {
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        windowsHide: true,
+        ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      });
+    } catch (error) {
+      resolveResult(spawnFailure(error));
+      return;
+    }
     const stdout = [];
     let stdoutLength = 0;
     let settled = false;
@@ -581,7 +689,7 @@ function execute(command, request) {
       stdout.push(chunk);
     });
     child.stderr.resume();
-    child.on('error', () => finish(degraded('thoth-mem could not be started; no memory success was confirmed.')));
+    child.on('error', (error) => finish(spawnFailure(error)));
     child.on('close', (code) => {
       if (settled) return;
       if (code !== 0) {
@@ -622,8 +730,9 @@ function renderNativeStdout(args, request, result) {
 
 export async function dispatchHookRequest(request, options = {}) {
   const command = resolveThothMemCommand(options);
+  const env = options.env ?? process.env;
   return command
-    ? execute(command, request)
+    ? execute(command, request, env)
     : degraded('Unable to resolve the thoth-mem executable from managed metadata, THOTH_MEM_BIN, or PATH.');
 }
 
@@ -645,8 +754,12 @@ export async function main() {
   const wrapped = protocolRequest(input, args);
   const result = wrapped.error ?? await dispatchHookRequest(wrapped.request);
   const output = nativeHarness ? renderNativeStdout(args, wrapped.request, result) : result;
-  if (nativeHarness && Object.hasOwn(output, 'hookSpecificOutput')) {
-    process.stderr.write('thoth-mem: emitted_via_verified_channel\n');
+  if (nativeHarness) {
+    if (Object.hasOwn(output, 'hookSpecificOutput')) {
+      process.stderr.write('thoth-mem: emitted_via_verified_channel\n');
+    } else if (result.outcome === 'degraded' && isBoundedString(result.diagnostic, 500)) {
+      process.stderr.write(`thoth-mem: ${result.diagnostic}\n`);
+    }
   }
   process.stdout.write(JSON.stringify(output) + '\n');
 }
