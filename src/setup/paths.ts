@@ -27,6 +27,7 @@ export interface SetupPaths {
   metadataPath: string;
   sourceAssetsPath: string;
   sourceSharedPath: string | null;
+  sourceSkillPath: string | null;
 }
 
 function requireAbsolutePath(value: string, label: string): string {
@@ -151,6 +152,9 @@ export function resolveSetupPaths(
     sourceAssetsPath: resolveSourceAssetsPath(request.harness, packageRoot),
     sourceSharedPath: request.harness === 'opencode'
       ? join(packageRoot, 'integrations', 'shared')
+      : null,
+    sourceSkillPath: request.harness === 'opencode'
+      ? join(packageRoot, 'plugin', 'skills', 'thoth-mem')
       : null,
   };
 }

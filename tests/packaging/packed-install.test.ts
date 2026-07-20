@@ -411,6 +411,11 @@ async function createSourceSetupFixture(
       join(packageRoot, 'integrations', 'shared'),
       { recursive: true },
     ));
+    copies.push(cp(
+      join(repositoryRoot, 'plugin', 'skills'),
+      join(packageRoot, 'plugin', 'skills'),
+      { recursive: true },
+    ));
   }
   await Promise.all(copies);
   await writeFile(executablePath, '#!/usr/bin/env node\n', 'utf8');
@@ -1043,6 +1048,20 @@ describe('packed OpenCode installation', () => {
   it('installs global/project scopes from packed assets with zero-write plan and verified rerun', async () => {
     const fixture = await getPackedFixture();
     expect(fixture.installMode).toBe('offline');
+    const packagedSkillRoot = join(fixture.packageRoot, 'plugin', 'skills', 'thoth-mem');
+    const expectBundledSkill = async (assetRoot: string): Promise<void> => {
+      for (const relativePath of [
+        'SKILL.md',
+        join('references', 'codex.md'),
+        join('references', 'claude-code.md'),
+        join('references', 'opencode.md'),
+      ]) {
+        expect(await readFile(
+          join(assetRoot, 'opencode', 'skills', 'thoth-mem', relativePath),
+          'utf8',
+        )).toBe(await readFile(join(packagedSkillRoot, relativePath), 'utf8'));
+      }
+    };
     const root = join(fixture.root, 'OpenCode harness homes with spaces');
     const globalRoot = join(root, 'global fixture');
     const projectRoot = join(root, 'project fixture with spaces');
@@ -1072,6 +1091,7 @@ describe('packed OpenCode installation', () => {
     const globalAssetRoot = join(globalConfigRoot, 'opencode', 'plugins', '.thoth-mem');
     expect(JSON.parse(await readFile(join(globalAssetRoot, CANONICAL_METADATA_NAME), 'utf8')))
       .toMatchObject({ executable: fixture.entryPath, packageVersion: getVersion() });
+    await expectBundledSkill(globalAssetRoot);
 
     const repeated = runPackedCli(fixture, ['setup', 'opencode', '--json'], {
       cwd: unrelatedCwd,
@@ -1093,7 +1113,9 @@ describe('packed OpenCode installation', () => {
     expect(projectInstalled.status, projectInstalled.stderr).toBe(0);
     expect(projectInstalled.json).toMatchObject({ status: 'complete', changed: true, scope: 'project' });
     expect(await directoryDigest(globalConfigRoot)).toBe(globalBeforeProject);
-    expect((await stat(join(projectRoot, '.opencode', 'plugins', '.thoth-mem'))).isDirectory()).toBe(true);
+    const projectAssetRoot = join(projectRoot, '.opencode', 'plugins', '.thoth-mem');
+    expect((await stat(projectAssetRoot)).isDirectory()).toBe(true);
+    await expectBundledSkill(projectAssetRoot);
 
     const runnerPath = join(globalAssetRoot, 'shared', 'hook-runner.mjs');
     const runner = run(process.execPath, [runnerPath, '--harness', 'opencode', '--hook', 'SessionStart'], {

@@ -188,6 +188,7 @@ async function withTemporaryFixture<T>(
 
   await mkdir(join(packageRoot, 'integrations', 'opencode'), { recursive: true });
   await mkdir(join(packageRoot, 'integrations', 'shared'), { recursive: true });
+  await mkdir(join(packageRoot, 'plugin', 'skills', 'thoth-mem'), { recursive: true });
   await mkdir(dirname(executablePath), { recursive: true });
   await writeFile(
     join(packageRoot, 'integrations', 'opencode', 'plugin.mjs'),
@@ -202,6 +203,11 @@ async function withTemporaryFixture<T>(
   await writeFile(
     join(packageRoot, 'integrations', 'shared', 'hook-runner.mjs'),
     'export {};\n',
+    'utf8',
+  );
+  await writeFile(
+    join(packageRoot, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'),
+    '# packaged skill\n',
     'utf8',
   );
   await writeFile(executablePath, '#!/usr/bin/env node\n', 'utf8');
@@ -1412,6 +1418,41 @@ describe('receipt-owned rollback', () => {
       expect((restored.mcp as Record<string, unknown> | undefined)?.['thoth-mem']).toBeUndefined();
       await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(fixture.paths.pluginEntryPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  it('rolls back the bundled skill only from receipt-owned OpenCode assets', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const sharedSkillRoot = join(fixture.paths.targetRoot, 'skills');
+      const sharedSentinel = join(sharedSkillRoot, 'user-owned-skill', 'SKILL.md');
+      await mkdir(dirname(sharedSentinel), { recursive: true });
+      await writeFile(sharedSentinel, '# user owned\n', 'utf8');
+
+      const setup = await runSetup(fixture, fixture.request, { ids: ['setup-with-skill'] });
+      expect(setup, JSON.stringify(setup)).toMatchObject({
+        status: 'complete',
+        changed: true,
+      });
+      const installedSkill = join(
+        fixture.paths.assetPath,
+        'opencode',
+        'skills',
+        'thoth-mem',
+        'SKILL.md',
+      );
+      expect(await readFile(installedSkill, 'utf8')).toBe('# packaged skill\n');
+
+      const rollback = await runSetup(fixture, {
+        ...fixture.request,
+        rollbackReceipt: setup.receipt!,
+      }, { ids: ['rollback-with-skill'] });
+
+      expect(rollback, JSON.stringify(rollback)).toMatchObject({
+        status: 'complete',
+        changed: true,
+      });
+      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(sharedSentinel, 'utf8')).toBe('# user owned\n');
     });
   });
 

@@ -535,6 +535,20 @@ async function validateOpenCodeDeclarations(root, inventory) {
   ].map((match) => match[1]).filter((path) => path.startsWith('.'));
 
   for (const declaredPath of declarations) {
+    if (declaredPath === './skills') {
+      const skill = getInventoryAsset(inventory, 'shared', 'skill');
+      // OpenCode setup materializes this shared plugin tree beside the copied runtime plugin.
+      await resolveDeclaredAsset(
+        root,
+        root,
+        skill.path,
+        inventory,
+        'shared',
+        'skill',
+        'opencode bundled skill source',
+      );
+      continue;
+    }
     const role = declaredPath.endsWith('.md') ? 'instruction' : 'runner';
     await resolveDeclaredAsset(
       root,

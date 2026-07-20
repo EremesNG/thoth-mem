@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
     import { dispatchHookRequest } from '../shared/hook-runner.mjs';
 
     const MEMORY_PROTOCOL_URL = new URL('./memory-protocol.md', import.meta.url);
+    const BUNDLED_SKILLS_PATH = fileURLToPath(new URL('./skills', import.meta.url));
     const PRIVATE_BEHAVIOR_EVIDENCE_MAPPING_ID = 'opencode-plugin-init-mutation-v1';
     const SIDE_EFFECT_BEHAVIOR_EVIDENCE_MAPPING_ID = 'opencode-plugin-init-side-effect-v1';
     const MAX_IDENTIFIER_CODE_POINTS = 128;
@@ -38,6 +40,22 @@ import { readFile } from 'node:fs/promises';
 
     function isRecord(value) {
       return typeof value === 'object' && value !== null && !Array.isArray(value);
+    }
+
+    function registerBundledSkillPath(config) {
+      if (!isRecord(config)) return;
+      if (config.skills === undefined) {
+        config.skills = { paths: [BUNDLED_SKILLS_PATH] };
+        return;
+      }
+      if (!isRecord(config.skills)) return;
+      if (config.skills.paths === undefined) {
+        config.skills.paths = [BUNDLED_SKILLS_PATH];
+        return;
+      }
+      if (!Array.isArray(config.skills.paths)
+        || config.skills.paths.includes(BUNDLED_SKILLS_PATH)) return;
+      config.skills.paths.push(BUNDLED_SKILLS_PATH);
     }
 
     function isBoundedIdentifier(value) {
@@ -381,6 +399,9 @@ function hasExactInput(type, input) {
         };
 
         return {
+          config: async (config) => {
+            registerBundledSkillPath(config);
+          },
           event: async ({ event }) => {
             if (!isRecord(event)) return;
             const properties = isRecord(event.properties) ? event.properties : undefined;

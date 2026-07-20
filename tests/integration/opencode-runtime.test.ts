@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -29,16 +35,24 @@ interface HookResponse {
   deliveryAttempt?: string;
 }
 interface OpenCodeHooks {
+  config(config: OpenCodeConfig): Promise<void>;
   event(input: { event: Record<string, unknown> }): Promise<void>;
   'chat.message'(input: Record<string, unknown>, output: Record<string, unknown>): Promise<void>;
   'experimental.chat.system.transform'(input: { sessionID?: string; model?: unknown }, output: { system: string[] }): Promise<void>;
   'experimental.session.compacting'(input: { sessionID?: string }, output: { context: string[]; prompt?: string }): Promise<void>;
 }
+interface OpenCodeConfig {
+  skills?: {
+    paths?: string[];
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
 type Dispatch = (request: unknown) => Promise<HookResponse>;
 type PluginFactory = (options?: { dispatch?: Dispatch }) => (context: unknown) => Promise<OpenCodeHooks>;
 
-async function loadPlugin(): Promise<PluginFactory> {
-  const module = await import(`${pathToFileURL(pluginPath).href}?test=${randomUUID()}`);
+async function loadPlugin(path = pluginPath): Promise<PluginFactory> {
+  const module = await import(`${pathToFileURL(path).href}?test=${randomUUID()}`);
   return module.createOpenCodePlugin as PluginFactory;
 }
 
@@ -132,6 +146,60 @@ function textPart(
 ): Record<string, unknown> {
   return { id, sessionID, messageID, type: 'text', text, ...extra };
 }
+
+describe('OpenCode bundled skill registration', () => {
+  it('registers the copied native skill parent once while preserving existing paths', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth opencode plugin with spaces '));
+    const assetRoot = join(root, 'copied installation with spaces');
+    const copiedPluginPath = join(assetRoot, 'opencode', 'plugin.mjs');
+    const bundledSkillsPath = join(assetRoot, 'opencode', 'skills');
+    try {
+      mkdirSync(join(assetRoot, 'opencode'), { recursive: true });
+      mkdirSync(join(assetRoot, 'shared'), { recursive: true });
+      cpSync(pluginPath, copiedPluginPath);
+      cpSync(
+        join(repositoryRoot, 'integrations', 'opencode', 'memory-protocol.md'),
+        join(assetRoot, 'opencode', 'memory-protocol.md'),
+      );
+      cpSync(
+        join(repositoryRoot, 'integrations', 'shared', 'hook-runner.mjs'),
+        join(assetRoot, 'shared', 'hook-runner.mjs'),
+      );
+      cpSync(
+        join(repositoryRoot, 'plugin', 'skills', 'thoth-mem'),
+        join(bundledSkillsPath, 'thoth-mem'),
+        { recursive: true },
+      );
+      const createOpenCodePlugin = await loadPlugin(copiedPluginPath);
+      const hooks = await createOpenCodePlugin()({});
+
+      const emptyConfig: OpenCodeConfig = {};
+      await hooks.config(emptyConfig);
+      expect(emptyConfig).toEqual({ skills: { paths: [bundledSkillsPath] } });
+
+      const existingConfig: OpenCodeConfig = {
+        skills: {
+          paths: ['./user-skills'],
+          urls: ['https://example.test/skills/'],
+        },
+      };
+      await hooks.config(existingConfig);
+      await hooks.config(existingConfig);
+
+      expect(isAbsolute(bundledSkillsPath)).toBe(true);
+      expect(existingConfig).toEqual({
+        skills: {
+          paths: ['./user-skills', bundledSkillsPath],
+          urls: ['https://example.test/skills/'],
+        },
+      });
+      expect(readFileSync(join(bundledSkillsPath, 'thoth-mem', 'SKILL.md'), 'utf8'))
+        .toMatch(/^---\r?\nname: thoth-mem\r?\n/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('OpenCode normal lifecycle side effects', () => {
   it('persists start then root prompt once through plugin, resolver, adapter, and core', async () => {

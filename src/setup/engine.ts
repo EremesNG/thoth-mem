@@ -151,6 +151,23 @@ const OPENCODE_PLUGIN_ENTRY = 'export { default } from \'./.thoth-mem/opencode/p
 const MANAGED_METADATA_NAME = 'thoth-mem.installation.json';
 const LEGACY_MANAGED_METADATA_NAME = '.thoth-mem-managed.json';
 
+function setupAssetLayout(
+  request: SetupRequest,
+  paths: SetupPaths,
+): FilesystemDirectoryEntry[] {
+  return request.harness === 'opencode'
+    ? [
+        { sourcePath: paths.sourceAssetsPath, targetRelativePath: 'opencode' },
+        { sourcePath: paths.sourceSharedPath!, targetRelativePath: 'shared' },
+        {
+          // Preserve thoth-mem as a child of the discovery root registered by the plugin.
+          sourcePath: dirname(paths.sourceSkillPath!),
+          targetRelativePath: 'opencode/skills',
+        },
+      ]
+    : [{ sourcePath: paths.sourceAssetsPath, targetRelativePath: '.' }];
+}
+
 function isMissingPathError(error: unknown): boolean {
   return error instanceof Error
     && 'code' in error
@@ -282,6 +299,12 @@ async function inspectSetup(
   ) {
     throw new Error('packaged-shared-assets-unavailable');
   }
+  if (
+    unresolvedPaths.sourceSkillPath
+    && await fileSystem.pathType(unresolvedPaths.sourceSkillPath) !== 'directory'
+  ) {
+    throw new Error('packaged-skill-assets-unavailable');
+  }
 
   const candidateTypes = await Promise.all(unresolvedPaths.configCandidates.map(async (path) => ({
     path,
@@ -370,12 +393,7 @@ async function inspectSetup(
   const matchingMetadata = metadata !== null
     && metadataMatches(metadata, request, paths);
   const canonicalMetadataMatches = matchingMetadata && metadataPath === canonicalMetadataPath;
-  const assetLayout: FilesystemDirectoryEntry[] = request.harness === 'opencode'
-    ? [
-        { sourcePath: paths.sourceAssetsPath, targetRelativePath: 'opencode' },
-        { sourcePath: paths.sourceSharedPath!, targetRelativePath: 'shared' },
-      ]
-    : [{ sourcePath: paths.sourceAssetsPath, targetRelativePath: '.' }];
+  const assetLayout = setupAssetLayout(request, paths);
   const assetContentsMatch = assetType === 'directory'
     && await fileSystem.directoryMatches(
       paths.assetPath,
@@ -464,6 +482,26 @@ function failedInspectionResult(
     }],
     diagnostics: [`Unable to inspect the packaged ${displayHarness(request)} setup assets or selected target.`],
     manual_actions: ['Verify filesystem permissions and that the installed package contains the required integration assets.'],
+    receipt: null,
+  };
+}
+
+function failedSkillInspectionResult(
+  request: SetupRequest,
+  paths: SetupPaths,
+): SetupResult {
+  return {
+    status: 'failed',
+    changed: false,
+    harness: request.harness,
+    scope: request.scope,
+    target: paths.targetRoot,
+    steps: [{
+      name: `Inspect packaged OpenCode skill assets: ${paths.sourceSkillPath}`,
+      outcome: 'failed',
+    }],
+    diagnostics: [`Packaged OpenCode skill assets are unavailable: ${paths.sourceSkillPath}`],
+    manual_actions: ['Verify that the installed package contains plugin/skills/thoth-mem and retry.'],
     receipt: null,
   };
 }
@@ -1609,10 +1647,7 @@ async function executeOpenCodeSetup(
     {
       kind: 'directory',
       targetPath: paths.assetPath,
-      entries: [
-        { sourcePath: paths.sourceAssetsPath, targetRelativePath: 'opencode' },
-        { sourcePath: paths.sourceSharedPath!, targetRelativePath: 'shared' },
-      ],
+      entries: setupAssetLayout(request, paths),
       generatedFiles: [{
         targetRelativePath: MANAGED_METADATA_NAME,
         content: metadata,
@@ -3098,7 +3133,14 @@ export async function inspectAndPlanSetup(
     let inspection: SetupInspection;
     try {
     inspection = await inspectSetup(request, paths, fileSystem, options);
-    } catch {
+    } catch (error) {
+      if (
+        request.harness === 'opencode'
+        && error instanceof Error
+        && error.message === 'packaged-skill-assets-unavailable'
+      ) {
+        return failedSkillInspectionResult(request, paths);
+      }
       return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
     }
     paths = inspection.paths;

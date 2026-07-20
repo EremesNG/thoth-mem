@@ -424,6 +424,9 @@ function seedPackagedAssets(fileSystem: FakeSetupFileSystem, paths: SetupPaths):
     fileSystem.directory(paths.sourceSharedPath);
     fileSystem.file(join(paths.sourceAssetsPath, 'plugin.mjs'), 'packaged-opencode-plugin');
     fileSystem.file(join(paths.sourceSharedPath, 'hook-runner.mjs'), 'packaged-hook-runner');
+    fileSystem.directory(dirname(paths.sourceSkillPath!));
+    fileSystem.directory(paths.sourceSkillPath!);
+    fileSystem.file(join(paths.sourceSkillPath!, 'SKILL.md'), 'packaged-skill');
   } else {
     fileSystem.file(join(paths.sourceAssetsPath, 'codex.mcp.json'), 'packaged-codex-mcp');
   }
@@ -449,8 +452,14 @@ function seedManagedSetup(
   if (request.harness === 'opencode') {
     fileSystem.directory(join(paths.assetPath, 'opencode'));
     fileSystem.directory(join(paths.assetPath, 'shared'));
+    fileSystem.directory(join(paths.assetPath, 'opencode', 'skills'));
     fileSystem.file(join(paths.assetPath, 'opencode', 'plugin.mjs'), 'packaged-opencode-plugin');
     fileSystem.file(join(paths.assetPath, 'shared', 'hook-runner.mjs'), 'packaged-hook-runner');
+    fileSystem.directory(join(paths.assetPath, 'opencode', 'skills', 'thoth-mem'));
+    fileSystem.file(
+      join(paths.assetPath, 'opencode', 'skills', 'thoth-mem', 'SKILL.md'),
+      'packaged-skill',
+    );
     fileSystem.file(paths.pluginEntryPath, 'export { default } from \'./.thoth-mem/opencode/plugin.mjs\';\n');
   } else {
     fileSystem.file(join(paths.assetPath, 'codex.mcp.json'), 'packaged-codex-mcp');
@@ -953,6 +962,7 @@ describe('inspects and plans with zero writes', () => {
       ),
       sourceAssetsPath: join(ROOTS.packageRoot, 'integrations', 'opencode'),
       sourceSharedPath: join(ROOTS.packageRoot, 'integrations', 'shared'),
+      sourceSkillPath: join(ROOTS.packageRoot, 'plugin', 'skills', 'thoth-mem'),
     });
 
     const projectPath = PROJECT_PATH;
@@ -969,7 +979,28 @@ describe('inspects and plans with zero writes', () => {
       metadataPath: join(projectPath, '.codex', 'plugins', 'thoth-mem', '.thoth-mem-managed.json'),
       sourceAssetsPath: join(ROOTS.packageRoot, 'plugin'),
       sourceSharedPath: null,
+      sourceSkillPath: null,
     });
+  });
+
+  it('requires the packaged OpenCode skill source before planning setup', async () => {
+    const request = setupRequest('opencode');
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    fileSystem.directory(paths.sourceAssetsPath);
+    fileSystem.directory(paths.sourceSharedPath!);
+
+    const result = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+
+    expect(result).toMatchObject({ status: 'failed', changed: false });
+    expect(result.diagnostics).toEqual([
+      `Packaged OpenCode skill assets are unavailable: ${join(
+        ROOTS.packageRoot,
+        'plugin',
+        'skills',
+        'thoth-mem',
+      )}`,
+    ]);
   });
 
   it('plans clean OpenCode global setup and refuses mutation in this planning slice', async () => {
@@ -1039,6 +1070,28 @@ describe('inspects and plans with zero writes', () => {
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
     expect(fileSystem.reads.some((path) => path.startsWith(ROOTS.xdgConfigHome!))).toBe(false);
     expectZeroWrites(fileSystem, before);
+  });
+
+  it('treats the bundled OpenCode skill as part of managed asset drift', async () => {
+    const request = setupRequest('opencode', {
+      scope: 'project',
+      projectPath: PROJECT_PATH,
+      planOnly: false,
+    });
+    const paths = resolveSetupPaths(request, ROOTS);
+    const installedSkillPath = join(paths.assetPath, 'opencode', 'skills', 'thoth-mem');
+    const fileSystem = new FakeSetupFileSystem();
+    seedManagedSetup(fileSystem, request, paths);
+
+    const clean = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+    expect(clean).toMatchObject({ status: 'complete', changed: false });
+
+    fileSystem.file(join(installedSkillPath, 'SKILL.md'), 'drifted-private-value');
+    const drifted = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+    expect(drifted.status).toBe('requires_user_action');
+    expect(drifted.steps.find((step) => step.name.startsWith('Install OpenCode assets'))?.outcome)
+      .toBe('unavailable');
+    expect(JSON.stringify(drifted)).not.toContain('drifted-private-value');
   });
 
   it('uses exactly one OpenCode JSON/JSONC candidate and fails closed when both exist', async () => {
