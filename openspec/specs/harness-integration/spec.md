@@ -791,3 +791,177 @@ Runtime registration MUST preserve existing `skills.paths` entries and MUST be i
 - **GIVEN** an installation path containing spaces or URL-encoded characters
 - **WHEN** the plugin resolves its bundle
 - **THEN** it registers a valid native absolute filesystem path
+
+### Requirement: Native OpenCode identity tool
+
+The OpenCode plugin MUST register exactly one model-callable tool named `thoth_mem_root_identity` with no user-supplied arguments.
+
+#### Scenario: US1 - Resolve identity from a root session 1
+
+- **GIVEN** a tool invocation whose session record has no `parentID`
+- **WHEN** `thoth_mem_root_identity` executes
+- **THEN** it returns schema `thoth-mem.opencode.identity.v1`, `status: "verified"`, matching root and caller IDs, `caller_role: "root"`, the current project name, and `authorization: "root_lifecycle"`
+
+#### Scenario: US1 - Resolve identity from a root session 2
+
+- **GIVEN** a verified root identity
+- **WHEN** the tool returns
+- **THEN** it has performed no enrollment, prompt capture, memory dispatch, or filesystem mutation
+
+### Requirement: Versioned identity result
+
+A verified result MUST be JSON using schema `thoth-mem.opencode.identity.v1` and MUST contain `status`, `root_session_id`, `caller_session_id`, `caller_role`, `project`, and `authorization` with deterministic field semantics.
+
+#### Scenario: US1 - Resolve identity from a root session 1
+
+- **GIVEN** a tool invocation whose session record has no `parentID`
+- **WHEN** `thoth_mem_root_identity` executes
+- **THEN** it returns schema `thoth-mem.opencode.identity.v1`, `status: "verified"`, matching root and caller IDs, `caller_role: "root"`, the current project name, and `authorization: "root_lifecycle"`
+
+#### Scenario: US1 - Resolve identity from a root session 2
+
+- **GIVEN** a verified root identity
+- **WHEN** the tool returns
+- **THEN** it has performed no enrollment, prompt capture, memory dispatch, or filesystem mutation
+
+#### Scenario: US2 - Resolve the root for a delegated caller 1
+
+- **GIVEN** a delegated caller with one or more valid `parentID` links
+- **WHEN** the tool executes
+- **THEN** it walks the bounded chain to the root and returns the root ID plus the original caller ID, `caller_role: "delegated"`, and `authorization: "none"`
+
+#### Scenario: US2 - Resolve the root for a delegated caller 2
+
+- **GIVEN** a delegated caller
+- **WHEN** the tool returns the root ID
+- **THEN** the result does not claim that the caller may start, checkpoint, summarize, or finalize the root lifecycle
+
+### Requirement: Bounded parent-chain resolution
+
+The tool MUST resolve the invoking session through validated `parentID` links to a root using a fixed traversal bound and cycle detection, and MUST reject missing, malformed, mismatched, cyclic, or over-depth chains.
+
+#### Scenario: US2 - Resolve the root for a delegated caller 1
+
+- **GIVEN** a delegated caller with one or more valid `parentID` links
+- **WHEN** the tool executes
+- **THEN** it walks the bounded chain to the root and returns the root ID plus the original caller ID, `caller_role: "delegated"`, and `authorization: "none"`
+
+#### Scenario: US2 - Resolve the root for a delegated caller 2
+
+- **GIVEN** a delegated caller
+- **WHEN** the tool returns the root ID
+- **THEN** the result does not claim that the caller may start, checkpoint, summarize, or finalize the root lifecycle
+
+#### Scenario: US3 - Fail closed when root identity is not provable 1
+
+- **GIVEN** session lookup is unavailable, throws, or returns a record whose ID does not match the requested link
+- **WHEN** the tool executes
+- **THEN** it returns versioned `status: "degraded"`, a bounded reason code, and `authorization: "none"` without a root ID
+
+#### Scenario: US3 - Fail closed when root identity is not provable 2
+
+- **GIVEN** the parent chain cycles or exceeds its fixed maximum depth
+- **WHEN** the tool executes
+- **THEN** it fails closed without unbounded lookup or partial root output
+
+#### Scenario: US3 - Fail closed when root identity is not provable 3
+
+- **GIVEN** the project name cannot be derived safely
+- **WHEN** the tool executes
+- **THEN** it returns degraded output rather than fabricating a project
+
+### Requirement: Delegated authority remains denied
+
+A delegated verified result MUST identify the root and original caller, MUST set `caller_role` to `delegated` and `authorization` to `none`, and MUST NOT imply root lifecycle ownership.
+
+#### Scenario: US2 - Resolve the root for a delegated caller 1
+
+- **GIVEN** a delegated caller with one or more valid `parentID` links
+- **WHEN** the tool executes
+- **THEN** it walks the bounded chain to the root and returns the root ID plus the original caller ID, `caller_role: "delegated"`, and `authorization: "none"`
+
+#### Scenario: US2 - Resolve the root for a delegated caller 2
+
+- **GIVEN** a delegated caller
+- **WHEN** the tool returns the root ID
+- **THEN** the result does not claim that the caller may start, checkpoint, summarize, or finalize the root lifecycle
+
+### Requirement: Identity-only execution
+
+Tool execution MUST NOT enroll a session, capture a prompt, call the memory dispatcher, mutate lifecycle state, write files, or add any MCP tool.
+
+#### Scenario: US1 - Resolve identity from a root session 1
+
+- **GIVEN** a tool invocation whose session record has no `parentID`
+- **WHEN** `thoth_mem_root_identity` executes
+- **THEN** it returns schema `thoth-mem.opencode.identity.v1`, `status: "verified"`, matching root and caller IDs, `caller_role: "root"`, the current project name, and `authorization: "root_lifecycle"`
+
+#### Scenario: US1 - Resolve identity from a root session 2
+
+- **GIVEN** a verified root identity
+- **WHEN** the tool returns
+- **THEN** it has performed no enrollment, prompt capture, memory dispatch, or filesystem mutation
+
+#### Scenario: US2 - Resolve the root for a delegated caller 1
+
+- **GIVEN** a delegated caller with one or more valid `parentID` links
+- **WHEN** the tool executes
+- **THEN** it walks the bounded chain to the root and returns the root ID plus the original caller ID, `caller_role: "delegated"`, and `authorization: "none"`
+
+#### Scenario: US2 - Resolve the root for a delegated caller 2
+
+- **GIVEN** a delegated caller
+- **WHEN** the tool returns the root ID
+- **THEN** the result does not claim that the caller may start, checkpoint, summarize, or finalize the root lifecycle
+
+#### Scenario: US3 - Fail closed when root identity is not provable 1
+
+- **GIVEN** session lookup is unavailable, throws, or returns a record whose ID does not match the requested link
+- **WHEN** the tool executes
+- **THEN** it returns versioned `status: "degraded"`, a bounded reason code, and `authorization: "none"` without a root ID
+
+#### Scenario: US3 - Fail closed when root identity is not provable 2
+
+- **GIVEN** the parent chain cycles or exceeds its fixed maximum depth
+- **WHEN** the tool executes
+- **THEN** it fails closed without unbounded lookup or partial root output
+
+#### Scenario: US3 - Fail closed when root identity is not provable 3
+
+- **GIVEN** the project name cannot be derived safely
+- **WHEN** the tool executes
+- **THEN** it returns degraded output rather than fabricating a project
+
+### Requirement: Fail-closed bounded output
+
+When root identity or project cannot be proven, the tool MUST return versioned degraded JSON with a bounded reason and `authorization: "none"`, MUST omit `root_session_id`, and MUST NOT throw host-internal details into model-visible output.
+
+#### Scenario: US1 - Resolve identity from a root session 1
+
+- **GIVEN** a tool invocation whose session record has no `parentID`
+- **WHEN** `thoth_mem_root_identity` executes
+- **THEN** it returns schema `thoth-mem.opencode.identity.v1`, `status: "verified"`, matching root and caller IDs, `caller_role: "root"`, the current project name, and `authorization: "root_lifecycle"`
+
+#### Scenario: US1 - Resolve identity from a root session 2
+
+- **GIVEN** a verified root identity
+- **WHEN** the tool returns
+- **THEN** it has performed no enrollment, prompt capture, memory dispatch, or filesystem mutation
+
+#### Scenario: US3 - Fail closed when root identity is not provable 1
+
+- **GIVEN** session lookup is unavailable, throws, or returns a record whose ID does not match the requested link
+- **WHEN** the tool executes
+- **THEN** it returns versioned `status: "degraded"`, a bounded reason code, and `authorization: "none"` without a root ID
+
+#### Scenario: US3 - Fail closed when root identity is not provable 2
+
+- **GIVEN** the parent chain cycles or exceeds its fixed maximum depth
+- **WHEN** the tool executes
+- **THEN** it fails closed without unbounded lookup or partial root output
+
+#### Scenario: US3 - Fail closed when root identity is not provable 3
+
+- **GIVEN** the project name cannot be derived safely
+- **WHEN** the tool executes
+- **THEN** it returns degraded output rather than fabricating a project
