@@ -1560,6 +1560,9 @@ describe('packed Codex and Claude installation', () => {
     expect(inventory.assets.filter((asset) => asset.harness === 'shared')).toEqual([
       { harness: 'shared', role: 'runner', path: 'plugin/runners/hook-runner.mjs' },
       { harness: 'shared', role: 'skill', path: 'plugin/skills/thoth-mem/SKILL.md' },
+      { harness: 'shared', role: 'skill-reference-codex', path: 'plugin/skills/thoth-mem/references/codex.md' },
+      { harness: 'shared', role: 'skill-reference-claude-code', path: 'plugin/skills/thoth-mem/references/claude-code.md' },
+      { harness: 'shared', role: 'skill-reference-opencode', path: 'plugin/skills/thoth-mem/references/opencode.md' },
     ]);
     await assertNoCheckoutReferences(fixture.packageRoot);
   }, PACKAGE_TIMEOUT_MS);

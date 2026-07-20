@@ -101,10 +101,10 @@ async function createPackageFixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'thoth inventory fixture '));
   await cp(join(repositoryRoot, 'integrations'), join(root, 'integrations'), { recursive: true });
   await cp(join(repositoryRoot, 'plugin'), join(root, 'plugin'), { recursive: true });
-  await mkdir(join(root, 'skills', 'thoth-mem'), { recursive: true });
   await cp(
-    join(repositoryRoot, 'skills', 'thoth-mem', 'SKILL.md'),
-    join(root, 'skills', 'thoth-mem', 'SKILL.md'),
+    join(repositoryRoot, 'skills', 'thoth-mem'),
+    join(root, 'skills', 'thoth-mem'),
+    { recursive: true },
   );
   await mkdir(join(root, '.agents', 'plugins'), { recursive: true });
   await mkdir(join(root, '.claude-plugin'), { recursive: true });
@@ -179,8 +179,8 @@ describe('canonical inventory', () => {
     }>(join(repositoryRoot, '.claude-plugin', 'marketplace.json'));
 
     expect(inventory).toMatchObject({ schemaVersion: 1 });
-    expect(inventory.assets).toHaveLength(13);
-    expect(new Set(inventory.assets.map((asset) => asset.path)).size).toBe(13);
+    expect(inventory.assets).toHaveLength(16);
+    expect(new Set(inventory.assets.map((asset) => asset.path)).size).toBe(16);
     expect(new Set(inventory.assets.map((asset) => asset.harness))).toEqual(
       new Set(['opencode', 'codex', 'claude', 'shared']),
     );
@@ -208,13 +208,16 @@ describe('canonical inventory', () => {
       'plugin/hooks/hooks.json',
       'plugin/runners/hook-runner.mjs',
       'plugin/skills/thoth-mem/SKILL.md',
+      'plugin/skills/thoth-mem/references/codex.md',
+      'plugin/skills/thoth-mem/references/claude-code.md',
+      'plugin/skills/thoth-mem/references/opencode.md',
     ]);
     expect(await readdir(join(repositoryRoot, 'integrations'))).not.toEqual(
       expect.arrayContaining(['codex', 'claude-code']),
     );
 
     await expect(verifier.verifyIntegrationPackage({ rootDir: repositoryRoot })).resolves.toEqual({
-      assetCount: 13,
+      assetCount: 16,
       harnesses: ['claude', 'codex', 'opencode'],
     });
   });
@@ -232,7 +235,7 @@ describe('canonical inventory', () => {
     await expect(verifier.verifyIntegrationPackage({
       rootDir: repositoryRoot,
       packageFiles,
-    })).resolves.toMatchObject({ assetCount: 13 });
+    })).resolves.toMatchObject({ assetCount: 16 });
   }, 30_000);
 
   it('builds a strict subprocess environment without inherited credentials, proxy, registry, npm, or PATH overrides', async () => {
@@ -389,6 +392,21 @@ describe('canonical inventory', () => {
     });
   });
 
+  it('canonical inventory rejects a stale packaged harness identity reference', async () => {
+    const verifier = await importVerifier();
+
+    await withPackageFixture(async (root) => {
+      await writeFile(
+        join(root, 'plugin', 'skills', 'thoth-mem', 'references', 'codex.md'),
+        '# Stale Codex identity reference\n',
+        'utf8',
+      );
+
+      await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
+        .rejects.toThrow(/stale.*codex.*identity reference/i);
+    });
+  });
+
   it('canonical inventory is the single path authority for relocatable declared assets', async () => {
     const verifier = await importVerifier();
 
@@ -411,7 +429,7 @@ describe('canonical inventory', () => {
       await writeJson(path, inventory);
 
       await expect(verifier.verifyIntegrationPackage({ rootDir: root })).resolves.toMatchObject({
-        assetCount: 13,
+        assetCount: 16,
       });
     });
   });
@@ -429,6 +447,9 @@ describe('version and path integrity', () => {
         'plugin/.claude-plugin/plugin.json',
         'plugin/runners/hook-runner.mjs',
         'plugin/skills/thoth-mem/SKILL.md',
+        'plugin/skills/thoth-mem/references/codex.md',
+        'plugin/skills/thoth-mem/references/claude-code.md',
+        'plugin/skills/thoth-mem/references/opencode.md',
       ];
       const initialHash = await hashFiles(root, synchronizedPaths);
       await sync.syncIntegrationAssets({ rootDir: root });
@@ -441,8 +462,20 @@ describe('version and path integrity', () => {
       await writeJson(codexPluginPath, codexPlugin);
       await writeFile(join(root, 'plugin', 'runners', 'hook-runner.mjs'), 'stale\n', 'utf8');
       await writeFile(join(root, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'stale\n', 'utf8');
+      for (const reference of ['codex.md', 'claude-code.md', 'opencode.md']) {
+        await writeFile(
+          join(root, 'plugin', 'skills', 'thoth-mem', 'references', reference),
+          'stale\n',
+          'utf8',
+        );
+      }
 
-      await sync.syncIntegrationAssets({ rootDir: root });
+      const synchronized = await sync.syncIntegrationAssets({ rootDir: root });
+      expect(synchronized.changedPaths).toEqual(expect.arrayContaining([
+        'plugin/skills/thoth-mem/references/codex.md',
+        'plugin/skills/thoth-mem/references/claude-code.md',
+        'plugin/skills/thoth-mem/references/opencode.md',
+      ]));
       const synchronizedPlugin = await readJson<Record<string, unknown>>(codexPluginPath);
       expect(synchronizedPlugin.version).toBe(packageManifest.version);
       expect(synchronizedPlugin.preserved).toEqual({ unrelated: true });
@@ -451,6 +484,10 @@ describe('version and path integrity', () => {
         .toEqual(canonicalRunner);
       expect(await readFile(join(root, 'plugin', 'skills', 'thoth-mem', 'SKILL.md')))
         .toEqual(await readFile(join(root, 'skills', 'thoth-mem', 'SKILL.md')));
+      for (const reference of ['codex.md', 'claude-code.md', 'opencode.md']) {
+        expect(await readFile(join(root, 'plugin', 'skills', 'thoth-mem', 'references', reference)))
+          .toEqual(await readFile(join(root, 'skills', 'thoth-mem', 'references', reference)));
+      }
       const synchronizedHash = await hashFiles(root, synchronizedPaths);
       await sync.syncIntegrationAssets({ rootDir: root });
       expect(await hashFiles(root, synchronizedPaths)).toBe(synchronizedHash);

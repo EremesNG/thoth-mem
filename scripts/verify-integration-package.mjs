@@ -177,11 +177,38 @@ const PACKED_RUNTIME_TIMEOUT_MS = 30_000;
         : 'tar';
     }
 
+const SHARED_SKILL_ASSETS = Object.freeze([
+  Object.freeze({
+    role: 'skill',
+    packagedPath: 'SKILL.md',
+    canonicalPath: 'skills/thoth-mem/SKILL.md',
+    label: 'memory skill',
+  }),
+  Object.freeze({
+    role: 'skill-reference-codex',
+    packagedPath: 'references/codex.md',
+    canonicalPath: 'skills/thoth-mem/references/codex.md',
+    label: 'Codex identity reference',
+  }),
+  Object.freeze({
+    role: 'skill-reference-claude-code',
+    packagedPath: 'references/claude-code.md',
+    canonicalPath: 'skills/thoth-mem/references/claude-code.md',
+    label: 'Claude Code identity reference',
+  }),
+  Object.freeze({
+    role: 'skill-reference-opencode',
+    packagedPath: 'references/opencode.md',
+    canonicalPath: 'skills/thoth-mem/references/opencode.md',
+    label: 'OpenCode identity reference',
+  }),
+]);
+
 const REQUIRED_ROLES = Object.freeze({
   opencode: Object.freeze(['plugin', 'instruction', 'runner']),
   codex: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks']),
   claude: Object.freeze(['marketplace', 'plugin', 'mcp', 'hooks']),
-  shared: Object.freeze(['runner', 'skill']),
+  shared: Object.freeze(['runner', ...SHARED_SKILL_ASSETS.map((asset) => asset.role)]),
 });
 const DISCOVERY_ANCHORS = Object.freeze([
   { harness: 'opencode', role: 'plugin', path: 'integrations/opencode/plugin.mjs' },
@@ -654,15 +681,30 @@ async function validateRuntimeDeclarations(root, inventory) {
       `Claude ${role}`,
     );
   }
-  await resolveDeclaredAsset(
-    root,
-    claudeRoot,
-    'skills/thoth-mem/SKILL.md',
-    inventory,
-    'shared',
-    'skill',
-    'Shared plugin skill',
-  );
+  for (const asset of SHARED_SKILL_ASSETS) {
+    const packagedPath = await resolveDeclaredAsset(
+      root,
+      claudeRoot,
+      `skills/thoth-mem/${asset.packagedPath}`,
+      inventory,
+      'shared',
+      asset.role,
+      `Shared plugin ${asset.label}`,
+    );
+    const canonicalPath = (await resolveContainedPath(
+      root,
+      asset.canonicalPath,
+      `Canonical ${asset.label}`,
+      { kind: 'file' },
+    )).targetPath;
+    const [packaged, canonical] = await Promise.all([
+      readFile(packagedPath),
+      readFile(canonicalPath),
+    ]);
+    if (!packaged.equals(canonical)) {
+      throw new Error(`Stale shared plugin ${asset.label}; run the integration asset synchronization command.`);
+    }
+  }
   const claudeMcpPath = join(claudeRoot, '.mcp.json');
   const claudeMcp = requireObject(await readJson(claudeMcpPath, 'Claude MCP'), 'Claude MCP');
   const claudeServers = requireObject(claudeMcp.mcpServers, 'Claude MCP servers');

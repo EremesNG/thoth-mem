@@ -13,6 +13,12 @@ import {
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(SCRIPT_DIRECTORY, '..');
+const SKILL_REFERENCES = Object.freeze([
+  { file: 'codex.md', role: 'skill-reference-codex' },
+  { file: 'claude-code.md', role: 'skill-reference-claude-code' },
+  { file: 'opencode.md', role: 'skill-reference-opencode' },
+]);
+
 function packagePath(root, path) {
   return relative(root, path).split(sep).join('/');
 }
@@ -93,6 +99,24 @@ export async function syncIntegrationAssets(options = {}) {
   const sharedSkillPath = getInventoryAsset(inventory, 'shared', 'skill').path;
   const sharedSkill = (await resolveContainedPath(root, sharedSkillPath, sharedSkillPath, { kind: 'file' })).targetPath;
   await writeIfChanged(sharedSkill, canonicalSkill, changedPaths, root);
+
+  for (const reference of SKILL_REFERENCES) {
+    const canonicalReferencePath = `skills/thoth-mem/references/${reference.file}`;
+    const canonicalReference = await readFile((await resolveContainedPath(
+      root,
+      canonicalReferencePath,
+      `canonical thoth-mem ${reference.file} reference`,
+      { kind: 'file' },
+    )).targetPath);
+    const sharedReferencePath = getInventoryAsset(inventory, 'shared', reference.role).path;
+    const sharedReference = (await resolveContainedPath(
+      root,
+      sharedReferencePath,
+      sharedReferencePath,
+      { kind: 'file' },
+    )).targetPath;
+    await writeIfChanged(sharedReference, canonicalReference, changedPaths, root);
+  }
 
   return { changedPaths };
 }

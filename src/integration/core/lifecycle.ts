@@ -19,7 +19,10 @@ import type {
 } from './types.js';
 import { sanitizePassiveLearning, sanitizeRootPromptCapture } from './sanitizer.js';
 import type { PromptCaptureDecision } from './sanitizer.js';
-import { createHostOutputDirective } from '../runtime/host-output.js';
+import {
+  createHostOutputDirective,
+  MAX_HOST_OUTPUT_TEXT_CODE_POINTS,
+} from '../runtime/host-output.js';
 import { resolveSaveIdentity } from '../../store/identity.js';
 import type { MemoryPort } from './memory-port.js';
 import {
@@ -276,6 +279,25 @@ function boundedResultText(text: string): string {
   return Array.from(text).slice(0, 1_000).join('');
 }
 
+function identityAwareHostOutputText(
+  identity: ResolvedLifecycleIdentity,
+  context: string,
+): string | undefined {
+  const header = `thoth-mem verified identity: root_session_id=${identity.rootSessionId}; project=${identity.projectId}`;
+  const headerLength = Array.from(header).length;
+  if (headerLength > MAX_HOST_OUTPUT_TEXT_CODE_POINTS) {
+    return undefined;
+  }
+
+  const contextBudget = MAX_HOST_OUTPUT_TEXT_CODE_POINTS - headerLength - 2;
+  if (contextBudget <= 0 || context.length === 0) {
+    return header;
+  }
+
+  const boundedContext = Array.from(context).slice(0, contextBudget).join('');
+  return boundedContext.length > 0 ? `${header}\n\n${boundedContext}` : header;
+}
+
 function promptCaptureDegradationReason(metadata: PromptCaptureMetadata | undefined): string | undefined {
   if (!metadata) {
     return undefined;
@@ -462,7 +484,7 @@ async handle(event: NormalizedEvent): Promise<LifecycleResult> {
       intent: event.intent,
       effects,
       ...planMetadata,
-      ...this.hostOutputFor(event, effects, true),
+      ...this.hostOutputFor(event, effects, true, plan.identity),
       diagnostic: safeDiagnostic(
         event,
         'degraded',
@@ -537,7 +559,7 @@ async handle(event: NormalizedEvent): Promise<LifecycleResult> {
       }
 
       const committedState = stateMetadata(transaction, eventKey.protection);
-      const hostOutput = this.hostOutputFor(event, effects, true);
+      const hostOutput = this.hostOutputFor(event, effects, true, plan.identity);
       if (stateOutcome === 'degraded'
         || plan.capabilityState === 'degraded'
         || safetyReason) {
@@ -737,7 +759,7 @@ async handle(event: NormalizedEvent): Promise<LifecycleResult> {
           return this.failedResult(event, effects, plan, reservedState);
         }
 
-        const hostOutput = this.hostOutputFor(event, effects, true);
+        const hostOutput = this.hostOutputFor(event, effects, true, plan.identity);
         if (!hostOutput.hostOutputDirective) {
           try {
             await this.options.stateStore.runExclusive(async (transaction) => {
@@ -945,7 +967,7 @@ private failedResult(
     identity: plan.identity,
     ...(plan.promptCapture ? { promptCapture: plan.promptCapture } : {}),
     ...(plan.passiveLearning ? { passiveLearning: plan.passiveLearning } : {}),
-    ...this.hostOutputFor(event, effects, false),
+    ...this.hostOutputFor(event, effects, false, plan.identity),
     ...(state ? { state } : {}),
     diagnostic: safeDiagnostic(
       event,
@@ -982,6 +1004,7 @@ private hostOutputFor(
   event: NormalizedEvent,
   effects: EffectResult[],
   memoryConfirmed: boolean,
+  identity: ResolvedLifecycleIdentity,
 ): Pick<LifecycleResult, 'hostOutputDirective' | 'deliveryState'> {
   const output = this.outputMappingFor(event);
   if (!output) {
@@ -1019,7 +1042,11 @@ private hostOutputFor(
     return { deliveryState: state('confirmed', 'not_ready') };
   }
 
-  const directive = createHostOutputDirective(output.purpose, context.text, output.mapping);
+  const text = identityAwareHostOutputText(identity, context.text);
+  if (!text) {
+    return { deliveryState: state('confirmed', 'unavailable') };
+  }
+  const directive = createHostOutputDirective(output.purpose, text, output.mapping);
   return directive
     ? { hostOutputDirective: directive, deliveryState: state('confirmed', 'ready') }
     : { deliveryState: state('confirmed', 'unavailable') };

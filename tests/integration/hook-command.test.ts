@@ -1209,7 +1209,7 @@ describe('private OpenCode delivery operations', () => {
         operation: 'prepare_delivery', outcome: 'confirmed', retryable: false,
         hostOutputDirective: {
           purpose: 'recovery_context',
-          text: 'Recovered production context.',
+          text: 'thoth-mem verified identity: root_session_id=default-success; project=thoth-mem\n\nRecovered production context.',
           deliveryMappingId: openCode.recovery.mappingId,
         },
         deliveryAttempt: expect.stringMatching(/^[A-Za-z0-9_-]+\.[a-f0-9]{64}$/),
@@ -1277,7 +1277,7 @@ describe('private OpenCode delivery operations', () => {
         operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
         hostOutputDirective: {
           purpose: 'post_compaction_guidance',
-          text: 'Compaction context 1',
+          text: 'thoth-mem verified identity: root_session_id=root-session; project=thoth-mem\n\nCompaction context 1',
           deliveryMappingId: openCode.compaction.mappingId,
         },
         deliveryAttempt: expect.any(String),
@@ -1286,7 +1286,7 @@ describe('private OpenCode delivery operations', () => {
         operation: 'prepare_delivery', intent: 'compact_session', outcome: 'confirmed',
         hostOutputDirective: {
           purpose: 'post_compaction_guidance',
-          text: 'Compaction context 2',
+          text: 'thoth-mem verified identity: root_session_id=root-session; project=thoth-mem\n\nCompaction context 2',
           deliveryMappingId: openCode.compaction.mappingId,
         },
         deliveryAttempt: expect.any(String),
@@ -1536,6 +1536,50 @@ describe('portable Node hook runner', () => {
 });
 
 describe('native plugin assets', () => {
+  it('routes the canonical memory skill to exactly one harness identity reference', () => {
+    const skillRoot = join(repositoryRoot, 'skills', 'thoth-mem');
+    const skill = readFileSync(join(skillRoot, 'SKILL.md'), 'utf8');
+    const referencePaths = [
+      'references/codex.md',
+      'references/claude-code.md',
+      'references/opencode.md',
+    ];
+    const routedReferences = [...skill.matchAll(/`(references\/[^`]+\.md)`/g)]
+      .map((match) => match[1]);
+
+    expect(routedReferences).toEqual(referencePaths);
+    expect(skill).toMatch(/read exactly one.*active\s+harness/is);
+
+    const references = new Map(referencePaths.map((relativePath) => {
+      const absolutePath = join(skillRoot, relativePath);
+      expect(existsSync(absolutePath), `${relativePath} must exist`).toBe(true);
+      return [relativePath, readFileSync(absolutePath, 'utf8')];
+    }));
+    for (const [relativePath, reference] of references) {
+      expect(reference, `${relativePath} maps mem_session.id`).toMatch(/mem_session.*id/is);
+      expect(reference, `${relativePath} maps session_id`).toMatch(/session_id/is);
+      expect(reference, `${relativePath} maps project`).toMatch(/project/is);
+      expect(reference, `${relativePath} rejects nearby identifiers`).toMatch(/(?:never|do not).*(?:turn|agent|tool|delegat)/is);
+      expect(reference, `${relativePath} stays harness-specific`)
+        .not.toContain('# thoth-mem memory recipe');
+    }
+
+    const codex = references.get('references/codex.md') ?? '';
+    expect(codex).toContain('CODEX_THREAD_ID');
+    expect(codex).toContain('list_threads');
+    expect(codex).toContain('projectId');
+    expect(codex).toContain('POSH_SESSION_ID');
+
+    const claude = references.get('references/claude-code.md') ?? '';
+    expect(claude).toMatch(/hook.*session_id.*cwd/is);
+    expect(claude).toMatch(/do not invent `CLAUDE_SESSION_ID`/i);
+
+    const opencode = references.get('references/opencode.md') ?? '';
+    expect(opencode).toContain('properties.info.id');
+    expect(opencode).toContain('input.sessionID');
+    expect(opencode).toMatch(/parentID.*delegated/is);
+  });
+
   it('parses both descriptors from one shared plugin bundle and keeps its runner canonical', () => {
     const requiredFiles = [
       '.agents/plugins/marketplace.json',
@@ -1548,6 +1592,9 @@ describe('native plugin assets', () => {
       'plugin/hooks/hooks.json',
       'plugin/runners/hook-runner.mjs',
       'plugin/skills/thoth-mem/SKILL.md',
+      'plugin/skills/thoth-mem/references/codex.md',
+      'plugin/skills/thoth-mem/references/claude-code.md',
+      'plugin/skills/thoth-mem/references/opencode.md',
       'integrations/shared/hook-runner.mjs',
     ];
     for (const relativePath of requiredFiles) {
@@ -1697,6 +1744,22 @@ describe('native plugin assets', () => {
       }
       expect(skill).not.toContain('mem_search');
       expect(skill).not.toContain('http://');
+    }
+    for (const referencePath of ['codex.md', 'claude-code.md', 'opencode.md']) {
+      expect(readFileSync(join(
+        repositoryRoot,
+        'plugin',
+        'skills',
+        'thoth-mem',
+        'references',
+        referencePath,
+      ))).toEqual(readFileSync(join(
+        repositoryRoot,
+        'skills',
+        'thoth-mem',
+        'references',
+        referencePath,
+      )));
     }
 
     const canonicalRunner = readFileSync(canonicalRunnerPath);

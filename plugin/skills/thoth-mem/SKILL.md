@@ -32,6 +32,18 @@ regardless of the native field or runtime label that carries it. The project nam
 is simply the name of the project being worked on; when it is not already explicit,
 derive it from the repository or workspace directory name.
 
+Identify the active harness from explicit runtime context, native payload shape, or
+available harness tools, then read exactly one identity reference for that active
+harness before declaring stable identity unavailable:
+
+- Codex: `references/codex.md`
+- Claude Code: `references/claude-code.md`
+- OpenCode: `references/opencode.md`
+
+Do not load all harness references. A model-visible `thoth-mem verified identity`
+block produced by confirmed native lifecycle handling is the primary identity source;
+the selected reference defines only that harness's bounded recovery procedure.
+
 When calling `mem_session`, its `id` parameter receives the root session ID and its
 `project` parameter receives the project name. When another memory tool exposes a
 `session_id` parameter, pass the same root session ID. Keep the root session ID and
@@ -49,7 +61,8 @@ project/session scope for bounded reads or durable observations, but it must not
 
 If the stable root session ID is unavailable, state the limitation and continue
 without claiming durable session continuity. Do not infer it from nearby identifiers
-or invent a fallback session.
+or invent a fallback session. Do not call the identity unavailable until the selected
+harness reference's explicit checks have been exhausted.
 
 ## 3. Start or resume boundedly
 

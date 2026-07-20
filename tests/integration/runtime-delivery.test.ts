@@ -97,7 +97,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
           expect(result.outcome).toBe('confirmed');
           expect(hostOutputDirective(result)).toEqual({
             purpose: 'recovery_context',
-            text: 'Recovered fixture guidance.',
+            text: 'thoth-mem verified identity: root_session_id=runtime-delivery-session; project=runtime-delivery-project\n\nRecovered fixture guidance.',
             deliveryMappingId: claudeEvidence.recovery.mappingId,
           });
           expect(deliveryState(result)).toEqual({
@@ -365,7 +365,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                 retryable: false,
                 hostOutputDirective: {
                   purpose: 'recovery_context',
-                  text: 'Recovered Codex compact guidance.',
+                  text: 'thoth-mem verified identity: root_session_id=codex-compact-session; project=thoth-mem\n\nRecovered Codex compact guidance.',
                 },
                 deliveryState: { modelConsumption: 'unproven' },
               });
@@ -603,7 +603,7 @@ import { executeIntegrationEvent } from '../../src/integration/runtime/integrati
                     intent: 'recall_guidance',
                     hostOutputDirective: {
                       purpose: 'recovery_context',
-                      text: 'Recovered compact guidance.',
+                      text: 'thoth-mem verified identity: root_session_id=compact-gate-session; project=thoth-mem\n\nRecovered compact guidance.',
                     },
                   });
                   expect(calls).toEqual(['mem_context']);

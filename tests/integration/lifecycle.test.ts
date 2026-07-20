@@ -1588,7 +1588,7 @@ it('keeps unproven terminal finalization degraded without disabling independent 
   });
 
 
-  it('issues a private delivery attempt only after confirmed recovery memory and never after a memory failure', async () => {
+  it('issues a private delivery attempt with verified identity only after confirmed recovery memory', async () => {
         const dataDir = mkdtempSync(join(tmpdir(), 'thoth-delivery-prepare-'));
         const capabilities = supportedCapabilities('opencode');
         const stateStore = new FileLifecycleStateStore({
@@ -1642,7 +1642,10 @@ it('keeps unproven terminal finalization degraded without disabling independent 
             outcome: 'confirmed',
             hostOutputDirective: {
               purpose: 'recovery_context',
-              text: 'Recovered context for delivery.',
+              text: [
+                'thoth-mem verified identity: root_session_id=root-session; project=host-neutral-project',
+                'Recovered context for delivery.',
+              ].join('\n\n'),
               deliveryMappingId: binding.deliveryMappingId,
             },
             deliveryAttempt: expect.any(String),
@@ -1688,6 +1691,67 @@ it('keeps unproven terminal finalization degraded without disabling independent 
         } finally {
           rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it('preserves complete verified identity within the Unicode host-output budget', async () => {
+    const runEnrollment = async (sessionId: string, project: string, context: string) => {
+      const dataDir = mkdtempSync(join(tmpdir(), 'thoth-identity-output-'));
+      const capabilities = supportedCapabilities('codex');
+      const stateStore = new FileLifecycleStateStore({
+        dataDir,
+        harness: 'codex',
+        projectId: project,
+        rootSessionId: sessionId,
+        capabilities,
+      });
+      const core = new MemoryIntegrationCore({
+        capabilities,
+        memoryPort: {
+          async call(tool) {
+            return {
+              confirmed: true,
+              isError: false,
+              text: tool === 'mem_context' ? context : 'Session enrolled.',
+            };
+          },
+          async close() {},
+        },
+        stateStore,
+        hostOutput: {
+          recovery: {
+            mappingId: 'codex-recovery-injection-v1',
+            verifiedMappingId: 'codex-recovery-injection-v1',
+            ready: true,
+          },
+        },
+      });
+      const event: NormalizedEvent = {
+        ...enrollmentEvent('codex'),
+        identity: { sessionId, project },
+        nativeEventId: randomUUID(),
+      };
+
+      try {
+        return await core.handle(event);
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    };
+
+    const sessionId = `session-${'s'.repeat(320)}`;
+    const project = `project-${'p'.repeat(320)}`;
+    const header = `thoth-mem verified identity: root_session_id=${sessionId}; project=${project}`;
+    const bounded = await runEnrollment(sessionId, project, '🧠'.repeat(1_000));
+    const boundedText = bounded.hostOutputDirective?.text;
+    expect(boundedText).toBeDefined();
+    expect(Array.from(boundedText ?? '')).toHaveLength(1_000);
+    expect(boundedText).toContain(header);
+    expect(boundedText).toContain('🧠');
+
+    const overlongSessionId = `session-${'s'.repeat(1_000)}`;
+    const unavailable = await runEnrollment(overlongSessionId, 'project', 'Recovered context.');
+    expect(unavailable).not.toHaveProperty('hostOutputDirective');
+    expect(unavailable.deliveryState?.outputReadiness).toBe('unavailable');
   });
 
   it('confirms a signed delivery attempt once and rejects mismatched, expired, cross-session, and locked confirmations', async () => {
