@@ -261,3 +261,35 @@ checkout as a runtime dependency.
 - THEN verification MUST confirm that only receipt-owned changes are restored
   or removed
 - AND it MUST confirm that unrelated later configuration remains unchanged
+
+### Requirement: Synchronize reference assets
+
+The explicit integration synchronization command MUST copy every canonical harness reference into the shared plugin skill and report changed reference paths.
+
+#### Scenario: US3 - Publish the complete skill bundle 1
+
+- **GIVEN** canonical harness references
+- **WHEN** integration assets are synchronized
+- **THEN** the shared plugin skill contains byte-identical copies and reports each changed path
+
+#### Scenario: US3 - Publish the complete skill bundle 2
+
+- **GIVEN** a missing, stale, or undeclared packaged reference
+- **WHEN** the read-only verifier runs
+- **THEN** verification fails with a bounded asset error
+
+### Requirement: Verify published references
+
+Inventory and read-only package verification MUST declare and validate every published harness reference so missing or stale files fail delivery checks.
+
+#### Scenario: US3 - Publish the complete skill bundle 1
+
+- **GIVEN** canonical harness references
+- **WHEN** integration assets are synchronized
+- **THEN** the shared plugin skill contains byte-identical copies and reports each changed path
+
+#### Scenario: US3 - Publish the complete skill bundle 2
+
+- **GIVEN** a missing, stale, or undeclared packaged reference
+- **WHEN** the read-only verifier runs
+- **THEN** verification fails with a bounded asset error

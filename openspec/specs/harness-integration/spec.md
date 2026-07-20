@@ -581,3 +581,135 @@ Unknown, degraded, malformed, or conflicting Codex ownership evidence MUST produ
 - WHEN setup derives the ownership outcome
 - THEN it MUST NOT report the modern installation as complete
 - AND it MUST preserve each independently supported operation and report the unresolved capability
+
+### Requirement: Progressive harness routing
+
+The canonical memory skill MUST keep shared lifecycle invariants in `SKILL.md`, identify the active harness from verified ambient context, and instruct the agent to read exactly one matching harness reference before declaring stable identity unavailable.
+
+#### Scenario: US1 - Resolve identity in the active harness 1
+
+- **GIVEN** a root agent running in Codex
+- **WHEN** no verified identity block is already visible
+- **THEN** the guide directs it to check `CODEX_THREAD_ID`, optionally cross-check an unambiguous current thread, derive the project consistently, and reject turn, agent, tool, shell-session, and Codex saved-project identifiers
+
+#### Scenario: US1 - Resolve identity in the active harness 2
+
+- **GIVEN** a root agent running in Claude Code or OpenCode
+- **WHEN** it needs stable identity
+- **THEN** it reads only that harness reference and uses verified native lifecycle identity before any documented manual fallback
+
+#### Scenario: US1 - Resolve identity in the active harness 3
+
+- **GIVEN** an unsupported or ambiguous identity source
+- **WHEN** the agent cannot prove root identity
+- **THEN** it reports degradation and does not invent continuity
+
+### Requirement: Codex identity procedure
+
+The Codex reference MUST prioritize a verified model-visible identity block, define `CODEX_THREAD_ID` as the explicit root-agent recovery check, permit current-thread inventory only as an unambiguous cross-check, map the resolved ID to `mem_session.id` and other tools' `session_id`, and distinguish the project name from Codex's saved-project ID.
+
+#### Scenario: US1 - Resolve identity in the active harness 1
+
+- **GIVEN** a root agent running in Codex
+- **WHEN** no verified identity block is already visible
+- **THEN** the guide directs it to check `CODEX_THREAD_ID`, optionally cross-check an unambiguous current thread, derive the project consistently, and reject turn, agent, tool, shell-session, and Codex saved-project identifiers
+
+#### Scenario: US1 - Resolve identity in the active harness 2
+
+- **GIVEN** a root agent running in Claude Code or OpenCode
+- **WHEN** it needs stable identity
+- **THEN** it reads only that harness reference and uses verified native lifecycle identity before any documented manual fallback
+
+#### Scenario: US1 - Resolve identity in the active harness 3
+
+- **GIVEN** an unsupported or ambiguous identity source
+- **WHEN** the agent cannot prove root identity
+- **THEN** it reports degradation and does not invent continuity
+
+### Requirement: Claude Code identity procedure
+
+The Claude Code reference MUST identify the verified native `session_id` and `cwd` lifecycle fields, reuse model-visible verified identity when present, and forbid invented environment-variable or nearby-ID fallbacks.
+
+#### Scenario: US1 - Resolve identity in the active harness 1
+
+- **GIVEN** a root agent running in Codex
+- **WHEN** no verified identity block is already visible
+- **THEN** the guide directs it to check `CODEX_THREAD_ID`, optionally cross-check an unambiguous current thread, derive the project consistently, and reject turn, agent, tool, shell-session, and Codex saved-project identifiers
+
+#### Scenario: US1 - Resolve identity in the active harness 2
+
+- **GIVEN** a root agent running in Claude Code or OpenCode
+- **WHEN** it needs stable identity
+- **THEN** it reads only that harness reference and uses verified native lifecycle identity before any documented manual fallback
+
+#### Scenario: US1 - Resolve identity in the active harness 3
+
+- **GIVEN** an unsupported or ambiguous identity source
+- **WHEN** the agent cannot prove root identity
+- **THEN** it reports degradation and does not invent continuity
+
+### Requirement: OpenCode identity procedure
+
+The OpenCode reference MUST identify the verified root session fields and project/worktree context used by the native adapter, reject delegated session identity, and forbid invented environment-variable or nearby-ID fallbacks.
+
+#### Scenario: US1 - Resolve identity in the active harness 1
+
+- **GIVEN** a root agent running in Codex
+- **WHEN** no verified identity block is already visible
+- **THEN** the guide directs it to check `CODEX_THREAD_ID`, optionally cross-check an unambiguous current thread, derive the project consistently, and reject turn, agent, tool, shell-session, and Codex saved-project identifiers
+
+#### Scenario: US1 - Resolve identity in the active harness 2
+
+- **GIVEN** a root agent running in Claude Code or OpenCode
+- **WHEN** it needs stable identity
+- **THEN** it reads only that harness reference and uses verified native lifecycle identity before any documented manual fallback
+
+#### Scenario: US1 - Resolve identity in the active harness 3
+
+- **GIVEN** an unsupported or ambiguous identity source
+- **WHEN** the agent cannot prove root identity
+- **THEN** it reports degradation and does not invent continuity
+
+### Requirement: Verified identity header
+
+Confirmed native recovery and post-compaction host output MUST prepend the lifecycle-resolved root session ID and project name to model-visible memory context.
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 1
+
+- **GIVEN** confirmed enrollment and recovery context
+- **WHEN** native host output is ready
+- **THEN** the emitted context begins with the verified root session ID and project and retains bounded memory context
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 2
+
+- **GIVEN** identity plus recovery text near the output limit
+- **WHEN** host output is built
+- **THEN** it stays within the existing bound without truncating or fabricating the identity
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 3
+
+- **GIVEN** an identity header that cannot fit safely
+- **WHEN** host output is built
+- **THEN** output is reported unavailable rather than emitting a partial identity
+
+### Requirement: Preserve bounded output truth
+
+Identity-aware host output MUST preserve the existing 1,000-code-point bound, keep the identity complete, retain as much recovery context as fits, and return unavailable when the complete identity header cannot fit.
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 1
+
+- **GIVEN** confirmed enrollment and recovery context
+- **WHEN** native host output is ready
+- **THEN** the emitted context begins with the verified root session ID and project and retains bounded memory context
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 2
+
+- **GIVEN** identity plus recovery text near the output limit
+- **WHEN** host output is built
+- **THEN** it stays within the existing bound without truncating or fabricating the identity
+
+#### Scenario: US2 - Receive verified identity from native lifecycle context 3
+
+- **GIVEN** an identity header that cannot fit safely
+- **WHEN** host output is built
+- **THEN** output is reported unavailable rather than emitting a partial identity
