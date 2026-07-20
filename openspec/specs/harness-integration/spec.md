@@ -713,3 +713,81 @@ Identity-aware host output MUST preserve the existing 1,000-code-point bound, ke
 - **GIVEN** an identity header that cannot fit safely
 - **WHEN** host output is built
 - **THEN** output is reported unavailable rather than emitting a partial identity
+
+### Requirement: Install packaged skill asset
+
+OpenCode project and global setup MUST copy the packaged `thoth-mem` skill, including every declared reference, into the receipt-owned OpenCode plugin asset directory.
+
+#### Scenario: US1 - Receive the memory skill with OpenCode setup 1
+
+- **GIVEN** a packed `thoth-mem` distribution
+- **WHEN** project-scoped OpenCode setup is applied
+- **THEN** the installed plugin asset directory contains a byte-equivalent `thoth-mem` skill bundle sourced from the package
+
+#### Scenario: US1 - Receive the memory skill with OpenCode setup 2
+
+- **GIVEN** a packed `thoth-mem` distribution
+- **WHEN** global OpenCode setup is applied
+- **THEN** the same skill bundle is installed under the global receipt-owned plugin asset directory rather than `~/.config/opencode/skills`
+
+#### Scenario: US1 - Receive the memory skill with OpenCode setup 3
+
+- **GIVEN** a packaged skill source that is missing or incomplete
+- **WHEN** setup inspection or application runs
+- **THEN** setup reports the missing managed asset instead of claiming a complete installation
+
+### Requirement: Register bundled discovery path
+
+The OpenCode plugin MUST register the native absolute parent directory of its bundled `thoth-mem` skill through the supported runtime configuration hook.
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 1
+
+- **GIVEN** an OpenCode configuration with no `skills` block
+- **WHEN** the plugin configuration hook runs
+- **THEN** it creates `skills.paths` containing the absolute bundled skill parent
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 2
+
+- **GIVEN** existing user-defined skill paths
+- **WHEN** the plugin configuration hook runs
+- **THEN** it preserves their order and values and appends only the missing bundled path
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 3
+
+- **GIVEN** the hook runs more than once
+- **WHEN** the bundled path is already registered
+- **THEN** the configuration remains unchanged and contains no duplicate path
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 4
+
+- **GIVEN** an installation path containing spaces or URL-encoded characters
+- **WHEN** the plugin resolves its bundle
+- **THEN** it registers a valid native absolute filesystem path
+
+### Requirement: Preserve user skill configuration
+
+Runtime registration MUST preserve existing `skills.paths` entries and MUST be idempotent across repeated hook execution.
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 1
+
+- **GIVEN** an OpenCode configuration with no `skills` block
+- **WHEN** the plugin configuration hook runs
+- **THEN** it creates `skills.paths` containing the absolute bundled skill parent
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 2
+
+- **GIVEN** existing user-defined skill paths
+- **WHEN** the plugin configuration hook runs
+- **THEN** it preserves their order and values and appends only the missing bundled path
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 3
+
+- **GIVEN** the hook runs more than once
+- **WHEN** the bundled path is already registered
+- **THEN** the configuration remains unchanged and contains no duplicate path
+
+#### Scenario: US2 - Discover the installed skill at OpenCode runtime 4
+
+- **GIVEN** an installation path containing spaces or URL-encoded characters
+- **WHEN** the plugin resolves its bundle
+- **THEN** it registers a valid native absolute filesystem path

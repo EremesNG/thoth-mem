@@ -293,3 +293,47 @@ Inventory and read-only package verification MUST declare and validate every pub
 - **GIVEN** a missing, stale, or undeclared packaged reference
 - **WHEN** the read-only verifier runs
 - **THEN** verification fails with a bounded asset error
+
+### Requirement: Include skill in managed drift
+
+OpenCode setup inspection and replacement MUST include the installed skill bundle in the existing receipt-owned asset comparison so missing, stale, or extra managed skill files are detected.
+
+#### Scenario: US3 - Preserve managed setup ownership 1
+
+- **GIVEN** a skill file is missing or modified inside the managed plugin assets
+- **WHEN** setup is inspected
+- **THEN** the installation is reported as drifted
+
+#### Scenario: US3 - Preserve managed setup ownership 2
+
+- **GIVEN** an older managed OpenCode installation without the bundled skill
+- **WHEN** setup is applied again
+- **THEN** the receipt-owned asset directory is upgraded to the complete current layout
+
+#### Scenario: US3 - Preserve managed setup ownership 3
+
+- **GIVEN** a managed installation with the bundled skill
+- **WHEN** rollback is applied
+- **THEN** the receipt-owned plugin assets are restored or removed according to the receipt and no shared OpenCode skill directory is mutated
+
+### Requirement: Keep rollback ownership bounded
+
+OpenCode rollback MUST restore or remove the bundled skill only through the existing managed plugin asset receipt and MUST NOT create, edit, or delete the user's shared OpenCode skills directory.
+
+#### Scenario: US3 - Preserve managed setup ownership 1
+
+- **GIVEN** a skill file is missing or modified inside the managed plugin assets
+- **WHEN** setup is inspected
+- **THEN** the installation is reported as drifted
+
+#### Scenario: US3 - Preserve managed setup ownership 2
+
+- **GIVEN** an older managed OpenCode installation without the bundled skill
+- **WHEN** setup is applied again
+- **THEN** the receipt-owned asset directory is upgraded to the complete current layout
+
+#### Scenario: US3 - Preserve managed setup ownership 3
+
+- **GIVEN** a managed installation with the bundled skill
+- **WHEN** rollback is applied
+- **THEN** the receipt-owned plugin assets are restored or removed according to the receipt and no shared OpenCode skill directory is mutated
