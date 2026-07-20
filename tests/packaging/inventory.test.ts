@@ -601,12 +601,14 @@ describe('package publication allowlist', () => {
 });
 
 describe('build release verification', () => {
-  it('release commands force the version lifecycle that synchronizes plugin manifests', async () => {
+  it('release commands synchronize, verify, and stage the published plugin assets', async () => {
     const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
 
-    expect(manifest.scripts.version).toBe(
-      'pnpm run integration:sync && pnpm run integration:verify',
-    );
+    expect(manifest.scripts.version.split('&&').map((step) => step.trim())).toEqual([
+      'pnpm run integration:sync',
+      'pnpm run integration:verify',
+      'git add -- plugin .agents/plugins/marketplace.json .claude-plugin/marketplace.json',
+    ]);
     for (const releaseType of ['patch', 'minor', 'major']) {
       expect(manifest.scripts[`release:${releaseType}`]).toBe(
         `npm version ${releaseType} --ignore-scripts=false && git push --follow-tags`,

@@ -38,7 +38,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "pnpm run build && pnpm test",
-    "version": "pnpm run integration:sync && pnpm run integration:verify",
+    "version": "pnpm run integration:sync && pnpm run integration:verify && git add -- plugin .agents/plugins/marketplace.json .claude-plugin/marketplace.json",
     "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags",
     "release:minor": "npm version minor --ignore-scripts=false && git push --follow-tags",
     "release:major": "npm version major --ignore-scripts=false && git push --follow-tags"
