@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
     const MAX_OUTPUT_ENTRIES = 128;
     const MAX_CONFIRM_ATTEMPTS = 3;
     const MAX_PROMPT_PARTS = 128;
+    const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v1';
+    const MAX_IDENTITY_PARENT_DEPTH = 16;
     const MAPPINGS = Object.freeze({
       'experimental.chat.system.transform': Object.freeze({
         eventMappingId: 'opencode-session-start-v1',
@@ -117,6 +119,32 @@ function hasExactInput(type, input) {
         if (name) return name;
       }
       return undefined;
+    }
+
+    function isBoundedProjectName(value) {
+      return typeof value === 'string'
+        && Array.from(value).length > 0
+        && Array.from(value).length <= MAX_IDENTIFIER_CODE_POINTS;
+    }
+
+    function identityResult(payload) {
+      return JSON.stringify({ schema: IDENTITY_SCHEMA, ...payload });
+    }
+
+    function degradedIdentity(reason) {
+      return identityResult({ status: 'degraded', reason, authorization: 'none' });
+    }
+
+    function verifiedIdentity(rootSessionID, callerSessionID, project) {
+      const callerIsRoot = rootSessionID === callerSessionID;
+      return identityResult({
+        status: 'verified',
+        root_session_id: rootSessionID,
+        caller_session_id: callerSessionID,
+        caller_role: callerIsRoot ? 'root' : 'delegated',
+        project,
+        authorization: callerIsRoot ? 'root_lifecycle' : 'none',
+      });
     }
 
     function requestContext(context) {
@@ -346,6 +374,32 @@ function hasExactInput(type, input) {
             enrollmentAttempts.delete(sessionID);
           }
         };
+        const resolveRootSession = async (callerSessionID, directory) => {
+          const get = context?.client?.session?.get;
+          if (typeof get !== 'function') return { reason: 'session_lookup_unavailable' };
+          const visited = new Set();
+          let sessionID = callerSessionID;
+          for (let depth = 0; depth < MAX_IDENTITY_PARENT_DEPTH; depth += 1) {
+            if (visited.has(sessionID)) return { reason: 'parent_cycle' };
+            visited.add(sessionID);
+            let response;
+            try {
+              response = await get.call(context.client.session, {
+                path: { id: sessionID },
+                ...(typeof directory === 'string' ? { query: { directory } } : {}),
+              });
+            } catch {
+              return { reason: 'session_lookup_failed' };
+            }
+            const info = isRecord(response) ? response.data : undefined;
+            if (!isRecord(info)) return { reason: 'session_not_found' };
+            if (info.id !== sessionID) return { reason: 'session_id_mismatch' };
+            if (!Object.hasOwn(info, 'parentID')) return { rootSessionID: sessionID };
+            if (!isBoundedIdentifier(info.parentID)) return { reason: 'parent_id_invalid' };
+            sessionID = info.parentID;
+          }
+          return { reason: 'parent_depth_exceeded' };
+        };
         const resolveSessionKind = async (sessionID) => {
           const known = sessionKinds.get(sessionID);
           if (known) return known;
@@ -399,6 +453,35 @@ function hasExactInput(type, input) {
         };
 
         return {
+          tool: {
+            thoth_mem_root_identity: {
+              description: 'Return the verified OpenCode root session identity as versioned JSON.',
+              args: {},
+              execute: async (_args, toolContext) => {
+                const sessionID = isRecord(toolContext) && isBoundedIdentifier(toolContext.sessionID)
+                  ? toolContext.sessionID
+                  : undefined;
+                if (!sessionID) return degradedIdentity('invalid_caller_session');
+                const directory = typeof toolContext.directory === 'string'
+                  ? toolContext.directory
+                  : context?.directory;
+                const resolution = await resolveRootSession(sessionID, directory);
+                if (resolution.reason) return degradedIdentity(resolution.reason);
+                const rootSessionID = resolution.rootSessionID;
+                const project = projectName({
+                  ...(isRecord(context) ? context : {}),
+                  ...(typeof toolContext.directory === 'string'
+                    ? { directory: toolContext.directory }
+                    : {}),
+                  ...(typeof toolContext.worktree === 'string'
+                    ? { worktree: toolContext.worktree }
+                    : {}),
+                });
+                if (!isBoundedProjectName(project)) return degradedIdentity('project_unavailable');
+                return verifiedIdentity(rootSessionID, sessionID, project);
+              },
+            },
+          },
           config: async (config) => {
             registerBundledSkillPath(config);
           },

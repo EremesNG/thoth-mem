@@ -34,7 +34,20 @@ interface HookResponse {
   hostOutputDirective?: { purpose: DirectivePurpose; text: string; deliveryMappingId: string };
   deliveryAttempt?: string;
 }
+interface OpenCodeToolContext {
+  sessionID: string;
+  messageID: string;
+  agent: string;
+  directory: string;
+  worktree: string;
+}
+interface OpenCodeToolDefinition {
+  description: string;
+  args: Record<string, never>;
+  execute(args: Record<string, never>, context: OpenCodeToolContext): Promise<string>;
+}
 interface OpenCodeHooks {
+  tool: { thoth_mem_root_identity: OpenCodeToolDefinition };
   config(config: OpenCodeConfig): Promise<void>;
   event(input: { event: Record<string, unknown> }): Promise<void>;
   'chat.message'(input: Record<string, unknown>, output: Record<string, unknown>): Promise<void>;
@@ -146,6 +159,209 @@ function textPart(
 ): Record<string, unknown> {
   return { id, sessionID, messageID, type: 'text', text, ...extra };
 }
+
+describe('OpenCode root identity tool', () => {
+  it('returns verified v1 identity for the invoking root without dispatching lifecycle work', async () => {
+    const requests: unknown[] = [];
+    const root = sessionInfo('root-session');
+    const createOpenCodePlugin = await loadPlugin();
+    const hooks = await createOpenCodePlugin({
+      dispatch: async (request) => {
+        requests.push(request);
+        throw new Error('identity tool must not dispatch');
+      },
+    })(pluginContext(new Map([['root-session', root]])));
+
+    expect(Object.keys(hooks.tool)).toEqual(['thoth_mem_root_identity']);
+    expect(hooks.tool.thoth_mem_root_identity.args).toEqual({});
+
+    const output = await hooks.tool.thoth_mem_root_identity.execute({}, {
+      sessionID: 'root-session',
+      messageID: 'message-1',
+      agent: 'orchestrator',
+      directory: 'C:\\workspace\\thoth-mem',
+      worktree: 'C:\\workspace\\thoth-mem',
+    });
+
+    expect(JSON.parse(output)).toEqual({
+      schema: 'thoth-mem.opencode.identity.v1',
+      status: 'verified',
+      root_session_id: 'root-session',
+      caller_session_id: 'root-session',
+      caller_role: 'root',
+      project: 'thoth-mem',
+      authorization: 'root_lifecycle',
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it('resolves the terminal root for a nested delegated caller without granting authority', async () => {
+    const requests: unknown[] = [];
+    const sessions = new Map([
+      ['root-session', sessionInfo('root-session')],
+      ['parent-session', sessionInfo('parent-session', 'root-session')],
+      ['child-session', sessionInfo('child-session', 'parent-session')],
+    ]);
+    const createOpenCodePlugin = await loadPlugin();
+    const hooks = await createOpenCodePlugin({
+      dispatch: async (request) => {
+        requests.push(request);
+        throw new Error('identity tool must not dispatch');
+      },
+    })(pluginContext(sessions));
+
+    const output = await hooks.tool.thoth_mem_root_identity.execute({}, {
+      sessionID: 'child-session',
+      messageID: 'message-2',
+      agent: 'explorer',
+      directory: 'C:\\workspace\\thoth-mem',
+      worktree: 'C:\\workspace\\thoth-mem',
+    });
+
+    expect(JSON.parse(output)).toEqual({
+      schema: 'thoth-mem.opencode.identity.v1',
+      status: 'verified',
+      root_session_id: 'root-session',
+      caller_session_id: 'child-session',
+      caller_role: 'delegated',
+      project: 'thoth-mem',
+      authorization: 'none',
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it('returns bounded degraded v1 output for every unprovable identity chain', async () => {
+    const root = sessionInfo('root-session');
+    const cycleSessions = new Map([
+      ['cycle-a', sessionInfo('cycle-a', 'cycle-b')],
+      ['cycle-b', sessionInfo('cycle-b', 'cycle-a')],
+    ]);
+    const deepSessions = new Map<string, Record<string, unknown>>();
+    for (let index = 0; index <= 16; index += 1) {
+      const id = 'deep-' + index;
+      deepSessions.set(id, sessionInfo(id, index < 16 ? 'deep-' + (index + 1) : undefined));
+    }
+    const noProjectContext = {
+      client: {
+        app: { log: async () => undefined },
+        session: {
+          get: async ({ path }: { path: { id: string } }) => ({
+            data: path.id === 'root-session' ? root : undefined,
+          }),
+        },
+      },
+    };
+    const lookupFailureContext = {
+      directory: 'C:\\workspace\\thoth-mem',
+      worktree: 'C:\\workspace\\thoth-mem',
+      project: { worktree: 'C:\\workspace\\thoth-mem' },
+      client: {
+        app: { log: async () => undefined },
+        session: { get: async () => { throw new Error('private host failure'); } },
+      },
+    };
+    const cases: Array<{
+      name: string;
+      context: Record<string, unknown>;
+      sessionID: string;
+      directory?: string;
+      reason: string;
+    }> = [
+      {
+        name: 'invalid caller session',
+        context: pluginContext(new Map()),
+        sessionID: '',
+        reason: 'invalid_caller_session',
+      },
+      {
+        name: 'lookup unavailable',
+        context: {
+          directory: 'C:\\workspace\\thoth-mem',
+          worktree: 'C:\\workspace\\thoth-mem',
+          project: { worktree: 'C:\\workspace\\thoth-mem' },
+        },
+        sessionID: 'root-session',
+        reason: 'session_lookup_unavailable',
+      },
+      {
+        name: 'lookup failure',
+        context: lookupFailureContext,
+        sessionID: 'root-session',
+        reason: 'session_lookup_failed',
+      },
+      {
+        name: 'missing session',
+        context: pluginContext(new Map()),
+        sessionID: 'missing-session',
+        reason: 'session_not_found',
+      },
+      {
+        name: 'mismatched session',
+        context: pluginContext(new Map([['root-session', sessionInfo('other-session')]])),
+        sessionID: 'root-session',
+        reason: 'session_id_mismatch',
+      },
+      {
+        name: 'malformed parent',
+        context: pluginContext(new Map([
+          ['child-session', { ...sessionInfo('child-session'), parentID: '' }],
+        ])),
+        sessionID: 'child-session',
+        reason: 'parent_id_invalid',
+      },
+      {
+        name: 'broken parent link',
+        context: pluginContext(new Map([
+          ['child-session', sessionInfo('child-session', 'missing-parent')],
+        ])),
+        sessionID: 'child-session',
+        reason: 'session_not_found',
+      },
+      {
+        name: 'parent cycle',
+        context: pluginContext(cycleSessions),
+        sessionID: 'cycle-a',
+        reason: 'parent_cycle',
+      },
+      {
+        name: 'parent depth overflow',
+        context: pluginContext(deepSessions),
+        sessionID: 'deep-0',
+        reason: 'parent_depth_exceeded',
+      },
+      {
+        name: 'project unavailable',
+        context: noProjectContext,
+        sessionID: 'root-session',
+        directory: '',
+        reason: 'project_unavailable',
+      },
+    ];
+    const createOpenCodePlugin = await loadPlugin();
+
+    for (const testCase of cases) {
+      const hooks = await createOpenCodePlugin({
+        dispatch: async () => { throw new Error('identity tool must not dispatch'); },
+      })(testCase.context);
+      const output = await hooks.tool.thoth_mem_root_identity.execute({}, {
+        sessionID: testCase.sessionID,
+        messageID: 'message-' + testCase.name,
+        agent: 'orchestrator',
+        directory: testCase.directory ?? 'C:\\workspace\\thoth-mem',
+        worktree: testCase.directory ?? 'C:\\workspace\\thoth-mem',
+      });
+      const parsed = JSON.parse(output);
+
+      expect(parsed, testCase.name).toEqual({
+        schema: 'thoth-mem.opencode.identity.v1',
+        status: 'degraded',
+        reason: testCase.reason,
+        authorization: 'none',
+      });
+      expect(parsed, testCase.name).not.toHaveProperty('root_session_id');
+    }
+  });
+});
 
 describe('OpenCode bundled skill registration', () => {
   it('registers the copied native skill parent once while preserving existing paths', async () => {
