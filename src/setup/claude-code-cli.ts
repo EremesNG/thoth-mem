@@ -9,6 +9,19 @@ export const CLAUDE_PLUGIN_ID = 'thoth-mem@thoth-mem';
 const PROBE_TIMEOUT_MS = 5_000;
 const MUTATION_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const SAFE_SPAWN_ERROR_CODES = new Set([
+  'EACCES',
+  'EAGAIN',
+  'EFTYPE',
+  'EINTR',
+  'EINVAL',
+  'EIO',
+  'ENOENT',
+  'ENOEXEC',
+  'ENOMEM',
+  'ENOTDIR',
+  'EPERM',
+]);
 
 export interface ClaudeCommandResult {
   exitCode: number | null;
@@ -91,7 +104,9 @@ export async function inspectClaudeCodeManager(
   const execution = executionOptions(options.scope, options.projectPath, PROBE_TIMEOUT_MS);
   const version = await run(options.executor, ['--version'], execution);
   if (!version.ok) {
-    return failedInspection('Claude Code version probing failed safely.');
+    return failedInspection(version.errorCode
+      ? `Claude Code version probing could not start (${version.errorCode}).`
+      : 'Claude Code version probing failed safely.');
   }
   if (!/^claude-code\s+1\./i.test(version.stdout.trim())) {
     return manualInspection('The detected Claude Code version is not in the verified manager family.');
@@ -295,17 +310,32 @@ async function run(
   executor: ClaudeCommandExecutor,
   args: readonly string[],
   options: ClaudeCommandExecutionOptions,
-): Promise<{ ok: boolean; stdout: string }> {
+): Promise<{ ok: boolean; stdout: string; errorCode?: string }> {
   try {
     const result = await executor.execute(args, options);
     const stdout = result.stdout.length <= MAX_OUTPUT_BYTES ? result.stdout : '';
+    const errorCode = safeSpawnErrorCode(result.errorCode);
     return {
       ok: result.exitCode === 0 && !result.timedOut && !result.outputTruncated && stdout.length > 0,
       stdout,
+      ...(errorCode ? { errorCode } : {}),
     };
-  } catch {
-    return { ok: false, stdout: '' };
+  } catch (error) {
+    const errorCode = safeSpawnErrorCode(error);
+    return { ok: false, stdout: '', ...(errorCode ? { errorCode } : {}) };
   }
+}
+
+function safeSpawnErrorCode(error: unknown): string | undefined {
+  let code: unknown;
+  if (typeof error === 'string') {
+    code = error;
+  } else if (error && typeof error === 'object' && 'code' in error) {
+    code = (error as { code?: unknown }).code;
+  }
+  return typeof code === 'string' && SAFE_SPAWN_ERROR_CODES.has(code)
+    ? code
+    : undefined;
 }
 
 function executeCommand(
@@ -316,11 +346,24 @@ function executeCommand(
   maxOutputBytes: number,
 ): Promise<ClaudeCommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let child;
+    try {
+      child = spawn(command, args, {
+        cwd,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      const errorCode = safeSpawnErrorCode(error);
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        error: 'spawn_failed',
+        ...(errorCode ? { errorCode } : {}),
+      });
+      return;
+    }
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -346,7 +389,14 @@ function executeCommand(
     child.stderr?.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
     child.on('error', (error) => {
       clearTimeout(timer);
-      resolve({ exitCode: null, stdout, stderr, error: error.message, errorCode: error.name });
+      const errorCode = safeSpawnErrorCode(error);
+      resolve({
+        exitCode: null,
+        stdout,
+        stderr,
+        error: 'spawn_failed',
+        ...(errorCode ? { errorCode } : {}),
+      });
     });
     child.on('close', (exitCode) => {
       clearTimeout(timer);
