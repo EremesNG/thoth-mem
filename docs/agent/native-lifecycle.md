@@ -9,9 +9,9 @@ Owns host-neutral session/prompt/compaction lifecycle effects, capability-eviden
 - `src/integration/runtime/integration-event-command.ts` and `hook-command.ts`: validate ingress and resolve capability evidence before adapter selection.
 - `src/integration/core/lifecycle.ts`, `memory-port.ts`, `mcp-memory-port.ts`, `state-store.ts`: plan/confirm memory effects and lifecycle state.
 - `src/integration/adapters/`: host-specific normalization/output behavior.
-- `integrations/opencode/plugin.mjs` and host runner assets: published native entrypoints governed by inventory.
+- `integrations/opencode/plugin.mjs` and `plugin/` runner/hook assets: published native entrypoints governed by inventory.
 
-A verified native event is normalized through resolver-backed evidence, mapped to the host-neutral lifecycle core, and allowed to produce bounded output only after confirmed memory effects. Each adapter translates its verified native root-session identity field into host-neutral `sessionId`; lifecycle effects map that value to the MCP tool's `id` or `session_id` parameter. Project identity is the current project name, normally derived from the repository or workspace directory name. OpenCode projects exact root `session.created` and trusted `chat.message` payloads into confirmed normal side effects, while its system/compaction output mutation remains a separate prepare/confirm protocol. Codex and Claude runners render verified native stdout.
+A verified native event is normalized through resolver-backed evidence, mapped to the host-neutral lifecycle core, and allowed to produce bounded output only after confirmed memory effects. Each adapter translates its verified native root-session identity field into host-neutral `sessionId`; lifecycle effects map that value to the MCP tool's `id` or `session_id` parameter. Project identity is the current project name, normally derived from the repository or workspace directory name. OpenCode projects exact root `session.created` and trusted `chat.message` payloads into confirmed normal side effects, while its system/compaction output mutation remains a separate prepare/confirm protocol. Codex and Claude invoke the same shared packaged runner with host-specific hook arguments to render verified native stdout.
 
 ## Invariants and hazards
 

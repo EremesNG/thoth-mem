@@ -9,6 +9,7 @@ Owns bounded harness setup planning/mutation/verification, managed configuration
 - `src/setup/engine.ts`, `paths.ts`, `managed-config.ts`, `receipt.ts`, `transaction-lock.ts`: setup strategy, scope, ownership, transactions, and recovery.
 - `src/setup/harnesses/`, `codex-cli.ts`, `claude-code-cli.ts`: host-specific setup/capability evidence.
 - `integrations/inventory.json`: sole executable authority for published native harness assets.
+- `plugin/`: one shared Codex/Claude distribution bundle with host-specific manifests and hooks plus one runner and skill copy.
 - `scripts/sync-integration-assets.mjs`: explicit mutating synchronization step.
 - `scripts/verify-integration-package.mjs`: read-only inventory/containment/package/runtime verification.
 - `scripts/build.mjs`, `package.json`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`: build and publication gates.
@@ -16,11 +17,11 @@ Owns bounded harness setup planning/mutation/verification, managed configuration
 ## Invariants and hazards
 
 - Public setup covers `opencode`, `codex`, and `claude`; the Claude setup/runtime contract uses `claude`.
-- Claude Code product-branded assets and modules retain names such as `claude-code-cli.ts` and `integrations/claude-code/**`.
+- Claude Code product-branded modules retain names such as `claude-code-cli.ts`; Codex and Claude published assets coexist under `plugin/`.
 - Resolve a confined target and choose one immutable strategy before mutation. Plan/no-op paths remain read-only.
 - Mutations and rollback are limited to proven ownership. Receipts/checkpoints preserve unrelated and later user edits; ambiguity fails closed or requires operator action.
 - External command success alone is not proof of manager ownership or complete setup.
-- Inventory, runner copies, manifests, versions, and package file lists must stay consistent. Do not edit generated `dist/`.
+- Inventory, shared runner/skill assets, manifests, versions, and package file lists must stay consistent. Do not edit generated `dist/`.
 - Automated verification is isolated and credential-free. Real host smoke, setup mutation, publication, version bump, and release commands require explicit authorization and disposable controlled environments.
 - Do not run `integration:sync` merely to inspect drift; it mutates published assets. Use the read-only verifier for verification tasks.
 
