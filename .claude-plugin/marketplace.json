@@ -9,7 +9,7 @@
     {
       "name": "thoth-mem",
       "description": "Root-session memory lifecycle, bounded recall, compaction recovery, and privacy-safe prompt capture.",
-      "version": "0.4.7",
+      "version": "0.4.8",
       "author": {
         "name": "thoth-mem maintainers"
       },
