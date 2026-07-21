@@ -41,8 +41,10 @@ harness before declaring stable identity unavailable:
 - OpenCode: `references/opencode.md`
 
 Do not load all harness references. A model-visible `thoth-mem verified identity`
-block produced by confirmed native lifecycle handling is the primary identity source;
-the selected reference defines only that harness's bounded recovery procedure.
+block produced by confirmed native lifecycle handling is the primary shared identity
+source. A selected harness reference may define a native identity tool that takes
+precedence because it verifies the current caller's role and authorization. Such a
+tool resolves identity only; it does not prove that lifecycle side effects occurred.
 
 When calling `mem_session`, its `id` parameter receives the root session ID and its
 `project` parameter receives the project name. When another memory tool exposes a

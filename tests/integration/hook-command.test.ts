@@ -1575,6 +1575,10 @@ describe('native plugin assets', () => {
     expect(claude).toMatch(/do not invent `CLAUDE_SESSION_ID`/i);
 
     const opencode = references.get('references/opencode.md') ?? '';
+    expect(opencode).toContain('thoth_mem_root_identity');
+    expect(opencode).toContain('thoth-mem.opencode.identity.v1');
+    expect(opencode).toMatch(/caller_role.*delegated.*authorization.*none/is);
+    expect(opencode).toMatch(/status.*degraded.*root_session_id/is);
     expect(opencode).toContain('properties.info.id');
     expect(opencode).toContain('input.sessionID');
     expect(opencode).toMatch(/parentID.*delegated/is);
