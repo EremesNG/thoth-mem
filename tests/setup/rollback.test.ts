@@ -1095,6 +1095,32 @@ describe('write-ahead setup receipts', () => {
     });
   });
 
+  it('reports a privacy-safe busy-target action when OpenCode replacement is blocked', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const privateError = 'EPERM private target path C:\\Users\\secret\\OpenCode';
+      let faultInjected = false;
+      const result = await runSetup(fixture, fixture.request, {
+        ids: ['busy-target'],
+        filesystemFault: ({ point }) => {
+          if (point === 'atomic-rename' && !faultInjected) {
+            faultInjected = true;
+            throw Object.assign(new Error(privateError), { code: 'EPERM' });
+          }
+        },
+      });
+
+      expect(result).toMatchObject({ status: 'failed', changed: false });
+      expect(faultInjected).toBe(true);
+      expect(result.diagnostics).toEqual([
+        'OpenCode setup could not replace its managed files because OpenCode or another process keeps them busy or inaccessible.',
+      ]);
+      expect(result.manual_actions).toEqual([
+        'Close every OpenCode process and retry setup; do not delete the thoth-mem plugin manually.',
+      ]);
+      expect(JSON.stringify(result)).not.toContain(privateError);
+    });
+  });
+
   it('uses target-bound transient OpenCode journals and removes successful rollback evidence', async () => {
         await withTemporaryFixture(async (fixture) => {
           const result = await runSetup(fixture, fixture.request, { ids: ['transient-journal'] });

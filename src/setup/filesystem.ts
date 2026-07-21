@@ -194,7 +194,7 @@ export async function applyAtomicFilesystemChanges(
       remainingArtifacts: [],
       diagnostics: [],
     };
-  } catch {
+  } catch (error) {
     const remainingArtifacts = await cleanupArtifacts(activeArtifacts, options);
     const { restored, unrestored } = await restoreAppliedChanges(applied, options);
     const cleanupIncomplete = remainingArtifacts.length > 0;
@@ -208,7 +208,7 @@ export async function applyAtomicFilesystemChanges(
         ? 'filesystem-artifact-cleanup-incomplete'
         : unrestored.length > 0
           ? 'filesystem-apply-failed-restoration-incomplete'
-          : 'filesystem-apply-failed-restored',
+          : filesystemApplyDiagnostic(error),
     );
   }
 }
@@ -972,6 +972,15 @@ async function cleanupArtifacts(
     }
   }
   return [...artifacts].sort();
+}
+
+function filesystemApplyDiagnostic(error: unknown): string {
+  const code = error instanceof Error && 'code' in error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+  return ['EPERM', 'EBUSY', 'EACCES', 'ETXTBSY'].includes(code ?? '')
+    ? 'filesystem-target-busy'
+    : 'filesystem-apply-failed-restored';
 }
 
 function failedResult(

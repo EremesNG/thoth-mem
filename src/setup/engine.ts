@@ -1408,6 +1408,7 @@ function receiptFailureResult(
   changed: boolean,
   receiptPath: string | null,
   diagnostic: string,
+  manualActions?: string[],
 ): SetupResult {
   return {
     status: 'failed',
@@ -1417,9 +1418,9 @@ function receiptFailureResult(
     target: paths.targetRoot,
     steps: [{ name: 'Apply receipt-backed setup transaction', outcome: 'failed' }],
     diagnostics: [diagnostic],
-    manual_actions: changed
+    manual_actions: manualActions ?? (changed
       ? ['Inspect the verified in-progress receipt before retrying or rolling back.']
-      : ['No setup target change remains; review the failed receipt before retrying.'],
+      : ['No setup target change remains; review the failed receipt before retrying.']),
     receipt: receiptPath,
   };
 }
@@ -2027,14 +2028,22 @@ async function executeOpenCodeSetup(
       receiptKeyPath,
       receiptTrustedRoot,
     );
+    const busyTarget = applied.filesystem.diagnostics.includes('filesystem-target-busy');
+    let failureDiagnostic = 'Setup transaction failed and did not complete.';
+    if (busyTarget) {
+      failureDiagnostic = 'OpenCode setup could not replace its managed files because OpenCode or another process keeps them busy or inaccessible.';
+    } else if (applied.filesystem.remainingArtifacts.length > 0) {
+      failureDiagnostic = 'Setup transaction failed with an unresolved temporary filesystem artifact.';
+    }
     return receiptFailureResult(
       request,
       paths,
       applied.filesystem.changed,
       applied.initialReceiptPersisted ? receiptPaths.receiptPath : null,
-      applied.filesystem.remainingArtifacts.length > 0
-        ? 'Setup transaction failed with an unresolved temporary filesystem artifact.'
-        : 'Setup transaction failed and did not complete.',
+      failureDiagnostic,
+      busyTarget
+        ? ['Close every OpenCode process and retry setup; do not delete the thoth-mem plugin manually.']
+        : undefined,
     );
   }
 
