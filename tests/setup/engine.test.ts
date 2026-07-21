@@ -1,10 +1,13 @@
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  readlink,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -419,14 +422,27 @@ function managedMetadata(request: SetupRequest, paths: SetupPaths): string {
 }
 
 function seedPackagedAssets(fileSystem: FakeSetupFileSystem, paths: SetupPaths): void {
+  fileSystem.file(join(dirname(dirname(paths.sourceAssetsPath)), 'integrations', 'inventory.json'), JSON.stringify({
+    schemaVersion: 1,
+    assets: [
+      { harness: 'opencode', role: 'plugin', path: 'integrations/opencode/plugin.mjs' },
+      { harness: 'opencode', role: 'instruction', path: 'integrations/opencode/memory-protocol.md' },
+      { harness: 'opencode', role: 'runner', path: 'integrations/shared/hook-runner.mjs' },
+      { harness: 'shared', role: 'skill', path: 'plugin/skills/thoth-mem/SKILL.md' },
+      { harness: 'shared', role: 'skill-reference-opencode', path: 'plugin/skills/thoth-mem/references/opencode.md' },
+    ],
+  }));
   fileSystem.directory(paths.sourceAssetsPath);
   if (paths.sourceSharedPath) {
     fileSystem.directory(paths.sourceSharedPath);
     fileSystem.file(join(paths.sourceAssetsPath, 'plugin.mjs'), 'packaged-opencode-plugin');
+    fileSystem.file(join(paths.sourceAssetsPath, 'memory-protocol.md'), 'packaged-memory-protocol');
     fileSystem.file(join(paths.sourceSharedPath, 'hook-runner.mjs'), 'packaged-hook-runner');
     fileSystem.directory(dirname(paths.sourceSkillPath!));
     fileSystem.directory(paths.sourceSkillPath!);
     fileSystem.file(join(paths.sourceSkillPath!, 'SKILL.md'), 'packaged-skill');
+    fileSystem.directory(join(paths.sourceSkillPath!, 'references'));
+    fileSystem.file(join(paths.sourceSkillPath!, 'references', 'opencode.md'), 'packaged-opencode-reference');
   } else {
     fileSystem.file(join(paths.sourceAssetsPath, 'codex.mcp.json'), 'packaged-codex-mcp');
   }
@@ -454,11 +470,17 @@ function seedManagedSetup(
     fileSystem.directory(join(paths.assetPath, 'shared'));
     fileSystem.directory(join(paths.assetPath, 'opencode', 'skills'));
     fileSystem.file(join(paths.assetPath, 'opencode', 'plugin.mjs'), 'packaged-opencode-plugin');
+    fileSystem.file(join(paths.assetPath, 'opencode', 'memory-protocol.md'), 'packaged-memory-protocol');
     fileSystem.file(join(paths.assetPath, 'shared', 'hook-runner.mjs'), 'packaged-hook-runner');
     fileSystem.directory(join(paths.assetPath, 'opencode', 'skills', 'thoth-mem'));
     fileSystem.file(
       join(paths.assetPath, 'opencode', 'skills', 'thoth-mem', 'SKILL.md'),
       'packaged-skill',
+    );
+    fileSystem.directory(join(paths.assetPath, 'opencode', 'skills', 'thoth-mem', 'references'));
+    fileSystem.file(
+      join(paths.assetPath, 'opencode', 'skills', 'thoth-mem', 'references', 'opencode.md'),
+      'packaged-opencode-reference',
     );
     fileSystem.file(paths.pluginEntryPath, 'export { default } from \'./.thoth-mem/opencode/plugin.mjs\';\n');
   } else {
@@ -987,8 +1009,8 @@ describe('inspects and plans with zero writes', () => {
     const request = setupRequest('opencode');
     const paths = resolveSetupPaths(request, ROOTS);
     const fileSystem = new FakeSetupFileSystem();
-    fileSystem.directory(paths.sourceAssetsPath);
-    fileSystem.directory(paths.sourceSharedPath!);
+    seedPackagedAssets(fileSystem, paths);
+    fileSystem.entries.delete(paths.sourceSkillPath!);
 
     const result = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
 
@@ -1025,13 +1047,21 @@ describe('inspects and plans with zero writes', () => {
       'planned',
       'planned',
       'planned',
+      'planned',
+      'planned',
+      'planned',
+      'planned',
     ]);
     expect(planned.steps.map((step) => step.name)).toEqual([
       `Inspect packaged OpenCode assets: ${paths.sourceAssetsPath}`,
       `Inspect OpenCode configuration: ${paths.configPath}`,
-      `Install OpenCode assets: ${paths.assetPath}`,
+      'Prepare target-bound temporary OpenCode recovery journal',
+      `Replace complete OpenCode managed assets: ${paths.assetPath}`,
+      `Replace canonical OpenCode plugin entry: ${paths.pluginEntryPath}`,
       `Merge managed OpenCode configuration: ${paths.configPath}`,
-      'Verify OpenCode setup',
+      'Verify exact OpenCode setup post-state',
+      'Remove target-bound OpenCode recovery and rollback evidence',
+      'Report manual OpenCode restart requirement',
     ]);
     expectZeroWrites(fileSystem, before);
 
@@ -1045,7 +1075,38 @@ describe('inspects and plans with zero writes', () => {
     expectZeroWrites(fileSystem, before);
   });
 
-  it('returns an idempotent no-op for verified OpenCode project setup', async () => {
+  it('plans destructive OpenCode convergence, temporary recovery, cleanup, and restart with zero writes', async () => {
+        const request = setupRequest('opencode');
+        const paths = resolveSetupPaths(request, ROOTS);
+        const fileSystem = new FakeSetupFileSystem();
+        seedPackagedAssets(fileSystem, paths);
+        fileSystem.directory(paths.assetPath);
+        fileSystem.file(join(paths.assetPath, 'obsolete-private.txt'), 'private');
+        const before = fileSystem.snapshot();
+
+        const result = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+
+        expect(result).toMatchObject({ status: 'complete', changed: false, receipt: null });
+        expect(result.steps.map((step) => step.name)).toEqual([
+          `Inspect packaged OpenCode assets: ${paths.sourceAssetsPath}`,
+          `Inspect OpenCode configuration: ${paths.configPath}`,
+          'Prepare target-bound temporary OpenCode recovery journal',
+          `Replace complete OpenCode managed assets: ${paths.assetPath}`,
+          `Replace canonical OpenCode plugin entry: ${paths.pluginEntryPath}`,
+          `Merge managed OpenCode configuration: ${paths.configPath}`,
+          'Verify exact OpenCode setup post-state',
+          'Remove target-bound OpenCode recovery and rollback evidence',
+          'Report manual OpenCode restart requirement',
+        ]);
+        expect(result.steps.slice(2).every((step) => step.outcome === 'planned')).toBe(true);
+        expect(result.diagnostics).toContain(
+          'OpenCode convergence replaces the complete managed asset directory and canonical plugin entry.',
+        );
+        expect(result.diagnostics).toContain('Changed OpenCode setup requires a manual host restart.');
+        expectZeroWrites(fileSystem, before);
+      });
+
+      it('returns an idempotent no-op for verified OpenCode project setup', async () => {
     const request = setupRequest('opencode', {
       scope: 'project',
       projectPath: PROJECT_PATH,
@@ -1065,18 +1126,81 @@ describe('inspects and plans with zero writes', () => {
       'confirmed',
       'skipped',
       'skipped',
+      'skipped',
+      'skipped',
       'confirmed',
+      'skipped',
+      'skipped',
     ]);
     expect(JSON.stringify(result)).not.toContain('must-not-leak');
     expect(fileSystem.reads.some((path) => path.startsWith(ROOTS.xdgConfigHome!))).toBe(false);
     expectZeroWrites(fileSystem, before);
   });
 
-  it('treats the bundled OpenCode skill as part of managed asset drift', async () => {
+  it.each([
+        { scope: 'global' as const, projectPath: undefined },
+        { scope: 'project' as const, projectPath: PROJECT_PATH },
+      ])('plans every non-current OpenCode state for convergence without force in $scope scope', async ({
+        scope,
+        projectPath,
+      }) => {
+        const request = setupRequest('opencode', {
+          scope,
+          ...(projectPath ? { projectPath } : {}),
+        });
+        const paths = resolveSetupPaths(request, ROOTS);
+        const metadataPath = join(paths.assetPath, 'thoth-mem.installation.json');
+        const cases: Array<{ name: string; mutate: (fileSystem: FakeSetupFileSystem) => void }> = [
+          {
+            name: 'older metadata',
+            mutate: (fileSystem) => fileSystem.file(
+              metadataPath,
+              managedMetadata(request, paths).replace(getVersion(), '0.0.1'),
+            ),
+          },
+          {
+            name: 'newer metadata',
+            mutate: (fileSystem) => fileSystem.file(
+              metadataPath,
+              managedMetadata(request, paths).replace(getVersion(), '999.0.0'),
+            ),
+          },
+          { name: 'missing metadata', mutate: (fileSystem) => fileSystem.entries.delete(metadataPath) },
+          { name: 'malformed metadata', mutate: (fileSystem) => fileSystem.file(metadataPath, '{') },
+          {
+            name: 'same-version asset drift',
+            mutate: (fileSystem) => fileSystem.file(
+              join(paths.assetPath, 'opencode', 'plugin.mjs'),
+              'drifted-private-value',
+            ),
+          },
+        ];
+
+        for (const fixture of cases) {
+          const fileSystem = new FakeSetupFileSystem();
+          seedManagedSetup(fileSystem, request, paths);
+          fixture.mutate(fileSystem);
+          const before = fileSystem.snapshot();
+
+          const result = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+
+          expect(result, fixture.name).toMatchObject({
+            status: 'complete',
+            changed: false,
+            receipt: null,
+          });
+          expect(result.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
+            .toBe('planned');
+          expect(result.manual_actions.join('\n')).not.toContain('--force');
+          expect(JSON.stringify(result)).not.toContain('drifted-private-value');
+          expectZeroWrites(fileSystem, before);
+        }
+      });
+
+      it('treats the bundled OpenCode skill as part of managed asset drift', async () => {
     const request = setupRequest('opencode', {
       scope: 'project',
       projectPath: PROJECT_PATH,
-      planOnly: false,
     });
     const paths = resolveSetupPaths(request, ROOTS);
     const installedSkillPath = join(paths.assetPath, 'opencode', 'skills', 'thoth-mem');
@@ -1088,9 +1212,9 @@ describe('inspects and plans with zero writes', () => {
 
     fileSystem.file(join(installedSkillPath, 'SKILL.md'), 'drifted-private-value');
     const drifted = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
-    expect(drifted.status).toBe('requires_user_action');
-    expect(drifted.steps.find((step) => step.name.startsWith('Install OpenCode assets'))?.outcome)
-      .toBe('unavailable');
+    expect(drifted.status).toBe('complete');
+    expect(drifted.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
+      .toBe('planned');
     expect(JSON.stringify(drifted)).not.toContain('drifted-private-value');
   });
 
@@ -1128,10 +1252,12 @@ describe('inspects and plans with zero writes', () => {
       { ...request, force: true },
       { roots: ROOTS, fileSystem: ambiguousFileSystem },
     );
-    expect(blocked.status).toBe('requires_user_action');
-    expect(blocked.diagnostics).toContain(
-      `Multiple OpenCode configuration files exist: ${paths.configCandidates.join(', ')}`,
-    );
+    expect(blocked.status).toBe('complete');
+    expect(blocked.steps).toContainEqual({
+      name: `Merge managed OpenCode configuration: ${paths.configCandidates[1]}`,
+      outcome: 'planned',
+    });
+    expect(blocked.diagnostics.join('\n')).not.toContain('Multiple OpenCode configuration files');
   });
 
   it('does not trust matching metadata when managed config or assets drift', async () => {
@@ -1148,9 +1274,9 @@ describe('inspects and plans with zero writes', () => {
       roots: ROOTS,
       fileSystem: configDrift,
     });
-    expect(configBlocked.status).toBe('requires_user_action');
+    expect(configBlocked.status).toBe('complete');
     expect(configBlocked.steps.find((step) => step.name.startsWith('Merge managed'))?.outcome)
-      .toBe('unavailable');
+      .toBe('planned');
     expect(JSON.stringify(configBlocked)).not.toContain('must-not-leak');
 
     const assetDrift = new FakeSetupFileSystem();
@@ -1160,9 +1286,9 @@ describe('inspects and plans with zero writes', () => {
       roots: ROOTS,
       fileSystem: assetDrift,
     });
-    expect(assetBlocked.status).toBe('requires_user_action');
-    expect(assetBlocked.steps.find((step) => step.name.startsWith('Install OpenCode assets'))?.outcome)
-      .toBe('unavailable');
+    expect(assetBlocked.status).toBe('complete');
+    expect(assetBlocked.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
+      .toBe('planned');
     expect(JSON.stringify(assetBlocked)).not.toContain('drifted-secret');
 
     const forced = await inspectAndPlanSetup(
@@ -1170,7 +1296,7 @@ describe('inspects and plans with zero writes', () => {
       { roots: ROOTS, fileSystem: assetDrift },
     );
     expect(forced.status).toBe('complete');
-    expect(forced.steps.find((step) => step.name.startsWith('Install OpenCode assets'))?.outcome)
+    expect(forced.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
       .toBe('planned');
   });
 
@@ -1184,9 +1310,10 @@ describe('inspects and plans with zero writes', () => {
     const before = fileSystem.snapshot();
 
     const blocked = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
-    expect(blocked.status).toBe('requires_user_action');
+    expect(blocked.status).toBe('complete');
     expect(blocked.changed).toBe(false);
-    expect(blocked.diagnostics).toContain(`Conflict at managed asset target: ${paths.assetPath}`);
+    expect(blocked.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
+      .toBe('planned');
     expectZeroWrites(fileSystem, before);
 
     const forced = await inspectAndPlanSetup({ ...request, force: true }, {
@@ -1195,9 +1322,9 @@ describe('inspects and plans with zero writes', () => {
     });
     expect(forced.status).toBe('complete');
     expect(forced.changed).toBe(false);
-    expect(forced.steps.find((step) => step.name.startsWith('Install OpenCode assets'))?.outcome)
+    expect(forced.steps.find((step) => step.name.startsWith('Replace complete OpenCode managed assets'))?.outcome)
       .toBe('planned');
-    expect(forced.diagnostics).toContain(`Force would replace only: ${paths.assetPath}`);
+    expect(forced.diagnostics.join('\n')).not.toContain('Force would replace');
     expectZeroWrites(fileSystem, before);
   });
 
@@ -1506,7 +1633,40 @@ describe('merges only managed configuration', () => {
     });
   });
 
-  it('treats exact OpenCode ownership as idempotent and force-replaces only conflicts', () => {
+  it('normalizes OpenCode owned and invalid parent values without force and recreates malformed roots', () => {
+        const ownedDrift = planOpenCodeManagedConfig({
+          before: '{ "theme": "keep", "mcp": { "thoth-mem": { "command": ["wrong"] } } }',
+          force: false,
+          mcpValue: OPENCODE_MCP_VALUE,
+        });
+        expect(ownedDrift).toMatchObject({ changed: true, forced: false, conflicts: [] });
+        expect(ownedDrift.after).toContain('"theme": "keep"');
+        expect(ownedDrift.after).not.toContain('wrong');
+
+        const invalidParent = planOpenCodeManagedConfig({
+          before: '{ "theme": "keep", "mcp": false }',
+          force: false,
+          mcpValue: OPENCODE_MCP_VALUE,
+        });
+        expect(invalidParent).toMatchObject({ changed: true, conflicts: [] });
+        expect(invalidParent.after).toContain('"theme": "keep"');
+        expect(invalidParent.verification.ownedValuesMatch).toBe(true);
+
+        const malformed = planOpenCodeManagedConfig({
+          before: Buffer.from([0xff, 0x7b, 0x22, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74]).toString('latin1'),
+          force: false,
+          mcpValue: OPENCODE_MCP_VALUE,
+        });
+        expect(malformed).toMatchObject({
+          changed: true,
+          conflicts: [],
+          verification: { beforeValid: false, afterValid: true, ownedValuesMatch: true },
+        });
+        expect(malformed.after).not.toContain('secret');
+        expect(JSON.parse(malformed.after)).toEqual({ mcp: { 'thoth-mem': OPENCODE_MCP_VALUE } });
+      });
+
+      it('keeps exact OpenCode ownership idempotent and converges drift without force', () => {
     const installed = planOpenCodeManagedConfig({
       before: null,
       force: false,
@@ -1534,12 +1694,10 @@ describe('merges only managed configuration', () => {
       force: false,
       mcpValue: OPENCODE_MCP_VALUE,
     });
-    expect(blocked.changed).toBe(false);
-    expect(blocked.after).toBe(before);
-    expect(blocked.conflicts).toEqual([expect.objectContaining({
-      location: 'mcp.thoth-mem',
-      forceable: true,
-    })]);
+    expect(blocked.changed).toBe(true);
+    expect(blocked.conflicts).toEqual([]);
+    expect(blocked.after).toContain('"theme": "unchanged"');
+    expect(blocked.after).not.toContain('wrong-command');
 
     const forced = planOpenCodeManagedConfig({
       before,
@@ -1554,7 +1712,7 @@ describe('merges only managed configuration', () => {
     expect(forced.verification.ownedValuesMatch).toBe(true);
   });
 
-  it('fails closed on malformed OpenCode config without leaking values', () => {
+  it('recreates malformed OpenCode config without leaking values', () => {
     const before = '{ "api_token": "do-not-leak",';
     const plan = planOpenCodeManagedConfig({
       before,
@@ -1562,14 +1720,11 @@ describe('merges only managed configuration', () => {
       mcpValue: OPENCODE_MCP_VALUE,
     });
 
-    expect(plan.changed).toBe(false);
-    expect(plan.after).toBe(before);
+    expect(plan.changed).toBe(true);
     expect(plan.verification.beforeValid).toBe(false);
-    expect(plan.conflicts).toEqual([expect.objectContaining({
-      location: 'root',
-      forceable: false,
-    })]);
-    expect(JSON.stringify(plan.conflicts)).not.toContain('do-not-leak');
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.after).not.toContain('do-not-leak');
+    expect(JSON.parse(plan.after)).toEqual({ mcp: { 'thoth-mem': OPENCODE_MCP_VALUE } });
   });
 
   it('appends one plugin-scoped Codex policy block while preserving unrelated TOML bytes', () => {
@@ -1799,7 +1954,79 @@ describe('backs up and applies atomically', () => {
     });
   });
 
-  it('stages contained OpenCode assets and rejects source or target escapes', async () => {
+  it('authoritatively replaces cross-kind and final linked targets without following destinations', async (context) => {
+        await withTemporarySetupRoot(async (root) => {
+          const targetRoot = join(root, 'managed target');
+          const sourceRoot = join(root, 'package source');
+          const source = join(sourceRoot, 'assets');
+          const outside = join(root, 'outside destination');
+          const targetPath = join(targetRoot, 'plugins', '.thoth-mem');
+          const sentinel = join(outside, 'sentinel.txt');
+          await mkdir(source, { recursive: true });
+          await mkdir(dirname(targetPath), { recursive: true });
+          await mkdir(outside, { recursive: true });
+          await writeFile(join(source, 'current.txt'), 'current', 'utf8');
+          await writeFile(sentinel, 'destination-unchanged', 'utf8');
+          try {
+            await symlink(outside, targetPath, process.platform === 'win32' ? 'junction' : 'dir');
+          } catch (error) {
+            const code = error instanceof Error && 'code' in error
+              ? (error as NodeJS.ErrnoException).code
+              : undefined;
+            if (code === 'EPERM' || code === 'EACCES') {
+              context.skip();
+              return;
+            }
+            throw error;
+          }
+          const originalLink = await readlink(targetPath);
+
+          const replaced = await applyAtomicFilesystemChanges({
+            targetRoot,
+            sourceRoot,
+            backupRoot: join(root, 'backups'),
+            changes: [{
+              kind: 'directory',
+              targetPath,
+              entries: [{ sourcePath: source, targetRelativePath: '.' }],
+              replaceExisting: true,
+            }],
+          });
+
+          expect(replaced.outcome).toBe('confirmed');
+          expect((await lstat(targetPath)).isDirectory()).toBe(true);
+          expect(await readFile(join(targetPath, 'current.txt'), 'utf8')).toBe('current');
+          expect(await readFile(sentinel, 'utf8')).toBe('destination-unchanged');
+
+          await rm(targetPath, { recursive: true, force: true });
+          await symlink(outside, targetPath, process.platform === 'win32' ? 'junction' : 'dir');
+          const restored = await applyAtomicFilesystemChanges({
+            targetRoot,
+            sourceRoot,
+            backupRoot: join(root, 'restore backups'),
+            changes: [{
+              kind: 'directory',
+              targetPath,
+              entries: [{ sourcePath: source, targetRelativePath: '.' }],
+              replaceExisting: true,
+            }],
+          }, {
+            fault: ({ point }) => {
+              if (point === 'after-rename') {
+                throw new Error('restore linked pre-state');
+              }
+            },
+          });
+
+          expect(restored.outcome).toBe('failed');
+          expect(restored.unrestored).toEqual([]);
+          expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+          expect(await readlink(targetPath)).toBe(originalLink);
+          expect(await readFile(sentinel, 'utf8')).toBe('destination-unchanged');
+        });
+      });
+
+      it('stages contained OpenCode assets and rejects source or target escapes', async () => {
     await withTemporarySetupRoot(async (root) => {
       const sourceRoot = join(root, 'package with spaces', 'integrations');
       const openCodeSource = join(sourceRoot, 'opencode');

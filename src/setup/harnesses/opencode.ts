@@ -7,11 +7,7 @@ import {
   type ParseError,
 } from 'jsonc-parser';
 
-import {
-  createManagedConfigConflictPlan,
-  INVALID_ROOT_REASON,
-  type ManagedConfigPlan,
-} from '../managed-config.js';
+import type { ManagedConfigPlan } from '../managed-config.js';
 
 const OWNED_LOCATION = 'mcp.thoth-mem';
 const JSONC_PARSE_OPTIONS = {
@@ -54,52 +50,25 @@ export function planOpenCodeManagedConfig(
   const parsed = parseJsonc(source);
 
   if (parsed === null || !isRecord(parsed)) {
-    return createManagedConfigConflictPlan(
-      options.before,
-      [OWNED_LOCATION],
-      { location: 'root', reason: INVALID_ROOT_REASON, forceable: false },
-      false,
-    );
+    const after = `${JSON.stringify({
+      mcp: { 'thoth-mem': options.mcpValue },
+    }, null, 2)}\n`;
+    return successfulPlan(options.before, after, false, options.mcpValue, false);
   }
 
-  const currentMcp = parsed.mcp;
-  if (currentMcp !== undefined && !isRecord(currentMcp)) {
-    return createManagedConfigConflictPlan(
-      options.before,
-      [OWNED_LOCATION],
-      {
-        location: 'mcp',
-        reason: 'The parent configuration value is not an object.',
-        forceable: false,
-      },
-      true,
-    );
-  }
-
-  const currentOwned = currentMcp?.['thoth-mem'];
+  const currentMcpValue = parsed.mcp;
+  const currentMcpObject = isRecord(currentMcpValue) ? currentMcpValue : null;
+  const currentOwned = currentMcpObject?.['thoth-mem'];
   const hasOwnedValue = currentOwned !== undefined;
   if (hasOwnedValue && valuesEqual(currentOwned, options.mcpValue)) {
     return successfulPlan(options.before, source, false, options.mcpValue);
   }
 
-  if (hasOwnedValue && !options.force) {
-    return createManagedConfigConflictPlan(
-      options.before,
-      [OWNED_LOCATION],
-      {
-        location: OWNED_LOCATION,
-        reason: 'The managed configuration value differs from the requested value.',
-        forceable: true,
-      },
-      true,
-    );
-  }
-
-  const path = currentMcp === undefined ? ['mcp'] : ['mcp', 'thoth-mem'];
-  const value = currentMcp === undefined
-    ? { 'thoth-mem': options.mcpValue }
-    : options.mcpValue;
-  const after = applyEdits(source, modify(source, path, value, currentMcp === undefined
+  const path = currentMcpObject ? ['mcp', 'thoth-mem'] : ['mcp'];
+  const value = currentMcpObject
+    ? options.mcpValue
+    : { 'thoth-mem': options.mcpValue };
+  const after = applyEdits(source, modify(source, path, value, currentMcpValue === undefined
     ? {
         formattingOptions: {
           insertSpaces: true,
@@ -113,7 +82,7 @@ export function planOpenCodeManagedConfig(
   return successfulPlan(
     options.before,
     after,
-    hasOwnedValue,
+    options.force && hasOwnedValue,
     options.mcpValue,
   );
 }
@@ -289,6 +258,7 @@ function successfulPlan(
   after: string,
   forced: boolean,
   desired: OpenCodeManagedConfigOptions['mcpValue'],
+  beforeValid = true,
 ): ManagedConfigPlan {
   const parsed = parseJsonc(after);
   const owned = isRecord(parsed) && isRecord(parsed.mcp)
@@ -303,7 +273,7 @@ function successfulPlan(
     ownedLocations: [OWNED_LOCATION],
     conflicts: [],
     verification: {
-      beforeValid: true,
+      beforeValid,
       afterValid: parsed !== null && isRecord(parsed),
       ownedValuesMatch: valuesEqual(owned, desired),
     },

@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {lstat, readFile} from 'node:fs/promises';
+import {lstat, readFile, readlink} from 'node:fs/promises';
 import {basename, dirname, isAbsolute, join, relative, resolve} from 'node:path';
 
 import {getConfig} from '../config.js';
@@ -47,13 +47,16 @@ import {
     type SetupRoots,
 } from './paths.js';
 import {
+    cleanupMatchingSetupReceipts,
     codexManagedFragmentFromReceiptEvidence,
     createCodexManagedFragmentReceiptEvidence,
     createSetupReceipt,
     loadSetupReceipt,
     persistSetupReceipt,
     resolveSetupReceiptPaths,
+    resetSetupReceiptNamespace,
     scanSetupReceipts,
+    setupReceiptNamespaceHasTrustedContainment,
     type ReceiptFaultEvent,
     type ReceiptPaths,
     type SetupReceipt,
@@ -139,6 +142,7 @@ interface SetupInspection {
   managed: boolean;
   conflicts: SetupConflict[];
   sourceAssetsAvailable: boolean;
+  configRecreation: boolean;
   codexLegacyState: 'absent' | 'managed' | 'ambiguous' | null;
 }
 
@@ -150,6 +154,7 @@ const OPENCODE_MCP_VALUE = {
 const OPENCODE_PLUGIN_ENTRY = 'export { default } from \'./.thoth-mem/opencode/plugin.mjs\';\n';
 const MANAGED_METADATA_NAME = 'thoth-mem.installation.json';
 const LEGACY_MANAGED_METADATA_NAME = '.thoth-mem-managed.json';
+const OPENCODE_CLEANUP_STEP_NAME = 'Remove target-bound OpenCode recovery and rollback evidence';
 
 function setupAssetLayout(
   request: SetupRequest,
@@ -282,12 +287,88 @@ function setupExecutablePath(options: SetupEngineOptions): string {
     : resolve(executable ?? 'thoth-mem');
 }
 
+async function resolveMalformedConfigBackupPath(
+  configPath: string,
+  transactionId: string,
+): Promise<string> {
+  const basePath = `${configPath}.thoth-mem-backup-${transactionId}`;
+  for (let suffix = 0; suffix < 1000; suffix++) {
+    const candidate = suffix === 0 ? basePath : `${basePath}-${suffix}`;
+    try {
+      await lstat(candidate);
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return candidate;
+      }
+      throw error;
+    }
+  }
+  throw new Error('malformed-config-backup-path-unavailable');
+}
+
+async function preflightOpenCodeInventory(
+  paths: SetupPaths,
+  fileSystem: SetupFileSystem,
+): Promise<void> {
+  const packageRoot = dirname(dirname(paths.sourceAssetsPath));
+  const inventoryPath = join(packageRoot, 'integrations', 'inventory.json');
+  if (await fileSystem.pathType(inventoryPath) !== 'file') {
+    throw new Error('packaged-inventory-unavailable');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fileSystem.readText(inventoryPath));
+  } catch {
+    throw new Error('packaged-inventory-invalid');
+  }
+  if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.assets)) {
+    throw new Error('packaged-inventory-invalid');
+  }
+  const assets = parsed.assets.filter((asset): asset is {
+    harness: string;
+    role: string;
+    path: string;
+  } => isRecord(asset)
+    && typeof asset.harness === 'string'
+    && typeof asset.role === 'string'
+    && typeof asset.path === 'string');
+  if (assets.length !== parsed.assets.length) {
+    throw new Error('packaged-inventory-invalid');
+  }
+  const required = assets.filter((asset) => (
+    asset.harness === 'opencode'
+    || asset.path.startsWith('plugin/skills/thoth-mem/')
+  ));
+  const requiredPaths = new Set(required.map((asset) => asset.path));
+  for (const expected of [
+    'integrations/opencode/plugin.mjs',
+    'integrations/opencode/memory-protocol.md',
+    'integrations/shared/hook-runner.mjs',
+    'plugin/skills/thoth-mem/SKILL.md',
+    'plugin/skills/thoth-mem/references/opencode.md',
+  ]) {
+    if (!requiredPaths.has(expected)) {
+      throw new Error('packaged-inventory-incomplete');
+    }
+  }
+  for (const asset of required) {
+    const sourcePath = resolve(packageRoot, asset.path);
+    if (hasPathEscape(relative(packageRoot, sourcePath))
+      || await fileSystem.pathType(sourcePath) !== 'file') {
+      throw new Error('packaged-inventory-asset-unavailable');
+    }
+  }
+}
+
 async function inspectSetup(
   request: SetupRequest,
   unresolvedPaths: SetupPaths,
   fileSystem: SetupFileSystem,
   options: SetupEngineOptions,
 ): Promise<SetupInspection> {
+  if (request.harness === 'opencode') {
+    await preflightOpenCodeInventory(unresolvedPaths, fileSystem);
+  }
   const sourceAssetsType = await fileSystem.pathType(unresolvedPaths.sourceAssetsPath);
   const sourceAssetsAvailable = sourceAssetsType === 'directory';
   if (request.harness === 'opencode' && !sourceAssetsAvailable) {
@@ -311,9 +392,9 @@ async function inspectSetup(
     type: await fileSystem.pathType(path),
   })));
   const existingConfigFiles = candidateTypes.filter((candidate) => candidate.type === 'file');
-  const selectedConfigPath = existingConfigFiles.length === 1
-    ? existingConfigFiles[0]!.path
-    : unresolvedPaths.configPath;
+  const selectedConfigPath = candidateTypes.find((candidate) => (
+    candidate.type === 'file' && candidate.path.endsWith('opencode.jsonc')
+  ))?.path ?? existingConfigFiles[0]?.path ?? unresolvedPaths.configPath;
   const paths = selectedConfigPath === unresolvedPaths.configPath
     ? unresolvedPaths
     : { ...unresolvedPaths, configPath: selectedConfigPath };
@@ -321,13 +402,7 @@ async function inspectSetup(
   const configType = selectedCandidate?.type ?? 'missing';
   const conflicts: SetupConflict[] = [];
 
-  if (existingConfigFiles.length > 1) {
-    conflicts.push({
-      path: paths.targetRoot,
-      diagnostic: `Multiple OpenCode configuration files exist: ${paths.configCandidates.join(', ')}`,
-      forceable: false,
-    });
-  }
+
   for (const candidate of candidateTypes) {
     if (candidate.type === 'directory' || candidate.type === 'other') {
       conflicts.push({
@@ -358,8 +433,13 @@ async function inspectSetup(
 
   const assetType = await fileSystem.pathType(paths.assetPath);
   const canonicalMetadataPath = join(paths.assetPath, MANAGED_METADATA_NAME);
-  const canonicalMetadataType = await fileSystem.pathType(canonicalMetadataPath);
-  const legacyMetadataType = await fileSystem.pathType(paths.metadataPath);
+  const inspectManagedMetadata = assetType === 'directory';
+  const canonicalMetadataType = inspectManagedMetadata
+    ? await fileSystem.pathType(canonicalMetadataPath)
+    : 'missing';
+  const legacyMetadataType = inspectManagedMetadata
+    ? await fileSystem.pathType(paths.metadataPath)
+    : 'missing';
   if (assetType === 'file' || assetType === 'other') {
     conflicts.push({
       path: paths.assetPath,
@@ -461,6 +541,7 @@ async function inspectSetup(
     managed,
     conflicts,
     sourceAssetsAvailable,
+    configRecreation: !baselineConfigPlan.verification.beforeValid,
     codexLegacyState,
   };
 }
@@ -520,6 +601,19 @@ function invalidPathResult(request: SetupRequest): SetupResult {
   };
 }
 
+function unsafeOpenCodeRecoveryBoundaryResult(
+  request: SetupRequest,
+  paths: SetupPaths,
+): SetupResult {
+  return requiresSetupActionResult(
+    request,
+    paths,
+    'The target-bound OpenCode recovery boundary escapes its trusted setup root.',
+    'Replace linked recovery ancestors with real directories inside the selected setup root, then retry.',
+    'Validate target-bound OpenCode recovery boundary',
+  );
+}
+
 function requiresSetupActionResult(
   request: SetupRequest,
   paths: SetupPaths,
@@ -571,10 +665,17 @@ function filesystemStepOutcome(
   return 'planned';
 }
 
+function isOpenCodeBoundaryConflict(conflict: SetupConflict): boolean {
+  return conflict.diagnostic.startsWith('Conflict at managed configuration target:');
+}
+
 function hasBlockingConflict(
   request: SetupRequest,
   inspection: SetupInspection,
 ): boolean {
+  if (request.harness === 'opencode') {
+    return inspection.conflicts.some(isOpenCodeBoundaryConflict);
+  }
   return inspection.conflicts.some((conflict) => !conflict.forceable || !request.force);
 }
 
@@ -587,10 +688,27 @@ function planSteps(
 ): SetupStep[] {
   const harness = displayHarness(request);
   const filesystemOutcome = filesystemStepOutcome(request, inspection);
+  if (request.harness === 'opencode') {
+    const verificationOutcome: SetupStepOutcome = inspection.managed ? 'confirmed' : 'planned';
+    return [
+      { name: `Inspect packaged ${harness} assets: ${paths.sourceAssetsPath}`, outcome: 'confirmed' },
+      { name: `Inspect ${harness} configuration: ${paths.configPath}`, outcome: 'confirmed' },
+      { name: 'Prepare target-bound temporary OpenCode recovery journal', outcome: filesystemOutcome },
+      { name: `Replace complete OpenCode managed assets: ${paths.assetPath}`, outcome: filesystemOutcome },
+      { name: `Replace canonical OpenCode plugin entry: ${paths.pluginEntryPath}`, outcome: filesystemOutcome },
+      {
+        name: `${inspection.configRecreation ? 'Recreate' : 'Merge managed'} OpenCode configuration: ${paths.configPath}`,
+        outcome: filesystemOutcome,
+      },
+      { name: 'Verify exact OpenCode setup post-state', outcome: verificationOutcome },
+      { name: OPENCODE_CLEANUP_STEP_NAME, outcome: filesystemOutcome },
+      { name: 'Report manual OpenCode restart requirement', outcome: filesystemOutcome },
+    ];
+  }
   const codexComplete = codexEvidence.marketplace === 'confirmed'
     && codexEvidence.plugin === 'confirmed';
   const verificationOutcome: SetupStepOutcome = inspection.managed
-    && (request.harness === 'opencode' || codexComplete)
+    && codexComplete
     ? 'confirmed'
     : 'planned';
 
@@ -630,6 +748,23 @@ function planSteps(
   return steps;
 }
 
+function finalizeOpenCodePlanSteps(
+  steps: SetupStep[],
+  cleanupComplete: boolean,
+): SetupStep[] {
+  return steps.map((step) => {
+    if (step.outcome !== 'planned') {
+      return step;
+    }
+    return {
+      ...step,
+      outcome: !cleanupComplete && step.name === OPENCODE_CLEANUP_STEP_NAME
+        ? 'unavailable'
+        : 'confirmed',
+    };
+  });
+}
+
 function planDiagnostics(
   request: SetupRequest,
   paths: SetupPaths,
@@ -639,10 +774,18 @@ function planDiagnostics(
 ): string[] {
   const diagnostics = inspection.conflicts.map((conflict) => conflict.diagnostic);
 
+  if (request.harness === 'opencode' && !inspection.managed) {
+    diagnostics.push('OpenCode convergence replaces the complete managed asset directory and canonical plugin entry.');
+    diagnostics.push('Temporary target-bound recovery evidence is created before mutation and removed only after exact verification.');
+    diagnostics.push('Changed OpenCode setup requires a manual host restart.');
+    if (inspection.configRecreation) {
+      diagnostics.push(`Malformed selected OpenCode configuration will be backed up byte-exactly before minimal recreation: ${paths.configPath}`);
+    }
+  }
   if (!inspection.managed && inspection.configType === 'file') {
     diagnostics.push(`Backup required before mutation: ${paths.configPath}`);
   }
-  if (request.force) {
+  if (request.force && request.harness !== 'opencode') {
     for (const conflict of inspection.conflicts.filter((candidate) => candidate.forceable)) {
       diagnostics.push(`Force would replace only: ${conflict.path}`);
     }
@@ -672,6 +815,9 @@ function manualActions(
   const actions: string[] = [];
 
   for (const conflict of inspection.conflicts) {
+    if (request.harness === 'opencode' && !isOpenCodeBoundaryConflict(conflict)) {
+      continue;
+    }
     if (conflict.forceable && !request.force) {
       actions.push(`Review the conflict and re-run with --force only if thoth-mem may own: ${conflict.path}`);
     } else if (!conflict.forceable) {
@@ -926,6 +1072,7 @@ interface ReceiptBackedChangeResult<T extends SetupReceipt = SetupReceipt> {
 interface BoundSetupReceipt {
   receipt: SetupReceiptV1;
   paths: SetupPaths;
+  configBackupStep?: SetupReceiptStep;
   configStep: SetupReceiptStep;
   assetStep: SetupReceiptStep;
   pluginStep: SetupReceiptStep;
@@ -958,6 +1105,57 @@ function setupReceiptBasePath(
   return join(projectRoot, '.thoth', 'setup', 'receipts');
 }
 
+function openCodeJournalBasePath(
+  request: SetupRequest,
+  paths: SetupPaths,
+  dataDir: string,
+  canonicalTarget: string,
+): string {
+  const targetHash = createHash('sha256').update(canonicalTarget).digest('hex');
+  const setupRoot = request.scope === 'global'
+    ? join(dataDir, 'setup')
+    : join(paths.targetRoot, '.thoth', 'setup');
+  return join(setupRoot, 'opencode-journals', targetHash);
+}
+
+function openCodeReceiptTrustedRoot(
+  request: SetupRequest,
+  paths: SetupPaths,
+  dataDir: string,
+): string {
+  return request.scope === 'global' ? dataDir : paths.targetRoot;
+}
+
+async function cleanupOpenCodeEvidence(input: {
+  request: SetupRequest;
+  paths: SetupPaths;
+  dataDir: string;
+  canonicalTarget: string;
+  journalBasePath: string;
+  journalKeyPath: string;
+  trustedRoot: string;
+  options: SetupEngineOptions;
+}): Promise<boolean> {
+  const journalCleanup = await resetSetupReceiptNamespace(input.journalBasePath, {
+    dataDir: input.dataDir,
+    keyPath: input.journalKeyPath,
+    trustedRoot: input.trustedRoot,
+    fault: input.options.transaction?.receiptFault,
+  });
+  const legacyCleanup = await cleanupMatchingSetupReceipts(
+    setupReceiptBasePath(input.request, input.paths, input.dataDir),
+    {
+      dataDir: input.dataDir,
+      trustedRoot: input.trustedRoot,
+      fault: input.options.transaction?.receiptFault,
+    },
+    (candidate) => candidate.harness === 'opencode'
+      && candidate.scope === input.request.scope
+      && resolve(candidate.target) === resolve(input.canonicalTarget),
+  );
+  return journalCleanup && legacyCleanup.ok;
+}
+
 function transactionNow(options: SetupEngineOptions): string {
   return (options.transaction?.now?.() ?? new Date()).toISOString();
 }
@@ -981,7 +1179,7 @@ async function traceSetup(
   }
 }
 
-function fileContentSnapshot(content: string): string {
+function fileContentSnapshot(content: string | Uint8Array): string {
   return `file:${createHash('sha256').update(content).digest('hex')}`;
 }
 
@@ -1075,10 +1273,14 @@ async function persistReceiptCheckpoint(
   receipt: SetupReceipt,
   dataDir: string,
   options: SetupEngineOptions,
+  receiptKeyPath?: string,
+  receiptTrustedRoot?: string,
 ) {
   return persistSetupReceipt(receiptPath, receipt, {
     dataDir,
     expectedBasePath: receiptBasePath,
+    ...(receiptKeyPath ? { keyPath: receiptKeyPath } : {}),
+    ...(receiptTrustedRoot ? { trustedRoot: receiptTrustedRoot } : {}),
     fault: options.transaction?.receiptFault,
   });
 }
@@ -1092,6 +1294,8 @@ async function applyReceiptBackedChanges<T extends SetupReceipt>(input: {
   receipt: T;
   changes: FilesystemChange[];
   options: SetupEngineOptions;
+  receiptKeyPath?: string;
+  receiptTrustedRoot?: string;
   postHash: (path: string) => Promise<string>;
   afterWriteAhead?: () => void | Promise<void>;
   changeTraceKind?: string;
@@ -1119,6 +1323,8 @@ async function applyReceiptBackedChanges<T extends SetupReceipt>(input: {
         activeReceipt,
         input.dataDir,
         input.options,
+        input.receiptKeyPath,
+        input.receiptTrustedRoot,
       );
       if (!persisted.ok) {
         throw new Error('receipt-write-ahead-failed');
@@ -1142,6 +1348,8 @@ async function applyReceiptBackedChanges<T extends SetupReceipt>(input: {
         activeReceipt,
         input.dataDir,
         input.options,
+        input.receiptKeyPath,
+        input.receiptTrustedRoot,
       );
       if (!persisted.ok) {
         throw new Error('receipt-checkpoint-failed');
@@ -1160,6 +1368,8 @@ async function markRestoredFailure(
   receiptBasePath: string,
   dataDir: string,
   options: SetupEngineOptions,
+  receiptKeyPath?: string,
+  receiptTrustedRoot?: string,
 ): Promise<SetupReceipt> {
   if (!result.initialReceiptPersisted || result.filesystem.changed) {
     return result.receipt;
@@ -1178,6 +1388,8 @@ async function markRestoredFailure(
     failedReceipt,
     dataDir,
     options,
+    receiptKeyPath,
+    receiptTrustedRoot,
   );
   return persisted.ok ? persisted.receipt : result.receipt;
 }
@@ -1246,14 +1458,18 @@ function bindSetupReceipt(
     || resolve(receiptPath) !== resolve(
       resolveSetupReceiptPaths(receiptBasePath, receipt.id).receiptPath,
     )
-    || receipt.steps.length !== 4
+    || (receipt.steps.length !== 4 && receipt.steps.length !== 5)
   ) {
     return null;
   }
+  const expectedIds = receipt.steps.length === 5
+    ? ['config-backup', 'config', 'assets', 'plugin', 'verify']
+    : ['config', 'assets', 'plugin', 'verify'];
   const byId = new Map(receipt.steps.map((step) => [step.id, step]));
-  if (byId.size !== 4) {
+  if (byId.size !== expectedIds.length || expectedIds.some((id) => !byId.has(id))) {
     return null;
   }
+  const configBackupStep = byId.get('config-backup');
   const configStep = byId.get('config');
   const assetStep = byId.get('assets');
   const pluginStep = byId.get('plugin');
@@ -1275,6 +1491,15 @@ function bindSetupReceipt(
     || !pluginStep.post_hash
     || verifyStep?.kind !== 'verification'
     || verifyStep.path !== undefined
+    || (receipt.steps.length === 5 && (
+      configBackupStep?.kind !== 'filesystem'
+      || configBackupStep.pre_hash !== 'missing'
+      || !configBackupStep.post_hash
+      || configBackupStep.backup_path !== undefined
+      || !configBackupStep.path
+      || dirname(configBackupStep.path) !== dirname(configStep.path)
+      || !basename(configBackupStep.path).startsWith(`${basename(configStep.path)}.thoth-mem-backup-`)
+    ))
   ) {
     return null;
   }
@@ -1293,19 +1518,102 @@ function bindSetupReceipt(
   return {
     receipt,
     paths: { ...unresolvedPaths, configPath: configStep.path },
+    ...(configBackupStep ? { configBackupStep } : {}),
     configStep,
     assetStep,
     pluginStep,
   };
 }
 
+async function restoreOpenCodeJournal(
+  bound: BoundSetupReceipt,
+  receiptPath: string,
+  dataDir: string,
+  receiptKeyPath: string,
+  trustedRoot: string,
+  options: SetupEngineOptions,
+): Promise<boolean> {
+  const receiptBasePath = dirname(dirname(receiptPath));
+  if (!await setupReceiptNamespaceHasTrustedContainment(receiptBasePath, {
+    dataDir,
+    keyPath: receiptKeyPath,
+    trustedRoot,
+  })) {
+    return false;
+  }
+  const changes: FilesystemChange[] = [];
+  const steps = [
+    ...(bound.configBackupStep ? [bound.configBackupStep] : []),
+    bound.configStep,
+    bound.assetStep,
+    bound.pluginStep,
+  ];
+  for (const step of steps) {
+    if (!step.path || !step.pre_hash) {
+      return false;
+    }
+    if (step.pre_hash === 'missing') {
+      changes.push({ kind: 'remove', targetPath: step.path });
+      continue;
+    }
+    if (!step.backup_path) {
+      return false;
+    }
+    try {
+      if (await filesystemEntrySnapshot(step.backup_path) !== step.pre_hash) {
+        return false;
+      }
+      const details = await lstat(step.backup_path);
+      if (details.isSymbolicLink()) {
+        changes.push({
+          kind: 'link',
+          targetPath: step.path,
+          linkTarget: await readlink(step.backup_path),
+          replaceExisting: true,
+        });
+      } else if (details.isFile()) {
+        changes.push({
+          kind: 'file',
+          targetPath: step.path,
+          content: await readFile(step.backup_path),
+          replaceExisting: true,
+        });
+      } else if (details.isDirectory()) {
+        changes.push({
+          kind: 'directory',
+          targetPath: step.path,
+          entries: [{ sourcePath: step.backup_path, targetRelativePath: '.' }],
+          replaceExisting: true,
+        });
+      } else {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  const receiptRoot = dirname(receiptPath);
+  const restored = await applyAtomicFilesystemChanges({
+    targetRoot: bound.paths.targetRoot,
+    sourceRoot: receiptRoot,
+    backupRoot: join(receiptRoot, 'recovery-current-state'),
+    changes,
+  }, { fault: options.transaction?.filesystemFault });
+  return restored.outcome === 'confirmed';
+}
+
 async function readRegularFileOrNull(path: string): Promise<string | null> {
+  const content = await readRegularFileBytesOrNull(path);
+  return content?.toString('utf8') ?? null;
+}
+
+async function readRegularFileBytesOrNull(path: string): Promise<Buffer | null> {
   try {
     const details = await lstat(path);
     if (!details.isFile() || details.isSymbolicLink()) {
       throw new Error('setup-file-not-regular');
     }
-    return readFile(path, 'utf8');
+    return readFile(path);
   } catch (error) {
     if (isMissingPathError(error)) {
       return null;
@@ -1564,12 +1872,15 @@ async function executeOpenCodeSetup(
   dataDir: string,
   canonicalTarget: string,
   receiptBasePath: string,
+  receiptKeyPath: string,
+  receiptTrustedRoot: string,
   options: SetupEngineOptions,
 ): Promise<SetupResult> {
   const paths = inspection.paths;
-  const configBefore = inspection.configType === 'file'
-    ? await readRegularFileOrNull(paths.configPath)
+  const configBeforeBytes = inspection.configType === 'file'
+    ? await readRegularFileBytesOrNull(paths.configPath)
     : null;
+  const configBefore = configBeforeBytes?.toString('utf8') ?? null;
   const configPlan = planOpenCodeManagedConfig({
     before: configBefore,
     force: request.force,
@@ -1594,12 +1905,28 @@ async function executeOpenCodeSetup(
   } catch {
     return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
   }
-  const configPreHash = inspectOpenCodeOwnedState(configBefore).hash;
-  const configPostHash = inspectOpenCodeOwnedState(configPlan.after).hash;
+  const configPreHash = configBeforeBytes
+    ? await filesystemEntrySnapshot(paths.configPath)
+    : 'missing';
+  const configPostHash = fileContentSnapshot(configPlan.after);
   const metadata = setupMetadata(request, paths, options);
-  const receiptPaths = resolveSetupReceiptPaths(receiptBasePath, nextReceiptId(options));
+  const receiptId = nextReceiptId(options);
+  const receiptPaths = resolveSetupReceiptPaths(receiptBasePath, receiptId);
+  const malformedConfigBackupPath = configBeforeBytes && !configPlan.verification.beforeValid
+    ? await resolveMalformedConfigBackupPath(paths.configPath, receiptId)
+    : null;
   const startedAt = transactionNow(options);
   const steps: SetupReceiptStep[] = [
+    ...(malformedConfigBackupPath && configBeforeBytes
+      ? [{
+          id: 'config-backup',
+          kind: 'filesystem' as const,
+          outcome: 'planned' as const,
+          path: malformedConfigBackupPath,
+          pre_hash: 'missing',
+          post_hash: fileContentSnapshot(configBeforeBytes),
+        }]
+      : []),
     {
       id: 'config',
       kind: 'filesystem',
@@ -1641,6 +1968,14 @@ async function executeOpenCodeSetup(
     steps,
   });
   const changes: FilesystemChange[] = [
+    ...(malformedConfigBackupPath && configBeforeBytes
+      ? [{
+          kind: 'file' as const,
+          targetPath: malformedConfigBackupPath,
+          content: configBeforeBytes,
+          mode: 0o600,
+        }]
+      : []),
     ...(configPlan.changed
       ? [{ kind: 'file' as const, targetPath: paths.configPath, content: configPlan.after }]
       : []),
@@ -1653,8 +1988,14 @@ async function executeOpenCodeSetup(
         content: metadata,
         mode: 0o600,
       }],
+      replaceExisting: true,
     },
-    { kind: 'file', targetPath: paths.pluginEntryPath, content: OPENCODE_PLUGIN_ENTRY },
+    {
+      kind: 'file',
+      targetPath: paths.pluginEntryPath,
+      content: OPENCODE_PLUGIN_ENTRY,
+      replaceExisting: true,
+    },
   ];
   const plannedSteps = planSteps(
     request,
@@ -1672,9 +2013,9 @@ async function executeOpenCodeSetup(
     receipt,
     changes,
     options,
-    postHash: async (path) => path === paths.configPath
-      ? inspectOpenCodeOwnedState(await readRegularFileOrNull(path)).hash
-      : filesystemEntrySnapshot(path),
+    receiptKeyPath,
+    receiptTrustedRoot,
+    postHash: filesystemEntrySnapshot,
   });
   if (applied.filesystem.outcome === 'failed') {
     await markRestoredFailure(
@@ -1683,6 +2024,8 @@ async function executeOpenCodeSetup(
       receiptBasePath,
       dataDir,
       options,
+      receiptKeyPath,
+      receiptTrustedRoot,
     );
     return receiptFailureResult(
       request,
@@ -1702,13 +2045,51 @@ async function executeOpenCodeSetup(
     verified = false;
   }
   if (!verified) {
-    return receiptFailureResult(
+    const bound = bindSetupReceipt(
       request,
       paths,
-      true,
+      canonicalTarget,
+      receiptBasePath,
       receiptPaths.receiptPath,
-      'OpenCode setup post-state verification failed.',
+      applied.receipt,
     );
+    const restored = bound
+      ? await restoreOpenCodeJournal(
+          bound,
+          receiptPaths.receiptPath,
+          dataDir,
+          receiptKeyPath,
+          receiptTrustedRoot,
+          options,
+        )
+      : false;
+    const recoveryEvidenceRemoved = restored
+      && await resetSetupReceiptNamespace(receiptBasePath, {
+        dataDir,
+        keyPath: receiptKeyPath,
+        trustedRoot: receiptTrustedRoot,
+        fault: options.transaction?.receiptFault,
+      });
+    if (restored) {
+      await traceSetup(options, 'journal_restored');
+    }
+    return {
+      status: 'failed',
+      changed: !restored,
+      harness: request.harness,
+      scope: request.scope,
+      target: paths.targetRoot,
+      steps: [{ name: 'Verify exact OpenCode setup post-state', outcome: 'failed' }],
+      diagnostics: [recoveryEvidenceRemoved
+        ? 'OpenCode setup post-state verification failed; the complete pre-run state was restored.'
+        : restored
+          ? 'OpenCode setup post-state verification failed; the complete pre-run state was restored, but recovery evidence cleanup is incomplete.'
+          : 'OpenCode setup post-state verification failed and complete restoration could not be confirmed.'],
+      manual_actions: recoveryEvidenceRemoved
+        ? ['Retry OpenCode setup from the restored pre-run state.']
+        : ['Inspect the target-bound recovery evidence before retrying.'],
+      receipt: recoveryEvidenceRemoved ? null : receiptPaths.receiptPath,
+    };
   }
 
   const completeReceipt: SetupReceiptV1 = {
@@ -1725,29 +2106,70 @@ async function executeOpenCodeSetup(
     completeReceipt,
     dataDir,
     options,
+    receiptKeyPath,
+    receiptTrustedRoot,
   );
   if (!persisted.ok) {
+    const cleanupComplete = await cleanupOpenCodeEvidence({
+      request,
+      paths,
+      dataDir,
+      canonicalTarget,
+      journalBasePath: receiptBasePath,
+      journalKeyPath: receiptKeyPath,
+      trustedRoot: receiptTrustedRoot,
+      options,
+    });
+    if (cleanupComplete) {
+      return {
+        status: 'complete',
+        changed: true,
+        harness: request.harness,
+        scope: request.scope,
+        target: paths.targetRoot,
+        steps: finalizeOpenCodePlanSteps(plannedSteps, true),
+        diagnostics: ['OpenCode setup verified; its final journal checkpoint was unavailable, but temporary recovery evidence was removed.'],
+        manual_actions: ['Restart OpenCode to load the updated thoth-mem integration.'],
+        receipt: null,
+      };
+    }
     return receiptFailureResult(
       request,
       paths,
       true,
       receiptPaths.receiptPath,
-      'OpenCode setup completed but its final receipt could not be confirmed.',
+      'OpenCode setup verified, but neither its final journal checkpoint nor cleanup could be confirmed.',
     );
   }
   await traceSetup(options, 'receipt_complete', receiptPaths.receiptPath);
+  const cleanupComplete = await cleanupOpenCodeEvidence({
+    request,
+    paths,
+    dataDir,
+    canonicalTarget,
+    journalBasePath: receiptBasePath,
+    journalKeyPath: receiptKeyPath,
+    trustedRoot: receiptTrustedRoot,
+    options,
+  });
   return {
     status: 'complete',
     changed: true,
     harness: request.harness,
     scope: request.scope,
     target: paths.targetRoot,
-    steps: plannedSteps.map((step) => (
-      step.outcome === 'planned' ? { ...step, outcome: 'confirmed' as const } : step
-    )),
-    diagnostics: receiptKeyDiagnostic(applied.keyProtection),
-    manual_actions: [],
-    receipt: receiptPaths.receiptPath,
+    steps: finalizeOpenCodePlanSteps(plannedSteps, cleanupComplete),
+    diagnostics: [
+      ...receiptKeyDiagnostic(applied.keyProtection),
+      ...(malformedConfigBackupPath
+        ? [`Malformed OpenCode configuration backup: ${malformedConfigBackupPath}`]
+        : []),
+      ...(!cleanupComplete
+        ? ['OpenCode setup succeeded, but target-bound recovery evidence cleanup is incomplete and will be retried.']
+        : []),
+    ],
+    manual_actions: ['Restart OpenCode to load the updated thoth-mem integration.'],
+    receipt: null,
   };
 }
 
@@ -3012,16 +3434,39 @@ export async function inspectAndPlanSetup(
   const needsTargetLock = canMutateOpenCode || canMutateCodex || canMutateCodexRollback;
   let dataDir: string;
   let receiptBasePath: string;
+  let receiptKeyPath: string | undefined;
+  let receiptTrustedRoot: string | undefined;
   let canonicalTarget: string;
   try {
     dataDir = canonicalDataDir(options, roots, needsTargetLock);
     if (!isAbsolute(dataDir)) {
       return invalidPathResult(request);
     }
-    receiptBasePath = setupReceiptBasePath(request, paths, dataDir);
     canonicalTarget = await canonicalizeSetupTarget(paths.targetRoot);
+    const legacyReceiptBasePath = setupReceiptBasePath(request, paths, dataDir);
+    const usesOpenCodeJournal = request.harness === 'opencode'
+      && request.rollbackReceipt === undefined;
+    receiptBasePath = usesOpenCodeJournal
+      ? openCodeJournalBasePath(request, paths, dataDir, canonicalTarget)
+      : legacyReceiptBasePath;
+    receiptKeyPath = usesOpenCodeJournal ? join(receiptBasePath, 'journal.key') : undefined;
+    receiptTrustedRoot = usesOpenCodeJournal
+      ? openCodeReceiptTrustedRoot(request, paths, dataDir)
+      : undefined;
   } catch {
     return invalidPathResult(request);
+  }
+
+  if (
+    canMutateOpenCode
+    && receiptTrustedRoot
+    && !await setupReceiptNamespaceHasTrustedContainment(receiptBasePath, {
+      dataDir,
+      ...(receiptKeyPath ? { keyPath: receiptKeyPath } : {}),
+      trustedRoot: receiptTrustedRoot,
+    })
+  ) {
+    return unsafeOpenCodeRecoveryBoundaryResult(request, paths);
   }
 
   let releaseLock: (() => Promise<void>) | undefined;
@@ -3062,10 +3507,44 @@ export async function inspectAndPlanSetup(
     if (releaseLock) {
       await traceSetup(options, 'lock_acquired');
     }
-    const scanned = await scanSetupReceipts(receiptBasePath, {
+    if (request.harness === 'opencode' && canMutateOpenCode) {
+      try {
+        await inspectSetup(request, paths, createNodeSetupFileSystem(), options);
+      } catch {
+        return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
+      }
+    }
+    let scanned = await scanSetupReceipts(receiptBasePath, {
       dataDir,
       expectedBasePath: receiptBasePath,
+      ...(receiptKeyPath ? { keyPath: receiptKeyPath } : {}),
+      ...(receiptTrustedRoot ? { trustedRoot: receiptTrustedRoot } : {}),
     });
+    if (
+      !scanned.ok
+      && scanned.reason === 'receipt_namespace_unsafe'
+      && request.harness === 'opencode'
+      && canMutateOpenCode
+    ) {
+      return unsafeOpenCodeRecoveryBoundaryResult(request, paths);
+    }
+    if (!scanned.ok && request.harness === 'opencode' && canMutateOpenCode) {
+      const reset = await resetSetupReceiptNamespace(receiptBasePath, {
+        dataDir,
+        keyPath: receiptKeyPath!,
+        ...(receiptTrustedRoot ? { trustedRoot: receiptTrustedRoot } : {}),
+        fault: options.transaction?.receiptFault,
+      });
+      if (!reset) {
+        return requiresSetupActionResult(
+          request,
+          paths,
+          'Invalid target-bound OpenCode recovery evidence could not be reset safely.',
+          'Remove only the reported target-bound recovery namespace and retry.',
+        );
+      }
+      scanned = { ok: true, receipts: [] };
+    }
     if (!scanned.ok) {
       return requiresSetupActionResult(
         request,
@@ -3080,9 +3559,55 @@ export async function inspectAndPlanSetup(
       && receipt.scope === request.scope
       && resolve(receipt.target) === resolve(canonicalTarget)
     ));
-    const blockingIncomplete = request.rollbackReceipt
-      ? incomplete.filter(({ path }) => resolve(path) !== resolve(request.rollbackReceipt!))
-      : incomplete;
+    if (request.harness === 'opencode' && canMutateOpenCode && incomplete.length > 0) {
+      let restored = false;
+      if (incomplete.length === 1) {
+        const candidate = incomplete[0]!;
+        const bound = candidate.receipt.schema_version === 1 ? bindSetupReceipt(
+          request,
+          paths,
+          canonicalTarget,
+          receiptBasePath,
+          candidate.path,
+          candidate.receipt,
+        ) : null;
+        if (bound) {
+          restored = await restoreOpenCodeJournal(
+            bound,
+            candidate.path,
+            dataDir,
+            receiptKeyPath!,
+            receiptTrustedRoot!,
+            options,
+          );
+        }
+      }
+      if (restored) {
+        await traceSetup(options, 'journal_restored');
+      }
+      const reset = await resetSetupReceiptNamespace(receiptBasePath, {
+        dataDir,
+        keyPath: receiptKeyPath!,
+        ...(receiptTrustedRoot ? { trustedRoot: receiptTrustedRoot } : {}),
+        fault: options.transaction?.receiptFault,
+      });
+      if (!reset) {
+        return requiresSetupActionResult(
+          request,
+          paths,
+          'Target-bound OpenCode recovery evidence could not be cleared safely.',
+          'Remove only the reported target-bound recovery namespace and retry.',
+        );
+      }
+      if (!restored && incomplete.length === 1) {
+        await traceSetup(options, 'journal_reset');
+      }
+    }
+    const blockingIncomplete = request.harness === 'opencode' && canMutateOpenCode
+      ? []
+      : request.rollbackReceipt
+        ? incomplete.filter(({ path }) => resolve(path) !== resolve(request.rollbackReceipt!))
+        : incomplete;
     if (blockingIncomplete.length > 0) {
       return {
         status: 'requires_user_action',
@@ -3144,6 +3669,19 @@ export async function inspectAndPlanSetup(
       return failedInspectionResult(request, paths.targetRoot, paths.sourceAssetsPath);
     }
     paths = inspection.paths;
+    let openCodeCleanupWarning = false;
+    if (request.harness === 'opencode' && canMutateOpenCode && inspection.managed) {
+      openCodeCleanupWarning = !await cleanupOpenCodeEvidence({
+        request,
+        paths,
+        dataDir,
+        canonicalTarget,
+        journalBasePath: receiptBasePath,
+        journalKeyPath: receiptKeyPath!,
+        trustedRoot: receiptTrustedRoot!,
+        options,
+      });
+    }
     if (
       request.harness === 'codex'
       && inspection.codexLegacyState === 'ambiguous'
@@ -3245,6 +3783,8 @@ export async function inspectAndPlanSetup(
         dataDir,
         canonicalTarget,
         receiptBasePath,
+        receiptKeyPath!,
+        receiptTrustedRoot!,
         options,
       );
     }
@@ -3256,7 +3796,12 @@ export async function inspectAndPlanSetup(
       scope: request.scope,
       target: paths.targetRoot,
       steps: planSteps(request, paths, inspection, codexEvidence),
-      diagnostics: planDiagnostics(request, paths, inspection, codexEvidence),
+      diagnostics: [
+        ...planDiagnostics(request, paths, inspection, codexEvidence),
+        ...(openCodeCleanupWarning
+          ? ['OpenCode setup is current, but target-bound recovery evidence cleanup remains incomplete.']
+          : []),
+      ],
       manual_actions: manualActions(request, inspection, codexEvidence, needsFileChanges),
       receipt: null,
     };

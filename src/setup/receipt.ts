@@ -43,7 +43,8 @@ export type ReceiptFaultPoint =
   | 'receipt-stage'
   | 'receipt-sync'
   | 'receipt-rename'
-  | 'receipt-parent-sync';
+  | 'receipt-parent-sync'
+  | 'receipt-cleanup';
 
 export interface ReceiptFaultEvent {
   point: ReceiptFaultPoint;
@@ -160,6 +161,8 @@ export interface ReceiptPaths {
 export interface ReceiptPersistenceOptions {
   dataDir: string;
   expectedBasePath?: string;
+  keyPath?: string;
+  trustedRoot?: string;
   fault?: (event: ReceiptFaultEvent) => void | Promise<void>;
 }
 
@@ -347,6 +350,9 @@ export async function persistSetupReceipt(
     return { ok: false, reason: 'receipt_schema_invalid' };
   }
   const basePath = options.expectedBasePath ?? dirname(dirname(receiptPath));
+  if (!await setupReceiptNamespaceHasTrustedContainment(basePath, options)) {
+    return { ok: false, reason: 'receipt_namespace_unsafe' };
+  }
   if (!await receiptPathMatches(receiptPath, basePath, receipt.id)) {
     return { ok: false, reason: 'receipt_path_invalid' };
   }
@@ -394,6 +400,9 @@ export async function loadSetupReceipt(
   options: ReceiptPersistenceOptions,
 ): Promise<ReceiptLoadResult> {
   const basePath = options.expectedBasePath ?? dirname(dirname(receiptPath));
+  if (!await setupReceiptNamespaceHasTrustedContainment(basePath, options)) {
+    return { ok: false, reason: 'receipt_namespace_unsafe' };
+  }
   if (!await receiptPathHasValidTopology(receiptPath, basePath)) {
     return { ok: false, reason: 'receipt_path_invalid' };
   }
@@ -419,7 +428,7 @@ export async function loadSetupReceipt(
     return { ok: false, reason: 'receipt_path_invalid' };
   }
 
-  const keyResult = await readReceiptKey(options.dataDir, false);
+  const keyResult = await readReceiptKey(options.dataDir, false, options.keyPath);
   if (!keyResult.ok) {
     return keyResult;
   }
@@ -436,6 +445,9 @@ export async function scanSetupReceipts(
   basePath: string,
   options: ReceiptPersistenceOptions,
 ): Promise<ReceiptScanResult> {
+  if (!await setupReceiptNamespaceHasTrustedContainment(basePath, options)) {
+    return { ok: false, reason: 'receipt_namespace_unsafe' };
+  }
   let receiptPaths: string[];
   try {
     receiptPaths = await listReceiptPaths(basePath);
@@ -457,6 +469,84 @@ export async function scanSetupReceipts(
     receipts.push({ path: receiptPath, receipt: loaded.receipt });
   }
   return { ok: true, receipts };
+}
+
+export async function resetSetupReceiptNamespace(
+  basePath: string,
+  options: ReceiptPersistenceOptions,
+): Promise<boolean> {
+  if (!await setupReceiptNamespaceHasTrustedContainment(basePath, options)) {
+    return false;
+  }
+  if (!isAbsolute(basePath)) {
+    return false;
+  }
+  if (options.keyPath && resolve(dirname(options.keyPath)) !== resolve(basePath)) {
+    return false;
+  }
+  try {
+    await invokeFault(options, 'receipt-cleanup', basePath);
+    await rm(basePath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cleanupMatchingSetupReceipts(
+  basePath: string,
+  options: ReceiptPersistenceOptions,
+  matches: (receipt: SetupReceipt) => boolean,
+): Promise<{ ok: boolean; removed: number }> {
+  if (!await setupReceiptNamespaceHasTrustedContainment(basePath, options)) {
+    return { ok: false, removed: 0 };
+  }
+  let receiptPaths: string[];
+  try {
+    receiptPaths = await listReceiptPaths(basePath);
+  } catch {
+    return { ok: false, removed: 0 };
+  }
+  let removed = 0;
+  let ok = true;
+  for (const receiptPath of receiptPaths) {
+    const loaded = await loadSetupReceipt(receiptPath, {
+      ...options,
+      expectedBasePath: basePath,
+    });
+    if (!loaded.ok || !matches(loaded.receipt)) {
+      continue;
+    }
+    try {
+      await invokeFault(options, 'receipt-cleanup', receiptPath);
+      await rm(dirname(receiptPath), { recursive: true, force: true });
+      removed++;
+    } catch {
+      ok = false;
+    }
+  }
+  return { ok, removed };
+}
+
+export async function setupReceiptNamespaceHasTrustedContainment(
+  basePath: string,
+  options: ReceiptPersistenceOptions,
+): Promise<boolean> {
+  if (!options.trustedRoot) {
+    return true;
+  }
+  if (
+    !isAbsolute(basePath)
+    || !isAbsolute(options.trustedRoot)
+    || (options.keyPath && resolve(dirname(options.keyPath)) !== resolve(basePath))
+  ) {
+    return false;
+  }
+  if (!await pathHasTrustedAncestors(basePath, options.trustedRoot)) {
+    return false;
+  }
+  return !options.keyPath
+    || pathHasTrustedAncestors(options.keyPath, options.trustedRoot);
 }
 
 function signReceipt(receipt: SetupReceipt, key: Buffer): string {
@@ -869,7 +959,7 @@ async function ensureReceiptKey(
   options: ReceiptPersistenceOptions,
   receiptBasePath: string,
 ): Promise<ReceiptKeyResult | ReceiptKeyFailure> {
-  const existing = await readReceiptKey(options.dataDir, true);
+  const existing = await readReceiptKey(options.dataDir, true, options.keyPath);
   if (existing.ok || existing.reason !== 'receipt_key_missing') {
     return existing;
   }
@@ -881,8 +971,11 @@ async function ensureReceiptKey(
     return { ok: false, reason: 'receipt_scan_failed' };
   }
 
-  const keyPath = getReceiptKeyPath(options.dataDir);
+  const keyPath = options.keyPath ?? getReceiptKeyPath(options.dataDir);
   const keyDirectory = dirname(keyPath);
+  if (options.keyPath && resolve(keyDirectory) !== resolve(receiptBasePath)) {
+    return { ok: false, reason: 'receipt_key_path_invalid' };
+  }
   const stagePath = join(keyDirectory, `.receipt-key.thoth-mem-stage-${randomUUID()}`);
   try {
     await mkdir(keyDirectory, { recursive: true });
@@ -906,7 +999,7 @@ async function ensureReceiptKey(
     }
     await rm(stagePath, { force: true });
     await syncDirectoryBestEffort(keyDirectory);
-    return readReceiptKey(options.dataDir, true);
+    return readReceiptKey(options.dataDir, true, options.keyPath);
   } catch {
     await rm(stagePath, { force: true }).catch(() => undefined);
     return { ok: false, reason: 'receipt_key_creation_failed' };
@@ -916,8 +1009,9 @@ async function ensureReceiptKey(
 async function readReceiptKey(
   dataDir: string,
   enforcePermissions: boolean,
+  explicitKeyPath?: string,
 ): Promise<ReceiptKeyResult | ReceiptKeyFailure> {
-  const keyPath = getReceiptKeyPath(dataDir);
+  const keyPath = explicitKeyPath ?? getReceiptKeyPath(dataDir);
   try {
     const details = await lstat(keyPath);
     if (!details.isFile() || details.isSymbolicLink() || details.size > 256) {
@@ -1019,6 +1113,44 @@ async function receiptPathMatches(
   return isReceiptId(id)
     && basename(dirname(receiptPath)) === id
     && await receiptPathHasValidTopology(receiptPath, expectedBasePath);
+}
+
+async function pathHasTrustedAncestors(
+  path: string,
+  trustedRoot: string,
+): Promise<boolean> {
+  const root = resolve(trustedRoot);
+  const candidate = resolve(path);
+  const relativePath = relative(root, candidate);
+  if (isPathEscape(relativePath)) {
+    return false;
+  }
+  try {
+    const canonicalRoot = await resolveFromNearestExistingAncestor(root);
+    let current = root;
+    for (const segment of relativePath.split(/[\\/]/).filter(Boolean)) {
+      current = join(current, segment);
+      const canonicalCurrent = await resolveFromNearestExistingAncestor(current);
+      if (!isPathContained(canonicalRoot, canonicalCurrent)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPathEscape(path: string): boolean {
+  return isAbsolute(path)
+    || path === '..'
+    || path.startsWith('../')
+    || path.startsWith('..\\');
+}
+
+function isPathContained(root: string, candidate: string): boolean {
+  const relativePath = relative(resolve(root), resolve(candidate));
+  return relativePath === '' || !isPathEscape(relativePath);
 }
 
 async function resolveFromNearestExistingAncestor(path: string): Promise<string> {
