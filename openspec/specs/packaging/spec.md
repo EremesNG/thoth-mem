@@ -337,3 +337,59 @@ OpenCode rollback MUST restore or remove the bundled skill only through the exis
 - **GIVEN** a managed installation with the bundled skill
 - **WHEN** rollback is applied
 - **THEN** the receipt-owned plugin assets are restored or removed according to the receipt and no shared OpenCode skill directory is mutated
+
+### Requirement: Replace the whole managed asset target safely
+
+Convergence MUST delete every prior entry inside the selected-scope managed asset target and install only the current packaged layout; if the target itself is a symlink, junction, or equivalent link, setup MUST remove the link without traversing or modifying its destination before creating a normal directory.
+
+#### Scenario: US1 - Converge an existing OpenCode installation 1
+
+- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
+- **WHEN** setup runs without `--force`
+- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
+
+#### Scenario: US1 - Converge an existing OpenCode installation 2
+
+- **GIVEN** the managed asset target exists without valid installation metadata
+- **WHEN** setup runs
+- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
+
+#### Scenario: US1 - Converge an existing OpenCode installation 3
+
+- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
+- **WHEN** setup runs
+- **THEN** setup repairs the full managed state automatically
+
+#### Scenario: US1 - Converge an existing OpenCode installation 4
+
+- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
+- **WHEN** setup runs again
+- **THEN** it returns `complete` with `changed=false` and performs zero mutation
+
+### Requirement: Verify current packed-package convergence
+
+Packed-artifact verification MUST exercise global and project OpenCode convergence from older, newer, missing, malformed, and same-version-diverged metadata and assets, and MUST prove an exact repeated no-op without using the source checkout or a real user home.
+
+#### Scenario: US1 - Converge an existing OpenCode installation 1
+
+- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
+- **WHEN** setup runs without `--force`
+- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
+
+#### Scenario: US1 - Converge an existing OpenCode installation 2
+
+- **GIVEN** the managed asset target exists without valid installation metadata
+- **WHEN** setup runs
+- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
+
+#### Scenario: US1 - Converge an existing OpenCode installation 3
+
+- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
+- **WHEN** setup runs
+- **THEN** setup repairs the full managed state automatically
+
+#### Scenario: US1 - Converge an existing OpenCode installation 4
+
+- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
+- **WHEN** setup runs again
+- **THEN** it returns `complete` with `changed=false` and performs zero mutation

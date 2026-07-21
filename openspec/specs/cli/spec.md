@@ -541,3 +541,239 @@ Legacy installation metadata MUST determine freshness from stable package identi
 - WHEN modern migration evaluates that metadata
 - THEN it MUST use the metadata only for claims its schema actually proves
 - AND it MUST require additional exact ownership evidence or return `requires_user_action`
+
+### Requirement: Converge installer-owned OpenCode state
+
+Global and project-scoped OpenCode setup MUST treat any existing canonical `.thoth-mem` asset-path entry as installer-owned and MUST converge it, the canonical `plugins/thoth-mem.js` entry, installation metadata, and `mcp.thoth-mem` configuration to the currently executing package without requiring metadata validity, receipt proof, manual deletion, or `--force`.
+
+#### Scenario: US1 - Converge an existing OpenCode installation 1
+
+- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
+- **WHEN** setup runs without `--force`
+- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
+
+#### Scenario: US1 - Converge an existing OpenCode installation 2
+
+- **GIVEN** the managed asset target exists without valid installation metadata
+- **WHEN** setup runs
+- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
+
+#### Scenario: US1 - Converge an existing OpenCode installation 3
+
+- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
+- **WHEN** setup runs
+- **THEN** setup repairs the full managed state automatically
+
+#### Scenario: US1 - Converge an existing OpenCode installation 4
+
+- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
+- **WHEN** setup runs again
+- **THEN** it returns `complete` with `changed=false` and performs zero mutation
+
+### Requirement: Repair every non-current state
+
+OpenCode setup MUST replace or repair its managed state for any package-version mismatch, including a downgrade, and for any same-version content or configuration divergence; it MUST mutate nothing only when the complete desired state already matches exactly.
+
+#### Scenario: US1 - Converge an existing OpenCode installation 1
+
+- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
+- **WHEN** setup runs without `--force`
+- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
+
+#### Scenario: US1 - Converge an existing OpenCode installation 2
+
+- **GIVEN** the managed asset target exists without valid installation metadata
+- **WHEN** setup runs
+- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
+
+#### Scenario: US1 - Converge an existing OpenCode installation 3
+
+- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
+- **WHEN** setup runs
+- **THEN** setup repairs the full managed state automatically
+
+#### Scenario: US1 - Converge an existing OpenCode installation 4
+
+- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
+- **WHEN** setup runs again
+- **THEN** it returns `complete` with `changed=false` and performs zero mutation
+
+### Requirement: Select and repair configuration deterministically
+
+Setup MUST prefer `opencode.jsonc` when both config candidates exist, MUST preserve unrelated settings when the selected file parses, and MUST persist a byte-exact non-colliding backup before replacing a malformed selected file with a minimal valid configuration containing canonical `mcp.thoth-mem`.
+
+#### Scenario: US3 - Repair OpenCode configuration deterministically 1
+
+- **GIVEN** the selected OpenCode configuration parses successfully
+- **WHEN** setup runs
+- **THEN** it normalizes only `mcp.thoth-mem` and preserves unrelated settings
+
+#### Scenario: US3 - Repair OpenCode configuration deterministically 2
+
+- **GIVEN** both `opencode.json` and `opencode.jsonc` exist
+- **WHEN** setup runs
+- **THEN** it selects JSONC and leaves JSON unchanged
+
+#### Scenario: US3 - Repair OpenCode configuration deterministically 3
+
+- **GIVEN** the selected configuration is malformed
+- **WHEN** setup runs
+- **THEN** it persists a byte-exact non-colliding backup, recreates a minimal valid configuration containing canonical `mcp.thoth-mem`, and reports the backup path
+
+### Requirement: Journal replacement before mutation
+
+Before the first OpenCode mutation, setup MUST durably persist target-bounded temporary journal and backup evidence sufficient to restore every selected pre-run state; an in-process failure MUST restore that state before returning `failed` whenever restoration remains possible.
+
+#### Scenario: US2 - Survive interrupted replacement 1
+
+- **GIVEN** setup has begun replacing OpenCode state
+- **WHEN** a filesystem mutation fails while the process remains alive
+- **THEN** setup restores the complete pre-run state and returns `failed` without claiming completion
+
+#### Scenario: US2 - Survive interrupted replacement 2
+
+- **GIVEN** a prior process stopped with a valid in-progress journal
+- **WHEN** setup runs again
+- **THEN** it restores the journal's verified pre-state and retries setup from a clean baseline
+
+#### Scenario: US2 - Survive interrupted replacement 3
+
+- **GIVEN** an in-progress journal fails signature, path, topology, or hash validation
+- **WHEN** setup runs again
+- **THEN** it discards only canonical journal artifacts without following embedded paths and performs a fresh canonical installation
+
+#### Scenario: US2 - Survive interrupted replacement 4
+
+- **GIVEN** setup verifies the new post-state
+- **WHEN** completion succeeds
+- **THEN** no durable OpenCode rollback receipt or pre-version backup for that target remains
+
+#### Scenario: US2 - Survive interrupted replacement 5
+
+- **GIVEN** post-success cleanup cannot remove every journal or backup artifact
+- **WHEN** setup renders its result
+- **THEN** it returns `complete` with a bounded warning and retries canonical cleanup on the next run
+
+### Requirement: Recover interrupted setup automatically
+
+A subsequent setup run MUST validate any canonical in-progress OpenCode journal, restore its verified pre-state, and retry from a clean baseline; an invalid journal MUST be discarded without following any embedded path before a fresh canonical installation proceeds.
+
+#### Scenario: US2 - Survive interrupted replacement 1
+
+- **GIVEN** setup has begun replacing OpenCode state
+- **WHEN** a filesystem mutation fails while the process remains alive
+- **THEN** setup restores the complete pre-run state and returns `failed` without claiming completion
+
+#### Scenario: US2 - Survive interrupted replacement 2
+
+- **GIVEN** a prior process stopped with a valid in-progress journal
+- **WHEN** setup runs again
+- **THEN** it restores the journal's verified pre-state and retries setup from a clean baseline
+
+#### Scenario: US2 - Survive interrupted replacement 3
+
+- **GIVEN** an in-progress journal fails signature, path, topology, or hash validation
+- **WHEN** setup runs again
+- **THEN** it discards only canonical journal artifacts without following embedded paths and performs a fresh canonical installation
+
+#### Scenario: US2 - Survive interrupted replacement 4
+
+- **GIVEN** setup verifies the new post-state
+- **WHEN** completion succeeds
+- **THEN** no durable OpenCode rollback receipt or pre-version backup for that target remains
+
+#### Scenario: US2 - Survive interrupted replacement 5
+
+- **GIVEN** post-success cleanup cannot remove every journal or backup artifact
+- **WHEN** setup renders its result
+- **THEN** it returns `complete` with a bounded warning and retries canonical cleanup on the next run
+
+### Requirement: Remove durable rollback state after success
+
+After exact post-state verification, setup MUST remove temporary journal data plus all prior setup receipts and backups bound to the same OpenCode harness, scope, and target so no successful OpenCode setup retains a usable durable rollback to the prior installation.
+
+#### Scenario: US2 - Survive interrupted replacement 1
+
+- **GIVEN** setup has begun replacing OpenCode state
+- **WHEN** a filesystem mutation fails while the process remains alive
+- **THEN** setup restores the complete pre-run state and returns `failed` without claiming completion
+
+#### Scenario: US2 - Survive interrupted replacement 2
+
+- **GIVEN** a prior process stopped with a valid in-progress journal
+- **WHEN** setup runs again
+- **THEN** it restores the journal's verified pre-state and retries setup from a clean baseline
+
+#### Scenario: US2 - Survive interrupted replacement 3
+
+- **GIVEN** an in-progress journal fails signature, path, topology, or hash validation
+- **WHEN** setup runs again
+- **THEN** it discards only canonical journal artifacts without following embedded paths and performs a fresh canonical installation
+
+#### Scenario: US2 - Survive interrupted replacement 4
+
+- **GIVEN** setup verifies the new post-state
+- **WHEN** completion succeeds
+- **THEN** no durable OpenCode rollback receipt or pre-version backup for that target remains
+
+#### Scenario: US2 - Survive interrupted replacement 5
+
+- **GIVEN** post-success cleanup cannot remove every journal or backup artifact
+- **WHEN** setup renders its result
+- **THEN** it returns `complete` with a bounded warning and retries canonical cleanup on the next run
+
+### Requirement: Degrade cleanup without false installation failure
+
+If verified setup succeeds but target-bounded receipt or backup cleanup is incomplete, setup MUST still return `complete`, MUST emit a bounded warning naming only safe cleanup context, and MUST retry cleanup before declaring a later no-op.
+
+#### Scenario: US2 - Survive interrupted replacement 1
+
+- **GIVEN** setup has begun replacing OpenCode state
+- **WHEN** a filesystem mutation fails while the process remains alive
+- **THEN** setup restores the complete pre-run state and returns `failed` without claiming completion
+
+#### Scenario: US2 - Survive interrupted replacement 2
+
+- **GIVEN** a prior process stopped with a valid in-progress journal
+- **WHEN** setup runs again
+- **THEN** it restores the journal's verified pre-state and retries setup from a clean baseline
+
+#### Scenario: US2 - Survive interrupted replacement 3
+
+- **GIVEN** an in-progress journal fails signature, path, topology, or hash validation
+- **WHEN** setup runs again
+- **THEN** it discards only canonical journal artifacts without following embedded paths and performs a fresh canonical installation
+
+#### Scenario: US2 - Survive interrupted replacement 4
+
+- **GIVEN** setup verifies the new post-state
+- **WHEN** completion succeeds
+- **THEN** no durable OpenCode rollback receipt or pre-version backup for that target remains
+
+#### Scenario: US2 - Survive interrupted replacement 5
+
+- **GIVEN** post-success cleanup cannot remove every journal or backup artifact
+- **WHEN** setup renders its result
+- **THEN** it returns `complete` with a bounded warning and retries canonical cleanup on the next run
+
+### Requirement: Preserve truthful planning and results
+
+Plan mode MUST report deterministic convergence, recovery, cleanup, and restart actions with zero writes; a changed successful result MUST request an OpenCode restart without attempting process control, while an exact no-op MUST return `complete` with `changed=false` and no restart action.
+
+#### Scenario: US4 - Preview and verify destructive convergence 1
+
+- **GIVEN** a target requires replacement or repair
+- **WHEN** setup runs with `--plan`
+- **THEN** it reports the selected config, whole managed-directory replacement, plugin-entry replacement, temporary recovery evidence, cleanup, and restart requirement while performing zero writes
+
+#### Scenario: US4 - Preview and verify destructive convergence 2
+
+- **GIVEN** mutating setup changes OpenCode state successfully
+- **WHEN** results are rendered
+- **THEN** human and JSON output agree on `complete`, `changed=true`, bounded warnings, and the manual OpenCode restart action
+
+#### Scenario: US4 - Preview and verify destructive convergence 3
+
+- **GIVEN** the current package lacks a required OpenCode source asset
+- **WHEN** setup inspects the package
+- **THEN** it fails before creating a journal, backup, or target mutation
