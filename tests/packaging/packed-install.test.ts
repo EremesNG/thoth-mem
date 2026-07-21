@@ -407,6 +407,10 @@ async function createSourceSetupFixture(
   ];
   if (harness === 'opencode') {
     copies.push(cp(
+      join(repositoryRoot, 'integrations', 'inventory.json'),
+      join(packageRoot, 'integrations', 'inventory.json'),
+    ));
+    copies.push(cp(
       join(repositoryRoot, 'integrations', 'shared'),
       join(packageRoot, 'integrations', 'shared'),
       { recursive: true },
@@ -808,7 +812,7 @@ describe('managed installation metadata source contract', () => {
     }
   });
 
-  it('keeps package, topology, packaged content, and owned content drift actionable', async () => {
+  it('plans package, topology, packaged content, and owned content drift for convergence', async () => {
     const fixture = await createSourceSetupFixture();
     const paths = resolveSetupPaths(fixture.request, fixture.roots);
     try {
@@ -833,7 +837,8 @@ describe('managed installation metadata source contract', () => {
           dataDir: fixture.dataDir,
           executablePath: fixture.executablePath,
         });
-        expect(blocked.status).toBe('requires_user_action');
+        expect(blocked).toMatchObject({ status: 'complete', changed: false });
+        expect(blocked.steps.some((step) => step.outcome === 'planned')).toBe(true);
       }
       await writeFile(metadataPath, JSON.stringify(metadata), 'utf8');
 
@@ -851,7 +856,7 @@ describe('managed installation metadata source contract', () => {
         dataDir: fixture.dataDir,
         executablePath: fixture.executablePath,
       });
-      expect(packagedDrift.status).toBe('requires_user_action');
+      expect(packagedDrift).toMatchObject({ status: 'complete', changed: false });
       await writeFile(sourcePlugin, sourceBefore, 'utf8');
 
       await writeFile(installedPlugin, 'export default { installedDrift: true };\n', 'utf8');
@@ -860,7 +865,7 @@ describe('managed installation metadata source contract', () => {
         dataDir: fixture.dataDir,
         executablePath: fixture.executablePath,
       });
-      expect(ownedDrift.status).toBe('requires_user_action');
+      expect(ownedDrift).toMatchObject({ status: 'complete', changed: false });
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
@@ -900,7 +905,7 @@ describe('managed installation metadata source contract', () => {
       });
       expect(plan).toMatchObject({ status: 'complete', changed: false });
       expect(plan.steps.some((step) => step.outcome === 'planned')).toBe(true);
-      expect(plan.steps.some((step) => /remove/i.test(step.name))).toBe(false);
+      expect(plan.steps.some((step) => /remove/i.test(step.name))).toBe(true);
       await expect(lstat(join(paths.assetPath, LEGACY_METADATA_NAME))).resolves.toMatchObject({});
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -1154,7 +1159,89 @@ describe('packed OpenCode installation', () => {
   }, PACKAGE_TIMEOUT_MS);
 });
 
-describe('packed disposable runtime evidence', () => {
+describe('packed OpenCode managed convergence', () => {
+      it('converges prior-release-shaped global and project targets from tarball assets only', async () => {
+        const fixture = await getPackedFixture();
+        const root = join(fixture.root, 'OpenCode convergence matrix');
+        const unrelatedCwd = join(root, 'unrelated cwd');
+        await mkdir(unrelatedCwd, { recursive: true });
+        const cases = [
+          { name: 'older', metadata: '0.0.1' },
+          { name: 'newer', metadata: '999.0.0' },
+          { name: 'missing', metadata: null },
+          { name: 'malformed', metadata: 'malformed' },
+          { name: 'same-version-diverged', metadata: getVersion() },
+        ] as const;
+
+        for (const scope of ['global', 'project'] as const) {
+          for (const fixtureCase of cases) {
+            const harnessRoot = join(root, scope, fixtureCase.name);
+            const projectPath = join(harnessRoot, 'project with spaces');
+            const env = cliEnvironment(fixture, harnessRoot);
+            const targetRoot = scope === 'global'
+              ? join(env.XDG_CONFIG_HOME!, 'opencode')
+              : projectPath;
+            const configPath = join(targetRoot, 'opencode.json');
+            const assetRoot = scope === 'global'
+              ? join(targetRoot, 'plugins', '.thoth-mem')
+              : join(targetRoot, '.opencode', 'plugins', '.thoth-mem');
+            const pluginEntry = scope === 'global'
+              ? join(targetRoot, 'plugins', 'thoth-mem.js')
+              : join(targetRoot, '.opencode', 'plugins', 'thoth-mem.js');
+            await mkdir(assetRoot, { recursive: true });
+            await writeFile(configPath, '{ "theme": "preserve" }\n', 'utf8');
+            await writeFile(join(assetRoot, 'obsolete-private.txt'), 'must-be-removed', 'utf8');
+            await writeFile(pluginEntry, 'stale-plugin-entry', 'utf8');
+            if (fixtureCase.metadata === 'malformed') {
+              await writeFile(join(assetRoot, CANONICAL_METADATA_NAME), '{', 'utf8');
+            } else if (fixtureCase.metadata !== null) {
+              await writeFile(join(assetRoot, CANONICAL_METADATA_NAME), `${JSON.stringify({
+                schemaVersion: 1,
+                packageVersion: fixtureCase.metadata,
+                executable: fixture.entryPath,
+                harness: 'opencode',
+                scope,
+                target: targetRoot,
+                configPath,
+                assetsPath: assetRoot,
+                verified: true,
+              }, null, 2)}\n`, 'utf8');
+            }
+            const args = [
+              'setup', 'opencode',
+              ...(scope === 'project' ? ['--scope', 'project', '--project', projectPath] : []),
+              '--json',
+            ];
+            const converged = runPackedCli(fixture, args, { cwd: unrelatedCwd, env });
+            expect(converged.status, `${scope}/${fixtureCase.name}: ${converged.stderr} ${JSON.stringify(converged.json)}`).toBe(0);
+            expect(converged.json).toMatchObject({
+              status: 'complete',
+              changed: true,
+              scope,
+              receipt: null,
+              manual_actions: ['Restart OpenCode to load the updated thoth-mem integration.'],
+            });
+            await expect(stat(join(assetRoot, 'obsolete-private.txt')))
+              .rejects.toMatchObject({ code: 'ENOENT' });
+            expect(JSON.parse(await readFile(join(assetRoot, CANONICAL_METADATA_NAME), 'utf8')))
+              .toMatchObject({ packageVersion: getVersion(), scope, target: targetRoot });
+            expect(await readFile(pluginEntry, 'utf8'))
+              .toBe("export { default } from './.thoth-mem/opencode/plugin.mjs';\n");
+
+            const repeated = runPackedCli(fixture, args, { cwd: unrelatedCwd, env });
+            expect(repeated.status, repeated.stderr).toBe(0);
+            expect(repeated.json).toMatchObject({
+              status: 'complete',
+              changed: false,
+              receipt: null,
+              manual_actions: [],
+            });
+          }
+        }
+      }, PACKAGE_TIMEOUT_MS);
+    });
+
+    describe('packed disposable runtime evidence', () => {
   it('executes every packed harness through the real six-tool memory port', async () => {
         const fixture = await getPackedFixture();
         const harnesses = buildDisposableHarnesses('packed-runtime-real-port');

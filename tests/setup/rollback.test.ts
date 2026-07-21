@@ -5,7 +5,6 @@ import {
   mkdtemp,
   readFile,
   readdir,
-  rename,
   rm,
   stat,
   symlink,
@@ -14,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { parse } from 'jsonc-parser';
 import { describe, expect, it } from 'vitest';
@@ -22,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { getVersion } from '../../src/version.js';
 import {
   applyAtomicFilesystemChanges,
+  filesystemEntrySnapshot,
   type FilesystemFaultPoint,
 } from '../../src/setup/filesystem.js';
 import { inspectAndPlanSetup } from '../../src/setup/engine.js';
@@ -191,6 +191,20 @@ async function withTemporaryFixture<T>(
   await mkdir(join(packageRoot, 'plugin', 'skills', 'thoth-mem'), { recursive: true });
   await mkdir(dirname(executablePath), { recursive: true });
   await writeFile(
+    join(packageRoot, 'integrations', 'inventory.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      assets: [
+        { harness: 'opencode', role: 'plugin', path: 'integrations/opencode/plugin.mjs' },
+        { harness: 'opencode', role: 'instruction', path: 'integrations/opencode/memory-protocol.md' },
+        { harness: 'opencode', role: 'runner', path: 'integrations/shared/hook-runner.mjs' },
+        { harness: 'shared', role: 'skill', path: 'plugin/skills/thoth-mem/SKILL.md' },
+        { harness: 'shared', role: 'skill-reference-opencode', path: 'plugin/skills/thoth-mem/references/opencode.md' },
+      ],
+    }, null, 2)}\n`,
+    'utf8',
+  );
+  await writeFile(
     join(packageRoot, 'integrations', 'opencode', 'plugin.mjs'),
     'export default {};\n',
     'utf8',
@@ -208,6 +222,12 @@ async function withTemporaryFixture<T>(
   await writeFile(
     join(packageRoot, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'),
     '# packaged skill\n',
+    'utf8',
+  );
+  await mkdir(join(packageRoot, 'plugin', 'skills', 'thoth-mem', 'references'), { recursive: true });
+  await writeFile(
+    join(packageRoot, 'plugin', 'skills', 'thoth-mem', 'references', 'opencode.md'),
+    '# packaged OpenCode reference\n',
     'utf8',
   );
   await writeFile(executablePath, '#!/usr/bin/env node\n', 'utf8');
@@ -1063,29 +1083,354 @@ describe('write-ahead setup receipts', () => {
         status: 'complete',
         changed: true,
         harness: 'opencode',
-        receipt: expect.any(String),
+        receipt: null,
       });
       expect(trace.indexOf('lock_acquired')).toBeLessThan(trace.indexOf('backup_synced'));
       expect(trace.indexOf('backup_synced')).toBeLessThan(trace.indexOf('receipt_in_progress'));
       expect(trace.indexOf('receipt_in_progress')).toBeLessThan(trace.indexOf('target_renamed'));
       expect(trace.indexOf('target_renamed')).toBeLessThan(trace.indexOf('receipt_complete'));
-      const loaded = await loadVerifiedReceipt(fixture, result.receipt!);
-      expect(loaded).toMatchObject({
-        ok: true,
-        receipt: {
-          schema_version: 1,
-          operation: 'setup',
-          status: 'complete',
-          package_version: getVersion(),
-          hmac_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-        },
-      });
+
       expect(await readFile(fixture.paths.configPath, 'utf8')).toContain('"theme": "keep"');
       expect(ownedConfig(await readFile(fixture.paths.configPath, 'utf8'))).toBeDefined();
     });
   });
 
-  it('performs no target mutation when the initial receipt cannot be persisted', async () => {
+  it('uses target-bound transient OpenCode journals and removes successful rollback evidence', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          const result = await runSetup(fixture, fixture.request, { ids: ['transient-journal'] });
+
+          expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          const targetHash = createHash('sha256')
+            .update(fixture.paths.targetRoot)
+            .digest('hex');
+          const journalRoot = join(
+            fixture.dataDir,
+            'setup',
+            'opencode-journals',
+            targetHash,
+          );
+          await expect(stat(journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+          expect(await receiptDirectoryCount(fixture)).toBe(0);
+
+          const repeated = await runSetup(fixture, fixture.request, { ids: ['unused'] });
+          expect(repeated).toMatchObject({
+            status: 'complete',
+            changed: false,
+            receipt: null,
+            manual_actions: [],
+          });
+        });
+      });
+
+      it('warns on cleanup failure and retries cleanup during an exact later no-op', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          const targetHash = createHash('sha256')
+            .update(fixture.paths.targetRoot)
+            .digest('hex');
+          const journalRoot = join(fixture.dataDir, 'setup', 'opencode-journals', targetHash);
+          const first = await runSetup(fixture, fixture.request, {
+            ids: ['cleanup-warning'],
+            receiptFault: ({ point }) => {
+              if (point === 'receipt-cleanup') {
+                throw new Error('private cleanup failure');
+              }
+            },
+          });
+
+          expect(first).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          expect(first.diagnostics).toContain(
+            'OpenCode setup succeeded, but target-bound recovery evidence cleanup is incomplete and will be retried.',
+          );
+          expect(first.steps).toContainEqual({
+            name: 'Remove target-bound OpenCode recovery and rollback evidence',
+            outcome: 'unavailable',
+          });
+          expect(JSON.stringify(first)).not.toContain('private cleanup failure');
+          expect(await stat(journalRoot)).toBeDefined();
+
+          const repeated = await runSetup(fixture, fixture.request, { ids: ['unused'] });
+          expect(repeated).toMatchObject({
+            status: 'complete',
+            changed: false,
+            receipt: null,
+            manual_actions: [],
+          });
+          await expect(stat(journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        });
+      });
+
+      it('discards invalid target-bound journal evidence without following embedded paths', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          const targetHash = createHash('sha256')
+            .update(fixture.paths.targetRoot)
+            .digest('hex');
+          const journalRoot = join(fixture.dataDir, 'setup', 'opencode-journals', targetHash);
+          const outside = join(fixture.root, 'outside-must-survive');
+          const sentinel = join(outside, 'sentinel.txt');
+          await mkdir(join(journalRoot, 'invalid'), { recursive: true });
+          await mkdir(outside, { recursive: true });
+          await writeFile(sentinel, 'unchanged', 'utf8');
+          await writeFile(join(journalRoot, 'journal.key'), 'corrupt-key', 'utf8');
+          await writeFile(join(journalRoot, 'invalid', 'receipt.json'), JSON.stringify({
+            target: outside,
+            backup_path: sentinel,
+            hmac_sha256: '0'.repeat(64),
+          }), 'utf8');
+
+          const result = await runSetup(fixture, fixture.request, { ids: ['fresh-after-reset'] });
+
+          expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          expect(await readFile(sentinel, 'utf8')).toBe('unchanged');
+          await expect(stat(journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        });
+      });
+
+      it.each(['global', 'project'] as const)(
+        'rejects an OpenCode %s journal ancestor escape before mutation',
+        async (scope, context) => {
+          await withTemporaryFixture(async (fixture) => {
+            const outside = join(fixture.root, `outside-${scope}-journal`);
+            await mkdir(outside, { recursive: true });
+            const linkedAncestor = scope === 'global'
+              ? join(fixture.dataDir, 'setup')
+              : join(fixture.projectPath, '.thoth');
+            await mkdir(dirname(linkedAncestor), { recursive: true });
+            try {
+              await symlink(outside, linkedAncestor, process.platform === 'win32' ? 'junction' : 'dir');
+            } catch (error) {
+              const code = error instanceof Error && 'code' in error
+                ? (error as NodeJS.ErrnoException).code
+                : undefined;
+              if (code === 'EPERM' || code === 'EACCES') {
+                context.skip();
+                return;
+              }
+              throw error;
+            }
+
+            const targetHash = createHash('sha256')
+              .update(fixture.paths.targetRoot)
+              .digest('hex');
+            const journalRoot = scope === 'global'
+              ? join(linkedAncestor, 'opencode-journals', targetHash)
+              : join(linkedAncestor, 'setup', 'opencode-journals', targetHash);
+            await mkdir(join(journalRoot, 'invalid'), { recursive: true });
+            await writeFile(join(journalRoot, 'journal.key'), 'corrupt-key', 'utf8');
+            await writeFile(join(journalRoot, 'invalid', 'receipt.json'), '{"invalid":true}\n', 'utf8');
+            await writeFile(join(journalRoot, 'outside-sentinel.txt'), 'unchanged', 'utf8');
+            const managedTargets = [
+              fixture.paths.configPath,
+              fixture.paths.assetPath,
+              fixture.paths.pluginEntryPath,
+            ];
+            const targetsBefore = await Promise.all(managedTargets.map(filesystemEntrySnapshot));
+            const outsideBefore = await filesystemEntrySnapshot(outside);
+
+            const result = await runSetup(fixture, fixture.request, { ids: [`blocked-${scope}`] });
+
+            expect(result).toMatchObject({
+              status: 'requires_user_action',
+              changed: false,
+              receipt: null,
+              diagnostics: expect.arrayContaining([expect.stringContaining('recovery boundary')]),
+            });
+            expect(await Promise.all(managedTargets.map(filesystemEntrySnapshot))).toEqual(targetsBefore);
+            expect(await filesystemEntrySnapshot(outside)).toBe(outsideBefore);
+          }, scope);
+        },
+      );
+
+      it('allows an intentionally linked data directory as the trusted global root', async (context) => {
+        await withTemporaryFixture(async (fixture) => {
+          const trustedDestination = join(fixture.root, 'linked-data-destination');
+          await mkdir(trustedDestination, { recursive: true });
+          try {
+            await symlink(
+              trustedDestination,
+              fixture.dataDir,
+              process.platform === 'win32' ? 'junction' : 'dir',
+            );
+          } catch (error) {
+            const code = error instanceof Error && 'code' in error
+              ? (error as NodeJS.ErrnoException).code
+              : undefined;
+            if (code === 'EPERM' || code === 'EACCES') {
+              context.skip();
+              return;
+            }
+            throw error;
+          }
+
+          const result = await runSetup(fixture);
+
+          expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          expect(ownedConfig(await readFile(fixture.paths.configPath, 'utf8'))).toBeDefined();
+        });
+      });
+
+      it('restores a valid interrupted target-bound journal before retrying convergence', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          await mkdir(dirname(fixture.paths.configPath), { recursive: true });
+          await mkdir(fixture.paths.assetPath, { recursive: true });
+          await writeFile(fixture.paths.configPath, '{ "theme": "before" }\n', 'utf8');
+          await writeFile(join(fixture.paths.assetPath, 'old.txt'), 'old-assets', 'utf8');
+          await writeFile(fixture.paths.pluginEntryPath, 'old-plugin', 'utf8');
+
+          const targetHash = createHash('sha256')
+            .update(fixture.paths.targetRoot)
+            .digest('hex');
+          const journalRoot = join(fixture.dataDir, 'setup', 'opencode-journals', targetHash);
+          const receiptPaths = resolveSetupReceiptPaths(journalRoot, 'interrupted');
+          const targets = [
+            { id: 'config', path: fixture.paths.configPath, owned_key: 'mcp.thoth-mem' },
+            { id: 'assets', path: fixture.paths.assetPath },
+            { id: 'plugin', path: fixture.paths.pluginEntryPath },
+          ];
+          const steps: SetupReceiptStep[] = [];
+          for (const target of targets) {
+            const backupPath = join(
+              receiptPaths.backupRoot,
+              relative(fixture.paths.targetRoot, target.path),
+            );
+            await mkdir(dirname(backupPath), { recursive: true });
+            await cp(target.path, backupPath, { recursive: true });
+            steps.push({
+              id: target.id,
+              kind: 'filesystem',
+              outcome: 'confirmed',
+              ...(target.owned_key ? { owned_key: target.owned_key } : {}),
+              path: target.path,
+              pre_hash: await filesystemEntrySnapshot(backupPath),
+              post_hash: 'pending-interrupted-post-state',
+              backup_path: backupPath,
+            });
+          }
+          steps.push({ id: 'verify', kind: 'verification', outcome: 'planned' });
+          const interrupted = createSetupReceipt({
+            id: 'interrupted',
+            operation: 'setup',
+            status: 'in_progress',
+            harness: 'opencode',
+            scope: fixture.request.scope,
+            target: fixture.paths.targetRoot,
+            package_version: getVersion(),
+            force: false,
+            started_at: '2026-07-09T12:00:00.000Z',
+            updated_at: '2026-07-09T12:00:00.000Z',
+            steps,
+          });
+          expect((await persistSetupReceipt(receiptPaths.receiptPath, interrupted, {
+            dataDir: fixture.dataDir,
+            expectedBasePath: journalRoot,
+            keyPath: join(journalRoot, 'journal.key'),
+          })).ok).toBe(true);
+
+          await writeFile(fixture.paths.configPath, '{ "interrupted": true }\n', 'utf8');
+          await rm(fixture.paths.assetPath, { recursive: true, force: true });
+          await mkdir(fixture.paths.assetPath, { recursive: true });
+          await writeFile(join(fixture.paths.assetPath, 'partial.txt'), 'partial', 'utf8');
+          await writeFile(fixture.paths.pluginEntryPath, 'partial-plugin', 'utf8');
+          const trace: string[] = [];
+
+          const result = await runSetup(fixture, fixture.request, {
+            ids: ['retry-after-restore'],
+            trace: ({ kind }) => trace.push(kind),
+          });
+
+          expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          expect(trace).toContain('journal_restored');
+          const config = parse(await readFile(fixture.paths.configPath, 'utf8')) as Record<string, unknown>;
+          expect(config.theme).toBe('before');
+          expect(ownedConfig(await readFile(fixture.paths.configPath, 'utf8'))).toBeDefined();
+          await expect(stat(journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        });
+      });
+
+      it('restores a valid five-step interrupted journal before retrying convergence', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          await mkdir(dirname(fixture.paths.configPath), { recursive: true });
+          await mkdir(fixture.paths.assetPath, { recursive: true });
+          await writeFile(fixture.paths.configPath, '{ "theme": "before" }\n', 'utf8');
+          await writeFile(join(fixture.paths.assetPath, 'old.txt'), 'old-assets', 'utf8');
+          await writeFile(fixture.paths.pluginEntryPath, 'old-plugin', 'utf8');
+
+          const targetHash = createHash('sha256')
+            .update(fixture.paths.targetRoot)
+            .digest('hex');
+          const journalRoot = join(fixture.dataDir, 'setup', 'opencode-journals', targetHash);
+          const receiptPaths = resolveSetupReceiptPaths(journalRoot, 'interrupted-with-config-backup');
+          const configBackupPath = `${fixture.paths.configPath}.thoth-mem-backup-interrupted`;
+          await writeFile(configBackupPath, 'malformed-original', 'utf8');
+          const steps: SetupReceiptStep[] = [{
+            id: 'config-backup',
+            kind: 'filesystem',
+            outcome: 'confirmed',
+            path: configBackupPath,
+            pre_hash: 'missing',
+            post_hash: await filesystemEntrySnapshot(configBackupPath),
+          }];
+          for (const target of [
+            { id: 'config', path: fixture.paths.configPath, owned_key: 'mcp.thoth-mem' },
+            { id: 'assets', path: fixture.paths.assetPath },
+            { id: 'plugin', path: fixture.paths.pluginEntryPath },
+          ]) {
+            const backupPath = join(receiptPaths.backupRoot, relative(fixture.paths.targetRoot, target.path));
+            await mkdir(dirname(backupPath), { recursive: true });
+            await cp(target.path, backupPath, { recursive: true });
+            steps.push({
+              id: target.id,
+              kind: 'filesystem',
+              outcome: 'confirmed',
+              ...(target.owned_key ? { owned_key: target.owned_key } : {}),
+              path: target.path,
+              pre_hash: await filesystemEntrySnapshot(backupPath),
+              post_hash: 'pending-interrupted-post-state',
+              backup_path: backupPath,
+            });
+          }
+          steps.push({ id: 'verify', kind: 'verification', outcome: 'planned' });
+          const interrupted = createSetupReceipt({
+            id: 'interrupted-with-config-backup',
+            operation: 'setup',
+            status: 'in_progress',
+            harness: 'opencode',
+            scope: fixture.request.scope,
+            target: fixture.paths.targetRoot,
+            package_version: getVersion(),
+            force: false,
+            started_at: '2026-07-09T12:00:00.000Z',
+            updated_at: '2026-07-09T12:00:00.000Z',
+            steps,
+          });
+          expect((await persistSetupReceipt(receiptPaths.receiptPath, interrupted, {
+            dataDir: fixture.dataDir,
+            expectedBasePath: journalRoot,
+            keyPath: join(journalRoot, 'journal.key'),
+          })).ok).toBe(true);
+
+          await writeFile(fixture.paths.configPath, '{ "interrupted": true }\n', 'utf8');
+          await rm(fixture.paths.assetPath, { recursive: true, force: true });
+          await mkdir(fixture.paths.assetPath, { recursive: true });
+          await writeFile(join(fixture.paths.assetPath, 'partial.txt'), 'partial', 'utf8');
+          await writeFile(fixture.paths.pluginEntryPath, 'partial-plugin', 'utf8');
+          const trace: string[] = [];
+
+          const result = await runSetup(fixture, fixture.request, {
+            ids: ['retry-after-five-step-restore'],
+            trace: ({ kind }) => trace.push(kind),
+          });
+
+          expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+          expect(trace).toContain('journal_restored');
+          const config = parse(await readFile(fixture.paths.configPath, 'utf8')) as Record<string, unknown>;
+          expect(config.theme).toBe('before');
+          expect(ownedConfig(await readFile(fixture.paths.configPath, 'utf8'))).toBeDefined();
+          await expect(stat(configBackupPath)).rejects.toMatchObject({ code: 'ENOENT' });
+          await expect(stat(journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+        });
+      });
+
+      it('performs no target mutation when the initial receipt cannot be persisted', async () => {
     await withTemporaryFixture(async (fixture) => {
       await mkdir(dirname(fixture.paths.configPath), { recursive: true });
       const original = '{ "theme": "unchanged" }\n';
@@ -1108,57 +1453,48 @@ describe('write-ahead setup receipts', () => {
     });
   });
 
-  it('propagates the selected data directory to key and global receipt resolution', async () => {
+  it('uses the selected data directory without retaining a successful OpenCode key or receipt', async () => {
     await withTemporaryFixture(async (fixture) => {
       const result = await runSetup(fixture);
 
-      expect(result.status).toBe('complete');
-      expect(result.receipt).toBe(
-        join(fixture.dataDir, 'setup', 'receipts', 'setup-receipt', 'receipt.json'),
-      );
+      expect(result).toMatchObject({ status: 'complete', receipt: null });
+      await expect(stat(getReceiptKeyPath(fixture.dataDir)))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await receiptDirectoryCount(fixture)).toBe(0);
+    });
+  });
+
+  it('removes a valid historical shared OpenCode receipt only after successful convergence', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const legacyBase = receiptBasePath(fixture);
+      const legacyPaths = resolveSetupReceiptPaths(legacyBase, 'historical-open-code');
+      const historical = createSetupReceipt({
+        id: 'historical-open-code',
+        operation: 'setup',
+        status: 'complete',
+        harness: 'opencode',
+        scope: fixture.request.scope,
+        target: fixture.paths.targetRoot,
+        package_version: '0.0.1',
+        force: false,
+        started_at: '2026-07-09T11:00:00.000Z',
+        updated_at: '2026-07-09T11:00:00.000Z',
+        steps: [{ id: 'verify', kind: 'verification', outcome: 'confirmed' }],
+      });
+      expect((await persistSetupReceipt(legacyPaths.receiptPath, historical, {
+        dataDir: fixture.dataDir,
+        expectedBasePath: legacyBase,
+      })).ok).toBe(true);
+      expect(await stat(legacyPaths.receiptPath)).toBeDefined();
+
+      const result = await runSetup(fixture, fixture.request, { ids: ['converge-current'] });
+
+      expect(result).toMatchObject({ status: 'complete', changed: true, receipt: null });
+      await expect(stat(legacyPaths.receiptRoot)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await stat(getReceiptKeyPath(fixture.dataDir))).toBeDefined();
     });
   });
 
-  it('detects every durable same-target in-progress checkpoint before managed no-op inspection', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const installed = await runSetup(fixture);
-      expect(installed.status).toBe('complete');
-      const complete = await loadVerifiedReceipt(fixture, installed.receipt!);
-      expect(complete.ok).toBe(true);
-      if (!complete.ok) {
-        return;
-      }
-
-      for (let confirmedCount = 0; confirmedCount <= complete.receipt.steps.length; confirmedCount++) {
-        const id = `interrupted-${confirmedCount}`;
-        const receiptPaths = resolveSetupReceiptPaths(receiptBasePath(fixture), id);
-        const steps = complete.receipt.steps.map((step, index) => ({
-          ...step,
-          outcome: index < confirmedCount ? 'confirmed' as const : 'planned' as const,
-        }));
-        const interrupted = createSetupReceipt({
-          ...complete.receipt,
-          id,
-          status: 'in_progress',
-          started_at: '2026-07-09T12:01:00.000Z',
-          updated_at: '2026-07-09T12:01:00.000Z',
-          steps,
-        });
-        const persisted = await persistSetupReceipt(
-          receiptPaths.receiptPath,
-          interrupted,
-          { dataDir: fixture.dataDir },
-        );
-        expect(persisted.ok).toBe(true);
-
-        const result = await runSetup(fixture, fixture.request, { ids: [`blocked-${confirmedCount}`] });
-        expect(result.status).toBe('requires_user_action');
-        expect(result.changed).toBe(false);
-        expect(result.diagnostics).toContain(`Incomplete setup receipt: ${receiptPaths.receiptPath}`);
-      }
-    });
-  });
 
   it('serializes concurrent setup attempts with a target-scoped exclusive lock', async () => {
     await withTemporaryFixture(async (fixture) => {
@@ -1195,147 +1531,39 @@ describe('write-ahead setup receipts', () => {
   });
 });
 
-describe('strict receipt integrity and binding', () => {
-  it('verifies semantic JSON reordering but rejects any signed-field mutation', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const result = await runSetup(fixture);
-      const raw = JSON.parse(await readFile(result.receipt!, 'utf8')) as Record<string, unknown>;
-      const reordered = Object.fromEntries(Object.entries(raw).reverse());
-      await writeFile(result.receipt!, JSON.stringify(reordered, null, 7), 'utf8');
-      expect((await loadVerifiedReceipt(fixture, result.receipt!)).ok).toBe(true);
+describe('OpenCode configuration convergence', () => {
+      it('prefers JSONC and quarantines malformed bytes exactly before minimal recreation', async () => {
+        await withTemporaryFixture(async (fixture) => {
+          const jsonPath = fixture.paths.configCandidates[0]!;
+          const jsoncPath = fixture.paths.configCandidates[1]!;
+          const jsonBefore = '{ "theme": "json-must-remain" }\\n';
+          const malformed = Buffer.from([0xff, 0x00, 0x7b, 0x22, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74]);
+          await mkdir(dirname(jsonPath), { recursive: true });
+          await writeFile(jsonPath, jsonBefore, 'utf8');
+          await writeFile(jsoncPath, malformed);
 
-      reordered.force = !reordered.force;
-      await writeFile(result.receipt!, JSON.stringify(reordered), 'utf8');
-      const tampered = await loadVerifiedReceipt(fixture, result.receipt!);
-      expect(tampered).toMatchObject({ ok: false, reason: 'hmac_mismatch' });
-    });
-  });
+          const result = await runSetup(fixture, fixture.request, { ids: ['config-quarantine'] });
 
-  it('refuses a tampered receipt even when rollback is forced', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture);
-      const raw = JSON.parse(await readFile(setup.receipt!, 'utf8')) as Record<string, unknown>;
-      raw.status = 'rolled_back';
-      await writeFile(setup.receipt!, JSON.stringify(raw), 'utf8');
-      const before = await readFile(fixture.paths.configPath, 'utf8');
-
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        force: true,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['rollback'] });
-
-      expect(rollback.status).toBe('requires_user_action');
-      expect(rollback.changed).toBe(false);
-      expect(await readFile(fixture.paths.configPath, 'utf8')).toBe(before);
-    });
-  });
-
-  it('refuses a receipt-owned backup whose signed pre-state no longer matches', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      await mkdir(dirname(fixture.paths.configPath), { recursive: true });
-      await writeFile(fixture.paths.configPath, JSON.stringify({
-        theme: 'keep',
-        mcp: {
-          'thoth-mem': {
+          expect(result).toMatchObject({ status: 'complete', changed: true });
+          expect(await readFile(jsonPath, 'utf8')).toBe(jsonBefore);
+          expect(ownedConfig(await readFile(jsoncPath, 'utf8'))).toEqual({
             type: 'local',
-            command: ['previous-thoth'],
+            command: ['thoth-mem', 'mcp', '--no-http'],
             enabled: true,
-          },
-        },
-      }, null, 2), 'utf8');
-      const setup = await runSetup(fixture, {
-        ...fixture.request,
-        force: true,
+          });
+          const diagnostic = result.diagnostics.find((value) => (
+            value.startsWith('Malformed OpenCode configuration backup: ')
+          ));
+          expect(diagnostic).toBeDefined();
+          const backupPath = diagnostic!.slice('Malformed OpenCode configuration backup: '.length);
+          expect(await readFile(backupPath)).toEqual(malformed);
+          expect(JSON.stringify(result)).not.toContain('secret');
+          expect(JSON.stringify(result)).not.toContain(malformed.toString('latin1'));
+        });
       });
-      const loaded = await loadVerifiedReceipt(fixture, setup.receipt!);
-      expect(loaded.ok).toBe(true);
-      if (!loaded.ok) {
-        return;
-      }
-      const configStep = loaded.receipt.steps.find((step) => step.id === 'config');
-      expect(configStep?.backup_path).toEqual(expect.any(String));
-      await writeFile(configStep!.backup_path!, JSON.stringify({
-        theme: 'keep',
-        mcp: { 'thoth-mem': { command: ['tampered-backup'] } },
-      }), 'utf8');
-      const current = await readFile(fixture.paths.configPath, 'utf8');
-
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        force: true,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['must-not-rollback'] });
-
-      expect(rollback.status).toBe('requires_user_action');
-      expect(rollback.changed).toBe(false);
-      expect(await readFile(fixture.paths.configPath, 'utf8')).toBe(current);
     });
-  });
 
-  it('does not rotate a missing or corrupt key while selected receipts exist', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture);
-      const keyPath = getReceiptKeyPath(fixture.dataDir);
-      await unlink(keyPath);
-
-      const missingKey = await runSetup(fixture, fixture.request, { ids: ['must-not-create'] });
-      expect(missingKey.status).toBe('requires_user_action');
-      await expect(stat(keyPath)).rejects.toMatchObject({ code: 'ENOENT' });
-
-      await writeFile(keyPath, 'not-a-valid-key', 'utf8');
-      const corruptKey = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['must-not-rotate'] });
-      expect(corruptKey.status).toBe('requires_user_action');
-      expect(await readFile(keyPath, 'utf8')).toBe('not-a-valid-key');
-    });
-  });
-
-  it('rejects a valid signed receipt copied across canonical project targets', async () => {
-    await withTemporaryFixture(async (source) => {
-      const setup = await runSetup(source);
-      await withTemporaryFixture(async (destination) => {
-        await mkdir(dirname(getReceiptKeyPath(destination.dataDir)), { recursive: true });
-        await cp(getReceiptKeyPath(source.dataDir), getReceiptKeyPath(destination.dataDir));
-        const copiedRoot = join(receiptBasePath(destination), basename(dirname(setup.receipt!)));
-        await mkdir(dirname(copiedRoot), { recursive: true });
-        await cp(dirname(setup.receipt!), copiedRoot, { recursive: true });
-        const copiedReceipt = join(copiedRoot, 'receipt.json');
-        expect((await loadVerifiedReceipt(destination, copiedReceipt)).ok).toBe(true);
-
-        const result = await runSetup(destination, {
-          ...destination.request,
-          force: true,
-          rollbackReceipt: copiedReceipt,
-        }, { ids: ['cross-project-rollback'] });
-        expect(result.status).toBe('requires_user_action');
-        expect(result.changed).toBe(false);
-      }, 'project');
-    }, 'project');
-  });
-
-  it('records owner-only key intent without claiming POSIX enforcement on Windows', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const result = await runSetup(fixture);
-      const key = await stat(getReceiptKeyPath(fixture.dataDir));
-
-      if (process.platform === 'win32') {
-        expect(result.diagnostics).toContain(
-          'Receipt key owner-only permissions are best-effort on Windows.',
-        );
-      } else {
-        expect(key.mode & 0o777).toBe(0o600);
-        expect(result.diagnostics).not.toContain(
-          'Receipt key owner-only permissions are best-effort on Windows.',
-        );
-      }
-    });
-  });
-});
-
-describe('receipt-owned rollback', () => {
+describe('Codex receipt-owned rollback and OpenCode idempotence', () => {
   it('recomposes and restores only the exact Codex managed fragment around later edits', async () => {
     const codexHarness: Record<string, unknown> = await import('../../src/setup/harnesses/codex.js');
     const planFragment: unknown = codexHarness.planCodexManagedFragment;
@@ -1393,148 +1621,27 @@ describe('receipt-owned rollback', () => {
     expect(plan.changed).toBe(false);
     expect(plan.conflicts).toEqual([expect.objectContaining({ forceable: false })]);
   });
-  it('preserves unrelated post-install config additions while restoring only the owned key', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      await mkdir(dirname(fixture.paths.configPath), { recursive: true });
-      await writeFile(fixture.paths.configPath, '{ "theme": "before" }\n', 'utf8');
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      const installed = await readFile(fixture.paths.configPath, 'utf8');
-      await writeFile(
-        fixture.paths.configPath,
-        installed.replace('{', '{\n  "late_setting": "preserve",'),
-        'utf8',
-      );
 
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['rollback'] });
 
-      expect(rollback).toMatchObject({ status: 'complete', changed: true });
-      expect(rollback.receipt).not.toBe(setup.receipt);
-      const restored = parse(await readFile(fixture.paths.configPath, 'utf8')) as Record<string, unknown>;
-      expect(restored.theme).toBe('before');
-      expect(restored.late_setting).toBe('preserve');
-      expect((restored.mcp as Record<string, unknown> | undefined)?.['thoth-mem']).toBeUndefined();
-      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(stat(fixture.paths.pluginEntryPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    });
-  });
 
-  it('rolls back the bundled skill only from receipt-owned OpenCode assets', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const sharedSkillRoot = join(fixture.paths.targetRoot, 'skills');
-      const sharedSentinel = join(sharedSkillRoot, 'user-owned-skill', 'SKILL.md');
-      await mkdir(dirname(sharedSentinel), { recursive: true });
-      await writeFile(sharedSentinel, '# user owned\n', 'utf8');
-
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup-with-skill'] });
-      expect(setup, JSON.stringify(setup)).toMatchObject({
-        status: 'complete',
-        changed: true,
-      });
-      const installedSkill = join(
-        fixture.paths.assetPath,
-        'opencode',
-        'skills',
-        'thoth-mem',
-        'SKILL.md',
-      );
-      expect(await readFile(installedSkill, 'utf8')).toBe('# packaged skill\n');
-
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['rollback-with-skill'] });
-
-      expect(rollback, JSON.stringify(rollback)).toMatchObject({
-        status: 'complete',
-        changed: true,
-      });
-      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(await readFile(sharedSentinel, 'utf8')).toBe('# user owned\n');
-    });
-  });
-
-  it('requires action for owned divergence and bounds force to receipt-owned locations', async () => {
+  it('keeps repeated verified OpenCode setup idempotent without durable receipts', async () => {
     await withTemporaryFixture(async (fixture) => {
       const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      const installed = await readFile(fixture.paths.configPath, 'utf8');
-      const diverged = installed
-        .replace('"thoth-mem",\n        "mcp"', '"different-command"')
-        .replace('{', '{\n  "unrelated_after": true,');
-      await writeFile(fixture.paths.configPath, diverged, 'utf8');
-
-      const blocked = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['blocked'] });
-      expect(blocked.status).toBe('requires_user_action');
-      expect(blocked.changed).toBe(false);
-      expect(await readFile(fixture.paths.configPath, 'utf8')).toBe(diverged);
-
-      const forced = await runSetup(fixture, {
-        ...fixture.request,
-        force: true,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['forced-rollback'] });
-      expect(forced).toMatchObject({ status: 'complete', changed: true });
-      const restored = parse(await readFile(fixture.paths.configPath, 'utf8')) as Record<string, unknown>;
-      expect(restored.unrelated_after).toBe(true);
-      expect((restored.mcp as Record<string, unknown> | undefined)?.['thoth-mem']).toBeUndefined();
-
-      const rollbackReceipt = await loadVerifiedReceipt(fixture, forced.receipt!);
-      expect(rollbackReceipt).toMatchObject({
-        ok: true,
-        receipt: { operation: 'rollback', status: 'complete', force: true },
-      });
-      if (rollbackReceipt.ok) {
-        const configStep = rollbackReceipt.receipt.steps.find((step) => step.owned_key === 'mcp.thoth-mem');
-        expect(configStep?.backup_path).toEqual(expect.any(String));
-        expect(await readFile(configStep!.backup_path!, 'utf8')).toBe(diverged);
-      }
-    });
-  });
-
-  it('keeps repeated verified setup and completed rollback idempotent', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
+      expect(setup).toMatchObject({ status: 'complete', changed: true, receipt: null });
       const afterSetupCount = await receiptDirectoryCount(fixture);
-      const repeatedSetup = await runSetup(fixture, fixture.request, { ids: ['unused-setup'] });
-      expect(repeatedSetup).toMatchObject({ status: 'complete', changed: false, receipt: null });
+
+      const repeated = await runSetup(fixture, fixture.request, { ids: ['unused-setup'] });
+
+      expect(repeated).toMatchObject({ status: 'complete', changed: false, receipt: null });
       expect(await receiptDirectoryCount(fixture)).toBe(afterSetupCount);
-
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['rollback'] });
-      expect(rollback.status).toBe('complete');
-      const afterRollbackCount = await receiptDirectoryCount(fixture);
-      const repeatedRollback = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['unused-rollback'] });
-      expect(repeatedRollback).toMatchObject({ status: 'complete', changed: false });
-      expect(await receiptDirectoryCount(fixture)).toBe(afterRollbackCount);
     });
   });
 
-  it('removes a setup-created config only when no unrelated later content exists', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      const rollback = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, { ids: ['rollback'] });
 
-      expect(rollback.status).toBe('complete');
-      await expect(stat(fixture.paths.configPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    });
-  });
 });
 
 describe('OpenCode failure status mapping', () => {
-  it('maps setup post-state verification failure to failed/1 while retaining changed recovery evidence', async () => {
+  it('restores the complete pre-run state when setup post-state verification fails', async () => {
     await withTemporaryFixture(async (fixture) => {
       const result = await runSetup(fixture, fixture.request, {
         trace: async ({ kind, path }) => {
@@ -1546,15 +1653,47 @@ describe('OpenCode failure status mapping', () => {
 
       expect(result).toMatchObject({
         status: 'failed',
-        changed: true,
-        receipt: expect.any(String),
-        manual_actions: expect.arrayContaining([expect.stringContaining('in-progress receipt')]),
+        changed: false,
+        receipt: null,
+        diagnostics: expect.arrayContaining([expect.stringContaining('pre-run state was restored')]),
       });
       expect(getSetupExitCode(result.status)).toBe(1);
+      await expect(stat(fixture.paths.configPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(fixture.paths.pluginEntryPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await receiptDirectoryCount(fixture)).toBe(0);
     });
   });
 
-  it('maps setup final-receipt persistence failure to failed/1 with the durable receipt path', async () => {
+  it('reports restored target state even when post-failure journal cleanup is incomplete', async () => {
+    await withTemporaryFixture(async (fixture) => {
+      const result = await runSetup(fixture, fixture.request, {
+        trace: async ({ kind, path }) => {
+          if (kind === 'target_renamed' && path === fixture.paths.pluginEntryPath) {
+            await writeFile(fixture.paths.configPath, '{}\n', 'utf8');
+          }
+        },
+        receiptFault: ({ point }) => {
+          if (point === 'receipt-cleanup') {
+            throw new Error('private cleanup failure');
+          }
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: 'failed',
+        changed: false,
+        receipt: expect.any(String),
+        diagnostics: expect.arrayContaining([expect.stringContaining('cleanup is incomplete')]),
+      });
+      await expect(stat(fixture.paths.configPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(fixture.paths.assetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(fixture.paths.pluginEntryPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(JSON.stringify(result)).not.toContain('private cleanup failure');
+    });
+  });
+
+  it('reports verified setup complete when final journal persistence fails but cleanup succeeds', async () => {
     await withTemporaryFixture(async (fixture) => {
       let receiptRenames = 0;
       const result = await runSetup(fixture, fixture.request, {
@@ -1566,100 +1705,19 @@ describe('OpenCode failure status mapping', () => {
       });
 
       expect(result).toMatchObject({
-        status: 'failed',
+        status: 'complete',
         changed: true,
-        receipt: expect.any(String),
+        receipt: null,
+        diagnostics: expect.arrayContaining([expect.stringContaining('final journal checkpoint was unavailable')]),
       });
-      expect(getSetupExitCode(result.status)).toBe(1);
+      expect(getSetupExitCode(result.status)).toBe(0);
+      expect(await receiptDirectoryCount(fixture)).toBe(0);
     });
   });
 
-  it('maps rollback filesystem failure to failed/1 while reporting an unrestored change', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      let parentSyncFailed = false;
-      const result = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, {
-        ids: ['rollback'],
-        filesystemFault: ({ point }) => {
-          if (point === 'parent-sync' && !parentSyncFailed) {
-            parentSyncFailed = true;
-            throw new Error('rollback parent sync failure');
-          }
-          if (point === 'restore') {
-            throw new Error('rollback restore failure');
-          }
-        },
-      });
 
-      expect(result).toMatchObject({
-        status: 'failed',
-        changed: true,
-        receipt: expect.any(String),
-      });
-      expect(getSetupExitCode(result.status)).toBe(1);
-    });
-  });
 
-  it('maps rollback post-state verification failure to failed/1 with recovery evidence', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      const result = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, {
-        ids: ['rollback'],
-        trace: async ({ kind, path }) => {
-          if (kind === 'target_renamed' && path === fixture.paths.pluginEntryPath) {
-            await mkdir(dirname(fixture.paths.configPath), { recursive: true });
-            await writeFile(fixture.paths.configPath, JSON.stringify({
-              mcp: {
-                'thoth-mem': {
-                  type: 'local',
-                  command: ['unexpected'],
-                  enabled: true,
-                },
-              },
-            }), 'utf8');
-          }
-        },
-      });
 
-      expect(result).toMatchObject({
-        status: 'failed',
-        changed: true,
-        receipt: expect.any(String),
-      });
-      expect(getSetupExitCode(result.status)).toBe(1);
-    });
-  });
-
-  it('maps rollback final-receipt persistence failure to failed/1 with the rollback receipt', async () => {
-    await withTemporaryFixture(async (fixture) => {
-      const setup = await runSetup(fixture, fixture.request, { ids: ['setup'] });
-      let receiptRenames = 0;
-      const result = await runSetup(fixture, {
-        ...fixture.request,
-        rollbackReceipt: setup.receipt!,
-      }, {
-        ids: ['rollback'],
-        receiptFault: ({ point }) => {
-          if (point === 'receipt-rename' && ++receiptRenames === 6) {
-            throw new Error('final rollback receipt failure');
-          }
-        },
-      });
-
-      expect(result).toMatchObject({
-        status: 'failed',
-        changed: true,
-        receipt: expect.any(String),
-      });
-      expect(getSetupExitCode(result.status)).toBe(1);
-    });
-  });
 });
 
 describe('filesystem transaction hardening', () => {

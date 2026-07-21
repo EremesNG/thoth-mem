@@ -5,10 +5,12 @@ import {
   mkdir,
   open,
   readFile,
+  readlink,
   realpath,
   readdir,
   rename,
   rm,
+  symlink,
 } from 'node:fs/promises';
 import {
   basename,
@@ -52,7 +54,9 @@ export interface FilesystemFaultOptions {
 export interface FilesystemFileChange {
   kind: 'file';
   targetPath: string;
-  content: string;
+  content: string | Uint8Array;
+  mode?: number;
+  replaceExisting?: boolean;
 }
 
 export interface FilesystemDirectoryEntry {
@@ -71,6 +75,14 @@ export interface FilesystemDirectoryChange {
   targetPath: string;
   entries: FilesystemDirectoryEntry[];
   generatedFiles?: FilesystemGeneratedFile[];
+  replaceExisting?: boolean;
+}
+
+export interface FilesystemLinkChange {
+  kind: 'link';
+  targetPath: string;
+  linkTarget: string;
+  replaceExisting?: boolean;
 }
 
 export interface FilesystemRemoveChange {
@@ -81,6 +93,7 @@ export interface FilesystemRemoveChange {
 export type FilesystemChange =
   | FilesystemFileChange
   | FilesystemDirectoryChange
+  | FilesystemLinkChange
   | FilesystemRemoveChange;
 
 export interface AtomicFilesystemPlan {
@@ -93,7 +106,7 @@ export interface AtomicFilesystemPlan {
 export interface FilesystemBackup {
   targetPath: string;
   backupPath: string;
-  kind: 'file' | 'directory';
+  kind: 'file' | 'directory' | 'link';
 }
 
 export interface AtomicFilesystemResult {
@@ -106,7 +119,7 @@ export interface AtomicFilesystemResult {
   diagnostics: string[];
 }
 
-type EntryKind = 'missing' | 'file' | 'directory' | 'other';
+type EntryKind = 'missing' | 'file' | 'directory' | 'link' | 'other';
 
 interface PreparedChange {
   change: FilesystemChange;
@@ -270,7 +283,7 @@ async function prepareChanges(plan: AtomicFilesystemPlan): Promise<PreparedChang
   for (const change of plan.changes) {
     const targetPath = requireAbsolute(change.targetPath);
     if (
-      !await isRealPathContained(targetRoot, targetPath)
+      !await isChangeTargetContained(change, targetRoot, targetPath)
       || seenTargets.has(targetPath)
     ) {
       throw new SafeFilesystemError('invalid-target');
@@ -290,7 +303,7 @@ async function prepareChanges(plan: AtomicFilesystemPlan): Promise<PreparedChang
         const destination = resolve(targetPath, entry.targetRelativePath);
         if (
           !await isRealPathContained(sourceRoot, sourcePath)
-          || !await isRealPathContained(targetPath, destination)
+          || !isContained(targetPath, destination)
           || destinations.has(destination)
         ) {
           throw new SafeFilesystemError('invalid-source');
@@ -301,7 +314,7 @@ async function prepareChanges(plan: AtomicFilesystemPlan): Promise<PreparedChang
       for (const generatedFile of change.generatedFiles ?? []) {
         const destination = resolve(targetPath, generatedFile.targetRelativePath);
         if (
-          !await isRealPathContained(targetPath, destination)
+          !isContained(targetPath, destination)
           || destinations.has(destination)
         ) {
           throw new SafeFilesystemError('invalid-generated-file');
@@ -312,13 +325,16 @@ async function prepareChanges(plan: AtomicFilesystemPlan): Promise<PreparedChang
 
     const originalDetails = await entryDetails(targetPath);
     const originalKind = originalDetails.kind;
-    if (originalKind === 'other') {
+    if (
+      originalKind === 'other'
+      || (originalKind === 'link' && !allowsAuthoritativeReplacement(change))
+    ) {
       throw new SafeFilesystemError('unsupported-target');
     }
     if (
       change.kind !== 'remove'
-      &&
-      originalKind !== 'missing'
+      && !allowsAuthoritativeReplacement(change)
+      && originalKind !== 'missing'
       && originalKind !== change.kind
     ) {
       throw new SafeFilesystemError('target-kind-conflict');
@@ -335,7 +351,7 @@ async function prepareChanges(plan: AtomicFilesystemPlan): Promise<PreparedChang
       originalMode: originalDetails.mode,
       originalSnapshot: await snapshotMaybe(targetPath),
       targetRoot,
-      ...(originalKind === 'file' || originalKind === 'directory'
+      ...(originalKind === 'file' || originalKind === 'directory' || originalKind === 'link'
         ? {
             backup: {
               targetPath,
@@ -363,6 +379,28 @@ function isContained(root: string, candidate: string): boolean {
     || (!isAbsolute(relativePath)
       && relativePath !== '..'
       && !relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`));
+}
+
+function allowsAuthoritativeReplacement(change: FilesystemChange): boolean {
+  return change.kind !== 'remove' && change.replaceExisting === true;
+}
+
+async function isChangeTargetContained(
+  change: FilesystemChange,
+  root: string,
+  targetPath: string,
+): Promise<boolean> {
+  return allowsAuthoritativeReplacement(change)
+    ? isRealParentContained(root, targetPath)
+    : isRealPathContained(root, targetPath);
+}
+
+async function isRealParentContained(root: string, candidate: string): Promise<boolean> {
+  return isContained(root, candidate)
+    && isContained(
+      await resolveFromNearestExistingAncestor(root),
+      await resolveFromNearestExistingAncestor(dirname(candidate)),
+    );
 }
 
 async function isRealPathContained(root: string, candidate: string): Promise<boolean> {
@@ -404,7 +442,7 @@ async function entryDetails(path: string): Promise<{
   try {
     const details = await lstat(path);
     if (details.isSymbolicLink()) {
-      return { kind: 'other' };
+      return { kind: 'link' };
     }
     if (details.isFile()) {
       return { kind: 'file', mode: details.mode & 0o777 };
@@ -459,10 +497,13 @@ async function createBackup(
   }
   if (backup.kind === 'file') {
     await copyFile(backup.targetPath, backup.backupPath);
-  } else {
+    await syncEntry(backup.backupPath);
+  } else if (backup.kind === 'directory') {
     await copyTree(backup.targetPath, backup.backupPath);
+    await syncEntry(backup.backupPath);
+  } else {
+    await symlink(await readlink(backup.targetPath), backup.backupPath);
   }
-  await syncEntry(backup.backupPath);
   if (!await filesystemEntriesEqual(backup.targetPath, backup.backupPath)) {
     throw new SafeFilesystemError('backup-verification-failed');
   }
@@ -481,7 +522,7 @@ async function applyChange(
 ): Promise<void> {
   const targetPath = item.change.targetPath;
   await mkdir(dirname(targetPath), { recursive: true });
-  if (!await isRealPathContained(item.targetRoot, targetPath)) {
+  if (!await isChangeTargetContained(item.change, item.targetRoot, targetPath)) {
     throw new SafeFilesystemError('target-containment-changed');
   }
   let stagePath: string | undefined;
@@ -500,10 +541,12 @@ async function applyChange(
         item.change.content,
         options,
         targetPath,
-        item.originalMode,
+        item.originalMode ?? item.change.mode,
       );
-    } else {
+    } else if (item.change.kind === 'directory') {
       await writeStagedDirectory(stagePath, item.change, options);
+    } else {
+      await symlink(item.change.linkTarget, stagePath);
     }
     expectedSnapshot = await snapshotEntry(stagePath);
   }
@@ -514,7 +557,7 @@ async function applyChange(
     ...(stagePath ? { stagePath } : {}),
   });
   if (
-    !await isRealPathContained(item.targetRoot, targetPath)
+    !await isChangeTargetContained(item.change, item.targetRoot, targetPath)
     || await snapshotMaybe(targetPath) !== item.originalSnapshot
   ) {
     throw new SafeFilesystemError('target-prestate-changed');
@@ -536,6 +579,7 @@ async function applyChange(
       stagePath!,
       targetPath,
       activeArtifacts,
+      allowsAuthoritativeReplacement(item.change),
     );
     activeArtifacts.delete(stagePath!);
   }
@@ -581,14 +625,14 @@ async function applyChange(
 
 async function writeStagedFile(
   stagePath: string,
-  content: string,
+  content: string | Uint8Array,
   options: FilesystemFaultOptions,
   targetPath: string,
   originalMode?: number,
 ): Promise<void> {
-  const handle = await open(stagePath, 'wx');
+  const handle = await open(stagePath, 'wx', originalMode ?? 0o666);
   try {
-    await handle.writeFile(content, 'utf8');
+    await handle.writeFile(typeof content === 'string' ? Buffer.from(content, 'utf8') : content);
     if (originalMode !== undefined && process.platform !== 'win32') {
       await handle.chmod(originalMode);
     }
@@ -634,12 +678,13 @@ async function renameIntoPlace(
   stagePath: string,
   targetPath: string,
   activeArtifacts: Set<string>,
+  replaceExisting: boolean,
 ): Promise<string | undefined> {
   try {
     await rename(stagePath, targetPath);
     return undefined;
   } catch (error) {
-    if (await entryKind(targetPath) !== 'directory') {
+    if (!replaceExisting && await entryKind(targetPath) !== 'directory') {
       throw error;
     }
   }
@@ -684,10 +729,13 @@ async function restoreAppliedChanges(
       } else if (item.backup) {
         if (item.backup.kind === 'file') {
           await copyFile(item.backup.backupPath, restoreStage);
-        } else {
+          await syncEntry(restoreStage);
+        } else if (item.backup.kind === 'directory') {
           await copyTree(item.backup.backupPath, restoreStage);
+          await syncEntry(restoreStage);
+        } else {
+          await symlink(await readlink(item.backup.backupPath), restoreStage);
         }
-        await syncEntry(restoreStage);
         await replaceForRestore(restoreStage, targetPath);
         restoreStage = undefined;
         await syncDirectoryBestEffort(dirname(targetPath));
@@ -806,6 +854,9 @@ async function snapshotEntry(path: string): Promise<string> {
   if (kind === 'file') {
     const content = await readFile(path);
     return `file:${createHash('sha256').update(content).digest('hex')}`;
+  }
+  if (kind === 'link') {
+    return `link:${await readlink(path)}`;
   }
   if (kind !== 'directory') {
     throw new SafeFilesystemError('snapshot-target-invalid');

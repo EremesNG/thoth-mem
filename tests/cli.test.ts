@@ -288,7 +288,48 @@ describe('runCli', () => {
     expect(captured.exitCode).toBe(2);
   });
 
-  it('dispatches claude setup requests through the existing Claude Code setup runner', async () => {
+  it('keeps OpenCode human and JSON setup results aligned for changed and exact no-op outcomes', async () => {
+        const changed: SetupResult = {
+          status: 'complete',
+          changed: true,
+          harness: 'opencode',
+          scope: 'global',
+          target: 'C:\\\\Users\\\\Example User\\\\.config\\\\opencode',
+          steps: [{ name: 'Verify exact OpenCode setup post-state', outcome: 'confirmed' }],
+          diagnostics: [
+            'OpenCode setup succeeded, but target-bound recovery evidence cleanup is incomplete and will be retried.',
+          ],
+          manual_actions: ['Restart OpenCode to load the updated thoth-mem integration.'],
+          receipt: null,
+        };
+        const changedRunner = vi.fn().mockResolvedValue(changed);
+        const json = await captureCli(['setup', 'opencode', '--json'], { setupRunner: changedRunner });
+        const human = await captureCli(['setup', 'opencode'], { setupRunner: changedRunner });
+
+        expect(json.exitCode).toBe(0);
+        expect(JSON.parse(json.stdout)).toEqual(changed);
+        expect(human.exitCode).toBe(0);
+        expect(human.stdout).toContain('Status: complete');
+        expect(human.stdout).toContain('Changed: yes');
+        expect(human.stdout).toContain(changed.diagnostics[0]);
+        expect(human.stdout).toContain(changed.manual_actions[0]);
+        expect(human.stdout).toContain('Receipt: none');
+
+        const noOp: SetupResult = {
+          ...changed,
+          changed: false,
+          diagnostics: [],
+          manual_actions: [],
+        };
+        const noOpHuman = await captureCli(['setup', 'opencode'], {
+          setupRunner: vi.fn().mockResolvedValue(noOp),
+        });
+        expect(noOpHuman.exitCode).toBe(0);
+        expect(noOpHuman.stdout).toContain('Changed: no');
+        expect(noOpHuman.stdout).not.toContain('Restart OpenCode');
+      });
+
+      it('dispatches claude setup requests through the existing Claude Code setup runner', async () => {
     const result: SetupResult = {
       status: 'complete',
       changed: false,
