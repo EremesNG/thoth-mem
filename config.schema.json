@@ -112,6 +112,15 @@
         "dimensions": {
           "type": ["integer", "null"],
           "minimum": 1
+        },
+        "profile": {
+          "type": "string",
+          "enum": ["auto", "nomic", "embeddinggemma", "qwen3", "raw"],
+          "default": "auto"
+        },
+        "normalize": {
+          "type": "boolean",
+          "default": true
         }
       }
     },

@@ -196,8 +196,8 @@ async function processChunkJob(
   currentJobId: number
 ): Promise<void> {
   const db = store.getDb();
-  const obs = db.prepare('SELECT id, content, project, topic_key FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
-    | { id: number; content: string; project: string | null; topic_key: string | null }
+  const obs = db.prepare('SELECT id, title, content, project, topic_key FROM observations WHERE id = ? AND deleted_at IS NULL').get(observationId) as
+    | { id: number; title: string; content: string; project: string | null; topic_key: string | null }
     | undefined;
   if (!obs) {
     return;
@@ -220,7 +220,12 @@ async function processChunkJob(
     upsertChunk.run(obs.id, chunk.chunkKey, chunk.chunkIndex, chunk.content, obs.project, obs.topic_key);
   }
 
-  await embedLane(store, 'chunk', chunks.map((c) => ({ key: c.chunkKey, content: c.content, observationId: obs.id })), embeddingProvider, currentJobId);
+  await embedLane(store, 'chunk', chunks.map((c) => ({
+    key: c.chunkKey,
+    content: c.content,
+    title: obs.title,
+    observationId: obs.id,
+  })), embeddingProvider, currentJobId);
 }
 
 async function processSentenceJob(
@@ -231,8 +236,12 @@ async function processSentenceJob(
 ): Promise<JobResult> {
   const db = store.getDb();
   const chunks = db.prepare(
-    'SELECT chunk_key, content FROM semantic_chunks WHERE observation_id = ? ORDER BY chunk_index ASC'
-  ).all(observationId) as Array<{ chunk_key: string; content: string }>;
+    `SELECT sc.chunk_key, sc.content, o.title
+     FROM semantic_chunks sc
+     JOIN observations o ON o.id = sc.observation_id
+     WHERE sc.observation_id = ? AND o.deleted_at IS NULL
+     ORDER BY sc.chunk_index ASC`
+  ).all(observationId) as Array<{ chunk_key: string; content: string; title: string }>;
   if (chunks.length === 0) {
     const observation = db.prepare(
       'SELECT 1 AS ok FROM observations WHERE id = ? AND deleted_at IS NULL'
@@ -256,12 +265,12 @@ async function processSentenceJob(
        updated_at = datetime('now')`
   );
 
-  const items: Array<{ key: string; content: string; observationId: number }> = [];
+  const items: Array<{ key: string; content: string; title: string; observationId: number }> = [];
   for (const chunk of chunks) {
     const sentences = splitChunkIntoSentences({ observationId, chunkKey: chunk.chunk_key, text: chunk.content });
     for (const sentence of sentences) {
       upsertSentence.run(observationId, chunk.chunk_key, sentence.sentenceKey, sentence.sentenceIndex, sentence.content, observationId);
-      items.push({ key: sentence.sentenceKey, content: sentence.content, observationId });
+      items.push({ key: sentence.sentenceKey, content: sentence.content, title: chunk.title, observationId });
     }
   }
   await embedLane(store, 'sentence', items, embeddingProvider, currentJobId);
@@ -271,7 +280,7 @@ async function processSentenceJob(
 async function embedLane(
   store: Store,
   lane: 'chunk' | 'sentence',
-  items: Array<{ key: string; content: string; observationId: number }>,
+  items: Array<{ key: string; content: string; title?: string; observationId: number }>,
   embeddingProvider: EmbeddingProviderAdapter | null,
   currentJobId: number
 ): Promise<void> {
@@ -285,7 +294,12 @@ async function embedLane(
     return;
   }
 
-  const vectors = await embeddingProvider.embed(items.map((item) => item.content), 'document');
+  const vectors = await embeddingProvider.embed(items.map((item) => ({
+    text: item.content,
+    intent: 'retrieval',
+    role: 'document',
+    ...(item.title ? { title: item.title } : {}),
+  })));
   const vecTable = lane === 'chunk' ? 'vec_chunks' : 'vec_sentences';
   const upsertRowid = db.prepare(
     `INSERT INTO semantic_vector_rowids (lane, source_key, vec_rowid, observation_id, lineage_hash, embedding_hash, updated_at)

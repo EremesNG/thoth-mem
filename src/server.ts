@@ -13,6 +13,7 @@ import { SERVER_MEMORY_PROTOCOL_INSTRUCTIONS } from "./integration/core/protocol
 
 export interface ServerOptions {
   dataDir?: string;
+  embeddingProvider?: EmbeddingProviderAdapter | null;
 }
 
 export function createServer(options: ServerOptions): {
@@ -28,7 +29,9 @@ export function createServer(options: ServerOptions): {
   resolveDataDir(config);
 
   const store = new Store(config.dbPath, config);
-  const embeddingProvider = config.embedding ? createEmbeddingProvider(config.embedding) : null;
+  const embeddingProvider = options.embeddingProvider === undefined
+    ? config.embedding ? createEmbeddingProvider(config.embedding) : null
+    : options.embeddingProvider;
   const hydeGenerator = createHydeGenerator(config.hyde);
   const kgLlmExtractor = createKgLlmExtractor(config.kgLlm);
 

@@ -2,9 +2,16 @@ import type { EmbeddingConfig } from '../config.js';
 
 export type EmbeddingInputRole = 'query' | 'document';
 
+export interface EmbeddingInput {
+  text: string;
+  intent: 'retrieval';
+  role: EmbeddingInputRole;
+  title?: string;
+}
+
 export interface EmbeddingProviderAdapter {
   readonly config: EmbeddingConfig;
-  embed(texts: string[], role?: EmbeddingInputRole): Promise<number[][]>;
+  embed(inputs: EmbeddingInput[]): Promise<number[][]>;
 }
 
 export interface EmbeddingProviderFactory {

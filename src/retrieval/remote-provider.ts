@@ -1,6 +1,7 @@
 import type { EmbeddingConfig } from '../config.js';
-import { formatEmbeddingInput } from './embedding-input.js';
-import type { EmbeddingInputRole, EmbeddingProviderAdapter } from './providers.js';
+import { formatEmbeddingInputForProfile } from './embedding-profile.js';
+import type { EmbeddingInput, EmbeddingProviderAdapter } from './providers.js';
+import { processEmbeddingVectors } from './vector-processing.js';
 
 interface OllamaEmbedResponse {
   embedding?: number[];
@@ -8,7 +9,7 @@ interface OllamaEmbedResponse {
 }
 
 interface OpenAIEmbeddingResponse {
-  data?: Array<{ embedding?: number[] }>;
+  data?: Array<{ index?: number; embedding?: number[] }>;
 }
 
 function ensureBaseUrl(config: EmbeddingConfig): string {
@@ -47,20 +48,25 @@ export class RemoteEmbeddingProvider implements EmbeddingProviderAdapter {
     this.config = config;
   }
 
-  async embed(texts: string[], role: EmbeddingInputRole = 'document'): Promise<number[][]> {
-    if (texts.length === 0) {
+  async embed(inputs: EmbeddingInput[]): Promise<number[][]> {
+    if (inputs.length === 0) {
       return [];
     }
 
     const baseUrl = ensureBaseUrl(this.config);
+    const dimensions = this.config.dimensions;
+    if (!dimensions || !Number.isInteger(dimensions) || dimensions <= 0) {
+      throw new Error('Embedding vector validation requires positive configured dimensions.');
+    }
+    const formattedInputs = inputs.map((input) => formatEmbeddingInputForProfile(input, this.config.resolvedProfile));
 
     if (this.config.provider === 'ollama') {
-      const vectors: number[][] = [];
+      const rows: Array<{ index: number; vector: number[] }> = [];
 
-      for (const text of texts) {
+      for (let index = 0; index < formattedInputs.length; index += 1) {
         const payload = {
           model: this.config.model,
-          prompt: text,
+          prompt: formattedInputs[index],
         };
 
         const json = await fetchJson(`${baseUrl}/api/embeddings`, payload) as OllamaEmbedResponse;
@@ -70,29 +76,38 @@ export class RemoteEmbeddingProvider implements EmbeddingProviderAdapter {
           throw new Error('Ollama embedding response did not include an embedding array.');
         }
 
-        vectors.push(embedding);
+        rows.push({ index, vector: embedding });
       }
 
-      return vectors;
+      return processEmbeddingVectors(rows, {
+        expectedCount: inputs.length,
+        dimensions,
+        normalize: this.config.normalize,
+      });
     }
 
     const payload = {
       model: this.config.model,
-      input: texts.map((text) => formatEmbeddingInput(text, this.config.model, role)),
+      input: formattedInputs,
     };
 
     const json = await fetchJson(`${baseUrl}/v1/embeddings`, payload) as OpenAIEmbeddingResponse;
     const rows = json.data ?? [];
 
-    if (!Array.isArray(rows) || rows.length !== texts.length) {
-      throw new Error(`LM Studio embedding response length mismatch (expected ${texts.length}, got ${rows.length}).`);
-    }
-
-    return rows.map((row, idx) => {
+    const indexedRows = rows.map((row, position) => {
       if (!row.embedding || !Array.isArray(row.embedding)) {
-        throw new Error(`LM Studio embedding response missing embedding for input index ${idx}.`);
+        throw new Error(`LM Studio embedding response missing embedding for row ${position}.`);
       }
-      return row.embedding;
+      if (!Number.isInteger(row.index)) {
+        throw new Error(`LM Studio embedding response missing index for row ${position}.`);
+      }
+      return { index: row.index as number, vector: row.embedding };
+    });
+
+    return processEmbeddingVectors(indexedRows, {
+      expectedCount: inputs.length,
+      dimensions,
+      normalize: this.config.normalize,
     });
   }
 }

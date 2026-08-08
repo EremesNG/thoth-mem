@@ -1,6 +1,7 @@
 # Delta for Retrieval
 
 ## ADDED Requirements
+
 ### Requirement: Hybrid Retrieval MUST Fuse Four Lanes
 The retrieval engine MUST execute sentence-semantic, chunk-semantic, lexical FTS5, and graph/KG lanes and fuse them into one ranked result set.
 
@@ -520,6 +521,7 @@ Community-summary read-path enrichment MUST remain bounded by configured communi
 # Delta for Retrieval
 
 ## ADDED Requirements
+
 ### Requirement: Recall and Context Paths MUST Emit Token-Savings Measurement Metadata
 Retrieval and context-producing paths MUST expose measurement metadata sufficient to compare full source size, retained evidence size, returned payload size, and token savings. Metrics MUST distinguish character counts from exact token counts and deterministic token estimates. When exact tokenizer accounting is unavailable, estimates MUST be labeled as estimates and computed deterministically.
 
@@ -578,3 +580,279 @@ Retrieval instrumentation and evals MUST include evidence that after a compactio
 - Design should reuse existing retrieval eval envelope fields where possible and add only the missing escalation/token fields.
 - Design must keep lane attribution unchanged: `sentence`, `chunk`, `lexical`, and `kg`.
 - Verification should include compact-only, context-expanded, and full-fetch-escalated paths.
+
+### Requirement: Deterministic profile resolution
+
+The system MUST resolve a versioned embedding profile from explicit configuration or deterministic `auto` detection for Nomic, EmbeddingGemma, Qwen3-Embedding, and raw fallback model families.
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 1
+
+- **GIVEN** an EmbeddingGemma model with automatic profile selection
+- **WHEN** a query and titled document are embedded
+- **THEN** the query uses the retrieval-query instruction and the document uses the title/text structure prescribed by EmbeddingGemma
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 2
+
+- **GIVEN** a Nomic model with automatic profile selection
+- **WHEN** query and document inputs are embedded
+- **THEN** the existing `search_query` and `search_document` behavior is preserved without duplicate prefixes
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 3
+
+- **GIVEN** an unknown model
+- **WHEN** automatic profile selection runs
+- **THEN** the raw profile is selected deterministically and the runtime exposes that model-specific asymmetric formatting was not inferred
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 4
+
+- **GIVEN** HyDE succeeds
+- **WHEN** semantic inputs are embedded
+- **THEN** the original query has query role and the hypothetical answer has document role while their result ordering and source labels remain stable
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 5
+
+- **GIVEN** a Qwen3-Embedding-0.6B model
+- **WHEN** query and document inputs are embedded
+- **THEN** only the query receives the fixed retrieval instruction and the document remains an uninstructed passage
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 6
+
+- **GIVEN** semantic embedding raises a provider or vector-validation error during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is marked degraded and lexical plus KG results remain available
+
+### Requirement: Structured retrieval inputs
+
+The embedding contract MUST carry text, retrieval intent, query/document role, and optional document title without exposing a global public `task` setting.
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 1
+
+- **GIVEN** an EmbeddingGemma model with automatic profile selection
+- **WHEN** a query and titled document are embedded
+- **THEN** the query uses the retrieval-query instruction and the document uses the title/text structure prescribed by EmbeddingGemma
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 2
+
+- **GIVEN** a Nomic model with automatic profile selection
+- **WHEN** query and document inputs are embedded
+- **THEN** the existing `search_query` and `search_document` behavior is preserved without duplicate prefixes
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 3
+
+- **GIVEN** an unknown model
+- **WHEN** automatic profile selection runs
+- **THEN** the raw profile is selected deterministically and the runtime exposes that model-specific asymmetric formatting was not inferred
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 4
+
+- **GIVEN** HyDE succeeds
+- **WHEN** semantic inputs are embedded
+- **THEN** the original query has query role and the hypothetical answer has document role while their result ordering and source labels remain stable
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 5
+
+- **GIVEN** a Qwen3-Embedding-0.6B model
+- **WHEN** query and document inputs are embedded
+- **THEN** only the query receives the fixed retrieval instruction and the document remains an uninstructed passage
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 6
+
+- **GIVEN** semantic embedding raises a provider or vector-validation error during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is marked degraded and lexical plus KG results remain available
+
+### Requirement: Exact and idempotent asymmetric formatting
+
+Each built-in profile MUST produce its documented query/document representation exactly once and preserve input text. Nomic MUST retain its query/document prefixes; EmbeddingGemma MUST use its retrieval-query and title/text structures with `title: none` when unavailable; Qwen3-Embedding MUST apply the fixed internal retrieval instruction only to queries and leave documents uninstructed.
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 1
+
+- **GIVEN** an EmbeddingGemma model with automatic profile selection
+- **WHEN** a query and titled document are embedded
+- **THEN** the query uses the retrieval-query instruction and the document uses the title/text structure prescribed by EmbeddingGemma
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 2
+
+- **GIVEN** a Nomic model with automatic profile selection
+- **WHEN** query and document inputs are embedded
+- **THEN** the existing `search_query` and `search_document` behavior is preserved without duplicate prefixes
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 3
+
+- **GIVEN** an unknown model
+- **WHEN** automatic profile selection runs
+- **THEN** the raw profile is selected deterministically and the runtime exposes that model-specific asymmetric formatting was not inferred
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 4
+
+- **GIVEN** HyDE succeeds
+- **WHEN** semantic inputs are embedded
+- **THEN** the original query has query role and the hypothetical answer has document role while their result ordering and source labels remain stable
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 5
+
+- **GIVEN** a Qwen3-Embedding-0.6B model
+- **WHEN** query and document inputs are embedded
+- **THEN** only the query receives the fixed retrieval instruction and the document remains an uninstructed passage
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 6
+
+- **GIVEN** semantic embedding raises a provider or vector-validation error during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is marked degraded and lexical plus KG results remain available
+
+### Requirement: Role-correct HyDE embeddings
+
+Raw recall queries MUST use query role while successful HyDE hypothetical answers MUST use document role; disabled, failed, or timed-out HyDE MUST preserve raw-query retrieval.
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 1
+
+- **GIVEN** an EmbeddingGemma model with automatic profile selection
+- **WHEN** a query and titled document are embedded
+- **THEN** the query uses the retrieval-query instruction and the document uses the title/text structure prescribed by EmbeddingGemma
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 2
+
+- **GIVEN** a Nomic model with automatic profile selection
+- **WHEN** query and document inputs are embedded
+- **THEN** the existing `search_query` and `search_document` behavior is preserved without duplicate prefixes
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 3
+
+- **GIVEN** an unknown model
+- **WHEN** automatic profile selection runs
+- **THEN** the raw profile is selected deterministically and the runtime exposes that model-specific asymmetric formatting was not inferred
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 4
+
+- **GIVEN** HyDE succeeds
+- **WHEN** semantic inputs are embedded
+- **THEN** the original query has query role and the hypothetical answer has document role while their result ordering and source labels remain stable
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 5
+
+- **GIVEN** a Qwen3-Embedding-0.6B model
+- **WHEN** query and document inputs are embedded
+- **THEN** only the query receives the fixed retrieval instruction and the document remains an uninstructed passage
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 6
+
+- **GIVEN** semantic embedding raises a provider or vector-validation error during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is marked degraded and lexical plus KG results remain available
+
+### Requirement: Provider-neutral vector validation and boundary policy
+
+Embedding results MUST be validated as an order-preserving batch of finite, non-zero vectors matching configured dimensions, and normalization MUST be applied consistently when enabled before storage or querying. Recall MUST catch provider/validation errors, expose an explicit semantic-degradation reason, and continue lexical plus KG retrieval; indexing MUST propagate them to the established retry path; the benchmark MUST fail closed.
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 1
+
+- **GIVEN** an EmbeddingGemma model with automatic profile selection
+- **WHEN** a query and titled document are embedded
+- **THEN** the query uses the retrieval-query instruction and the document uses the title/text structure prescribed by EmbeddingGemma
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 2
+
+- **GIVEN** a Nomic model with automatic profile selection
+- **WHEN** query and document inputs are embedded
+- **THEN** the existing `search_query` and `search_document` behavior is preserved without duplicate prefixes
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 3
+
+- **GIVEN** an unknown model
+- **WHEN** automatic profile selection runs
+- **THEN** the raw profile is selected deterministically and the runtime exposes that model-specific asymmetric formatting was not inferred
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 4
+
+- **GIVEN** HyDE succeeds
+- **WHEN** semantic inputs are embedded
+- **THEN** the original query has query role and the hypothetical answer has document role while their result ordering and source labels remain stable
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 5
+
+- **GIVEN** a Qwen3-Embedding-0.6B model
+- **WHEN** query and document inputs are embedded
+- **THEN** only the query receives the fixed retrieval instruction and the document remains an uninstructed passage
+
+#### Scenario: US1 - Model-aware asymmetric retrieval 6
+
+- **GIVEN** semantic embedding raises a provider or vector-validation error during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is marked degraded and lexical plus KG results remain available
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 1
+
+- **GIVEN** LM Studio exposes `text-embedding-embeddinggemma-300m`
+- **WHEN** the remote adapter embeds structured query and document inputs
+- **THEN** it sends the exact resolved model identifier and profile-formatted strings to the OpenAI-compatible embeddings endpoint
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 2
+
+- **GIVEN** the local EmbeddingGemma ONNX model
+- **WHEN** the Transformers.js adapter embeds the same inputs
+- **THEN** it uses the model's supported Q8 inference path and returns its sentence embeddings rather than applying a Nomic-only execution assumption
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 3
+
+- **GIVEN** any provider returns non-finite values, an unexpected row count, an empty vector, or a dimension different from configured metadata
+- **WHEN** results are validated
+- **THEN** no partial vector batch is accepted and the error identifies the violated contract
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 4
+
+- **GIVEN** normalization is enabled
+- **WHEN** a finite non-zero vector is returned
+- **THEN** the stored/query vector is L2-normalized by provider-neutral post-processing
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 5
+
+- **GIVEN** the local Qwen3-Embedding ONNX model
+- **WHEN** the Transformers.js adapter embeds a mixed-role batch
+- **THEN** it applies last-token pooling over each attention-masked sequence and returns native 1024-dimensional embeddings in input order
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 6
+
+- **GIVEN** a provider or vector validation error occurs during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is explicitly marked degraded while lexical and KG lanes remain available; indexing propagates the same error to its existing retry path and the benchmark fails closed
+
+### Requirement: Candidate provider parity
+
+EmbeddingGemma and Qwen3-Embedding-0.6B MUST be supported by the LM Studio OpenAI-compatible adapter and local Transformers.js. Local execution MUST use `onnx-community/embeddinggemma-300m-ONNX` at Q8 with its sentence-embedding output contract and `onnx-community/Qwen3-Embedding-0.6B-ONNX` at Q8 with attention-mask-aware last-token pooling, respectively.
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 1
+
+- **GIVEN** LM Studio exposes `text-embedding-embeddinggemma-300m`
+- **WHEN** the remote adapter embeds structured query and document inputs
+- **THEN** it sends the exact resolved model identifier and profile-formatted strings to the OpenAI-compatible embeddings endpoint
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 2
+
+- **GIVEN** the local EmbeddingGemma ONNX model
+- **WHEN** the Transformers.js adapter embeds the same inputs
+- **THEN** it uses the model's supported Q8 inference path and returns its sentence embeddings rather than applying a Nomic-only execution assumption
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 3
+
+- **GIVEN** any provider returns non-finite values, an unexpected row count, an empty vector, or a dimension different from configured metadata
+- **WHEN** results are validated
+- **THEN** no partial vector batch is accepted and the error identifies the violated contract
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 4
+
+- **GIVEN** normalization is enabled
+- **WHEN** a finite non-zero vector is returned
+- **THEN** the stored/query vector is L2-normalized by provider-neutral post-processing
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 5
+
+- **GIVEN** the local Qwen3-Embedding ONNX model
+- **WHEN** the Transformers.js adapter embeds a mixed-role batch
+- **THEN** it applies last-token pooling over each attention-masked sequence and returns native 1024-dimensional embeddings in input order
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 6
+
+- **GIVEN** a provider or vector validation error occurs during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is explicitly marked degraded while lexical and KG lanes remain available; indexing propagates the same error to its existing retry path and the benchmark fails closed

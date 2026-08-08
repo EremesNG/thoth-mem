@@ -550,7 +550,7 @@ it('keeps unproven terminal finalization degraded without disabling independent 
 
   it('uses only the six-tool MemoryPort', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'thoth-linked-memory-port-'));
-    const port = await McpMemoryPort.create({ dataDir });
+    const port = await McpMemoryPort.create({ dataDir, embeddingProvider: null });
 
     try {
       expect(MEMORY_TOOL_NAMES).toEqual([
@@ -1077,7 +1077,7 @@ it('keeps unproven terminal finalization degraded without disabling independent 
       expect(scriptedPort.calls).toHaveLength(2);
 
       const linkedDataDir = join(dataDir, 'linked');
-      const linkedPort = await McpMemoryPort.create({ dataDir: linkedDataDir });
+      const linkedPort = await McpMemoryPort.create({ dataDir: linkedDataDir, embeddingProvider: null });
       const linkedCapabilities = supportedCapabilities('codex');
       const linkedState = new FileLifecycleStateStore({
         dataDir: linkedDataDir,
@@ -1192,7 +1192,7 @@ it('keeps unproven terminal finalization degraded without disabling independent 
       fixtureDatabase.close();
     }
 
-    const linkedPort = await McpMemoryPort.create({ dataDir });
+    const linkedPort = await McpMemoryPort.create({ dataDir, embeddingProvider: null });
     const fixedRequests: Array<{
       input: Record<string, unknown>;
       name: 'context' | 'get' | 'project' | 'recall';

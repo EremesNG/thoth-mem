@@ -740,7 +740,7 @@ function makeDeterministicEmbeddingProvider(store: Store): EmbeddingProviderAdap
   };
   return {
     config: store.config.embedding!,
-    embed: async (texts) => texts.map((text) => vectorFromText(text)),
+    embed: async (inputs) => inputs.map((input) => vectorFromText(input.text)),
   };
 }
 

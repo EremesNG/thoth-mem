@@ -1,6 +1,7 @@
 # Delta for Config
 
 ## ADDED Requirements
+
 ### Requirement: Embedding Configuration Resolution MUST Be Deterministic
 The system MUST resolve embedding settings in this precedence order: explicit `THOTH_*` environment overrides, then persisted config in the resolved data dir (`{THOTH_DATA_DIR|~/.thoth}/config.json`), then local fallback when no provider is configured.
 
@@ -565,6 +566,7 @@ The system SHOULD avoid independent hardcoded semantic version literals in runti
 # Delta for Config
 
 ## ADDED Requirements
+
 ### Requirement: Data-Dir Bootstrap MUST Remain Centralized and Semantics-Preserving
 Stable memory identity bootstrap MUST preserve the existing centralized data-directory resolution contract. `THOTH_DATA_DIR`, CLI data-dir input, persisted config in the resolved data dir, and built-in defaults MUST continue to resolve according to the existing `getConfig`/data-dir bootstrap semantics; this change MUST NOT introduce a second data-dir resolver or change `THOTH_DATA_DIR` meaning.
 
@@ -621,6 +623,7 @@ Any identity-bootstrap defaults introduced by this change MUST resolve determini
 # Delta for Config
 
 ## ADDED Requirements
+
 ### Requirement: Project Identity Resolver v2 MUST Resolve Stable Project Identity Deterministically
 The system MUST provide a shared project identity resolver v2 that derives the effective project identity in this precedence order: explicit caller input, centralized configured project default when present, current working directory workspace identity, git worktree or remote identity, package/workspace metadata when available, then a deterministic compatibility default. Explicit caller input MUST always win and MUST NOT be replaced by a derived value. Derived or compatibility identities MUST expose the selected source and any degraded reason.
 
@@ -702,3 +705,116 @@ Project/session identity resolver v2 MUST NOT silently rewrite historical placeh
 - Design must define the concrete normalization rules for cwd/git/package strings and the exact degraded metadata fields shared by MCP, HTTP, CLI, import, and sync paths.
 - Tests should cover explicit/config/cwd/git/default precedence, blank and placeholder session ids, deterministic repeated resolution, and no historical repair.
 
+### Requirement: Backward-compatible profile configuration
+
+Persisted configuration, schema validation, and environment precedence MUST support profile selection and provider-neutral normalization while configurations that omit the new fields resolve deterministically.
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 1
+
+- **GIVEN** LM Studio exposes `text-embedding-embeddinggemma-300m`
+- **WHEN** the remote adapter embeds structured query and document inputs
+- **THEN** it sends the exact resolved model identifier and profile-formatted strings to the OpenAI-compatible embeddings endpoint
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 2
+
+- **GIVEN** the local EmbeddingGemma ONNX model
+- **WHEN** the Transformers.js adapter embeds the same inputs
+- **THEN** it uses the model's supported Q8 inference path and returns its sentence embeddings rather than applying a Nomic-only execution assumption
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 3
+
+- **GIVEN** any provider returns non-finite values, an unexpected row count, an empty vector, or a dimension different from configured metadata
+- **WHEN** results are validated
+- **THEN** no partial vector batch is accepted and the error identifies the violated contract
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 4
+
+- **GIVEN** normalization is enabled
+- **WHEN** a finite non-zero vector is returned
+- **THEN** the stored/query vector is L2-normalized by provider-neutral post-processing
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 5
+
+- **GIVEN** the local Qwen3-Embedding ONNX model
+- **WHEN** the Transformers.js adapter embeds a mixed-role batch
+- **THEN** it applies last-token pooling over each attention-masked sequence and returns native 1024-dimensional embeddings in input order
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 6
+
+- **GIVEN** a provider or vector validation error occurs during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is explicitly marked degraded while lexical and KG lanes remain available; indexing propagates the same error to its existing retry path and the benchmark fails closed
+
+### Requirement: Preprocessing-aware index lineage
+
+Embedding configuration metadata and its deterministic hash MUST include the resolved profile identity/version and normalization behavior so any vector-space-affecting preprocessing change invalidates prior semantic lineage.
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 1
+
+- **GIVEN** LM Studio exposes `text-embedding-embeddinggemma-300m`
+- **WHEN** the remote adapter embeds structured query and document inputs
+- **THEN** it sends the exact resolved model identifier and profile-formatted strings to the OpenAI-compatible embeddings endpoint
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 2
+
+- **GIVEN** the local EmbeddingGemma ONNX model
+- **WHEN** the Transformers.js adapter embeds the same inputs
+- **THEN** it uses the model's supported Q8 inference path and returns its sentence embeddings rather than applying a Nomic-only execution assumption
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 3
+
+- **GIVEN** any provider returns non-finite values, an unexpected row count, an empty vector, or a dimension different from configured metadata
+- **WHEN** results are validated
+- **THEN** no partial vector batch is accepted and the error identifies the violated contract
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 4
+
+- **GIVEN** normalization is enabled
+- **WHEN** a finite non-zero vector is returned
+- **THEN** the stored/query vector is L2-normalized by provider-neutral post-processing
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 5
+
+- **GIVEN** the local Qwen3-Embedding ONNX model
+- **WHEN** the Transformers.js adapter embeds a mixed-role batch
+- **THEN** it applies last-token pooling over each attention-masked sequence and returns native 1024-dimensional embeddings in input order
+
+#### Scenario: US2 - Provider-parity EmbeddingGemma support 6
+
+- **GIVEN** a provider or vector validation error occurs during recall
+- **WHEN** hybrid retrieval continues
+- **THEN** semantic retrieval is explicitly marked degraded while lexical and KG lanes remain available; indexing propagates the same error to its existing retry path and the benchmark fails closed
+
+### Requirement: Conditional local default
+
+During implementation, the shipped `transformers_local` product constant MUST change from Nomic to the eligible winner recorded in `gate.defaultDecision` only when persisted workflow evidence has `gate.passed: true`; otherwise the current Nomic default MUST remain. Product runtime and permanent tests MUST NOT read the active OpenSpec evidence path, and the selected constant's native dimensions MUST materialize consistently.
+
+#### Scenario: US3 - Benchmark-gated default decision 1
+
+- **GIVEN** all three models are available
+- **WHEN** the benchmark runs
+- **THEN** each model receives identical queries/documents through its resolved profile and the report includes per-model quality and operational metrics
+
+#### Scenario: US3 - Benchmark-gated default decision 2
+
+- **GIVEN** all three runs are complete
+- **WHEN** a candidate satisfies the absolute thresholds and is no worse than Nomic on Recall@1, Recall@5, and MRR
+- **THEN** it becomes eligible and the deterministic quality score and tie-break order select the winning eligible candidate even when Nomic itself is below the candidate thresholds
+
+#### Scenario: US3 - Benchmark-gated default decision 3
+
+- **GIVEN** neither candidate is eligible, any model is unavailable, or benchmark execution/evidence persistence is incomplete
+- **WHEN** the gate is evaluated
+- **THEN** the gate fails closed and Nomic remains the shipped local default
+
+#### Scenario: US3 - Benchmark-gated default decision 4
+
+- **GIVEN** the effective default model or resolved preprocessing lineage changes
+- **WHEN** semantic index state is reconciled
+- **THEN** existing vectors are marked stale and an idempotent rebuild is enqueued
+
+#### Scenario: US3 - Benchmark-gated default decision 5
+
+- **GIVEN** a live benchmark finishes
+- **WHEN** its human-readable report is rendered
+- **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits

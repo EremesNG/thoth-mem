@@ -626,8 +626,46 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     const config = getConfig() as any;
 
     expect(config.embedding.provider).toBe('transformers_local');
-    expect(config.embedding.model).toBe('nomic-ai/nomic-embed-text-v1.5');
+    expect(config.embedding.model).toBe('onnx-community/embeddinggemma-300m-ONNX');
     expect(config.embedding.dimensions).toBe(768);
+    expect(config.embedding.profile).toBe('auto');
+    expect(config.embedding.resolvedProfile).toMatchObject({ id: 'embeddinggemma', version: 1 });
+    expect(config.embedding.normalize).toBe(true);
+  });
+
+  it('embedding: resolves Qwen native dimensions and profile metadata', () => {
+    process.env.THOTH_EMBEDDING_MODEL = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';
+
+    const embedding = getConfig().embedding;
+
+    expect(embedding).toMatchObject({
+      model: 'onnx-community/Qwen3-Embedding-0.6B-ONNX',
+      dimensions: 1024,
+      profile: 'auto',
+      resolvedProfile: { id: 'qwen3', version: 1, inferred: true },
+      normalize: true,
+    });
+  });
+
+  it('embedding: environment profile and normalization override persisted values', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      embedding: {
+        provider: 'lmstudio',
+        model: 'custom/vectorizer',
+        baseUrl: 'http://127.0.0.1:1234',
+        dimensions: 1024,
+        profile: 'raw',
+        normalize: false,
+      },
+    }, null, 2));
+    process.env.THOTH_EMBEDDING_PROFILE = 'qwen3';
+    process.env.THOTH_EMBEDDING_NORMALIZE = 'true';
+
+    expect(getConfig().embedding).toMatchObject({
+      profile: 'qwen3',
+      resolvedProfile: { id: 'qwen3', version: 1, inferred: false },
+      normalize: true,
+    });
   });
 
   it('hyde: defaults to enabled local Transformers text generation', () => {
@@ -704,9 +742,11 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.version).toBe(1);
     expect(saved.embedding).toEqual({
       provider: 'transformers_local',
-      model: 'nomic-ai/nomic-embed-text-v1.5',
+      model: 'onnx-community/embeddinggemma-300m-ONNX',
       baseUrl: null,
       dimensions: 768,
+      profile: 'auto',
+      normalize: true,
     });
     expect(saved.hyde).toEqual(config.hyde);
     expect(saved.kgLlm).toEqual(config.kgLlm);
@@ -724,6 +764,8 @@ describe('embedding config (hybrid retrieval baseline)', () => {
         embedding: {
           properties: {
             provider: { enum: ['transformers_local', 'ollama', 'lmstudio'] },
+            profile: { enum: ['auto', 'nomic', 'embeddinggemma', 'qwen3', 'raw'] },
+            normalize: { type: 'boolean', default: true },
           },
         },
         kgLlm: {
@@ -803,6 +845,8 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       model: 'text-embedding-nomic-embed-text-v1.5@q8_0',
       baseUrl: 'http://169.254.83.107:1234',
       dimensions: 768,
+      profile: 'auto',
+      normalize: true,
     });
     expect(saved.hyde.enabled).toBe(true);
     expect(saved.hyde.provider).toBe('transformers_local');
@@ -846,6 +890,27 @@ describe('embedding config (hybrid retrieval baseline)', () => {
 
     expect(configA.embedding.configHash).toBe(configB.embedding.configHash);
     expect(configA.embedding.configHash).not.toBe(configC.embedding.configHash);
+  });
+
+  it('embedding: hashes resolved profile semantics and normalization', () => {
+    process.env.THOTH_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+    process.env.THOTH_EMBEDDING_PROFILE = 'auto';
+    process.env.THOTH_EMBEDDING_NORMALIZE = 'true';
+    const automatic = getConfig().embedding;
+
+    process.env.THOTH_EMBEDDING_PROFILE = 'nomic';
+    const explicitEquivalent = getConfig().embedding;
+
+    process.env.THOTH_EMBEDDING_PROFILE = 'raw';
+    const raw = getConfig().embedding;
+
+    process.env.THOTH_EMBEDDING_PROFILE = 'nomic';
+    process.env.THOTH_EMBEDDING_NORMALIZE = 'false';
+    const unnormalized = getConfig().embedding;
+
+    expect(automatic?.configHash).toBe(explicitEquivalent?.configHash);
+    expect(automatic?.configHash).not.toBe(raw?.configHash);
+    expect(automatic?.configHash).not.toBe(unnormalized?.configHash);
   });
 
   it('embedding: config hash does not change when only HyDE generation config changes', () => {

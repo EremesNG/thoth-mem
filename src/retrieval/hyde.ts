@@ -1,12 +1,12 @@
 import type { HydeConfig } from '../config.js';
+import type { EmbeddingInput } from './providers.js';
 
 export interface HydeGenerator {
   generate(input: { query: string }): Promise<string>;
 }
 
-export interface SemanticInput {
+export interface SemanticInput extends EmbeddingInput {
   source: 'raw_query' | 'hyde_answer';
-  text: string;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -32,7 +32,12 @@ export async function prepareHydeSemanticInputs(
   config: HydeConfig,
   generator?: HydeGenerator,
 ): Promise<{ inputs: SemanticInput[]; degradedReason?: string }> {
-  const inputs: SemanticInput[] = [{ source: 'raw_query', text: query }];
+  const inputs: SemanticInput[] = [{
+    source: 'raw_query',
+    text: query,
+    intent: 'retrieval',
+    role: 'query',
+  }];
 
   if (!config.enabled || !generator) {
     return { inputs };
@@ -45,7 +50,12 @@ export async function prepareHydeSemanticInputs(
       return { inputs, degradedReason: 'hyde_empty' };
     }
 
-    inputs.push({ source: 'hyde_answer', text: answer });
+    inputs.push({
+      source: 'hyde_answer',
+      text: answer,
+      intent: 'retrieval',
+      role: 'document',
+    });
     return { inputs };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'HyDE generation failed';

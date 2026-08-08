@@ -31,6 +31,7 @@
     "dashboard:typecheck": "pnpm --dir dashboard typecheck",
     "dev": "tsx watch src/index.ts",
     "eval:kg": "tsx src/evals/kg-quality.ts",
+    "eval:embedding-models": "tsx src/evals/embedding-models.ts",
     "eval:retrieval": "tsx src/evals/retrieval.ts",
     "integration:sync": "node scripts/sync-integration-assets.mjs",
     "integration:verify": "node scripts/verify-integration-package.mjs",

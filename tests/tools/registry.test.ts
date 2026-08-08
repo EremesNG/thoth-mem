@@ -119,7 +119,8 @@ function responseEnvelope(result: unknown): { contentTypes: string[]; isError: b
 
 async function capturePublicContract(): Promise<PublicContractSnapshot> {
   const dataDir = mkdtempSync(join(tmpdir(), 'thoth-public-contract-'));
-  const { server, store } = createServer({ dataDir });
+  const { server, store, embeddingProvider } = createServer({ dataDir, embeddingProvider: null });
+  expect(embeddingProvider).toBeNull();
   const client = new Client({ name: 'registry-contract-test', version: '1' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

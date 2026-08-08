@@ -1,6 +1,7 @@
 # Delta for Indexing
 
 ## ADDED Requirements
+
 ### Requirement: Indexing MUST Run Asynchronously and Preserve Save Responsiveness
 Chunk/sentence semantic indexing and KG extraction MUST execute in background jobs so save/ingest flows remain responsive.
 
@@ -8,19 +9,6 @@ Chunk/sentence semantic indexing and KG extraction MUST execute in background jo
 - GIVEN a new observation is persisted
 - WHEN semantic/KG indexing work is required
 - THEN persistence MUST complete independently of background indexing completion
-
-### Requirement: Post-Save Semantic Consistency MUST Be Eventual and Explicit
-The system MUST treat semantic recall for newly saved or updated content as eventual until background indexing finishes, while immediately preserving primary persistence, FTS5-compatible text, and graph/KG-compatible source data.
-
-#### Scenario: Save returns with semantic indexing pending
-- GIVEN a save operation enqueues semantic indexing work
-- WHEN the save response is returned
-- THEN the system MUST NOT claim sentence/chunk semantic coverage is fresh until the relevant background jobs complete
-
-#### Scenario: Retrieval can observe pending semantic coverage
-- GIVEN semantic indexing is pending for a saved item
-- WHEN retrieval checks index state
-- THEN the system MUST expose pending/degraded semantic coverage so callers can distinguish eventual semantic recall from missing data
 
 ### Requirement: Chunk Vector Indexing SHOULD Precede Sentence Vector Indexing for the Same Source
 When chunk and sentence indexing jobs are split for the same source content, the background workflow SHOULD process chunk vectors before sentence vectors so coarse semantic context becomes available before high-precision sentence recall. This ordering MUST NOT block save responsiveness.
@@ -140,6 +128,7 @@ mechanism for legacy observations (CL-2), reusing the existing rebuild job path
 
 
 ## MODIFIED Requirements
+
 ### Requirement: Post-Save Semantic Consistency MUST Be Eventual and Explicit
 The system MUST treat SEMANTIC recall (sentence/chunk vectors) for newly saved or
 updated content as eventual until background indexing finishes. Graph/KG facts,
@@ -361,3 +350,37 @@ Background indexing and KG failures MUST remain visible after terminal failure t
 - GIVEN optional KG LLM enrichment fails
 - WHEN the dashboard requests health
 - THEN the recent error list MUST include the failed job warning without blocking deterministic KG results
+
+### Requirement: Title-aware semantic indexing
+
+Chunk and sentence indexing MUST retain the source observation title as optional document metadata for profile formatting without altering persisted source content or lexical retrieval text.
+
+#### Scenario: US3 - Benchmark-gated default decision 1
+
+- **GIVEN** all three models are available
+- **WHEN** the benchmark runs
+- **THEN** each model receives identical queries/documents through its resolved profile and the report includes per-model quality and operational metrics
+
+#### Scenario: US3 - Benchmark-gated default decision 2
+
+- **GIVEN** all three runs are complete
+- **WHEN** a candidate satisfies the absolute thresholds and is no worse than Nomic on Recall@1, Recall@5, and MRR
+- **THEN** it becomes eligible and the deterministic quality score and tie-break order select the winning eligible candidate even when Nomic itself is below the candidate thresholds
+
+#### Scenario: US3 - Benchmark-gated default decision 3
+
+- **GIVEN** neither candidate is eligible, any model is unavailable, or benchmark execution/evidence persistence is incomplete
+- **WHEN** the gate is evaluated
+- **THEN** the gate fails closed and Nomic remains the shipped local default
+
+#### Scenario: US3 - Benchmark-gated default decision 4
+
+- **GIVEN** the effective default model or resolved preprocessing lineage changes
+- **WHEN** semantic index state is reconciled
+- **THEN** existing vectors are marked stale and an idempotent rebuild is enqueued
+
+#### Scenario: US3 - Benchmark-gated default decision 5
+
+- **GIVEN** a live benchmark finishes
+- **WHEN** its human-readable report is rendered
+- **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits

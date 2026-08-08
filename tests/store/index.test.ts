@@ -4,6 +4,8 @@ import { vectorToBuffer } from '../../src/retrieval/sqlite-vec.js';
 import { deterministicVecRowid, splitChunkIntoSentences, splitIntoChunks } from '../../src/retrieval/sentences.js';
 import { fuseCandidates } from '../../src/retrieval/ranking.js';
 import { KG_ENTITY_TYPES } from '../../src/indexing/kg-extractor.js';
+import type { EmbeddingConfig } from '../../src/config.js';
+import type { EmbeddingInput } from '../../src/retrieval/providers.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -804,6 +806,63 @@ describe('Store', () => {
       expect(response?.scoreFromDistance?.(20)).toBeCloseTo(Math.exp(-1), 10);
     });
 
+    it('hybrid retrieval: keeps lexical and KG available when semantic embedding fails', async () => {
+      const embedding = {
+        provider: 'transformers_local',
+        model: 'custom/test-embedding',
+        baseUrl: null,
+        dimensions: 384,
+        profile: 'raw',
+        resolvedProfile: { id: 'raw', version: 1, inferred: false },
+        normalize: true,
+        configHash: 'semantic-failure-test',
+      } satisfies EmbeddingConfig;
+      store = new Store(':memory:', { embedding });
+      const saved = store.saveObservation({
+        title: 'Credential rotation runbook',
+        content: 'Rotate API credentials every week and revoke the previous key.',
+        project: 'hybrid-test',
+      });
+      store.getDb().prepare(
+        "UPDATE semantic_index_state SET pending = 0, stale = 0, degraded = 0 WHERE lane IN ('chunk','sentence')",
+      ).run();
+      const provider = {
+        config: embedding,
+        embed: async (_inputs: EmbeddingInput[]) => {
+          throw new Error('embedding offline');
+        },
+      };
+      const runtime = store as unknown as {
+        processSemanticJobs(input: {
+          limit: number;
+          embeddingProvider: { config: EmbeddingConfig; embed(inputs: EmbeddingInput[]): Promise<number[][]> };
+        }): Promise<number>;
+        hybridRetrieve(input: {
+          query: string;
+          project: string;
+          embeddingProvider: typeof provider;
+        }): Promise<{ degradedFallback: string[]; results: Array<{ observation: { id: number } }> }>;
+      };
+      const readyProvider = {
+        config: embedding,
+        embed: async (inputs: EmbeddingInput[]) => inputs.map(() => (
+          Array.from({ length: 384 }, (_, index) => index === 0 ? 1 : 0)
+        )),
+      };
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: readyProvider });
+
+      const response = await runtime.hybridRetrieve({
+        query: 'rotate API credentials',
+        project: 'hybrid-test',
+        embeddingProvider: provider,
+      });
+
+      expect(response.degradedFallback).toContain('semantic:embedding offline');
+      expect(response.degradedFallback).toContain('lexical');
+      expect(response.degradedFallback).not.toContain('kg');
+      expect(response.results.some((result) => result.observation.id === saved.observation.id)).toBe(true);
+    });
+
     it('sentence KNN: applies sqlite-vec kNN, distance scoring, and source attribution', async () => {
       store = new Store(':memory:');
       const saved = store.saveObservation({
@@ -1330,8 +1389,66 @@ describe('Store', () => {
         hyde: { enabled: true, mode: 'timeout' },
       });
 
-      expect(success?.inputs.map((input: { source: string }) => input.source)).toEqual(['raw_query', 'hyde_answer']);
-      expect(fallback?.inputs.map((input: { source: string }) => input.source)).toEqual(['raw_query']);
+      expect(success?.inputs).toEqual([
+        {
+          source: 'raw_query',
+          text: 'How do we rotate API credentials?',
+          intent: 'retrieval',
+          role: 'query',
+        },
+        {
+          source: 'hyde_answer',
+          text: 'Hypothetical answer for How do we rotate API credentials?',
+          intent: 'retrieval',
+          role: 'document',
+        },
+      ]);
+      expect(fallback?.inputs).toEqual([{
+        source: 'raw_query',
+        text: 'How do we rotate API credentials?',
+        intent: 'retrieval',
+        role: 'query',
+      }]);
+    });
+
+    it('semantic indexing: passes observation titles as ephemeral document metadata', async () => {
+      const embedding = {
+        provider: 'transformers_local',
+        model: 'custom/test-embedding',
+        baseUrl: null,
+        dimensions: 384,
+        profile: 'raw',
+        resolvedProfile: { id: 'raw', version: 1, inferred: false },
+        normalize: true,
+        configHash: 'title-metadata-test',
+      } satisfies EmbeddingConfig;
+      store = new Store(':memory:', { embedding });
+      const calls: EmbeddingInput[][] = [];
+      const provider = {
+        config: embedding,
+        embed: async (inputs: EmbeddingInput[]) => {
+          calls.push(inputs);
+          return inputs.map(() => Array.from({ length: 384 }, (_, index) => index === 0 ? 1 : 0));
+        },
+      };
+      const runtime = store as unknown as {
+        processSemanticJobs(input: { limit: number; embeddingProvider: typeof provider }): Promise<number>;
+      };
+      store.saveObservation({
+        title: 'Security runbook',
+        content: 'Rotate credentials weekly. Revoke the previous credential after rollout.',
+        project: 'hybrid-test',
+      });
+
+      await runtime.processSemanticJobs({ limit: 20, embeddingProvider: provider });
+
+      const embeddedInputs = calls.flat();
+      expect(embeddedInputs.length).toBeGreaterThan(0);
+      expect(embeddedInputs.every((entry) => entry.role === 'document')).toBe(true);
+      expect(embeddedInputs.every((entry) => entry.intent === 'retrieval')).toBe(true);
+      expect(embeddedInputs.every((entry) => entry.title === 'Security runbook')).toBe(true);
+      expect(embeddedInputs.some((entry) => entry.text.includes('Rotate credentials weekly.'))).toBe(true);
+      expect(embeddedInputs.every((entry) => !entry.text.includes('Security runbook'))).toBe(true);
     });
 
     it('HyDE: uses the configured generator by default and supports per-query disable', async () => {
