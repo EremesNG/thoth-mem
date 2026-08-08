@@ -18,22 +18,81 @@ Thoth-Mem is a local-first MCP server backed by SQLite and FTS5. It preserves us
 
 Global scope manages the current user's harness configuration; project scope is explicit and confined to the selected project and its receipt tree. Engram, thoth-agents, or another memory integration may overlap; treat this as a warning only: thoth-mem does not edit, disable, remove, or write to external repositories.
 
-## First use
+## Quick start
 
-Requires Node.js 18 or newer.
+Requires Node.js 18 or newer. Native setup is optional: a manual MCP connection
+only needs the `mcp` command.
+
+### Run the published package
+
+Start the latest published MCP server without installing a global command:
 
 ```bash
 npx -y thoth-mem@latest mcp
 ```
 
-This starts the MCP server and its local HTTP bridge. For a persistent command that native integrations can invoke, install the CLI globally:
+This starts the MCP server and its local HTTP bridge. Add `--no-http` when only
+the MCP transport is wanted. New client configurations should use the explicit
+`mcp` subcommand.
+
+Native integrations invoke the persistent `thoth-mem` command after setup, so
+install or update that command globally before configuring a harness. Use `npx`
+to run the setup implementation from the latest published package, inspect its
+zero-write plan, and then apply it:
 
 ```bash
-pnpm add -g thoth-mem
-thoth-mem mcp
+npx -y thoth-mem@latest setup codex --scope global --plan --json
+npx -y thoth-mem@latest setup codex --scope global --json
 ```
 
-New client configurations should use the explicit `mcp` subcommand. Add `--no-http` when only the MCP transport is wanted.
+Replace `codex` with `opencode` or `claude` for another supported harness, then
+restart that harness. Running `setup` alone does not install or update the npm
+package.
+
+### Install this repository
+
+Use the repository flow to test commits that have not been published yet:
+
+```bash
+pnpm install
+pnpm run build
+pnpm add -g .
+thoth-mem version
+thoth-mem setup codex --scope global --plan --json
+thoth-mem setup codex --scope global --json
+```
+
+`thoth-mem@latest` only contains the latest published release. Rebuild and rerun
+`pnpm add -g .` after pulling newer unpublished commits.
+
+### Update an existing installation
+
+Update the package first. If a native integration is installed, rerun its setup
+so copied assets, skills, hooks, and managed declarations converge to the new
+package version:
+
+```bash
+pnpm add -g thoth-mem@latest
+npx -y thoth-mem@latest setup codex --scope global --plan --json
+npx -y thoth-mem@latest setup codex --scope global --json
+```
+
+Then restart the harness or MCP process. Manual MCP users do not need `setup`;
+restarting `npx -y thoth-mem@latest mcp` is enough.
+
+Setup preserves the memory database and user-owned configuration. On startup,
+missing configuration fields may be backfilled, but explicit values such as an
+LM Studio model remain selected. The config format remains `"version": 1`.
+For a published install, update an older `$schema` URL manually to that release
+version for current editor validation and autocomplete. An unpublished checkout
+must use this repository's `config.schema.json` for matching validation because
+unpkg cannot expose the change before release. The schema URL does not control
+runtime migration.
+
+Changing an embedding model is a configuration operation, not a setup operation.
+Edit `embedding.provider`, `model`, `baseUrl`, and native `dimensions` as needed;
+`profile: "auto"` resolves supported model families. Restart thoth-mem and let
+the changed embedding lineage enqueue the idempotent semantic-index rebuild.
 
 ## The memory loop
 
