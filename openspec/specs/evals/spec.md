@@ -1,6 +1,7 @@
 # Delta for Evals
 
 ## ADDED Requirements
+
 ### Requirement: Evals MUST Validate sqlite-vec KNN Retrieval Defaults
 Evaluation suites MUST validate that semantic retrieval uses sqlite-vec KNN semantics for sentence and chunk lanes and returns bounded top-k evidence using the configured defaults.
 
@@ -524,6 +525,7 @@ Rollout evals MUST NOT require or imply multi-harness support, G3 harness parity
 # Delta for Evals
 
 ## ADDED Requirements
+
 ### Requirement: Evals MUST Report Runtime Token-Savings Telemetry
 Retrieval eval reporting MUST include average payload per tool, full/evidence/returned sizes, saved size, compression ratio, exact-or-estimated token counts, and whether token counts are exact or estimated. The report MUST make the metric basis explicit and MUST preserve existing recall/rank quality gates.
 
@@ -580,3 +582,71 @@ Evals MUST simulate or fixture a compaction-like state where only compact handof
 ## Handoff Hints
 - Design should extend `RetrievalTokenSavingsMetricsEnvelope` rather than create an unrelated report format unless the existing shape cannot express per-tool and escalation metrics.
 - Verification should run focused retrieval eval tests plus the broader build/test gate in later phases.
+
+### Requirement: Reproducible durable model comparison
+
+A runnable benchmark MUST compare Nomic, EmbeddingGemma, and Qwen3-Embedding-0.6B over the same committed multilingual, technical-memory, and code-retrieval cases and report Recall@1, Recall@5, MRR, per-model errors, dimensions, vector norms, latency, model bytes when available, corpus hash, and explicit gate/default status. Every decision run MUST persist the complete JSON report at `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before exit.
+
+#### Scenario: US3 - Benchmark-gated default decision 1
+
+- **GIVEN** all three models are available
+- **WHEN** the benchmark runs
+- **THEN** each model receives identical queries/documents through its resolved profile and the report includes per-model quality and operational metrics
+
+#### Scenario: US3 - Benchmark-gated default decision 2
+
+- **GIVEN** all three runs are complete
+- **WHEN** a candidate satisfies the absolute thresholds and is no worse than Nomic on Recall@1, Recall@5, and MRR
+- **THEN** it becomes eligible and the deterministic quality score and tie-break order select the winning eligible candidate even when Nomic itself is below the candidate thresholds
+
+#### Scenario: US3 - Benchmark-gated default decision 3
+
+- **GIVEN** neither candidate is eligible, any model is unavailable, or benchmark execution/evidence persistence is incomplete
+- **WHEN** the gate is evaluated
+- **THEN** the gate fails closed and Nomic remains the shipped local default
+
+#### Scenario: US3 - Benchmark-gated default decision 4
+
+- **GIVEN** the effective default model or resolved preprocessing lineage changes
+- **WHEN** semantic index state is reconciled
+- **THEN** existing vectors are marked stale and an idempotent rebuild is enqueued
+
+#### Scenario: US3 - Benchmark-gated default decision 5
+
+- **GIVEN** a live benchmark finishes
+- **WHEN** its human-readable report is rendered
+- **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits
+
+### Requirement: Fail-closed quality gate and winner selection
+
+The default-change gate MUST pass only when all three model runs and the durable report are complete. Each candidate MUST satisfy corpus thresholds and be no worse than Nomic on Recall@1, Recall@5, and MRR to be eligible; Nomic acts as the relative comparator and is not required to satisfy the candidates' absolute thresholds. Among eligible candidates, the highest arithmetic mean of those three metrics wins; exact-score ties MUST resolve by higher MRR, then Recall@1, then Recall@5, then lexical profile ID. Unavailable or incomplete evidence MUST fail the gate.
+
+#### Scenario: US3 - Benchmark-gated default decision 1
+
+- **GIVEN** all three models are available
+- **WHEN** the benchmark runs
+- **THEN** each model receives identical queries/documents through its resolved profile and the report includes per-model quality and operational metrics
+
+#### Scenario: US3 - Benchmark-gated default decision 2
+
+- **GIVEN** all three runs are complete
+- **WHEN** a candidate satisfies the absolute thresholds and is no worse than Nomic on Recall@1, Recall@5, and MRR
+- **THEN** it becomes eligible and the deterministic quality score and tie-break order select the winning eligible candidate even when Nomic itself is below the candidate thresholds
+
+#### Scenario: US3 - Benchmark-gated default decision 3
+
+- **GIVEN** neither candidate is eligible, any model is unavailable, or benchmark execution/evidence persistence is incomplete
+- **WHEN** the gate is evaluated
+- **THEN** the gate fails closed and Nomic remains the shipped local default
+
+#### Scenario: US3 - Benchmark-gated default decision 4
+
+- **GIVEN** the effective default model or resolved preprocessing lineage changes
+- **WHEN** semantic index state is reconciled
+- **THEN** existing vectors are marked stale and an idempotent rebuild is enqueued
+
+#### Scenario: US3 - Benchmark-gated default decision 5
+
+- **GIVEN** a live benchmark finishes
+- **WHEN** its human-readable report is rendered
+- **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits

@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "timestamp": "2026-08-08T19:07:58.838Z",
+  "provider": "lmstudio",
+  "corpus": {
+    "hash": "999df2b0b74e396128bb3d9d9bd49155a2b8ed8c639499e84dfa1ba83664f1f1",
+    "caseCount": 10,
+    "documentCount": 12
+  },
+  "models": {
+    "nomic": {
+      "key": "nomic",
+      "requestedModel": "text-embedding-nomic-embed-text-v1.5@q8_0",
+      "profile": {
+        "id": "nomic",
+        "version": 1
+      },
+      "complete": true,
+      "expectedDimensions": 768,
+      "observedDimensions": 768,
+      "norms": {
+        "min": 0.9999999999999997,
+        "max": 1.0000000000000004,
+        "mean": 1
+      },
+      "metrics": {
+        "recallAt1": 0.5,
+        "recallAt5": 1,
+        "mrr": 0.7166666666666666,
+        "qualityScore": 0.7388888888888889
+      },
+      "requestCount": 2,
+      "elapsedMs": 388,
+      "medianLatencyMs": 190.5,
+      "p95LatencyMs": 203,
+      "modelBytes": 146146432,
+      "errors": []
+    },
+    "embeddinggemma": {
+      "key": "embeddinggemma",
+      "requestedModel": "text-embedding-embeddinggemma-300m",
+      "profile": {
+        "id": "embeddinggemma",
+        "version": 1
+      },
+      "complete": true,
+      "expectedDimensions": 768,
+      "observedDimensions": 768,
+      "norms": {
+        "min": 0.9999999999999996,
+        "max": 1.0000000000000002,
+        "mean": 1
+      },
+      "metrics": {
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "mrr": 1,
+        "qualityScore": 1
+      },
+      "requestCount": 2,
+      "elapsedMs": 391,
+      "medianLatencyMs": 195,
+      "p95LatencyMs": 226,
+      "modelBytes": 333590944,
+      "errors": []
+    },
+    "qwen3": {
+      "key": "qwen3",
+      "requestedModel": "text-embedding-qwen3-embedding-0.6b",
+      "profile": {
+        "id": "qwen3",
+        "version": 1
+      },
+      "complete": true,
+      "expectedDimensions": 1024,
+      "observedDimensions": 1024,
+      "norms": {
+        "min": 0.9999999999999997,
+        "max": 1.0000000000000004,
+        "mean": 1
+      },
+      "metrics": {
+        "recallAt1": 1,
+        "recallAt5": 1,
+        "mrr": 1,
+        "qualityScore": 1
+      },
+      "requestCount": 2,
+      "elapsedMs": 642,
+      "medianLatencyMs": 320.5,
+      "p95LatencyMs": 396,
+      "modelBytes": 639150592,
+      "errors": []
+    }
+  },
+  "gate": {
+    "thresholds": {
+      "recallAt1": 0.8,
+      "recallAt5": 0.95,
+      "mrr": 0.85
+    },
+    "equalityTolerance": 1e-12,
+    "candidates": {
+      "embeddinggemma": {
+        "eligible": true,
+        "qualityScore": 1,
+        "absoluteThresholds": {
+          "recallAt1": true,
+          "recallAt5": true,
+          "mrr": true
+        },
+        "noRegression": {
+          "recallAt1": true,
+          "recallAt5": true,
+          "mrr": true
+        },
+        "reasons": []
+      },
+      "qwen3": {
+        "eligible": true,
+        "qualityScore": 1,
+        "absoluteThresholds": {
+          "recallAt1": true,
+          "recallAt5": true,
+          "mrr": true
+        },
+        "noRegression": {
+          "recallAt1": true,
+          "recallAt5": true,
+          "mrr": true
+        },
+        "reasons": []
+      }
+    },
+    "winnerTrace": [
+      "qualityScore tied within tolerance.",
+      "MRR tied within tolerance.",
+      "Recall@1 tied within tolerance.",
+      "Recall@5 tied within tolerance.",
+      "embeddinggemma wins by lexical profile ID."
+    ],
+    "passed": true,
+    "reasons": [],
+    "defaultDecision": "embeddinggemma"
+  }
+}
