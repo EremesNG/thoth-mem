@@ -770,6 +770,7 @@ function planDiagnostics(
   paths: SetupPaths,
   inspection: SetupInspection,
   codexEvidence: CodexRegistrationEvidence,
+  needsFileChanges: boolean,
   includeLegacyCodexDiagnostics = true,
 ): string[] {
   const diagnostics = inspection.conflicts.map((conflict) => conflict.diagnostic);
@@ -782,7 +783,7 @@ function planDiagnostics(
       diagnostics.push(`Malformed selected OpenCode configuration will be backed up byte-exactly before minimal recreation: ${paths.configPath}`);
     }
   }
-  if (!inspection.managed && inspection.configType === 'file') {
+  if (needsFileChanges && inspection.configType === 'file') {
     diagnostics.push(`Backup required before mutation: ${paths.configPath}`);
   }
   if (request.force && request.harness !== 'opencode') {
@@ -913,7 +914,14 @@ function codexPlanningResult(
     target: inspection.paths.targetRoot,
     steps: codexStrategySteps(request, inspection, evidence, plan),
     diagnostics: [
-      ...planDiagnostics(request, inspection.paths, inspection, evidence, false),
+      ...planDiagnostics(
+        request,
+        inspection.paths,
+        inspection,
+        evidence,
+        needsFileChanges,
+        false,
+      ),
       ...plan.diagnostics,
     ],
     manual_actions: [
@@ -985,6 +993,7 @@ async function inspectVerifiedCodexNoOpBeforeLock(
   const plan = await inspectCodexCli({
     executor,
     scope: request.scope,
+    force: request.force,
     ...(request.projectPath ? { projectPath: request.projectPath } : {}),
   });
   return isVerifiedCodexNoOp(request, inspection, plan)
@@ -2692,6 +2701,7 @@ async function executeCodexMigration(
   const finalPlan = await inspectCodexCli({
     executor,
     scope: request.scope,
+    force: request.force,
     ...(request.projectPath ? { projectPath: request.projectPath } : {}),
   });
   const finalInspection = await inspectSetup(request, paths, createNodeSetupFileSystem(), options);
@@ -2757,7 +2767,10 @@ async function executeCodexMigration(
     target: paths.targetRoot,
     steps: codexStrategySteps(request, inspection, codexEvidenceFromPlan(request, finalPlan), finalPlan)
       .map((step) => ({ ...step, outcome: 'confirmed' as const })),
-    diagnostics: receiptKeyDiagnostic(assetsApplied.keyProtection),
+    diagnostics: [
+      ...receiptKeyDiagnostic(assetsApplied.keyProtection),
+      ...finalPlan.diagnostics,
+    ],
     manual_actions: [],
     receipt: receiptPaths.receiptPath,
   };
@@ -3717,6 +3730,7 @@ export async function inspectAndPlanSetup(
       const codexPlan = await inspectCodexCli({
         executor,
         scope: request.scope,
+        force: request.force,
         ...(request.projectPath ? { projectPath: request.projectPath } : {}),
       });
       if (inspection.conflicts.some((conflict) => conflict.forceable)) {
@@ -3806,7 +3820,13 @@ export async function inspectAndPlanSetup(
       target: paths.targetRoot,
       steps: planSteps(request, paths, inspection, codexEvidence),
       diagnostics: [
-        ...planDiagnostics(request, paths, inspection, codexEvidence),
+        ...planDiagnostics(
+          request,
+          paths,
+          inspection,
+          codexEvidence,
+          needsFileChanges,
+        ),
         ...(openCodeCleanupWarning
           ? ['OpenCode setup is current, but target-bound recovery evidence cleanup remains incomplete.']
           : []),
