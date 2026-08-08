@@ -181,6 +181,7 @@ The repository includes deterministic evaluation commands:
 ```bash
 pnpm run eval:retrieval
 pnpm run eval:kg
+pnpm run eval:embedding-models -- --help
 ```
 
 `eval:retrieval` seeds signal observations plus distractors and measures whether the expected memory ranks near the top. Read its report as a collection of signals:
@@ -194,6 +195,55 @@ pnpm run eval:kg
 `eval:kg` measures expected subject-relation-object recall, forbidden-triple leakage, deterministic extraction behavior, and validated optional LLM enrichment. Missing expected facts indicate coverage gaps; forbidden hits indicate unsafe graph invention.
 
 These evals are deterministic development gates over curated and synthetic fixtures. They do not predict every production corpus, replace human review, prove a native harness integration, or by themselves justify enabling optional community read paths. Compare the individual cases and failure messages instead of treating one aggregate number as universal quality.
+
+### Embedding profiles and model comparison
+
+Semantic embedding inputs are formatted by a versioned model profile. `auto` recognizes Nomic, EmbeddingGemma, and Qwen3-Embedding model-family aliases; unknown models use `raw` and receive no inferred asymmetric formatting. The public configuration intentionally has no global `task` field: retrieval intent and query/document role are assigned internally for each input, including document-role HyDE answers.
+
+```json
+{
+  "embedding": {
+    "provider": "lmstudio",
+    "model": "text-embedding-embeddinggemma-300m",
+    "baseUrl": "http://127.0.0.1:1234",
+    "dimensions": 768,
+    "profile": "auto",
+    "normalize": true
+  }
+}
+```
+
+Supported profile values are `auto`, `nomic`, `embeddinggemma`, `qwen3`, and `raw`. `THOTH_EMBEDDING_PROFILE` and `THOTH_EMBEDDING_NORMALIZE` override persisted values. The resolved profile version and normalization flag are part of semantic index lineage, so changing them marks prior vectors stale and uses the existing idempotent rebuild queue.
+
+Provider model examples:
+
+| Profile | LM Studio model ID | Transformers.js model ID | Native dimensions |
+| --- | --- | --- | ---: |
+| Nomic | use the exact ID from `/v1/models`, for example `text-embedding-nomic-embed-text-v1.5@q8_0` | `nomic-ai/nomic-embed-text-v1.5` | 768 |
+| EmbeddingGemma | `text-embedding-embeddinggemma-300m` for the verified GGUF installation | `onnx-community/embeddinggemma-300m-ONNX` | 768 |
+| Qwen3-Embedding-0.6B | `text-embedding-qwen3-embedding-0.6b` for the verified GGUF installation | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 |
+
+EmbeddingGemma local execution consumes `sentence_embedding`. Qwen local execution applies the retrieval instruction only to queries and uses the last attended hidden-state token for pooling. All providers reject incomplete, non-finite, zero, or dimensionally inconsistent batches. LM Studio response indexes are validated and valid out-of-order rows are restored to input order; missing, duplicate, or invalid indexes are rejected. During recall these errors explicitly degrade semantic retrieval while lexical and KG retrieval continue.
+
+Run the three-model quality gate with explicit model IDs and a durable output path:
+
+```bash
+pnpm run eval:embedding-models -- --provider lmstudio --base-url http://127.0.0.1:1234 --nomic-model <nomic-id> --embeddinggemma-model <gemma-id> --qwen3-model <qwen-id> --output <result.json>
+```
+
+The gate requires all three executions to complete and at least one candidate to meet the Recall@1/Recall@5/MRR thresholds without regressing any Nomic metric. Nomic is the relative comparator, not a candidate subject to the absolute thresholds. If both candidates qualify, an explicit quality score and stable tie-break order select the winner. A missing model, invalid vector, no eligible candidate, or report-write failure exits non-zero and preserves the current default.
+
+The recorded 2026-08-08 LM Studio run selected EmbeddingGemma as the shipped local default. EmbeddingGemma and Qwen3 both completed with Recall@1 `1.00`, Recall@5 `1.00`, and MRR `1.00`, versus Nomic `0.50`, `1.00`, and `0.7167`; both candidates were eligible, and EmbeddingGemma won their exact quality tie by the stable lexical profile-ID rule. Median latency in the persisted decision run was 190.5 ms for Nomic, 195 ms for EmbeddingGemma, and 320.5 ms for Qwen3.
+
+Qwen3 file sizes depend on the runtime artifact:
+
+| Qwen3 artifact | Quantization | Bytes | MiB |
+| --- | --- | ---: | ---: |
+| Original Transformers `model.safetensors` | BF16 | 1,191,586,416 | 1,136.39 |
+| Transformers.js `onnx/model_quantized.onnx` | Q8 | 613,527,631 | 585.11 |
+| LM Studio `Qwen3-Embedding-0.6B-Q8_0.gguf` | Q8_0 | 639,150,592 | 609.54 |
+
+The Qwen3 Q8 model is 304,069,133 bytes larger than EmbeddingGemma Q8 in Transformers.js and 305,559,648 bytes larger in LM Studio. It also uses native 1024-dimensional vectors instead of EmbeddingGemma's 768 dimensions. The runner does not install or discover provider models on the operator's behalf.
 
 Scale retrieval noise when you want a tougher local run:
 

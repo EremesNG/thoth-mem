@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getVersion } from './version.js';
 import { KG_RELATION_TYPES } from './indexing/kg-extractor.js';
+import {
+  resolveEmbeddingProfile,
+  type EmbeddingProfileSelection,
+  type ResolvedEmbeddingProfile,
+} from './retrieval/embedding-profile.js';
 import { OBSERVATION_TYPES } from './store/types.js';
 
 export interface RetrievalDefaults {
@@ -120,6 +125,9 @@ export interface EmbeddingConfig {
   model: string;
   baseUrl: string | null;
   dimensions: number | null;
+  profile: EmbeddingProfileSelection;
+  resolvedProfile: ResolvedEmbeddingProfile;
+  normalize: boolean;
   configHash: string;
 }
 
@@ -342,14 +350,10 @@ const COMMUNITY_SUMMARIES_LIMITS = {
   enrichmentMaxChars: { min: 200, max: 8000 },
 };
 
-const DEFAULT_LOCAL_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+const DEFAULT_LOCAL_EMBEDDING_MODEL = 'onnx-community/embeddinggemma-300m-ONNX';
 const KNOWN_EMBEDDING_DIMENSIONS: Record<string, number> = {
-  'nomic-ai/nomic-embed-text-v1.5': 768,
-  'nomic-embed-text': 768,
   'xenova/all-minilm-l6-v2': 384,
   'sentence-transformers/all-minilm-l6-v2': 384,
-  'qwen/qwen3-embedding-0.6b': 1024,
-  'qwen3-embedding:0.6b': 1024,
 };
 
 /**
@@ -388,7 +392,13 @@ function normalizeExplicitString(value: string | null | undefined): string | und
 }
 
 function inferEmbeddingDimensions(model: string): number | null {
-  return KNOWN_EMBEDDING_DIMENSIONS[model] ?? KNOWN_EMBEDDING_DIMENSIONS[model.toLowerCase()] ?? null;
+  const normalized = model.toLowerCase();
+  const exact = KNOWN_EMBEDDING_DIMENSIONS[model] ?? KNOWN_EMBEDDING_DIMENSIONS[normalized];
+  if (exact) return exact;
+  const profileId = resolveEmbeddingProfile(model).id;
+  if (profileId === 'nomic' || profileId === 'embeddinggemma') return 768;
+  if (profileId === 'qwen3') return 1024;
+  return null;
 }
 
 function parseNumber(value: string | undefined): number | null {
@@ -442,6 +452,20 @@ function parseProvider(value: string | null | undefined, fallback: LocalModelPro
   }
 
   return fallback;
+}
+
+function parseEmbeddingProfile(value: string | null | undefined): EmbeddingProfileSelection | null {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'auto'
+    || normalized === 'nomic'
+    || normalized === 'embeddinggemma'
+    || normalized === 'qwen3'
+    || normalized === 'raw'
+  ) {
+    return normalized;
+  }
+  return null;
 }
 
 function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmProvider): KgLlmProvider {
@@ -551,6 +575,8 @@ function defaultPersistedConfig(): PersistedConfig {
       model: DEFAULT_LOCAL_EMBEDDING_MODEL,
       baseUrl: null,
       dimensions: 768,
+      profile: 'auto',
+      normalize: true,
     },
     hyde: { ...DEFAULT_HYDE_CONFIG },
     kgLlm: { ...DEFAULT_KG_LLM_CONFIG },
@@ -566,7 +592,12 @@ function normalizePersistedEmbedding(embedding: PersistedEmbeddingConfig | undef
     return undefined;
   }
 
-  const { configHash: _configHash, hyde: _hyde, ...editable } = embedding;
+  const {
+    configHash: _configHash,
+    resolvedProfile: _resolvedProfile,
+    hyde: _hyde,
+    ...editable
+  } = embedding;
   return editable;
 }
 
@@ -1070,7 +1101,17 @@ function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
     ?? (provider === 'transformers_local' ? DEFAULT_LOCAL_EMBEDDING_MODEL : 'nomic-embed-text');
 
   const dimensionsFromEnv = parseNumber(process.env.THOTH_EMBEDDING_DIMENSIONS);
-  const dimensions = dimensionsFromEnv ?? persistedEmbedding.dimensions ?? inferEmbeddingDimensions(model);
+  const inferredDimensions = inferEmbeddingDimensions(model);
+  const dimensions = dimensionsFromEnv
+    ?? (modelFromEnv ? inferredDimensions : persistedEmbedding.dimensions ?? inferredDimensions);
+
+  const profile = parseEmbeddingProfile(process.env.THOTH_EMBEDDING_PROFILE)
+    ?? parseEmbeddingProfile(persistedEmbedding.profile)
+    ?? 'auto';
+  const resolvedProfile = resolveEmbeddingProfile(model, profile);
+  const normalize = parseBoolean(process.env.THOTH_EMBEDDING_NORMALIZE)
+    ?? persistedEmbedding.normalize
+    ?? true;
 
   const baseUrl = normalizeBaseUrl(
     process.env.THOTH_EMBEDDING_BASE_URL
@@ -1087,6 +1128,11 @@ function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
     model,
     baseUrl,
     dimensions,
+    resolvedProfile: {
+      id: resolvedProfile.id,
+      version: resolvedProfile.version,
+    },
+    normalize,
   };
 
   const configHash = createHash('sha256')
@@ -1098,6 +1144,9 @@ function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
     model,
     baseUrl,
     dimensions,
+    profile,
+    resolvedProfile,
+    normalize,
     configHash,
   };
 }

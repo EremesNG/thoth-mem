@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { writeDeterministicKgFacts } from '../../src/indexing/jobs.js';
 import { Store } from '../../src/store/index.js';
+import type { EmbeddingInput } from '../../src/retrieval/providers.js';
 import { formatProjectGraph } from '../../src/tools/project-views.js';
 
 function insertKgTriple(store: Store, input: {
@@ -492,15 +493,13 @@ describe('Store visualization', () => {
     try {
       const docVector = [1, 0, 0];
       const farVector = [100, 100, 100];
-      const queryTexts: string[] = [];
+      const semanticInputs: EmbeddingInput[] = [];
       const provider = {
         config: embedding,
-        embed: async (texts: string[], usage: 'document' | 'query') => {
-          if (usage === 'query') {
-            queryTexts.push(...texts);
-          }
-          return texts.map((text) => (
-            text.toLowerCase().includes('phoenix shard') ? docVector : farVector
+        embed: async (inputs: EmbeddingInput[]) => {
+          semanticInputs.push(...inputs);
+          return inputs.map((input) => (
+            input.text.toLowerCase().includes('phoenix shard') ? docVector : farVector
           ));
         },
       };
@@ -528,7 +527,16 @@ describe('Store visualization', () => {
         hydeGenerator,
       });
 
-      expect(queryTexts).toContain('Phoenix shard failover plan lives in the recovery runbook.');
+      expect(semanticInputs).toContainEqual(expect.objectContaining({
+        text: 'where is recovery documented',
+        intent: 'retrieval',
+        role: 'query',
+      }));
+      expect(semanticInputs).toContainEqual(expect.objectContaining({
+        text: 'Phoenix shard failover plan lives in the recovery runbook.',
+        intent: 'retrieval',
+        role: 'document',
+      }));
       expect(recall.lanes['chunk-vector'].map((hit) => hit.observation_id)).toContain(saved.observation.id);
       expect(recall.lane_states?.['chunk-vector']?.status).toBe('ready');
     } finally {

@@ -3828,31 +3828,41 @@ export class Store {
     const canRunChunkSemantic = semanticReadiness.chunk.ready;
 
     if ((canRunSentenceSemantic || canRunChunkSemantic) && input.embeddingProvider && semanticInputs.length > 0) {
-      const embeddings = await input.embeddingProvider.embed(semanticInputs.map((item) => item.text), 'query');
-      for (let i = 0; i < semanticInputs.length; i += 1) {
-        const semanticInput = semanticInputs[i];
-        const vector = embeddings[i];
-        if (!vector || vector.length === 0) continue;
-        if (canRunSentenceSemantic) {
-          semanticCandidates.push(...this.querySentenceLane({
-            vector,
-            source: semanticInput.source,
-            topK: defaults.sentenceTopK,
-            minSemanticScore: defaults.minSemanticScore,
-            l2DistanceScale: defaults.l2DistanceScale,
-            filters,
-          }));
+      try {
+        const embeddings = await input.embeddingProvider.embed(semanticInputs.map((item) => ({
+          text: item.text,
+          intent: item.intent,
+          role: item.role,
+          ...(item.title ? { title: item.title } : {}),
+        })));
+        for (let i = 0; i < semanticInputs.length; i += 1) {
+          const semanticInput = semanticInputs[i];
+          const vector = embeddings[i];
+          if (!vector || vector.length === 0) continue;
+          if (canRunSentenceSemantic) {
+            semanticCandidates.push(...this.querySentenceLane({
+              vector,
+              source: semanticInput.source,
+              topK: defaults.sentenceTopK,
+              minSemanticScore: defaults.minSemanticScore,
+              l2DistanceScale: defaults.l2DistanceScale,
+              filters,
+            }));
+          }
+          if (canRunChunkSemantic) {
+            semanticCandidates.push(...this.queryChunkLane({
+              vector,
+              source: semanticInput.source,
+              topK: defaults.chunkTopK,
+              minSemanticScore: defaults.minSemanticScore,
+              l2DistanceScale: defaults.l2DistanceScale,
+              filters,
+            }));
+          }
         }
-        if (canRunChunkSemantic) {
-          semanticCandidates.push(...this.queryChunkLane({
-            vector,
-            source: semanticInput.source,
-            topK: defaults.chunkTopK,
-            minSemanticScore: defaults.minSemanticScore,
-            l2DistanceScale: defaults.l2DistanceScale,
-            filters,
-          }));
-        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        degradedFallback.push(`semantic:${reason}`, 'lexical');
       }
     } else {
       degradedFallback.push('lexical');
