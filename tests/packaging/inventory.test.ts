@@ -316,8 +316,12 @@ describe('canonical inventory', () => {
 
     await withPackageFixture(async (root) => {
       const path = join(root, 'plugin', 'codex.mcp.json');
+      const packageManifest = await readJson<PackageManifest>(join(root, 'package.json'));
       await writeJson(path, {
-        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+        'thoth-mem': {
+          command: 'npx',
+          args: ['--yes', `thoth-mem@${packageManifest.version}`, 'mcp', '--no-http'],
+        },
       });
 
       await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
@@ -492,6 +496,61 @@ describe('version and path integrity', () => {
       await sync.syncIntegrationAssets({ rootDir: root });
       expect(await hashFiles(root, synchronizedPaths)).toBe(synchronizedHash);
       await verifier.verifyIntegrationPackage({ rootDir: root });
+    });
+  });
+
+  it('version and path integrity synchronizes pinned Codex and Claude MCP package versions', async () => {
+    const sync = await importSync();
+
+    await withPackageFixture(async (root) => {
+      const packageManifestPath = join(root, 'package.json');
+      const packageManifest = await readJson<PackageManifest>(packageManifestPath);
+      packageManifest.version = '9.8.7';
+      await writeJson(packageManifestPath, packageManifest);
+
+      const synchronized = await sync.syncIntegrationAssets({ rootDir: root });
+      expect(synchronized.changedPaths).toEqual(expect.arrayContaining([
+        'plugin/codex.mcp.json',
+        'plugin/.mcp.json',
+      ]));
+
+      for (const relativePath of ['plugin/codex.mcp.json', 'plugin/.mcp.json']) {
+        const descriptor = await readJson<{
+          mcpServers: Record<string, { command: string; args: string[] }>;
+        }>(join(root, relativePath));
+        expect(descriptor.mcpServers['thoth-mem']).toEqual({
+          command: 'npx',
+          args: ['--yes', 'thoth-mem@9.8.7', 'mcp', '--no-http'],
+        });
+      }
+
+      await expect(sync.syncIntegrationAssets({ rootDir: root }))
+        .resolves.toEqual({ changedPaths: [] });
+    });
+  });
+
+  it.each([
+    ['Codex', 'thoth-mem@0.0.0', 'plugin/codex.mcp.json'],
+    ['Codex', 'thoth-mem', 'plugin/codex.mcp.json'],
+    ['Claude', 'thoth-mem@0.0.0', 'plugin/.mcp.json'],
+    ['Claude', 'thoth-mem', 'plugin/.mcp.json'],
+  ])('version and path integrity rejects %s MCP package spec %s', async (
+    harness,
+    packageSpec,
+    relativePath,
+  ) => {
+    const verifier = await importVerifier();
+
+    await withPackageFixture(async (root) => {
+      const path = join(root, relativePath);
+      const descriptor = await readJson<{
+        mcpServers: Record<string, { command: string; args: string[] }>;
+      }>(path);
+      descriptor.mcpServers['thoth-mem'].args[1] = packageSpec;
+      await writeJson(path, descriptor);
+
+      await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
+        .rejects.toThrow(new RegExp(`${harness} MCP server args must pin the exact package version`, 'i'));
     });
   });
 

@@ -1670,12 +1670,18 @@ describe('native plugin assets', () => {
 
     expect(codexMcp).toEqual({
       mcpServers: {
-        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+        'thoth-mem': {
+          command: 'npx',
+          args: ['--yes', `thoth-mem@${packageVersion}`, 'mcp', '--no-http'],
+        },
       },
     });
     expect(claudeMcp).toEqual({
       mcpServers: {
-        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+        'thoth-mem': {
+          command: 'npx',
+          args: ['--yes', `thoth-mem@${packageVersion}`, 'mcp', '--no-http'],
+        },
       },
     });
     expect(JSON.stringify(codexHooks)).toContain('${PLUGIN_ROOT}/runners/hook-runner.mjs');

@@ -544,7 +544,7 @@ Legacy installation metadata MUST determine freshness from stable package identi
 
 ### Requirement: Converge installer-owned OpenCode state
 
-Global and project-scoped OpenCode setup MUST treat any existing canonical `.thoth-mem` asset-path entry as installer-owned and MUST converge it, the canonical `plugins/thoth-mem.js` entry, installation metadata, and `mcp.thoth-mem` configuration to the currently executing package without requiring metadata validity, receipt proof, manual deletion, or `--force`.
+Global and project-scoped OpenCode setup MUST treat any existing canonical `.thoth-mem` asset-path entry as installer-owned and MUST converge it, the canonical `plugins/thoth-mem.js` entry, installation metadata, and `mcp.thoth-mem` configuration to the currently executing package without requiring metadata validity, receipt proof, manual deletion, or `--force`. The canonical MCP value MUST be enabled, use local type, and execute `["npx", "--yes", "thoth-mem@<executing-package-version>", "mcp", "--no-http"]`.
 
 #### Scenario: US1 - Converge an existing OpenCode installation 1
 

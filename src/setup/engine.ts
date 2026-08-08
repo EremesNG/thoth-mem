@@ -148,7 +148,7 @@ interface SetupInspection {
 
 const OPENCODE_MCP_VALUE = {
   type: 'local' as const,
-  command: ['thoth-mem', 'mcp', '--no-http'],
+  command: ['npx', '--yes', `thoth-mem@${getVersion()}`, 'mcp', '--no-http'],
   enabled: true,
 };
 const OPENCODE_PLUGIN_ENTRY = 'export { default } from \'./.thoth-mem/opencode/plugin.mjs\';\n';
