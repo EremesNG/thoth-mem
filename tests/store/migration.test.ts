@@ -732,6 +732,25 @@ describe('Store — Migration behaviors', () => {
       expect(staleCount.c).toBeGreaterThan(0);
     });
 
+    it('sqlite-vec: preserves persisted embedding lineage until startup can compare it', () => {
+      const db = store.getDb();
+      db.prepare(
+        "UPDATE semantic_index_state SET embedding_config_hash = 'lineage-a' WHERE lane IN ('chunk','sentence')"
+      ).run();
+
+      runMigrationsWithSemantic(db, {
+        sqliteVecReady: true,
+        embeddingDimensions: 768,
+        embeddingConfigHash: 'lineage-b',
+      });
+
+      const hashes = db.prepare(
+        'SELECT embedding_config_hash FROM semantic_index_state ORDER BY lane'
+      ).all() as Array<{ embedding_config_hash: string | null }>;
+
+      expect(hashes.map((row) => row.embedding_config_hash)).toEqual(['lineage-a', 'lineage-a']);
+    });
+
     it('sqlite-vec: recreates vector tables when embedding dimensions change', () => {
       const db = store.getDb();
 
