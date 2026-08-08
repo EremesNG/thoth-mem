@@ -185,7 +185,7 @@ Project-local setup is explicit:
 thoth-mem setup opencode --scope project --project /path/to/project --plan --json
 ```
 
-Review detected conflicts before applying. Use `--force` only for conflicting locations whose thoth-mem ownership is already proven; it does not grant authority over unrelated configuration.
+Review detected conflicts before applying. Use `--force` only for conflicting locations whose thoth-mem ownership is already proven. For Codex, `--force` may also override only the tested-version gate when the selected scope still exposes complete, independently verifiable plugin-manager capabilities; setup emits a warning when it uses that override. It does not bypass state verification, ownership, containment, reconciliation, or cleanup safeguards, and it grants no authority over unrelated configuration.
 
 Claude Code also supports its native marketplace flow:
 
