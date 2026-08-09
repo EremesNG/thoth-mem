@@ -965,3 +965,91 @@ When root identity or project cannot be proven, the tool MUST return versioned d
 - **GIVEN** the project name cannot be derived safely
 - **WHEN** the tool executes
 - **THEN** it returns degraded output rather than fabricating a project
+
+### Requirement: Add an explicit version-gate override
+
+When Codex setup is requested with `--force`, it MUST allow plugin-manager strategy selection without requiring the detected Codex version to belong to the tested compatibility set, provided all existing selected-scope capability and manager-state requirements are satisfied.
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 1
+
+- **GIVEN** Codex `0.146.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
+- **WHEN** setup runs with `--force`
+- **THEN** it bypasses the version gate, selects `plugin_manager`, and emits a bounded warning instead of returning `requires_user_action` solely because of the version
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 2
+
+- **GIVEN** Codex `0.147.x` exposes the same complete safe contract
+- **WHEN** setup runs with `--force`
+- **THEN** it follows the same forced plugin-manager path and warning contract
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 3
+
+- **GIVEN** both marketplace and plugin state are already exactly present on either required newer minor
+- **WHEN** setup runs with `--force`
+- **THEN** it returns `complete` with `changed=false` and no manual recovery action
+
+### Requirement: Proceed through the existing modern flow
+
+A forced version override that proves complete safe mutation and independent verification capabilities and classifiable manager state MUST select and retain `plugin_manager`, and MUST derive `complete`, `partial`, `failed`, or `requires_user_action` from the existing operation and ambiguity evidence rather than rejecting solely because of version classification.
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 1
+
+- **GIVEN** Codex `0.146.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
+- **WHEN** setup runs with `--force`
+- **THEN** it bypasses the version gate, selects `plugin_manager`, and emits a bounded warning instead of returning `requires_user_action` solely because of the version
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 2
+
+- **GIVEN** Codex `0.147.x` exposes the same complete safe contract
+- **WHEN** setup runs with `--force`
+- **THEN** it follows the same forced plugin-manager path and warning contract
+
+#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 3
+
+- **GIVEN** both marketplace and plugin state are already exactly present on either required newer minor
+- **WHEN** setup runs with `--force`
+- **THEN** it returns `complete` with `changed=false` and no manual recovery action
+
+### Requirement: Preserve unforced setup behavior
+
+When `--force` is absent, Codex setup MUST retain the existing tested-version classification, ownership strategy selection, status, diagnostics, manual actions, and mutation boundaries.
+
+#### Scenario: US2 - Keep the default version policy unchanged 1
+
+- **GIVEN** Codex `0.146.x` or `0.147.x` is outside the tested compatibility set
+- **WHEN** setup runs without `--force`
+- **THEN** current version classification and strategy-selection behavior remains unchanged
+
+#### Scenario: US2 - Keep the default version policy unchanged 2
+
+- **GIVEN** an untested version has compatible manager-owned state
+- **WHEN** setup runs without `--force`
+- **THEN** it still returns `requires_user_action` before mutation
+
+#### Scenario: US2 - Keep the default version policy unchanged 3
+
+- **GIVEN** an untested version has safely absent manager state
+- **WHEN** setup runs without `--force`
+- **THEN** the existing legacy strategy behavior remains unchanged
+
+### Requirement: Preserve non-version safety and ownership gates
+
+`--force` MUST NOT relax exact JSON or recognized legacy parsing, selected-scope capability verification, conflict classification, checkpointing, reconciliation, legacy ownership proof, containment, or the prohibition on implicit legacy fallback and direct manager-state cleanup.
+
+#### Scenario: US3 - Preserve every non-version safety gate 1
+
+- **GIVEN** a forced Codex version lacks any required selected-scope mutation or verification capability
+- **WHEN** setup classifies ownership
+- **THEN** `--force` does not select `plugin_manager` from version override alone
+
+#### Scenario: US3 - Preserve every non-version safety gate 2
+
+- **GIVEN** a forced version returns malformed, conflicting, or unclassifiable manager state
+- **WHEN** setup evaluates the result
+- **THEN** it retains fail-closed behavior and performs no unsafe cleanup or implicit legacy fallback
+
+#### Scenario: US3 - Preserve every non-version safety gate 3
+
+- **GIVEN** forced modern setup needs no legacy filesystem changes
+- **WHEN** an unrelated `config.toml` exists
+- **THEN** output does not claim a configuration backup is required before mutation

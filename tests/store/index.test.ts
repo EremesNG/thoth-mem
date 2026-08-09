@@ -10,6 +10,19 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+function createTestEmbeddingConfig(configHash: string): EmbeddingConfig {
+  return {
+    provider: 'transformers_local',
+    model: 'test-embedding-model',
+    baseUrl: null,
+    dimensions: 3,
+    profile: 'raw',
+    resolvedProfile: { id: 'raw', version: 1, inferred: false },
+    normalize: true,
+    configHash,
+  };
+}
+
 function createLegacyObservationFactsTable(store: Store) {
   store.getDb().exec(`
     CREATE TABLE IF NOT EXISTS observation_facts (
@@ -118,6 +131,211 @@ describe('Store', () => {
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it('enqueues one rebuild when a persistent store opens under a different embedding lineage', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-lineage-'));
+    const dbPath = join(tmpDir, 'test.db');
+    let first: Store | undefined;
+    let second: Store | undefined;
+    let concurrent: Store | undefined;
+
+    try {
+      first = new Store(dbPath, { embedding: createTestEmbeddingConfig('lineage-a') });
+      first.close();
+      first = undefined;
+
+      second = new Store(dbPath, { embedding: createTestEmbeddingConfig('lineage-b') });
+      const progress = second.getSemanticIndexProgress();
+
+      expect(progress.byKind.find((job) => job.kind === 'rebuild_semantic')).toMatchObject({
+        total: 1,
+        pending: 1,
+        running: 0,
+      });
+      expect(progress.lanes).toEqual([
+        expect.objectContaining({ lane: 'chunk', embeddingConfigHash: 'lineage-b', pending: true, stale: true }),
+        expect.objectContaining({ lane: 'sentence', embeddingConfigHash: 'lineage-b', pending: true, stale: true }),
+      ]);
+
+      concurrent = new Store(dbPath, { embedding: createTestEmbeddingConfig('lineage-b') });
+      const concurrentProgress = concurrent.getSemanticIndexProgress();
+      expect(concurrentProgress.byKind.find((job) => job.kind === 'rebuild_semantic')).toMatchObject({
+        total: 1,
+        pending: 1,
+        running: 0,
+      });
+    } finally {
+      concurrent?.close();
+      second?.close();
+      first?.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['an older hash', 'lineage-a'],
+    ['a null hash', null],
+  ])('repairs falsely healthy vector lineage with %s', async (_case, storedVectorHash) => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-vector-lineage-'));
+    const dbPath = join(tmpDir, 'test.db');
+    const embedding = createTestEmbeddingConfig('lineage-b');
+    const provider = {
+      config: embedding,
+      embed: async (inputs: EmbeddingInput[]) => inputs.map(() => [0.1, 0.2, 0.3]),
+    };
+    let initial: Store | undefined;
+    let reopened: Store | undefined;
+
+    try {
+      initial = new Store(dbPath, { embedding });
+      initial.saveObservation({
+        title: 'Mixed lineage source',
+        content: 'Complete vector coverage must still reject stale embedding lineage.',
+        project: 'lineage-test',
+      });
+      await initial.processSemanticJobs({ limit: 10, embeddingProvider: provider });
+      initial.getDb().prepare(
+        'UPDATE semantic_vector_rowids SET embedding_hash = ?'
+      ).run(storedVectorHash);
+      initial.getDb().prepare(
+        `UPDATE semantic_index_state
+         SET embedding_config_hash = 'lineage-b', pending = 0, degraded = 0, stale = 0
+         WHERE lane IN ('chunk','sentence')`
+      ).run();
+      initial.close();
+      initial = undefined;
+
+      reopened = new Store(dbPath, { embedding });
+      const progress = reopened.getSemanticIndexProgress();
+      const state = reopened.getSemanticIndexState();
+
+      expect(progress.byKind.find((job) => job.kind === 'rebuild_semantic')).toMatchObject({
+        total: 1,
+        pending: 1,
+      });
+      expect(progress.lanes.every((lane) => lane.pending && lane.stale)).toBe(true);
+      expect(state).toMatchObject({ pending: true, stale: true });
+    } finally {
+      reopened?.close();
+      initial?.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reactivates a terminal rebuild row without creating a duplicate', () => {
+    store = new Store(':memory:');
+    const request = store.requestSemanticRebuild({ reason: 'repeatable-lineage' });
+    store.getDb().prepare(
+      `UPDATE semantic_jobs
+       SET state = 'done', attempt_count = 2, last_error = 'old failure',
+           started_at = '2026-01-01 00:00:00', finished_at = '2026-01-01 00:00:01'
+       WHERE job_key = ?`
+    ).run(request.dedupeKey);
+
+    store.requestSemanticRebuild({ reason: 'repeatable-lineage' });
+
+    const rows = store.getDb().prepare(
+      `SELECT state, attempt_count, last_error, started_at, finished_at
+       FROM semantic_jobs WHERE job_key = ?`
+    ).all(request.dedupeKey) as Array<{
+      state: string;
+      attempt_count: number;
+      last_error: string | null;
+      started_at: string | null;
+      finished_at: string | null;
+    }>;
+    expect(rows).toEqual([{
+      state: 'pending',
+      attempt_count: 0,
+      last_error: null,
+      started_at: null,
+      finished_at: null,
+    }]);
+  });
+
+  it.each(['pending', 'running'] as const)(
+    'preserves an active %s rebuild row when the same key is requested again',
+    (activeState) => {
+      store = new Store(':memory:');
+      const request = store.requestSemanticRebuild({ reason: `active-${activeState}` });
+      store.getDb().prepare(
+        `UPDATE semantic_jobs
+         SET state = ?, attempt_count = 2, started_at = '2026-01-01 00:00:00'
+         WHERE job_key = ?`
+      ).run(activeState, request.dedupeKey);
+
+      store.requestSemanticRebuild({ reason: `active-${activeState}` });
+
+      const rows = store.getDb().prepare(
+        'SELECT state, attempt_count, started_at FROM semantic_jobs WHERE job_key = ?'
+      ).all(request.dedupeKey);
+      expect(rows).toEqual([{
+        state: activeState,
+        attempt_count: 2,
+        started_at: '2026-01-01 00:00:00',
+      }]);
+    },
+  );
+
+  it.each([
+    ['all stale lanes are covered', ['chunk', 'sentence'], false],
+    ['only one stale lane is covered', ['chunk'], true],
+  ] as const)(
+    'handles vector-only mismatch when %s by active child jobs',
+    async (_case, activeKinds, expectsRebuild) => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-active-lineage-'));
+      const dbPath = join(tmpDir, 'test.db');
+      const embedding = createTestEmbeddingConfig('lineage-b');
+      const provider = {
+        config: embedding,
+        embed: async (inputs: EmbeddingInput[]) => inputs.map(() => [0.1, 0.2, 0.3]),
+      };
+      let initial: Store | undefined;
+      let reopened: Store | undefined;
+
+      try {
+        initial = new Store(dbPath, { embedding });
+        initial.saveObservation({
+          title: 'Active lineage transition',
+          content: 'Active child jobs should cover only their matching stale semantic lanes.',
+          project: 'lineage-test',
+        });
+        await initial.processSemanticJobs({ limit: 10, embeddingProvider: provider });
+        initial.getDb().prepare(
+          "UPDATE semantic_vector_rowids SET embedding_hash = 'lineage-a'"
+        ).run();
+        initial.getDb().prepare(
+          `UPDATE semantic_index_state
+           SET embedding_config_hash = 'lineage-b', pending = 0, degraded = 0, stale = 0
+           WHERE lane IN ('chunk','sentence')`
+        ).run();
+        initial.getDb().prepare(
+          `UPDATE semantic_jobs
+           SET state = CASE WHEN kind IN (${activeKinds.map(() => '?').join(',')}) THEN 'pending' ELSE state END,
+               attempt_count = 0,
+               started_at = NULL,
+               finished_at = NULL
+           WHERE kind IN ('chunk','sentence')`
+        ).run(...activeKinds);
+        initial.close();
+        initial = undefined;
+
+        reopened = new Store(dbPath, { embedding });
+        const rebuild = reopened.getSemanticIndexProgress().byKind
+          .find((job) => job.kind === 'rebuild_semantic');
+
+        if (expectsRebuild) {
+          expect(rebuild).toMatchObject({ total: 1, pending: 1 });
+        } else {
+          expect(rebuild).toBeUndefined();
+        }
+      } finally {
+        reopened?.close();
+        initial?.close();
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   describe('ensureSession', () => {
     it('creates a new session', () => {

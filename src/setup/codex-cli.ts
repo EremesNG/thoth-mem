@@ -152,6 +152,7 @@ export interface InspectCodexCliOptions {
   executor: CodexCommandExecutor;
   scope: SetupScope;
   projectPath?: string;
+  force?: boolean;
 }
 
 export interface ExecuteCodexCliOptions {
@@ -324,7 +325,9 @@ export async function inspectCodexCli(
     marketplaceVerification?.state ?? 'unclassifiable',
     pluginVerification?.state ?? 'unclassifiable',
   );
-  const strategy = selectCodexStrategy(evidence);
+  const forcedVersionOverride = options.force === true
+    && version.classification !== 'tested';
+  const strategy = selectCodexStrategy(evidence, forcedVersionOverride);
   const unavailable = operations.filter((operation) => !operation.verified && !operation.available);
   const allProjectOperationsUnavailable = options.scope === 'project'
     && unavailable.length === operations.length;
@@ -333,6 +336,9 @@ export async function inspectCodexCli(
     : unavailable.map((operation) => operation.unavailableDiagnostic);
   if (strategy === null && evidence.managerState === 'unclassifiable') {
     diagnostics.push('Codex manager state could not be classified safely for the selected scope.');
+  }
+  if (strategy === 'plugin_manager' && forcedVersionOverride) {
+    diagnostics.push(forcedVersionOverrideDiagnostic(version.value));
   }
 
   return {
@@ -391,7 +397,7 @@ export async function executeCodexCli(
   }
 
   const steps: SetupStep[] = [];
-  const diagnostics: string[] = [];
+  const diagnostics: string[] = [...plan.diagnostics];
   const manualActions: string[] = [];
   const operations: CodexOperationExecutionEvidence[] = [];
   let changed = false;
@@ -1152,6 +1158,11 @@ function classifyCodexVersion(output: string): CodexCliEvidence['version'] {
   return { value, classification: tested ? 'tested' : 'untested' };
 }
 
+function forcedVersionOverrideDiagnostic(version: string | null): string {
+  const detectedVersion = version ? `Codex ${version}` : 'The detected Codex version';
+  return `${detectedVersion} is outside thoth-mem's tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.`;
+}
+
 function operationCapability(grammar: OperationGrammar): CodexOperationCapabilityEvidence {
   return {
     mutation: grammar.mutationArgs !== null,
@@ -1206,12 +1217,15 @@ function codexCliEvidence(
   };
 }
 
-function selectCodexStrategy(evidence: CodexCliEvidence): CodexSetupStrategy | null {
+function selectCodexStrategy(
+  evidence: CodexCliEvidence,
+  forceVersionOverride = false,
+): CodexSetupStrategy | null {
   if (evidence.managerState === 'unclassifiable') {
     return null;
   }
   if (
-    evidence.version.classification === 'tested'
+    (evidence.version.classification === 'tested' || forceVersionOverride)
     && evidence.capabilities.complete
   ) {
     return 'plugin_manager';

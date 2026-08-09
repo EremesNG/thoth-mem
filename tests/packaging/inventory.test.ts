@@ -69,6 +69,7 @@ interface BuildModule {
 interface PackageManifest {
   name: string;
   version: string;
+  packageManager: string;
   files: string[];
   scripts: Record<string, string>;
 }
@@ -78,6 +79,8 @@ const verifierPath = join(repositoryRoot, 'scripts', 'verify-integration-package
 const syncPath = join(repositoryRoot, 'scripts', 'sync-integration-assets.mjs');
 const buildPath = join(repositoryRoot, 'scripts', 'build.mjs');
 const inventoryPath = join(repositoryRoot, 'integrations', 'inventory.json');
+const ciWorkflowPath = join(repositoryRoot, '.github', 'workflows', 'ci.yml');
+const releaseWorkflowPath = join(repositoryRoot, '.github', 'workflows', 'release.yml');
 
 async function importVerifier(): Promise<VerifierModule> {
   await expect(readFile(verifierPath, 'utf8')).resolves.toContain('verifyIntegrationPackage');
@@ -316,8 +319,12 @@ describe('canonical inventory', () => {
 
     await withPackageFixture(async (root) => {
       const path = join(root, 'plugin', 'codex.mcp.json');
+      const packageManifest = await readJson<PackageManifest>(join(root, 'package.json'));
       await writeJson(path, {
-        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+        'thoth-mem': {
+          command: 'npx',
+          args: ['--yes', `thoth-mem@${packageManifest.version}`, 'mcp', '--no-http'],
+        },
       });
 
       await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
@@ -495,6 +502,61 @@ describe('version and path integrity', () => {
     });
   });
 
+  it('version and path integrity synchronizes pinned Codex and Claude MCP package versions', async () => {
+    const sync = await importSync();
+
+    await withPackageFixture(async (root) => {
+      const packageManifestPath = join(root, 'package.json');
+      const packageManifest = await readJson<PackageManifest>(packageManifestPath);
+      packageManifest.version = '9.8.7';
+      await writeJson(packageManifestPath, packageManifest);
+
+      const synchronized = await sync.syncIntegrationAssets({ rootDir: root });
+      expect(synchronized.changedPaths).toEqual(expect.arrayContaining([
+        'plugin/codex.mcp.json',
+        'plugin/.mcp.json',
+      ]));
+
+      for (const relativePath of ['plugin/codex.mcp.json', 'plugin/.mcp.json']) {
+        const descriptor = await readJson<{
+          mcpServers: Record<string, { command: string; args: string[] }>;
+        }>(join(root, relativePath));
+        expect(descriptor.mcpServers['thoth-mem']).toEqual({
+          command: 'npx',
+          args: ['--yes', 'thoth-mem@9.8.7', 'mcp', '--no-http'],
+        });
+      }
+
+      await expect(sync.syncIntegrationAssets({ rootDir: root }))
+        .resolves.toEqual({ changedPaths: [] });
+    });
+  });
+
+  it.each([
+    ['Codex', 'thoth-mem@0.0.0', 'plugin/codex.mcp.json'],
+    ['Codex', 'thoth-mem', 'plugin/codex.mcp.json'],
+    ['Claude', 'thoth-mem@0.0.0', 'plugin/.mcp.json'],
+    ['Claude', 'thoth-mem', 'plugin/.mcp.json'],
+  ])('version and path integrity rejects %s MCP package spec %s', async (
+    harness,
+    packageSpec,
+    relativePath,
+  ) => {
+    const verifier = await importVerifier();
+
+    await withPackageFixture(async (root) => {
+      const path = join(root, relativePath);
+      const descriptor = await readJson<{
+        mcpServers: Record<string, { command: string; args: string[] }>;
+      }>(path);
+      descriptor.mcpServers['thoth-mem'].args[1] = packageSpec;
+      await writeJson(path, descriptor);
+
+      await expect(verifier.verifyIntegrationPackage({ rootDir: root }))
+        .rejects.toThrow(new RegExp(`${harness} MCP server args must pin the exact package version`, 'i'));
+    });
+  });
+
   it('version and path integrity rejects stale, range, and mismatched plugin identities', async () => {
     const verifier = await importVerifier();
     const packageManifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
@@ -638,6 +700,22 @@ describe('package publication allowlist', () => {
 });
 
 describe('build release verification', () => {
+  it('derives the pnpm version from packageManager in CI and release workflows', async () => {
+    const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
+    expect(manifest.packageManager).toBe('pnpm@11.20.0');
+
+    for (const workflowPath of [ciWorkflowPath, releaseWorkflowPath]) {
+      const workflow = await readFile(workflowPath, 'utf8');
+      const setupPnpmStep = workflow.match(
+        /      - name: Setup pnpm\r?\n[\s\S]*?(?=\r?\n      - name:|$)/,
+      )?.[0];
+
+      expect(setupPnpmStep).toContain('uses: pnpm/action-setup@v4');
+      expect(setupPnpmStep).toContain('run_install: false');
+      expect(setupPnpmStep).not.toMatch(/^\s+version:/m);
+    }
+  });
+
   it('release commands synchronize, verify, and stage the published plugin assets', async () => {
     const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
 

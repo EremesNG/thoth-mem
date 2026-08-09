@@ -1574,7 +1574,7 @@ describe('OpenCode configuration convergence', () => {
           expect(await readFile(jsonPath, 'utf8')).toBe(jsonBefore);
           expect(ownedConfig(await readFile(jsoncPath, 'utf8'))).toEqual({
             type: 'local',
-            command: ['thoth-mem', 'mcp', '--no-http'],
+            command: ['npx', '--yes', `thoth-mem@${getVersion()}`, 'mcp', '--no-http'],
             enabled: true,
           });
           const diagnostic = result.diagnostics.find((value) => (

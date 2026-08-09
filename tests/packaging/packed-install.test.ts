@@ -1652,7 +1652,10 @@ describe('packed Codex and Claude installation', () => {
     });
     expect(mcp).toEqual({
       mcpServers: {
-        'thoth-mem': { command: 'thoth-mem', args: ['mcp', '--no-http'] },
+        'thoth-mem': {
+          command: 'npx',
+          args: ['--yes', `thoth-mem@${getVersion()}`, 'mcp', '--no-http'],
+        },
       },
     });
     expect(hooks).toContain('${PLUGIN_ROOT}/runners/hook-runner.mjs');

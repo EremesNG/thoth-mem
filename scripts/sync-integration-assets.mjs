@@ -41,6 +41,13 @@ async function writeIfChanged(path, content, changedPaths, root) {
   changedPaths.push(packagePath(root, path));
 }
 
+function requireObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return value;
+}
+
 export async function syncIntegrationAssets(options = {}) {
   const root = resolve(options.rootDir ?? DEFAULT_ROOT);
   const packageManifestPath = (await resolveContainedPath(root, 'package.json', 'package.json', { kind: 'file' })).targetPath;
@@ -75,6 +82,24 @@ export async function syncIntegrationAssets(options = {}) {
     if (currentVersion === packageManifest.version) {
       continue;
     }
+    await writeIfChanged(path, `${JSON.stringify(manifest, null, 2)}\n`, changedPaths, root);
+  }
+
+  const mcpArgs = ['--yes', `thoth-mem@${packageManifest.version}`, 'mcp', '--no-http'];
+  for (const harness of ['codex', 'claude']) {
+    const asset = getInventoryAsset(inventory, harness, 'mcp');
+    const manifestPath = asset.path;
+    const path = (await resolveContainedPath(root, manifestPath, manifestPath, { kind: 'file' })).targetPath;
+    const manifest = requireObject(await readJson(path, manifestPath), manifestPath);
+    const servers = requireObject(manifest.mcpServers, `${manifestPath} mcpServers`);
+    const server = requireObject(servers['thoth-mem'], `${manifestPath} thoth-mem server`);
+    if (server.command === 'npx'
+      && Array.isArray(server.args)
+      && server.args.length === mcpArgs.length
+      && server.args.every((argument, index) => argument === mcpArgs[index])) {
+      continue;
+    }
+    servers['thoth-mem'] = { ...server, command: 'npx', args: mcpArgs };
     await writeIfChanged(path, `${JSON.stringify(manifest, null, 2)}\n`, changedPaths, root);
   }
 

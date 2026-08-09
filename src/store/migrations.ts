@@ -277,7 +277,7 @@ export function runMigrationsWithSemantic(db: SqliteDatabase, options: SemanticM
           lane, embedding_config_hash, embedding_dimensions, pending, degraded, stale, last_ready_at, updated_at
         ) VALUES (?, ?, ?, 1, ?, ?, NULL, datetime('now'))
         ON CONFLICT(lane) DO UPDATE SET
-          embedding_config_hash = excluded.embedding_config_hash,
+          embedding_config_hash = semantic_index_state.embedding_config_hash,
           embedding_dimensions = excluded.embedding_dimensions,
           pending = CASE WHEN excluded.stale = 1 THEN 1 ELSE semantic_index_state.pending END,
           degraded = excluded.degraded,

@@ -61,7 +61,7 @@ Setup Options:
   --scope <global|project>  Setup scope (default: global)
   --project <path>          Required with --scope project
   --plan                    Inspect and report without mutation
-  --force                   Replace only conflicting managed entries
+  --force                   Replace proven managed conflicts; for Codex, override only the version gate
   --rollback <receipt>      Roll back a managed setup receipt
   --json                    Emit the setup result as JSON
 `;

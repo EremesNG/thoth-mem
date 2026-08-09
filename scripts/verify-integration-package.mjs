@@ -451,6 +451,21 @@ function assertExactVersion(value, packageVersion, label) {
   }
 }
 
+function assertPinnedMcpServer(value, packageVersion, label) {
+  const server = requireObject(value, label);
+  if (server.command !== 'npx') {
+    throw new Error(`${label} command must be "npx".`);
+  }
+  const expectedArgs = ['--yes', `thoth-mem@${packageVersion}`, 'mcp', '--no-http'];
+  if (!Array.isArray(server.args)
+    || server.args.length !== expectedArgs.length
+    || server.args.some((argument, index) => argument !== expectedArgs[index])) {
+    throw new Error(
+      `${label} args must pin the exact package version as ${JSON.stringify(expectedArgs)}.`,
+    );
+  }
+}
+
 function inventoryByPath(inventory) {
   return new Map(inventory.assets.map((asset) => [asset.path, asset]));
 }
@@ -668,18 +683,7 @@ async function validateRuntimeDeclarations(root, inventory) {
     throw new Error('Codex MCP mcpServers must declare exactly one server.');
   }
   assertPluginIdentity(Object.keys(codexServers)[0], 'Codex MCP server');
-  const codexServer = requireObject(codexServers['thoth-mem'], 'Codex MCP server');
-  if (codexServer.command !== 'thoth-mem') {
-    throw new Error('Codex MCP server command must be "thoth-mem".');
-  }
-  if (
-    !Array.isArray(codexServer.args)
-    || codexServer.args.length !== 2
-    || codexServer.args[0] !== 'mcp'
-    || codexServer.args[1] !== '--no-http'
-  ) {
-    throw new Error('Codex MCP server args must be ["mcp", "--no-http"].');
-  }
+  assertPinnedMcpServer(codexServers['thoth-mem'], packageVersion, 'Codex MCP server');
 
   for (const [relativePath, role] of [
     ['.mcp.json', 'mcp'],
@@ -726,6 +730,7 @@ async function validateRuntimeDeclarations(root, inventory) {
     throw new Error('Claude MCP descriptor must declare exactly one server.');
   }
   assertPluginIdentity(Object.keys(claudeServers)[0], 'Claude MCP server');
+  assertPinnedMcpServer(claudeServers['thoth-mem'], packageVersion, 'Claude MCP server');
 
   const codexHooks = await readJson(codexHooksPath, 'Codex hooks');
   const claudeHooksPath = join(claudeRoot, 'hooks', 'hooks.json');

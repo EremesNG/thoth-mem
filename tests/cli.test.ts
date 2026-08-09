@@ -245,6 +245,7 @@ describe('runCli', () => {
     expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
     expect(stdout).toContain('setup <opencode|codex|claude>');
+    expect(stdout).toContain('for Codex, override only the version gate');
   });
 
   it('setup command contract keeps project paths command-scoped and returns the setup exit code', async () => {
@@ -286,6 +287,38 @@ describe('runCli', () => {
     expect(JSON.parse(captured.stdout)).toEqual(result);
     expect(captured.stderr).toBe('');
     expect(captured.exitCode).toBe(2);
+  });
+
+  it('keeps forced Codex version warnings aligned in human and JSON output', async () => {
+    const warning = 'Codex 0.147.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.';
+    const result: SetupResult = {
+      status: 'complete',
+      changed: false,
+      harness: 'codex',
+      scope: 'global',
+      target: 'C:\\Users\\Example User\\.codex',
+      steps: [{ name: 'Inspect Codex manager state (global)', outcome: 'confirmed' }],
+      diagnostics: [warning],
+      manual_actions: [],
+      receipt: null,
+    };
+    const setupRunner = vi.fn().mockResolvedValue(result);
+
+    const json = await captureCli(['setup', 'codex', '--force', '--json'], { setupRunner });
+    const human = await captureCli(['setup', 'codex', '--force'], { setupRunner });
+
+    expect(setupRunner).toHaveBeenNthCalledWith(1, {
+      harness: 'codex',
+      scope: 'global',
+      planOnly: false,
+      force: true,
+      json: true,
+    }, {});
+    expect(JSON.parse(json.stdout).diagnostics).toEqual([warning]);
+    expect(human.stdout).toContain('Status: complete');
+    expect(human.stdout).toContain(warning);
+    expect(json.exitCode).toBe(0);
+    expect(human.exitCode).toBe(0);
   });
 
   it('keeps OpenCode human and JSON setup results aligned for changed and exact no-op outcomes', async () => {

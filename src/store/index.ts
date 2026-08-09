@@ -886,7 +886,16 @@ export class Store {
     this.db.prepare(
       `INSERT INTO semantic_jobs (job_key, kind, state, priority)
        VALUES (?, 'rebuild_semantic', 'pending', 10)
-       ON CONFLICT(job_key) DO NOTHING`
+       ON CONFLICT(job_key) DO UPDATE SET
+         state = 'pending',
+         priority = excluded.priority,
+         attempt_count = 0,
+         last_error = NULL,
+         available_at = datetime('now'),
+         started_at = NULL,
+         finished_at = NULL,
+         updated_at = datetime('now')
+       WHERE semantic_jobs.state IN ('done','failed')`
     ).run(dedupeKey);
     this.db.prepare(
       "UPDATE semantic_index_state SET pending = 1, updated_at = datetime('now') WHERE lane IN ('chunk','sentence')"
@@ -1021,6 +1030,7 @@ export class Store {
       return;
     }
 
+    const activeEmbeddingHash = this.config.embedding.configHash;
     const lanes: SemanticLaneName[] = ['chunk', 'sentence'];
     for (const lane of lanes) {
       const sourceTable = lane === 'chunk' ? 'semantic_chunks' : 'semantic_sentences';
@@ -1037,13 +1047,27 @@ export class Store {
             FROM semantic_vector_rowids v
             JOIN ${sourceTable} source ON source.${sourceKeyColumn} = v.source_key
             JOIN observations o ON o.id = source.observation_id
-            WHERE v.lane = ? AND o.deleted_at IS NULL) AS vectors`
-      ).get(lane, lane, lane) as { active: number; failed: number; expected: number; vectors: number };
+            WHERE v.lane = ? AND o.deleted_at IS NULL) AS vectors,
+           (SELECT COUNT(*)
+            FROM semantic_vector_rowids v
+            JOIN ${sourceTable} source ON source.${sourceKeyColumn} = v.source_key
+            JOIN observations o ON o.id = source.observation_id
+            WHERE v.lane = ?
+              AND o.deleted_at IS NULL
+              AND (v.embedding_hash IS NULL OR v.embedding_hash != ?)) AS lineage_mismatches`
+      ).get(lane, lane, lane, lane, activeEmbeddingHash) as {
+        active: number;
+        failed: number;
+        expected: number;
+        vectors: number;
+        lineage_mismatches: number;
+      };
       const runtimeDegraded = this.semanticRuntime.degradedReason !== null;
       const missingVectors = state.vectors < state.expected;
-      const pending = state.active > 0 || (state.failed === 0 && missingVectors) ? 1 : 0;
+      const lineageMismatch = state.lineage_mismatches > 0;
+      const pending = state.active > 0 || (state.failed === 0 && (missingVectors || lineageMismatch)) ? 1 : 0;
       const degraded = runtimeDegraded || state.failed > 0 ? 1 : 0;
-      const stale = state.active > 0 || state.failed > 0 || missingVectors || runtimeDegraded ? 1 : 0;
+      const stale = state.active > 0 || state.failed > 0 || missingVectors || lineageMismatch || runtimeDegraded ? 1 : 0;
 
       this.db.prepare(
         `UPDATE semantic_index_state
@@ -1085,6 +1109,38 @@ export class Store {
     return readiness;
   }
 
+  private hasUncoveredSemanticLineageMismatch(hash: string): boolean {
+    return (this.db.prepare(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM semantic_vector_rowids v
+         JOIN semantic_chunks source ON v.lane = 'chunk' AND source.chunk_key = v.source_key
+         JOIN observations o ON o.id = source.observation_id
+         WHERE o.deleted_at IS NULL
+           AND (v.embedding_hash IS NULL OR v.embedding_hash != ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM semantic_jobs j
+             WHERE j.kind = 'chunk'
+               AND j.observation_id = source.observation_id
+               AND j.state IN ('pending','running')
+           )
+         UNION ALL
+         SELECT 1
+         FROM semantic_vector_rowids v
+         JOIN semantic_sentences source ON v.lane = 'sentence' AND source.sentence_key = v.source_key
+         JOIN observations o ON o.id = source.observation_id
+         WHERE o.deleted_at IS NULL
+           AND (v.embedding_hash IS NULL OR v.embedding_hash != ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM semantic_jobs j
+             WHERE j.kind = 'sentence'
+               AND j.observation_id = source.observation_id
+               AND j.state IN ('pending','running')
+           )
+       ) AS mismatch`
+    ).get(hash, hash) as { mismatch: number }).mismatch === 1;
+  }
+
   private enqueueRebuildOnConfigMismatch(): void {
     const hash = this.config.embedding?.configHash ?? null;
     if (!hash) {
@@ -1095,7 +1151,9 @@ export class Store {
       "SELECT lane, embedding_config_hash FROM semantic_index_state WHERE lane IN ('chunk','sentence')"
     ).all() as Array<{ lane: string; embedding_config_hash: string | null }>;
 
-    const mismatch = rows.some((row) => row.embedding_config_hash !== hash);
+    const metadataMismatch = rows.some((row) => row.embedding_config_hash !== hash);
+    const uncoveredVectorMismatch = this.hasUncoveredSemanticLineageMismatch(hash);
+    const mismatch = metadataMismatch || uncoveredVectorMismatch;
     if (!mismatch) {
       return;
     }

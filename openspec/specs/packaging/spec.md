@@ -15,7 +15,7 @@ The published thoth-mem package MUST contain complete, host-discoverable integra
 - GIVEN the published package or controlled marketplace fixture is available without the development checkout
 - WHEN a compatible Codex plugin manager resolves thoth-mem
 - THEN the expected marketplace, plugin manifest, hook, skill, runner, and MCP declaration MUST be discoverable under the exact thoth-mem identity
-- AND the Codex MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `thoth-mem` and args `["mcp", "--no-http"]`
+- AND the Codex MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `npx` and args `["--yes", "thoth-mem@<package-version>", "mcp", "--no-http"]`
 - AND thoth-mem setup MUST NOT need to copy that manager-installed content into the legacy direct-install target
 
 #### Scenario: Legacy Codex fallback assets are discoverable
@@ -28,12 +28,14 @@ The published thoth-mem package MUST contain complete, host-discoverable integra
 - GIVEN the repository or a packed repository fixture is registered as a Claude Code marketplace
 - WHEN `claude plugin install thoth-mem` resolves the plugin
 - THEN the marketplace and plugin manifests MUST identify a valid thoth-mem plugin
+- AND the Claude MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `npx` and args `["--yes", "thoth-mem@<package-version>", "mcp", "--no-http"]`
 - AND every declared hook, runner, skill, and adapter asset MUST be present at its declared packaged path
 
 #### Scenario: Modern and legacy identities cannot diverge
 - GIVEN the packed manager-facing descriptors and legacy fallback assets identify thoth-mem
 - WHEN package integrity verification compares their version and stable content identity
 - THEN the identities MUST be compatible with the packed package version
+- AND integration asset synchronization MUST update both MCP package pins to that exact version
 - AND verification MUST fail if the strategies would install conflicting plugin identities or runtime content
 
 ### Requirement: Hook Execution MUST Use Portable Node Runners

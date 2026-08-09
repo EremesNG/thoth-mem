@@ -1075,6 +1075,21 @@ describe('inspects and plans with zero writes', () => {
     expectZeroWrites(fileSystem, before);
   });
 
+  it('recognizes the exact version-pinned OpenCode MCP command as managed state', async () => {
+    const request = setupRequest('opencode');
+    const paths = resolveSetupPaths(request, ROOTS);
+    const fileSystem = new FakeSetupFileSystem();
+    seedManagedSetup(fileSystem, request, paths);
+
+    const result = await inspectAndPlanSetup(request, { roots: ROOTS, fileSystem });
+
+    expect(result).toMatchObject({ status: 'complete', changed: false });
+    expect(result.steps).toContainEqual({
+      name: `Merge managed OpenCode configuration: ${paths.configPath}`,
+      outcome: 'skipped',
+    });
+  });
+
   it('plans destructive OpenCode convergence, temporary recovery, cleanup, and restart with zero writes', async () => {
         const request = setupRequest('opencode');
         const paths = resolveSetupPaths(request, ROOTS);
@@ -1574,7 +1589,7 @@ describe('projects Codex execution evidence without losing phase semantics', () 
 
 const OPENCODE_MCP_VALUE = {
   type: 'local' as const,
-  command: ['thoth-mem', 'mcp', '--no-http'],
+  command: ['npx', '--yes', `thoth-mem@${getVersion()}`, 'mcp', '--no-http'],
   enabled: true,
 };
 
