@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "--yes",
-        "thoth-mem@0.4.10",
+        "thoth-mem@0.4.11",
         "mcp",
         "--no-http"
       ]
