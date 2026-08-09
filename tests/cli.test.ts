@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { Store } from '../src/store/index.js';
 import type { ExportData } from '../src/store/types.js';
 import type { SetupResult } from '../src/setup/types.js';
@@ -16,6 +17,31 @@ function createTempDir(): string {
 
 function ensureDir(path: string): void {
   mkdirSync(path, { recursive: true });
+}
+
+function semanticStateSnapshot(dbPath: string): string {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  db.pragma('query_only = ON');
+
+  try {
+    return JSON.stringify({
+      jobs: db.prepare(
+        `SELECT id, job_key, kind, state, priority, observation_id, source_key,
+                attempt_count, max_attempts, available_at, started_at, finished_at,
+                last_error, created_at, updated_at
+         FROM semantic_jobs
+         ORDER BY id`
+      ).all(),
+      lanes: db.prepare(
+        `SELECT lane, pending, degraded, stale, embedding_config_hash,
+                embedding_dimensions, last_ready_at, updated_at
+         FROM semantic_index_state
+         ORDER BY lane`
+      ).all(),
+    });
+  } finally {
+    db.close();
+  }
 }
 
 function seedStore(dataDir: string): void {
@@ -896,6 +922,26 @@ describe('runCli', () => {
   it('reports semantic rebuild-index status without queueing work', async () => {
     const dataDir = join(tempDir, 'status-data');
     seedStore(dataDir);
+    const dbPath = join(dataDir, 'thoth.db');
+    const store = new Store(dbPath);
+    try {
+      store.getDb().prepare(
+        `UPDATE semantic_jobs
+         SET state = 'running',
+             attempt_count = 1,
+             started_at = datetime('now', '-1 hour'),
+             updated_at = datetime('now', '-1 hour')
+         WHERE id = (
+           SELECT id FROM semantic_jobs
+           WHERE kind = 'chunk'
+           ORDER BY id
+           LIMIT 1
+         )`
+      ).run();
+    } finally {
+      store.close();
+    }
+    const before = semanticStateSnapshot(dbPath);
 
     const { stdout, stderr } = await captureCli([
       'rebuild-index',
@@ -910,6 +956,7 @@ describe('runCli', () => {
     expect(stdout).toContain('- **Queue by state/kind:**');
     expect(stdout).toContain('- **Chunk coverage:**');
     expect(stdout).not.toContain('## Semantic Index Rebuild');
+    expect(semanticStateSnapshot(dbPath)).toBe(before);
   });
 
   it('fails clearly when delete-project is missing or has an invalid project argument', async () => {

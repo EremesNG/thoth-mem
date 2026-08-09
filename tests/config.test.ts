@@ -960,6 +960,45 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(cpu?.configHash).toBe(dml?.configHash);
   });
 
+  it('embedding: materializes the supplied LM Studio configuration with stable lineage', () => {
+    delete process.env.THOTH_EMBEDDING_PROVIDER;
+    delete process.env.THOTH_EMBEDDING_MODEL;
+    delete process.env.THOTH_EMBEDDING_BASE_URL;
+    delete process.env.THOTH_EMBEDDING_DIMENSIONS;
+    delete process.env.THOTH_EMBEDDING_PROFILE;
+    delete process.env.THOTH_EMBEDDING_NORMALIZE;
+    delete process.env.THOTH_EMBEDDING_DEVICE;
+
+    const loadEmbedding = (device: 'auto' | 'cpu' | 'dml') => {
+      writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+        version: 1,
+        embedding: {
+          provider: 'lmstudio',
+          model: 'text-embedding-embeddinggemma-300m',
+          baseUrl: 'http://169.254.83.107:1234',
+          dimensions: 768,
+          profile: 'auto',
+          normalize: true,
+          device,
+        },
+      }, null, 2));
+      return getConfig().embedding;
+    };
+
+    const repeated = [loadEmbedding('auto'), loadEmbedding('auto'), loadEmbedding('auto')];
+    const deviceVariants = [loadEmbedding('cpu'), loadEmbedding('dml')];
+    const hashes = [...repeated, ...deviceVariants].map((embedding) => embedding?.configHash);
+
+    expect(new Set(hashes).size).toBe(1);
+    expect(repeated[0]).toMatchObject({
+      provider: 'lmstudio',
+      model: 'text-embedding-embeddinggemma-300m',
+      baseUrl: 'http://169.254.83.107:1234',
+      dimensions: 768,
+      normalize: true,
+    });
+  });
+
   it('embedding: config hash does not change when only HyDE generation config changes', () => {
     process.env.THOTH_EMBEDDING_PROVIDER = 'lmstudio';
     process.env.THOTH_EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
