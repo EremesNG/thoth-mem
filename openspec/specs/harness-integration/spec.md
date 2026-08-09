@@ -970,21 +970,21 @@ When root identity or project cannot be proven, the tool MUST return versioned d
 
 When Codex setup is requested with `--force`, it MUST allow plugin-manager strategy selection without requiring the detected Codex version to belong to the tested compatibility set, provided all existing selected-scope capability and manager-state requirements are satisfied.
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 1
+#### Scenario: Force a future untested Codex version through verified capabilities
 
-- **GIVEN** Codex `0.146.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
+- **GIVEN** Codex `0.148.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
 - **WHEN** setup runs with `--force`
 - **THEN** it bypasses the version gate, selects `plugin_manager`, and emits a bounded warning instead of returning `requires_user_action` solely because of the version
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 2
+#### Scenario: Force remains capability-gated for other untested versions
 
-- **GIVEN** Codex `0.147.x` exposes the same complete safe contract
+- **GIVEN** another untested Codex version exposes the same complete safe contract
 - **WHEN** setup runs with `--force`
 - **THEN** it follows the same forced plugin-manager path and warning contract
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 3
+#### Scenario: Forced future compatible state remains an exact no-op
 
-- **GIVEN** both marketplace and plugin state are already exactly present on either required newer minor
+- **GIVEN** both marketplace and plugin state are already exactly present on a forced untested version
 - **WHEN** setup runs with `--force`
 - **THEN** it returns `complete` with `changed=false` and no manual recovery action
 
@@ -992,43 +992,49 @@ When Codex setup is requested with `--force`, it MUST allow plugin-manager strat
 
 A forced version override that proves complete safe mutation and independent verification capabilities and classifiable manager state MUST select and retain `plugin_manager`, and MUST derive `complete`, `partial`, `failed`, or `requires_user_action` from the existing operation and ambiguity evidence rather than rejecting solely because of version classification.
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 1
+#### Scenario: Forced future version uses the modern flow
 
-- **GIVEN** Codex `0.146.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
+- **GIVEN** Codex `0.148.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
 - **WHEN** setup runs with `--force`
 - **THEN** it bypasses the version gate, selects `plugin_manager`, and emits a bounded warning instead of returning `requires_user_action` solely because of the version
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 2
+#### Scenario: Forced modern results remain evidence-derived
 
-- **GIVEN** Codex `0.147.x` exposes the same complete safe contract
+- **GIVEN** another untested Codex version exposes the same complete safe contract
 - **WHEN** setup runs with `--force`
 - **THEN** it follows the same forced plugin-manager path and warning contract
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 3
+#### Scenario: Forced modern compatible state remains unchanged
 
-- **GIVEN** both marketplace and plugin state are already exactly present on either required newer minor
+- **GIVEN** both marketplace and plugin state are already exactly present on a forced untested version
 - **WHEN** setup runs with `--force`
 - **THEN** it returns `complete` with `changed=false` and no manual recovery action
 
 ### Requirement: Preserve unforced setup behavior
 
-When `--force` is absent, Codex setup MUST retain the existing tested-version classification, ownership strategy selection, status, diagnostics, manual actions, and mutation boundaries.
+Codex setup MUST classify `0.144.x`, `0.146.x`, and `0.147.x` as tested versions. When `--force` is absent, setup MUST use the existing capability and manager-state evidence to select ownership and derive status, diagnostics, manual actions, and mutation boundaries; versions outside the tested set MUST retain the existing fail-closed version gate.
 
-#### Scenario: US2 - Keep the default version policy unchanged 1
+#### Scenario: Codex 0.146 and 0.147 use compatible manager state without force
 
-- **GIVEN** Codex `0.146.x` or `0.147.x` is outside the tested compatibility set
+- **GIVEN** Codex `0.146.x` or `0.147.x` exposes complete safe capabilities and compatible manager-owned state
 - **WHEN** setup runs without `--force`
-- **THEN** current version classification and strategy-selection behavior remains unchanged
+- **THEN** it selects `plugin_manager` and derives the normal evidence-based result without a forced-version warning
 
-#### Scenario: US2 - Keep the default version policy unchanged 2
+#### Scenario: Codex 0.146 and 0.147 use absent manager state without force
 
-- **GIVEN** an untested version has compatible manager-owned state
+- **GIVEN** Codex `0.146.x` or `0.147.x` exposes complete safe capabilities and safely absent manager state
 - **WHEN** setup runs without `--force`
-- **THEN** it still returns `requires_user_action` before mutation
+- **THEN** it selects the `plugin_manager` strategy rather than legacy filesystem setup
 
-#### Scenario: US2 - Keep the default version policy unchanged 3
+#### Scenario: Future compatible manager state remains blocked without force
 
-- **GIVEN** an untested version has safely absent manager state
+- **GIVEN** Codex `0.148.x` or another untested version has compatible manager-owned state
+- **WHEN** setup runs without `--force`
+- **THEN** it returns `requires_user_action` before mutation
+
+#### Scenario: Future absent manager state retains legacy behavior without force
+
+- **GIVEN** Codex `0.148.x` or another untested version has safely absent manager state
 - **WHEN** setup runs without `--force`
 - **THEN** the existing legacy strategy behavior remains unchanged
 

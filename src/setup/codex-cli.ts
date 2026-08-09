@@ -30,7 +30,7 @@ const SAFE_SPAWN_ERROR_CODES = new Set([
   'ENOTDIR',
   'EPERM',
 ]);
-const TESTED_CODEX_VERSION = { major: 0, minor: 144 } as const;
+const TESTED_CODEX_MINOR_VERSIONS = new Set(['0.144', '0.146', '0.147']);
 
 export interface CodexCommandResult {
   exitCode: number | null;
@@ -1153,8 +1153,7 @@ function classifyCodexVersion(output: string): CodexCliEvidence['version'] {
     return { value: null, classification: 'unknown' };
   }
   const value = `${match[1]}.${match[2]}.${match[3]}`;
-  const tested = Number(match[1]) === TESTED_CODEX_VERSION.major
-    && Number(match[2]) === TESTED_CODEX_VERSION.minor;
+  const tested = TESTED_CODEX_MINOR_VERSIONS.has(`${match[1]}.${match[2]}`);
   return { value, classification: tested ? 'tested' : 'untested' };
 }
 
