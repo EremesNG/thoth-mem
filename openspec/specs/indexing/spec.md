@@ -35,12 +35,32 @@ When active embedding hash differs from persisted semantic index hash, a rebuild
 - THEN rebuild MUST be enqueued idempotently
 
 ### Requirement: Jobs MUST Be Idempotent and Retryable
-Indexing/rebuild jobs MUST be restart-safe and converge without duplicate side effects.
 
-#### Scenario: Interrupted rebuild converges on retry
-- GIVEN a rebuild job is interrupted
-- WHEN processing resumes
-- THEN final semantic/KG index state MUST converge deterministically
+Indexing and rebuild jobs MUST remain restart-safe and converge without duplicate side effects: repeated store or MCP initialization with unchanged effective embedding configuration and valid terminal coverage, including normalized content that legitimately produces zero semantic units, MUST NOT enqueue, reactivate, or retry a rebuild; a genuine lineage mismatch or missing required nonblank coverage MUST request exactly one active rebuild across repeated or concurrent initialization.
+
+#### Scenario: US2 - Restart the MCP without another rebuild 1
+
+- **GIVEN** all active observations have reached a valid terminal semantic representation and the effective embedding configuration is unchanged
+- **WHEN** the store or MCP starts repeatedly
+- **THEN** no semantic rebuild is requested and ready lanes remain ready
+
+#### Scenario: US2 - Restart the MCP without another rebuild 2
+
+- **GIVEN** the same LM Studio embedding settings are materialized repeatedly, including `device: "auto"`
+- **WHEN** configuration lineage is compared
+- **THEN** the rebuild identity remains stable because execution-device selection is not index lineage
+
+#### Scenario: US3 - Preserve automatic repair for real mismatches 1
+
+- **GIVEN** a stored embedding lineage hash that differs from the current effective configuration
+- **WHEN** the MCP starts
+- **THEN** exactly one deduplicated semantic rebuild is requested
+
+#### Scenario: US3 - Preserve automatic repair for real mismatches 2
+
+- **GIVEN** an active observation that should produce semantic units but lacks valid coverage
+- **WHEN** the MCP starts
+- **THEN** exactly one deduplicated semantic rebuild is requested
 
 ### Requirement: Deterministic KG Facts MUST Be Written Synchronously on Save
 The indexing/extraction path MUST perform a SYNCHRONOUS, deterministic
