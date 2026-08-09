@@ -69,6 +69,7 @@ interface BuildModule {
 interface PackageManifest {
   name: string;
   version: string;
+  packageManager: string;
   files: string[];
   scripts: Record<string, string>;
 }
@@ -78,6 +79,8 @@ const verifierPath = join(repositoryRoot, 'scripts', 'verify-integration-package
 const syncPath = join(repositoryRoot, 'scripts', 'sync-integration-assets.mjs');
 const buildPath = join(repositoryRoot, 'scripts', 'build.mjs');
 const inventoryPath = join(repositoryRoot, 'integrations', 'inventory.json');
+const ciWorkflowPath = join(repositoryRoot, '.github', 'workflows', 'ci.yml');
+const releaseWorkflowPath = join(repositoryRoot, '.github', 'workflows', 'release.yml');
 
 async function importVerifier(): Promise<VerifierModule> {
   await expect(readFile(verifierPath, 'utf8')).resolves.toContain('verifyIntegrationPackage');
@@ -697,6 +700,22 @@ describe('package publication allowlist', () => {
 });
 
 describe('build release verification', () => {
+  it('derives the pnpm version from packageManager in CI and release workflows', async () => {
+    const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
+    expect(manifest.packageManager).toBe('pnpm@11.20.0');
+
+    for (const workflowPath of [ciWorkflowPath, releaseWorkflowPath]) {
+      const workflow = await readFile(workflowPath, 'utf8');
+      const setupPnpmStep = workflow.match(
+        /      - name: Setup pnpm\r?\n[\s\S]*?(?=\r?\n      - name:|$)/,
+      )?.[0];
+
+      expect(setupPnpmStep).toContain('uses: pnpm/action-setup@v4');
+      expect(setupPnpmStep).toContain('run_install: false');
+      expect(setupPnpmStep).not.toMatch(/^\s+version:/m);
+    }
+  });
+
   it('release commands synchronize, verify, and stage the published plugin assets', async () => {
     const manifest = await readJson<PackageManifest>(join(repositoryRoot, 'package.json'));
 

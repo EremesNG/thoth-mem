@@ -28,7 +28,7 @@ The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoin
 
 ## Verified baseline
 
-- Package manager: pnpm `11.1.3`; Node.js runtime floor: `>=18`.
+- Package manager: pnpm `11.20.0`, pinned by `package.json#packageManager`; Node.js runtime floor: `>=18`.
 - Stack: strict TypeScript, Node16 ESM, Vitest, SQLite via `better-sqlite3`, zod; dashboard uses React and Vite.
 - Common scripts from `package.json`: `pnpm install`, `pnpm run dev`, `pnpm run build`, `pnpm test`, `pnpm run test:watch`, and `pnpm run prepublishOnly`.
 - There is no root lint script. Do not invent or claim `pnpm run lint`; use only checks verified in manifests or CI.

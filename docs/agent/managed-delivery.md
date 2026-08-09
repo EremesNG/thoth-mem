@@ -27,7 +27,7 @@ Owns bounded harness setup planning/mutation/verification, managed configuration
 
 ## Tests and verification
 
-Start in `tests/setup/`, `tests/packaging/`, and their fixtures. Delivery changes commonly require focused suites, `pnpm run integration:verify`, build, and full tests; follow [testing](testing.md). Release workflow evidence uses Node `22.13`, pnpm `11.1.3`, dashboard typecheck, build, tests, retrieval eval, release-note generation, npm publish, and GitHub release creation—do not execute release steps during ordinary verification.
+Start in `tests/setup/`, `tests/packaging/`, and their fixtures. Delivery changes commonly require focused suites, `pnpm run integration:verify`, build, and full tests; follow [testing](testing.md). CI and release derive pnpm `11.20.0` from `package.json#packageManager`; release workflow evidence also uses Node `22.13`, dashboard typecheck, build, tests, retrieval eval, release-note generation, npm publish, and GitHub release creation—do not execute release steps during ordinary verification.
 
 ## Escalate context
 
