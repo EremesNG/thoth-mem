@@ -2,7 +2,12 @@
   "mcpServers": {
     "thoth-mem": {
       "command": "npx",
-      "args": ["--yes", "thoth-mem@0.4.9", "mcp", "--no-http"]
+      "args": [
+        "--yes",
+        "thoth-mem@0.4.10",
+        "mcp",
+        "--no-http"
+      ]
     }
   }
 }
