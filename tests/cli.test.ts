@@ -290,7 +290,7 @@ describe('runCli', () => {
   });
 
   it('keeps forced Codex version warnings aligned in human and JSON output', async () => {
-    const warning = 'Codex 0.147.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.';
+    const warning = 'Codex 0.148.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.';
     const result: SetupResult = {
       status: 'complete',
       changed: false,

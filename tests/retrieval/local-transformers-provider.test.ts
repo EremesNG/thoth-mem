@@ -7,11 +7,13 @@ import {
   resolveLocalPipelineOptions,
 } from '../../src/retrieval/local-transformers-provider.js';
 import { resolveEmbeddingProfile } from '../../src/retrieval/embedding-profile.js';
+import type { EmbeddingDevice } from '../../src/config.js';
 import type { EmbeddingInput } from '../../src/retrieval/providers.js';
 
-function embeddingConfig(model: string, dimensions = 3) {
+function embeddingConfig(model: string, dimensions = 3, device: EmbeddingDevice = 'cpu') {
   return {
     provider: 'transformers_local' as const,
+    device,
     model,
     baseUrl: null,
     dimensions,
@@ -31,8 +33,14 @@ describe('local model selection', () => {
     expect(resolveLocalModelKind('onnx-community/embeddinggemma-300m-ONNX')).toBe('embeddinggemma');
     expect(resolveLocalModelKind('onnx-community/Qwen3-Embedding-0.6B-ONNX')).toBe('qwen3');
     expect(resolveLocalModelKind('nomic-ai/nomic-embed-text-v1.5')).toBe('pipeline');
-    expect(resolveLocalPipelineOptions('onnx-community/embeddinggemma-300m-ONNX')).toEqual({ dtype: 'q8' });
-    expect(resolveLocalPipelineOptions('onnx-community/Qwen3-Embedding-0.6B-ONNX')).toEqual({ dtype: 'q8' });
+    expect(resolveLocalPipelineOptions('onnx-community/embeddinggemma-300m-ONNX', 'dml')).toEqual({
+      dtype: 'q8',
+      device: 'dml',
+    });
+    expect(resolveLocalPipelineOptions('onnx-community/Qwen3-Embedding-0.6B-ONNX', 'cuda')).toEqual({
+      dtype: 'q8',
+      device: 'cuda',
+    });
   });
 });
 
@@ -83,7 +91,7 @@ describe('LocalTransformersEmbeddingProvider', () => {
     expect(createExecutor).toHaveBeenCalledWith(
       'onnx-community/embeddinggemma-300m-ONNX',
       'embeddinggemma',
-      { dtype: 'q8' },
+      { dtype: 'q8', device: 'cpu' },
     );
     expect(embed).toHaveBeenCalledWith([
       'task: search result | query: rotate credentials',
@@ -96,7 +104,7 @@ describe('LocalTransformersEmbeddingProvider', () => {
     const embed = vi.fn(async () => [[1, 0, 0], [0, 1, 0]]);
     const createExecutor = vi.fn(async () => ({ embed }));
     const provider = new LocalTransformersEmbeddingProvider(
-      embeddingConfig('onnx-community/Qwen3-Embedding-0.6B-ONNX'),
+      embeddingConfig('onnx-community/Qwen3-Embedding-0.6B-ONNX', 3, 'dml'),
       { createExecutor },
     );
 
@@ -108,11 +116,45 @@ describe('LocalTransformersEmbeddingProvider', () => {
     expect(createExecutor).toHaveBeenCalledWith(
       'onnx-community/Qwen3-Embedding-0.6B-ONNX',
       'qwen3',
-      { dtype: 'q8' },
+      { dtype: 'q8', device: 'dml' },
     );
     expect(embed).toHaveBeenCalledWith([
       'Instruct: Given a user query, retrieve relevant passages that answer the query\nQuery:rotate credentials',
       'rotation policy',
     ]);
+  });
+
+  it('forwards auto through the generic pipeline execution path', async () => {
+    const embed = vi.fn(async () => [[1, 0, 0]]);
+    const createExecutor = vi.fn(async () => ({ embed }));
+    const provider = new LocalTransformersEmbeddingProvider(
+      embeddingConfig('nomic-ai/nomic-embed-text-v1.5', 3, 'auto'),
+      { createExecutor },
+    );
+
+    await provider.embed([input('rotation policy', 'document')]);
+
+    expect(createExecutor).toHaveBeenCalledWith(
+      'nomic-ai/nomic-embed-text-v1.5',
+      'pipeline',
+      { dtype: 'q8', device: 'auto' },
+    );
+  });
+
+  it('surfaces explicit device initialization failures without retrying on CPU', async () => {
+    const initializationError = new Error('Unsupported device: "cuda".');
+    const createExecutor = vi.fn(async () => Promise.reject(initializationError));
+    const provider = new LocalTransformersEmbeddingProvider(
+      embeddingConfig('onnx-community/embeddinggemma-300m-ONNX', 3, 'cuda'),
+      { createExecutor },
+    );
+
+    await expect(provider.embed([input('rotation policy', 'document')])).rejects.toBe(initializationError);
+    expect(createExecutor).toHaveBeenCalledOnce();
+    expect(createExecutor).toHaveBeenCalledWith(
+      'onnx-community/embeddinggemma-300m-ONNX',
+      'embeddinggemma',
+      { dtype: 'q8', device: 'cuda' },
+    );
   });
 });

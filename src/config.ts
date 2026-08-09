@@ -21,6 +21,7 @@ export interface RetrievalDefaults {
 
 export type LocalModelProvider = 'ollama' | 'lmstudio' | 'transformers_local';
 export type EmbeddingProvider = LocalModelProvider;
+export type EmbeddingDevice = 'auto' | 'cpu' | 'dml' | 'cuda' | 'coreml';
 export type HydeProvider = LocalModelProvider;
 export type KgLlmProvider = LocalModelProvider;
 export type GraphFactsSource = 'legacy' | 'kg';
@@ -122,6 +123,7 @@ export interface CommunitySummariesConfig {
 
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
+  device: EmbeddingDevice;
   model: string;
   baseUrl: string | null;
   dimensions: number | null;
@@ -468,6 +470,24 @@ function parseEmbeddingProfile(value: string | null | undefined): EmbeddingProfi
   return null;
 }
 
+function parseEmbeddingDevice(value: string | null | undefined): EmbeddingDevice | null {
+  if (value === null || value === undefined) return null;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === 'auto'
+    || normalized === 'cpu'
+    || normalized === 'dml'
+    || normalized === 'cuda'
+    || normalized === 'coreml'
+  ) {
+    return normalized;
+  }
+
+  throw new Error(
+    `Invalid embedding device "${value}". Expected one of: auto, cpu, dml, cuda, coreml.`,
+  );
+}
+
 function parseKgLlmProvider(value: string | null | undefined, fallback: KgLlmProvider): KgLlmProvider {
   const normalized = value?.trim();
   if (normalized === 'ollama' || normalized === 'lmstudio' || normalized === 'transformers_local') {
@@ -572,6 +592,7 @@ function defaultPersistedConfig(): PersistedConfig {
     retrievalDefaults: { ...DEFAULT_RETRIEVAL_DEFAULTS },
     embedding: {
       provider: 'transformers_local',
+      device: 'cpu',
       model: DEFAULT_LOCAL_EMBEDDING_MODEL,
       baseUrl: null,
       dimensions: 768,
@@ -1094,6 +1115,7 @@ export function resolveCommunitySummariesConfig(persisted: PersistedConfig): Com
 function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   const persistedEmbedding = persisted.embedding ?? {};
   const provider = parseProvider(process.env.THOTH_EMBEDDING_PROVIDER ?? persistedEmbedding.provider, 'transformers_local');
+  const device = parseEmbeddingDevice(process.env.THOTH_EMBEDDING_DEVICE ?? persistedEmbedding.device) ?? 'cpu';
 
   const modelFromEnv = process.env.THOTH_EMBEDDING_MODEL;
   const model = modelFromEnv
@@ -1141,6 +1163,7 @@ function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
 
   return {
     provider,
+    device,
     model,
     baseUrl,
     dimensions,

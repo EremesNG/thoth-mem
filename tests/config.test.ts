@@ -628,6 +628,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(config.embedding.provider).toBe('transformers_local');
     expect(config.embedding.model).toBe('onnx-community/embeddinggemma-300m-ONNX');
     expect(config.embedding.dimensions).toBe(768);
+    expect(config.embedding.device).toBe('cpu');
     expect(config.embedding.profile).toBe('auto');
     expect(config.embedding.resolvedProfile).toMatchObject({ id: 'embeddinggemma', version: 1 });
     expect(config.embedding.normalize).toBe(true);
@@ -666,6 +667,39 @@ describe('embedding config (hybrid retrieval baseline)', () => {
       resolvedProfile: { id: 'qwen3', version: 1, inferred: false },
       normalize: true,
     });
+  });
+
+  it.each(['auto', 'cpu', 'dml', 'cuda', 'coreml'] as const)(
+    'embedding: accepts %s as a local execution device',
+    (device) => {
+      process.env.THOTH_EMBEDDING_DEVICE = `  ${device.toUpperCase()}  `;
+
+      expect(getConfig().embedding?.device).toBe(device);
+    },
+  );
+
+  it('embedding: environment device overrides the persisted selection', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+      embedding: { device: 'dml' },
+    }));
+    process.env.THOTH_EMBEDDING_DEVICE = 'cuda';
+
+    expect(getConfig().embedding?.device).toBe('cuda');
+  });
+
+  it.each([
+    ['environment', () => { process.env.THOTH_EMBEDDING_DEVICE = 'vulkan'; }],
+    ['persisted config', () => {
+      writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({
+        embedding: { device: 'vulkan' },
+      }));
+    }],
+  ])('embedding: rejects an unknown device from %s', (_source, arrange) => {
+    arrange();
+
+    expect(() => getConfig()).toThrow(
+      'Invalid embedding device "vulkan". Expected one of: auto, cpu, dml, cuda, coreml.',
+    );
   });
 
   it('hyde: defaults to enabled local Transformers text generation', () => {
@@ -742,6 +776,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(saved.version).toBe(1);
     expect(saved.embedding).toEqual({
       provider: 'transformers_local',
+      device: 'cpu',
       model: 'onnx-community/embeddinggemma-300m-ONNX',
       baseUrl: null,
       dimensions: 768,
@@ -764,6 +799,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
         embedding: {
           properties: {
             provider: { enum: ['transformers_local', 'ollama', 'lmstudio'] },
+            device: { enum: ['auto', 'cpu', 'dml', 'cuda', 'coreml'], default: 'cpu' },
             profile: { enum: ['auto', 'nomic', 'embeddinggemma', 'qwen3', 'raw'] },
             normalize: { type: 'boolean', default: true },
           },
@@ -842,6 +878,7 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(config.embedding.provider).toBe('lmstudio');
     expect(saved.embedding).toEqual({
       provider: 'lmstudio',
+      device: 'cpu',
       model: 'text-embedding-nomic-embed-text-v1.5@q8_0',
       baseUrl: 'http://169.254.83.107:1234',
       dimensions: 768,
@@ -911,6 +948,16 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(automatic?.configHash).toBe(explicitEquivalent?.configHash);
     expect(automatic?.configHash).not.toBe(raw?.configHash);
     expect(automatic?.configHash).not.toBe(unnormalized?.configHash);
+  });
+
+  it('embedding: config hash does not change when only the execution device changes', () => {
+    process.env.THOTH_EMBEDDING_DEVICE = 'cpu';
+    const cpu = getConfig().embedding;
+
+    process.env.THOTH_EMBEDDING_DEVICE = 'dml';
+    const dml = getConfig().embedding;
+
+    expect(cpu?.configHash).toBe(dml?.configHash);
   });
 
   it('embedding: config hash does not change when only HyDE generation config changes', () => {

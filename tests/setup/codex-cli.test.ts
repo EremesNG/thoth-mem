@@ -601,31 +601,9 @@ describe('Codex CLI setup capability orchestration', () => {
   });
 
   it.each(['0.146.3', '0.147.0'])(
-    'forces Codex %s through verified plugin-manager capabilities with a warning',
-    async (version) => {
-      const executor = new ControlledCodexExecutor({
-        versionOutput: `codex-cli ${version}`,
-        marketplaceListJson: true,
-        pluginListJson: true,
-      });
-
-      const plan = await inspectCodexCli({ executor, scope: 'global', force: true });
-
-      expect(strategyOf(plan)).toBe('plugin_manager');
-      expect(plan.status).toBe('ready');
-      expect(plan.diagnostics).toEqual([
-        `Codex ${version} is outside thoth-mem's tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.`,
-      ]);
-      expect(executor.mutatingCalls).toEqual([]);
-    },
-  );
-
-  it.each(['0.146.3', '0.147.0'])(
-    'completes forced compatible Codex %s setup without a legacy backup diagnostic',
+    'completes compatible tested Codex %s setup without force',
     async (version) => {
       await withCodexFixture(async (fixture) => {
-        await mkdir(dirname(fixture.paths.configPath), { recursive: true });
-        await writeFile(fixture.paths.configPath, 'model = "gpt-5"\n', 'utf8');
         const executor = new ControlledCodexExecutor({
           versionOutput: `codex-cli ${version}`,
           marketplaceInstalled: true,
@@ -634,32 +612,78 @@ describe('Codex CLI setup capability orchestration', () => {
           pluginListJson: true,
         });
 
-        const result = await runSetup(fixture, executor, {
-          ...fixture.request,
-          force: true,
-        });
+        const result = await runSetup(fixture, executor, fixture.request);
 
         expect(result).toMatchObject({
           status: 'complete',
           changed: false,
-          receipt: null,
+          diagnostics: [],
           manual_actions: [],
+          receipt: null,
         });
         expect(result.steps).toContainEqual({
           name: 'Inspect Codex manager state (global)',
           outcome: 'confirmed',
         });
-        expect(result.diagnostics).toEqual([
-          `Codex ${version} is outside thoth-mem's tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.`,
-        ]);
         expect(executor.mutatingCalls).toEqual([]);
       });
     },
   );
 
+  it('forces future Codex 0.148.0 through verified plugin-manager capabilities with a warning', async () => {
+    const executor = new ControlledCodexExecutor({
+      versionOutput: 'codex-cli 0.148.0',
+      marketplaceListJson: true,
+      pluginListJson: true,
+    });
+
+    const plan = await inspectCodexCli({ executor, scope: 'global', force: true });
+
+    expect(strategyOf(plan)).toBe('plugin_manager');
+    expect(plan.status).toBe('ready');
+    expect(plan.diagnostics).toEqual([
+      'Codex 0.148.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
+    ]);
+    expect(executor.mutatingCalls).toEqual([]);
+  });
+
+  it('completes forced compatible future Codex 0.148.0 setup without a legacy backup diagnostic', async () => {
+    await withCodexFixture(async (fixture) => {
+      await mkdir(dirname(fixture.paths.configPath), { recursive: true });
+      await writeFile(fixture.paths.configPath, 'model = "gpt-5"\n', 'utf8');
+      const executor = new ControlledCodexExecutor({
+        versionOutput: 'codex-cli 0.148.0',
+        marketplaceInstalled: true,
+        pluginInstalled: true,
+        marketplaceListJson: true,
+        pluginListJson: true,
+      });
+
+      const result = await runSetup(fixture, executor, {
+        ...fixture.request,
+        force: true,
+      });
+
+      expect(result).toMatchObject({
+        status: 'complete',
+        changed: false,
+        receipt: null,
+        manual_actions: [],
+      });
+      expect(result.steps).toContainEqual({
+        name: 'Inspect Codex manager state (global)',
+        outcome: 'confirmed',
+      });
+      expect(result.diagnostics).toEqual([
+        'Codex 0.148.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
+      ]);
+      expect(executor.mutatingCalls).toEqual([]);
+    });
+  });
+
   it('preserves the forced-version warning through manager mutation execution', async () => {
     const executor = new ControlledCodexExecutor({
-      versionOutput: 'codex-cli 0.147.0',
+      versionOutput: 'codex-cli 0.148.0',
       marketplaceListJson: true,
       pluginListJson: true,
     });
@@ -673,7 +697,7 @@ describe('Codex CLI setup capability orchestration', () => {
 
     expect(result.status).toBe('complete');
     expect(result.diagnostics).toEqual([
-      'Codex 0.147.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
+      'Codex 0.148.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
     ]);
   });
 
@@ -693,7 +717,7 @@ describe('Codex CLI setup capability orchestration', () => {
       expect(legacy).toMatchObject({ status: 'complete', changed: true });
 
       const managerExecutor = new ControlledCodexExecutor({
-        versionOutput: 'codex-cli 0.147.0',
+        versionOutput: 'codex-cli 0.148.0',
         marketplaceInstalled: true,
         pluginInstalled: true,
         marketplaceListJson: true,
@@ -711,7 +735,7 @@ describe('Codex CLI setup capability orchestration', () => {
 
       expect(migrated).toMatchObject({ status: 'complete', changed: true });
       expect(forcedWarnings).toEqual([
-        'Codex 0.147.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
+        'Codex 0.148.0 is outside thoth-mem\'s tested compatibility set; --force is proceeding with independently verified plugin-manager capabilities.',
       ]);
     });
   });
@@ -726,12 +750,8 @@ describe('Codex CLI setup capability orchestration', () => {
       options: { versionOutput: 'codex-cli 0.145.0' },
     },
     {
-      name: 'Codex 0.146 without force',
-      options: { versionOutput: 'codex-cli 0.146.3' },
-    },
-    {
-      name: 'Codex 0.147 without force',
-      options: { versionOutput: 'codex-cli 0.147.0' },
+      name: 'future Codex 0.148 without force',
+      options: { versionOutput: 'codex-cli 0.148.0' },
     },
     {
       name: 'unknown version output with otherwise complete capabilities',
@@ -800,25 +820,22 @@ describe('Codex CLI setup capability orchestration', () => {
     expect(executor.mutatingCalls).toEqual([]);
   });
 
-  it.each(['0.146.3', '0.147.0'])(
-    'keeps compatible Codex %s manager state blocked without force',
-    async (version) => {
-      const executor = new ControlledCodexExecutor({
-        versionOutput: `codex-cli ${version}`,
-        marketplaceInstalled: true,
-        pluginInstalled: true,
-        marketplaceListJson: true,
-        pluginListJson: true,
-      });
+  it('keeps compatible future Codex 0.148.0 manager state blocked without force', async () => {
+    const executor = new ControlledCodexExecutor({
+      versionOutput: 'codex-cli 0.148.0',
+      marketplaceInstalled: true,
+      pluginInstalled: true,
+      marketplaceListJson: true,
+      pluginListJson: true,
+    });
 
-      const plan = await inspectCodexCli({ executor, scope: 'global' });
+    const plan = await inspectCodexCli({ executor, scope: 'global' });
 
-      expect(strategyOf(plan)).toBeNull();
-      expect(plan.status).toBe('requires_user_action');
-      expect(plan.diagnostics).toEqual([]);
-      expect(executor.mutatingCalls).toEqual([]);
-    },
-  );
+    expect(strategyOf(plan)).toBeNull();
+    expect(plan.status).toBe('requires_user_action');
+    expect(plan.diagnostics).toEqual([]);
+    expect(executor.mutatingCalls).toEqual([]);
+  });
 
   it('retains the backup diagnostic for a planned legacy existing-config mutation', async () => {
     await withCodexFixture(async (fixture) => {

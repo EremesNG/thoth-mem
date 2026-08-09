@@ -782,23 +782,23 @@ Plan mode MUST report deterministic convergence, recovery, cleanup, and restart 
 
 Human and JSON setup results that use the forced version override to select `plugin_manager` MUST include exactly one bounded diagnostic naming the detected Codex version when available and stating that the version gate was overridden in favor of verified plugin-manager capabilities, without changing the evidence-derived status or adding a manual action solely for the warning.
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 1
+#### Scenario: Future untested Codex version emits the forced-version warning
 
-- **GIVEN** Codex `0.146.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
+- **GIVEN** Codex `0.148.x` advertises complete safe plugin-manager mutation and verification commands and exact manager state is classifiable
 - **WHEN** setup runs with `--force`
 - **THEN** it bypasses the version gate, selects `plugin_manager`, and emits a bounded warning instead of returning `requires_user_action` solely because of the version
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 2
+#### Scenario: Tested Codex versions do not emit a forced-version warning
 
-- **GIVEN** Codex `0.147.x` exposes the same complete safe contract
+- **GIVEN** Codex `0.146.x` or `0.147.x` exposes the complete safe contract
 - **WHEN** setup runs with `--force`
-- **THEN** it follows the same forced plugin-manager path and warning contract
+- **THEN** it follows the normal tested plugin-manager path without a forced-version warning
 
-#### Scenario: US1 - Force verified plugin-manager setup on newer Codex versions 3
+#### Scenario: Forced future compatible state preserves the warning on an exact no-op
 
-- **GIVEN** both marketplace and plugin state are already exactly present on either required newer minor
+- **GIVEN** both marketplace and plugin state are already exactly present on a forced untested version
 - **WHEN** setup runs with `--force`
-- **THEN** it returns `complete` with `changed=false` and no manual recovery action
+- **THEN** it returns `complete` with `changed=false`, one forced-version warning, and no manual recovery action
 
 ### Requirement: Report only applicable mutation requirements
 
@@ -824,7 +824,7 @@ Forced Codex setup MUST report manager-state inspection according to classified 
 
 ### Requirement: Verify override behavior in isolated controlled execution
 
-Automated Codex setup verification MUST cover forced and unforced `0.146.x` and `0.147.x` through injected controlled executors, including compatible state, absent state, incomplete capability, and unsafe-state cases, without reading or mutating a real Codex home.
+Automated Codex setup verification MUST cover unforced tested `0.146.x` and `0.147.x` plus forced and unforced future `0.148.x` behavior through injected controlled executors, including compatible state, absent state, incomplete capability, and unsafe-state cases, without reading or mutating a real Codex home.
 
 #### Scenario: US3 - Preserve every non-version safety gate 1
 

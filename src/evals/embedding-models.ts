@@ -266,6 +266,7 @@ async function runSingleModel(
   const profile = resolveEmbeddingProfile(options.models[key], key);
   const config: EmbeddingConfig = {
     provider: options.provider,
+    device: 'cpu',
     model: options.models[key],
     baseUrl: options.provider === 'lmstudio' ? options.baseUrl : null,
     dimensions: expectedDimensions,

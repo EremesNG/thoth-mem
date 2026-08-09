@@ -856,3 +856,47 @@ EmbeddingGemma and Qwen3-Embedding-0.6B MUST be supported by the LM Studio OpenA
 - **GIVEN** a provider or vector validation error occurs during recall
 - **WHEN** hybrid retrieval continues
 - **THEN** semantic retrieval is explicitly marked degraded while lexical and KG lanes remain available; indexing propagates the same error to its existing retry path and the benchmark fails closed
+
+### Requirement: Local runtime forwarding
+
+The `transformers_local` provider MUST pass the materialized device unchanged to every Transformers.js model-loading path while preserving existing model-profile dtype behavior.
+
+#### Scenario: US1 - Select a local inference device 1
+
+- **GIVEN** a persisted `embedding.device` value
+- **WHEN** configuration is loaded without an environment override
+- **THEN** the selected supported value is materialized
+
+#### Scenario: US1 - Select a local inference device 2
+
+- **GIVEN** a persisted device and `THOTH_EMBEDDING_DEVICE`
+- **WHEN** configuration is loaded
+- **THEN** the environment value takes precedence
+
+#### Scenario: US1 - Select a local inference device 3
+
+- **GIVEN** a materialized `transformers_local` configuration
+- **WHEN** its executor is created
+- **THEN** the configured device is passed to Transformers.js without changing model-specific dtype selection
+
+### Requirement: Explicit selection integrity
+
+The system MUST NOT silently replace an explicitly selected device when Transformers.js reports that it is unsupported or cannot initialize it; `auto` MUST be delegated unchanged for provider fallback.
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 1
+
+- **GIVEN** a device value outside the public taxonomy
+- **WHEN** configuration is loaded
+- **THEN** loading fails with an actionable allowed-values error
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 2
+
+- **GIVEN** an explicit platform-specific device that Transformers.js cannot initialize
+- **WHEN** the local executor loads
+- **THEN** the initialization error is surfaced and thoth-mem does not silently switch to CPU
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 3
+
+- **GIVEN** `auto`
+- **WHEN** the local executor loads
+- **THEN** Transformers.js owns platform-specific provider ordering and fallback behavior
