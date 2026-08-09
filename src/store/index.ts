@@ -618,9 +618,18 @@ export function runSupersededPrune(
   };
 }
 
+export interface StoreOpenOptions {
+  mode?: 'read-write' | 'read-only';
+}
+
+function semanticTextPresence(content: unknown): number {
+  return typeof content === 'string' && content.trim().length > 0 ? 1 : 0;
+}
+
 export class Store {
   private db: Database.Database;
   public readonly config: ThothConfig;
+  private readonly openMode: 'read-write' | 'read-only';
   private semanticRuntime = {
     pending: true,
     degraded: false,
@@ -628,7 +637,12 @@ export class Store {
     degradedReason: null as string | null,
   };
 
-  constructor(dbPath: string, config?: Partial<ThothConfig>) {
+  constructor(
+    dbPath: string,
+    config?: Partial<ThothConfig>,
+    options: StoreOpenOptions = {},
+  ) {
+    this.openMode = options.mode ?? 'read-write';
     const maintenanceConfig = config?.maintenance;
     const readPathEnabled = maintenanceConfig?.readPath?.enabled
       ?? (maintenanceConfig?.enabled === false ? false : DEFAULT_MAINTENANCE_CONFIG.readPath.enabled);
@@ -683,7 +697,21 @@ export class Store {
         },
       },
     };
-    this.db = new Database(dbPath);
+    this.db = this.openMode === 'read-only'
+      ? new Database(dbPath, { readonly: true, fileMustExist: true })
+      : new Database(dbPath);
+    this.db.function(
+      'thoth_has_semantic_text',
+      { deterministic: true },
+      semanticTextPresence,
+    );
+
+    if (this.openMode === 'read-only') {
+      this.db.pragma('busy_timeout = 5000');
+      this.db.pragma('query_only = ON');
+      this.refreshSemanticRuntimeFromState();
+      return;
+    }
 
     for (const pragma of PRAGMAS) {
       this.db.exec(pragma);
@@ -717,12 +745,12 @@ export class Store {
     stale: boolean;
     degradedReason: string | null;
   } {
-    this.reconcileSemanticIndexState();
+    this.refreshSemanticStateForRead();
     return { ...this.semanticRuntime };
   }
 
   getSemanticIndexProgress(input: { project?: string } = {}): SemanticIndexProgress {
-    this.reconcileSemanticIndexState();
+    this.refreshSemanticStateForRead();
     const project = input.project?.trim();
     const jobWhere = project
       ? `WHERE j.observation_id IN (SELECT id FROM observations WHERE project = ? AND deleted_at IS NULL)`
@@ -1024,6 +1052,15 @@ export class Store {
     this.semanticRuntime.stale = rows.some((row) => row.stale === 1);
   }
 
+  private refreshSemanticStateForRead(): void {
+    if (this.openMode === 'read-only') {
+      this.refreshSemanticRuntimeFromState();
+      return;
+    }
+
+    this.reconcileSemanticIndexState();
+  }
+
   private reconcileSemanticIndexState(): void {
     if (!this.config.embedding) {
       this.refreshSemanticRuntimeFromState();
@@ -1169,7 +1206,10 @@ export class Store {
 
   private enqueueRebuildOnMissingSemanticCoverage(): void {
     const activeObservations = (this.db.prepare(
-      'SELECT COUNT(*) AS count FROM observations WHERE deleted_at IS NULL'
+      `SELECT COUNT(*) AS count
+       FROM observations
+       WHERE deleted_at IS NULL
+         AND thoth_has_semantic_text(content) = 1`
     ).get() as { count: number }).count;
     if (activeObservations === 0) {
       return;

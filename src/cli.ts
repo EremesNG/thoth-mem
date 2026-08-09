@@ -10,7 +10,7 @@ import { formatIdentityWarning } from './store/identity.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
 import { VERSION } from './version.js';
 import { createEmbeddingProvider } from './retrieval/provider-factory.js';
-import type { SemanticIndexProgress } from './store/index.js';
+import type { SemanticIndexProgress, StoreOpenOptions } from './store/index.js';
 import { getSetupExitCode } from './setup/types.js';
 import type { SetupRequest, SetupResult } from './setup/types.js';
 import { inspectAndPlanSetup } from './setup/engine.js';
@@ -451,19 +451,26 @@ function parseProjectOrAllScope(positionals: string[], globals: GlobalOptions, c
   };
 }
 
-function createStoreContext(dataDir?: string): StoreContext {
+function createStoreContext(
+  dataDir?: string,
+  options: StoreOpenOptions = {},
+): StoreContext {
   const config = getConfig({ dataDir });
 
   resolveDataDir(config);
 
   return {
-    store: new Store(config.dbPath, config),
+    store: new Store(config.dbPath, config, options),
     config,
   };
 }
 
-async function withStore<T>(dataDir: string | undefined, action: (context: StoreContext) => Promise<T> | T): Promise<T> {
-  const context = createStoreContext(dataDir);
+async function withStore<T>(
+  dataDir: string | undefined,
+  action: (context: StoreContext) => Promise<T> | T,
+  options: StoreOpenOptions = {},
+): Promise<T> {
+  const context = createStoreContext(dataDir, options);
 
   try {
     return await action(context);
@@ -1071,7 +1078,7 @@ async function handleRebuildIndex(positionals: string[], globals: GlobalOptions)
       '',
       formatSemanticProgress(progress, scopeLabel),
     ].join('\n'));
-  });
+  }, statusOnly ? { mode: 'read-only' } : undefined);
 }
 
 async function handleMaintainMemory(positionals: string[], globals: GlobalOptions): Promise<void> {

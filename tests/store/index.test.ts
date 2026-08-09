@@ -24,6 +24,13 @@ function createTestEmbeddingConfig(configHash: string): EmbeddingConfig {
   };
 }
 
+function activeSemanticRebuildCount(store: Store): number {
+  return (store.getDb().prepare(
+    `SELECT COUNT(*) AS count FROM semantic_jobs
+     WHERE kind = 'rebuild_semantic' AND state IN ('pending','running')`
+  ).get() as { count: number }).count;
+}
+
 function createLegacyObservationFactsTable(store: Store) {
   store.getDb().exec(`
     CREATE TABLE IF NOT EXISTS observation_facts (
@@ -131,6 +138,127 @@ describe('Store', () => {
     store2.close();
 
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('opens semantic status read-only with persisted state and rejects writes', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-read-only-status-'));
+    const dbPath = join(tmpDir, 'test.db');
+    const embedding = createTestEmbeddingConfig('read-only-lineage');
+    let writable: Store | undefined;
+    let readOnly: Store | undefined;
+
+    try {
+      writable = new Store(dbPath, { embedding });
+      writable.getDb().prepare(
+        `UPDATE semantic_index_state
+         SET pending = 0, degraded = 1, stale = 1
+         WHERE lane IN ('chunk','sentence')`
+      ).run();
+      writable.close();
+      writable = undefined;
+
+      readOnly = new Store(dbPath, { embedding }, { mode: 'read-only' });
+
+      expect(readOnly.getSemanticIndexState()).toMatchObject({
+        pending: false,
+        degraded: true,
+        stale: true,
+      });
+      expect(() => readOnly?.getDb().prepare(
+        "UPDATE semantic_index_state SET pending = 1 WHERE lane = 'chunk'"
+      ).run()).toThrow();
+    } finally {
+      readOnly?.close();
+      writable?.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps valid zero-unit semantic content complete across clean reopenings', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-zero-unit-'));
+    const dbPath = join(tmpDir, 'test.db');
+    const embedding = createTestEmbeddingConfig('zero-unit-lineage');
+    const provider = {
+      config: embedding,
+      embed: async (inputs: EmbeddingInput[]) => inputs.map(() => [0.1, 0.2, 0.3]),
+    };
+    let initial: Store | undefined;
+    let firstReopen: Store | undefined;
+    let secondReopen: Store | undefined;
+
+    try {
+      initial = new Store(dbPath, { embedding });
+      initial.startSession('zero-unit-session', 'zero-unit-project', '/workspace/zero-unit');
+      initial.saveObservation({
+        session_id: 'zero-unit-session',
+        title: 'Indexable observation',
+        content: 'This observation creates semantic chunks and sentences.',
+        project: 'zero-unit-project',
+      });
+      initial.saveObservation({
+        session_id: 'zero-unit-session',
+        title: 'Valid empty semantic observation',
+        content: '\t\r\n  ',
+        project: 'zero-unit-project',
+      });
+      await initial.processSemanticJobs({ limit: 50, embeddingProvider: provider });
+      expect(initial.getSemanticIndexState()).toMatchObject({ pending: false, stale: false });
+      initial.close();
+      initial = undefined;
+
+      firstReopen = new Store(dbPath, { embedding });
+      expect(activeSemanticRebuildCount(firstReopen)).toBe(0);
+      expect(firstReopen.getSemanticIndexState()).toMatchObject({ pending: false, stale: false });
+      firstReopen.close();
+      firstReopen = undefined;
+
+      secondReopen = new Store(dbPath, { embedding });
+      expect(activeSemanticRebuildCount(secondReopen)).toBe(0);
+      expect(secondReopen.getSemanticIndexState()).toMatchObject({ pending: false, stale: false });
+    } finally {
+      secondReopen?.close();
+      firstReopen?.close();
+      initial?.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still deduplicates a rebuild for genuinely missing nonblank semantic coverage', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'thoth-missing-coverage-'));
+    const dbPath = join(tmpDir, 'test.db');
+    const embedding = createTestEmbeddingConfig('missing-coverage-lineage');
+    const provider = {
+      config: embedding,
+      embed: async (inputs: EmbeddingInput[]) => inputs.map(() => [0.1, 0.2, 0.3]),
+    };
+    let initial: Store | undefined;
+    let firstReopen: Store | undefined;
+    let secondReopen: Store | undefined;
+
+    try {
+      initial = new Store(dbPath, { embedding });
+      const saved = initial.saveObservation({
+        title: 'Coverage must remain repairable',
+        content: 'Nonblank semantic content must never be treated as a terminal zero-unit result.',
+        project: 'missing-coverage-project',
+      });
+      await initial.processSemanticJobs({ limit: 50, embeddingProvider: provider });
+      initial.getDb().prepare('DELETE FROM semantic_sentences WHERE observation_id = ?').run(saved.observation.id);
+      initial.getDb().prepare('DELETE FROM semantic_chunks WHERE observation_id = ?').run(saved.observation.id);
+      initial.close();
+      initial = undefined;
+
+      firstReopen = new Store(dbPath, { embedding });
+      secondReopen = new Store(dbPath, { embedding });
+
+      expect(activeSemanticRebuildCount(secondReopen)).toBe(1);
+      expect(secondReopen.getSemanticIndexState()).toMatchObject({ pending: true, stale: true });
+    } finally {
+      secondReopen?.close();
+      firstReopen?.close();
+      initial?.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('enqueues one rebuild when a persistent store opens under a different embedding lineage', () => {

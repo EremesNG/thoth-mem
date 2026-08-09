@@ -68,12 +68,26 @@ If sqlite-vec cannot load, vec tables are unavailable, semantic index is stale/r
 - THEN the tool surface MUST be able to indicate pending semantic coverage rather than implying fresh vector recall
 
 ### Requirement: Manual Rebuild Surface MUST Remain CLI-Controlled
-The system MUST provide manual `thoth-mem rebuild-index` control for semantic/KG reindexing through CLI, not through the compact MCP tool surface.
 
-#### Scenario: Operator invokes rebuild-index
-- GIVEN an operator requests rebuild
-- WHEN the CLI rebuild command runs
-- THEN rebuild MUST be initiated with observable status
+The system MUST keep manual `thoth-mem rebuild-index` control for semantic/KG reindexing on the CLI rather than the compact MCP tool surface, and `rebuild-index --status` MUST report persisted semantic progress without running startup recovery, reconciliation, coverage repair, or any other database mutation.
+
+#### Scenario: US1 - Inspect rebuild status without mutation 1
+
+- **GIVEN** a completed semantic index with unchanged effective embedding configuration
+- **WHEN** the operator runs `rebuild-index --status`
+- **THEN** progress is reported without inserting, reactivating, retrying, or updating semantic jobs or semantic index state
+
+#### Scenario: US1 - Inspect rebuild status without mutation 2
+
+- **GIVEN** semantic work already pending or failed
+- **WHEN** the operator runs `rebuild-index --status`
+- **THEN** the existing state is reported without recovery or queue mutation
+
+#### Scenario: US1 - Inspect rebuild status without mutation 3
+
+- **GIVEN** an operator explicitly requests a semantic rebuild
+- **WHEN** the CLI rebuild command runs without `--status`
+- **THEN** the rebuild is initiated with observable status and remains outside the compact MCP tool surface
 
 ### Requirement: Context And Summary Responses MUST Be Bounded By A Configurable Character Budget
 `mem_context` and `mem_project` with `action=summary` MUST bound their rendered
@@ -459,6 +473,7 @@ CLI and HTTP sync operations MUST return explicit failure responses when sync ar
 # Delta for Tools
 
 ## ADDED Requirements
+
 ### Requirement: MCP Session and Save Tools MUST Preserve Explicit Identity
 The existing `mem_session` and `mem_save` tools MUST preserve caller-provided `session_id` and `project` values when persisting sessions, prompts, session summaries, or observations. The tools MUST NOT replace explicit identity with compatibility placeholders such as `manual-save-*` or `unknown` when a non-empty caller-provided value is available.
 
@@ -625,6 +640,7 @@ When `navigation="community"` is requested, `mem_project action="graph"` MUST re
 # Delta for Tools
 
 ## ADDED Requirements
+
 ### Requirement: mem_project action=health MUST Report Community Summary Health State
 `mem_project` with `action="health"` MUST expose the current community-summary health state for the requested project, when community-summary configuration or artifacts exist. The state MUST be one of `fresh`, `stale`, `rebuilding`, `failed`, `degraded`, `missing`, or `disabled`. The output MUST include bounded coverage, graph signature or freshness basis, latest community job status, and degraded/failure reason when present.
 
