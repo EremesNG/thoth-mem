@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 function createTestEmbeddingConfig(configHash: string): EmbeddingConfig {
   return {
     provider: 'transformers_local',
+    device: 'cpu',
     model: 'test-embedding-model',
     baseUrl: null,
     dimensions: 3,
@@ -1027,6 +1028,7 @@ describe('Store', () => {
     it('hybrid retrieval: keeps lexical and KG available when semantic embedding fails', async () => {
       const embedding = {
         provider: 'transformers_local',
+        device: 'cpu',
         model: 'custom/test-embedding',
         baseUrl: null,
         dimensions: 384,
@@ -1632,6 +1634,7 @@ describe('Store', () => {
     it('semantic indexing: passes observation titles as ephemeral document metadata', async () => {
       const embedding = {
         provider: 'transformers_local',
+        device: 'cpu',
         model: 'custom/test-embedding',
         baseUrl: null,
         dimensions: 384,

@@ -818,3 +818,113 @@ During implementation, the shipped `transformers_local` product constant MUST ch
 - **GIVEN** a live benchmark finishes
 - **WHEN** its human-readable report is rendered
 - **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits
+
+### Requirement: Public device taxonomy
+
+The system MUST expose an embedding execution-device value restricted to `auto`, `cpu`, `dml`, `cuda`, and `coreml` in TypeScript and the public JSON schema.
+
+#### Scenario: US1 - Select a local inference device 1
+
+- **GIVEN** a persisted `embedding.device` value
+- **WHEN** configuration is loaded without an environment override
+- **THEN** the selected supported value is materialized
+
+#### Scenario: US1 - Select a local inference device 2
+
+- **GIVEN** a persisted device and `THOTH_EMBEDDING_DEVICE`
+- **WHEN** configuration is loaded
+- **THEN** the environment value takes precedence
+
+#### Scenario: US1 - Select a local inference device 3
+
+- **GIVEN** a materialized `transformers_local` configuration
+- **WHEN** its executor is created
+- **THEN** the configured device is passed to Transformers.js without changing model-specific dtype selection
+
+### Requirement: Configuration precedence
+
+The system MUST resolve `THOTH_EMBEDDING_DEVICE` before persisted `embedding.device` and validate either source against the public taxonomy.
+
+#### Scenario: US1 - Select a local inference device 1
+
+- **GIVEN** a persisted `embedding.device` value
+- **WHEN** configuration is loaded without an environment override
+- **THEN** the selected supported value is materialized
+
+#### Scenario: US1 - Select a local inference device 2
+
+- **GIVEN** a persisted device and `THOTH_EMBEDDING_DEVICE`
+- **WHEN** configuration is loaded
+- **THEN** the environment value takes precedence
+
+#### Scenario: US1 - Select a local inference device 3
+
+- **GIVEN** a materialized `transformers_local` configuration
+- **WHEN** its executor is created
+- **THEN** the configured device is passed to Transformers.js without changing model-specific dtype selection
+
+### Requirement: CPU default
+
+The system MUST materialize `cpu` when neither the environment nor persisted configuration selects a device.
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 1
+
+- **GIVEN** no persisted or environment device selection
+- **WHEN** configuration is loaded
+- **THEN** `cpu` is materialized
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 2
+
+- **GIVEN** two otherwise identical local embedding configurations that differ only by device
+- **WHEN** their semantic configuration hashes are calculated
+- **THEN** the hashes are equal
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 3
+
+- **GIVEN** an existing persisted configuration without `device`
+- **WHEN** it is loaded and saved
+- **THEN** it remains valid and records the materialized CPU default
+
+### Requirement: Execution-only lineage
+
+The system MUST exclude the execution device from semantic embedding lineage so that changing only the device neither changes `configHash` nor marks vectors stale.
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 1
+
+- **GIVEN** no persisted or environment device selection
+- **WHEN** configuration is loaded
+- **THEN** `cpu` is materialized
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 2
+
+- **GIVEN** two otherwise identical local embedding configurations that differ only by device
+- **WHEN** their semantic configuration hashes are calculated
+- **THEN** the hashes are equal
+
+#### Scenario: US2 - Preserve compatible defaults and index lineage 3
+
+- **GIVEN** an existing persisted configuration without `device`
+- **WHEN** it is loaded and saved
+- **THEN** it remains valid and records the materialized CPU default
+
+### Requirement: Operator documentation
+
+The public configuration documentation MUST describe the accepted values, CPU default, environment override, platform expectations, `auto` semantics, cold-start tradeoff, and no-rebuild behavior.
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 1
+
+- **GIVEN** a device value outside the public taxonomy
+- **WHEN** configuration is loaded
+- **THEN** loading fails with an actionable allowed-values error
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 2
+
+- **GIVEN** an explicit platform-specific device that Transformers.js cannot initialize
+- **WHEN** the local executor loads
+- **THEN** the initialization error is surfaced and thoth-mem does not silently switch to CPU
+
+#### Scenario: US3 - Receive actionable unsupported-device failures 3
+
+- **GIVEN** `auto`
+- **WHEN** the local executor loads
+- **THEN** Transformers.js owns platform-specific provider ordering and fallback behavior

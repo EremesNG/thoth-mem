@@ -6,6 +6,7 @@ import type { EmbeddingInput } from '../../src/retrieval/providers.js';
 function embeddingConfig(model = 'nomic-ai/nomic-embed-text-v1.5') {
   return {
     provider: 'lmstudio' as const,
+    device: 'cpu' as const,
     model,
     baseUrl: 'http://127.0.0.1:1234',
     dimensions: 3,

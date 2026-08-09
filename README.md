@@ -274,6 +274,25 @@ Semantic embedding inputs are formatted by a versioned model profile. `auto` rec
 
 Supported profile values are `auto`, `nomic`, `embeddinggemma`, `qwen3`, and `raw`. `THOTH_EMBEDDING_PROFILE` and `THOTH_EMBEDDING_NORMALIZE` override persisted values. The resolved profile version and normalization flag are part of semantic index lineage, so changing them marks prior vectors stale and uses the existing idempotent rebuild queue.
 
+Local Transformers.js inference can opt into a specific ONNX execution device:
+
+```json
+{
+  "embedding": {
+    "provider": "transformers_local",
+    "model": "onnx-community/embeddinggemma-300m-ONNX",
+    "device": "dml",
+    "dimensions": 768,
+    "profile": "auto",
+    "normalize": true
+  }
+}
+```
+
+Supported device values are `auto`, `cpu`, `dml`, `cuda`, and `coreml`; `cpu` is the default. `THOTH_EMBEDDING_DEVICE` overrides the persisted `embedding.device` value. With the prebuilt Node ONNX Runtime used by Transformers.js, `dml` targets DirectML on Windows, `cuda` targets supported Linux x64 CUDA installations, and `coreml` targets macOS. An explicit unavailable device fails model initialization instead of silently switching to CPU. `auto` delegates platform-specific provider ordering and fallback to Transformers.js, so its effective backend can change across hosts or dependency versions.
+
+Device selection only affects `transformers_local`; remote Ollama and LM Studio requests ignore it. GPU backends can have a substantially slower cold start, so they are most useful for persistent MCP processes or larger embedding batches. The device is deliberately excluded from semantic index lineage: changing only `embedding.device` does not mark existing vectors stale or enqueue a rebuild.
+
 Provider model examples:
 
 | Profile | LM Studio model ID | Transformers.js model ID | Native dimensions |

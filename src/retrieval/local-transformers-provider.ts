@@ -1,4 +1,4 @@
-import type { EmbeddingConfig } from '../config.js';
+import type { EmbeddingConfig, EmbeddingDevice } from '../config.js';
 import { formatEmbeddingInputForProfile, resolveEmbeddingProfile } from './embedding-profile.js';
 import type { EmbeddingInput, EmbeddingProviderAdapter } from './providers.js';
 import { processEmbeddingVectors } from './vector-processing.js';
@@ -43,11 +43,11 @@ export function resolveLocalModelKind(model: string): LocalEmbeddingModelKind {
   return profileId === 'embeddinggemma' || profileId === 'qwen3' ? profileId : 'pipeline';
 }
 
-export function resolveLocalPipelineOptions(model: string): PipelineOptions {
+export function resolveLocalPipelineOptions(model: string, device: EmbeddingDevice): PipelineOptions {
   if (resolveEmbeddingProfile(model).id !== 'raw') {
-    return { dtype: 'q8' };
+    return { dtype: 'q8', device };
   }
-  return {};
+  return { device };
 }
 
 function isTensorLike(value: unknown): value is TensorLike {
@@ -189,7 +189,7 @@ export class LocalTransformersEmbeddingProvider implements EmbeddingProviderAdap
       this.executorPromise = this.runtime.createExecutor(
         this.config.model,
         resolveLocalModelKind(this.config.model),
-        resolveLocalPipelineOptions(this.config.model),
+        resolveLocalPipelineOptions(this.config.model, this.config.device),
       );
     }
     return this.executorPromise;
