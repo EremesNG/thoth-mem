@@ -24,8 +24,8 @@ describe('observatory deep-link state', () => {
       const states: Array<{url:string;nodes:number}> = [{url:await browser.url(),nodes:await graphCount()}];
       await browser.clickText('.graph-navigator li > button:first-child','Project: browser-nebula');
       await browser.waitFor(`location.search.includes('focus=project')`); states.push({url:await browser.url(),nodes:await graphCount()});
-      await browser.waitFor(`document.querySelectorAll('.memory-lens .lens-connections button').length > 0`);
-      await browser.click('.memory-lens .lens-connections button');
+      await browser.waitFor(`document.querySelectorAll('.memory-overview .lens-connections button').length > 0`);
+      await browser.click('.memory-overview .lens-connections button');
       await browser.waitFor(`new URLSearchParams(location.search).get('focus')?.startsWith('obs:')`); states.push({url:await browser.url(),nodes:await graphCount()});
       await browser.back(); states.push({url:await browser.url(),nodes:await graphCount()});
       await browser.back(); states.push({url:await browser.url(),nodes:await graphCount()});
@@ -49,7 +49,7 @@ describe('observatory deep-link state', () => {
         expect(await contextLabel()).toBe(label);
         expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-focus-id')).toBe(focusId);
         expect(await browser.text('.graph-navigator li.active > button:first-child')).toContain(label);
-        expect(await browser.text('.memory-lens h2')).toBe(label);
+        expect(await browser.text('.memory-overview h2')).toBe(label);
       };
 
       await browser.goto('/?project=browser-nebula');
@@ -66,8 +66,8 @@ describe('observatory deep-link state', () => {
       await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(previousFocus)} && document.querySelector('.focus-trail')?.textContent?.includes('2 / 2')`);
       const nextFocus = await urlFocus();
       const nextLabel = await contextLabel();
-      await browser.click('button[title="Activate Memory Lens (Enter)"]');
-      await browser.waitFor(`document.querySelector('.memory-lens h2')?.textContent === ${JSON.stringify(nextLabel)}`);
+      await browser.click('button[title="Open memory overview (Enter)"]');
+      await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent === ${JSON.stringify(nextLabel)}`);
 
       await browser.clickText('.focus-trail button', 'Back');
       await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(previousFocus)}`);
@@ -108,6 +108,7 @@ describe('observatory deep-link state', () => {
   it('normalizes dependent choices before graph loading and rejects stale metadata races', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.goto('/?project=browser-nebula&session_id=missing-session&topic_key=missing-topic');
+      await browser.click('button[aria-controls="atlas-scope-panel"]');
       await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]') && !new URLSearchParams(location.search).has('session_id') && !new URLSearchParams(location.search).has('topic_key')`);
       expect(browser.requests.filter(({ url }) => url.includes('/viz/slice')).every(({ url }) => !url.includes('missing-session') && !url.includes('missing-topic'))).toBe(true);
 

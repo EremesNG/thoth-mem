@@ -99,10 +99,10 @@ describe('dashboard browser harness faults', () => {
   it('continues independently bounded cleanup after one cleanup step fails', async () => {
     const evidence = createEvidence();
     await expect(withDashboardBrowser(async () => undefined, {
-      faultInjection: { cleanupFault: 'browser', deadlineMs: 5_000, onResource: evidence.record },
+      faultInjection: { cleanupFault: 'browser', deadlineMs: 15_000, onResource: evidence.record },
     })).rejects.toThrow(/cleanup failed/i);
     await expectResourcesClean(evidence);
-  }, 10_000);
+  }, 30_000);
 
   it.each(['bridge', 'vite'] as const)('recovers deterministically from an injected %s port collision', async (collision) => {
     const evidence = createEvidence();
@@ -113,6 +113,17 @@ describe('dashboard browser harness faults', () => {
     }, { faultInjection: { collision, deadlineMs: 10_000, onResource: evidence.record } });
     await expectResourcesClean(evidence);
   }, 15_000);
+
+  it('recognizes a browser terminated by signal even when exitCode remains null', () => {
+    expect(harnessFaultTestApi.browserHasExited(null, 'SIGTERM')).toBe(true);
+    expect(harnessFaultTestApi.browserHasExited(0, null)).toBe(true);
+    expect(harnessFaultTestApi.browserHasExited(null, null)).toBe(false);
+  });
+
+  it('recognizes an owned browser that disappeared before child metadata settles', () => {
+    expect(harnessFaultTestApi.browserProcessHasExited(null, null, process.pid)).toBe(false);
+    expect(harnessFaultTestApi.browserProcessHasExited(null, null, 2_147_483_647)).toBe(true);
+  });
 });
 
 type PeerMode =

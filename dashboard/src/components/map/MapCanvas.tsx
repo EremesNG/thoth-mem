@@ -4,6 +4,7 @@ import type { VizDensityState, VizEdge, VizNode, VizSemanticState } from '../../
 import { buildCosmosGraphData, cosmosMotionConfig } from './cosmos-graph-data.js';
 import {
   CosmosGraphRuntime,
+  type CosmosMotionProbe,
   type CosmosNodeOverlay,
   type CosmosRuntimeSnapshot,
 } from './cosmos-graph-runtime.js';
@@ -34,6 +35,9 @@ const initialRuntimeSnapshot: CosmosRuntimeSnapshot = {
   paused: false,
   reducedMotion: false,
   error: null,
+  worldWidth: 0,
+  worldHeight: 0,
+  worldAspect: 1,
 };
 
 function graphStatusMessage(snapshot: CosmosRuntimeSnapshot): string {
@@ -73,9 +77,11 @@ export default function MapCanvas({
   });
   const [hover, setHover] = useState<{ label: string; x: number; y: number } | null>(null);
   const [nodeOverlays, setNodeOverlays] = useState<CosmosNodeOverlay[]>([]);
+  const [motionProbe, setMotionProbe] = useState<CosmosMotionProbe | null>(null);
   const [reducedMotion, setReducedMotion] = useState(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
+  const reducedMotionRef = useRef(reducedMotion);
   const focusId = selection?.kind === 'node' ? selection.id : null;
   const graphData = useMemo(
     () => buildCosmosGraphData(nodes, edges, focusId),
@@ -86,10 +92,23 @@ export default function MapCanvas({
     () => [...new Set(graphData.pointColors)].slice(0, 5),
     [graphData.pointColors],
   );
+  const pointSizeSummary = useMemo(() => {
+    const sorted = [...graphData.pointSizes].sort((left, right) => left - right);
+    return {
+      minimum: sorted[0] ?? 0,
+      median: sorted[Math.floor(sorted.length / 2)] ?? 0,
+      maximum: sorted[sorted.length - 1] ?? 0,
+    };
+  }, [graphData.pointSizes]);
+  const linkWidthSummary = useMemo(() => ({
+    minimum: graphData.linkWidths.length ? Math.min(...graphData.linkWidths) : 0,
+    maximum: graphData.linkWidths.length ? Math.max(...graphData.linkWidths) : 0,
+  }), [graphData.linkWidths]);
   graphDataRef.current = graphData;
   onSelectRef.current = onSelect;
   onPausedChangeRef.current = onPausedChange;
   pausedRef.current = paused;
+  reducedMotionRef.current = reducedMotion;
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -107,6 +126,7 @@ export default function MapCanvas({
     setSnapshot({ ...initialRuntimeSnapshot, paused, reducedMotion });
     setHover(null);
     setNodeOverlays([]);
+    setMotionProbe(null);
 
     CosmosGraphRuntime.create(
       host,
@@ -115,6 +135,9 @@ export default function MapCanvas({
         onHover: setHover,
         onNodeOverlays: (nextOverlays) => {
           if (!cancelled && generation === lifecycleGenerationRef.current) setNodeOverlays(nextOverlays);
+        },
+        onMotionProbe: (nextProbe) => {
+          if (!cancelled && generation === lifecycleGenerationRef.current) setMotionProbe(nextProbe);
         },
         onSnapshot: (nextSnapshot) => {
           if (!cancelled && generation === lifecycleGenerationRef.current) setSnapshot(nextSnapshot);
@@ -132,6 +155,9 @@ export default function MapCanvas({
           return;
         }
         runtimeRef.current = runtime;
+        const currentReducedMotion = reducedMotionRef.current;
+        runtime.setReducedMotion(currentReducedMotion, cosmosMotionConfig(currentReducedMotion));
+        runtime.setPaused(pausedRef.current);
         const currentData = graphDataRef.current;
         runtime.setData(currentData);
         runtime.focus(
@@ -201,6 +227,15 @@ export default function MapCanvas({
       data-paused={String(snapshot.paused)}
       data-reduced-motion={String(reducedMotion)}
       data-transition-duration={cosmosMotionConfig(reducedMotion).transitionDuration}
+      data-world-width={snapshot.worldWidth}
+      data-world-height={snapshot.worldHeight}
+      data-world-aspect={snapshot.worldAspect}
+      data-point-min={pointSizeSummary.minimum}
+      data-point-median={pointSizeSummary.median}
+      data-point-max={pointSizeSummary.maximum}
+      data-link-min={linkWidthSummary.minimum}
+      data-link-max={linkWidthSummary.maximum}
+      data-motion-probe={motionProbe ? JSON.stringify(motionProbe) : undefined}
       data-density={state}
       data-semantic-state={semanticState}
       data-truncated={String(truncated)}

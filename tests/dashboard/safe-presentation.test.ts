@@ -28,14 +28,16 @@ describe('safe presentation boundary', () => {
         { includes: '/observatory/map/frontier', method: 'POST', status: 200, delayMs: 2_000, body: { nodes: [], edges: [], frontier_state: { added_node_ids: [], already_visible_node_ids: ['obs:1'], exhausted: true, continuation: null, reason: 'no-neighbors' }, health } },
       ]);
       await browser.goto('/');
+      await browser.click('button[aria-controls="atlas-scope-panel"]');
       await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]') && document.querySelectorAll('.graph-navigator li').length === 1`);
       await browser.click('[role="combobox"][aria-label="Project"]');
       expect(await browser.text('.guided-select-popover')).toContain('Visible project');
       await browser.key('Escape');
+      await browser.click('button[aria-label="Close filters"]');
       await browser.clickText('.graph-navigator li > button:first-child', 'Visible memory');
-      await browser.waitFor(`document.querySelector('.memory-lens h2')?.textContent?.includes('Visible memory') && document.querySelector('.memory-lens details.technical-disclosure')`);
-      await browser.waitFor(`document.querySelector('.active-focus-summary') && document.querySelector('.observatory-map-inspector')`);
-      await browser.click('.memory-lens details.technical-disclosure summary');
+      await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent?.includes('Visible memory') && document.querySelector('.memory-overview details.technical-disclosure')`);
+      await browser.waitFor(`document.querySelector('.active-focus-summary') && document.querySelector('.memory-overview')`);
+      await browser.click('.memory-overview details.technical-disclosure summary');
       const html = await browser.evaluate<string>('document.documentElement.outerHTML');
       for (const secret of ['OPTION_SECRET', 'RELATION_SECRET', 'NODE_SECRET', 'SNIPPET_SECRET', 'PROJECT_SECRET', 'TOPIC_SECRET', 'LENS_TITLE_SECRET', 'LENS_SECRET', 'METADATA_SECRET']) expect(html).not.toContain(secret);
     }, { observations: 3 });

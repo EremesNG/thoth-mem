@@ -14,12 +14,14 @@
 .command-rail footer small { grid-column: 2; color: var(--starlight-muted); }
 .health-beacon { width: 6px; height: 6px; border-radius: 50%; background: var(--healthy-signal); box-shadow: 0 0 10px var(--healthy-signal); }
 .app-main { min-width: 0; }
+.app-main.atlas-route { height: 100dvh; overflow: hidden; }
 .mobile-nav-trigger,.rail-close,.drawer-backdrop { display: none; }
 .route-missing { min-height: 80vh; display: grid; place-content: center; gap: 16px; padding: 24px; }
 .route-missing span { color: var(--degraded-coral); font: .75rem var(--font-mono); text-transform: uppercase; }
 .route-missing a { color: var(--ion-focus); }
 @media (max-width: 720px) {
   .app-shell { display: block; padding-top: 52px; }
+  .app-main.atlas-route { height: calc(100dvh - 52px); }
   .mobile-nav-trigger { display: flex; position: fixed; inset: 0 0 auto 0; z-index: 18; height: 52px; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--line); background: rgba(7,10,13,.97); padding: 0 16px; }
   .mobile-nav-trigger svg { width: 18px; }
   .command-rail { position: fixed; inset: 0 auto 0 0; width: min(320px, 86vw); transform: translateX(-102%); transition: transform 180ms cubic-bezier(.2,0,0,1); }

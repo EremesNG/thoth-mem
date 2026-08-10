@@ -1,5 +1,9 @@
 import type { VizEdge, VizNode } from '../../api/client.js';
 import { presentStoredText } from '../safe-presentation.js';
+import {
+  buildNeuralAtlasLayout,
+  type NeuralAtlasWorldExtent,
+} from './neural-atlas-layout.js';
 
 const COMMUNITY_PALETTE = [
   '#36c8ff',
@@ -29,6 +33,9 @@ export interface CosmosGraphData {
   pointPositions: number[];
   pointDegrees: number[];
   pointCommunities: number[];
+  clusterCenters: number[];
+  clusterStrengths: number[];
+  worldExtent: NeuralAtlasWorldExtent;
   pointColors: string[];
   pointSizes: number[];
   pointShapes: number[];
@@ -81,9 +88,23 @@ export function buildCosmosGraphData(
   for (const edge of visibleEdges) {
     const sourceIndex = pointIndexById.get(edge.source_id)!;
     links.push(sourceIndex, pointIndexById.get(edge.target_id)!);
-    linkWidths.push(edge.kind === 'semantic' ? 1.7 : edge.kind === 'fact' ? 1.25 : 0.72);
-    linkColors.push(mixWithVoid(pointColors[sourceIndex], edge.kind === 'metadata' ? 0.62 : 0.38));
+    linkWidths.push(edge.kind === 'semantic' ? 1.15 : edge.kind === 'fact' ? 1 : 0.8);
+    linkColors.push(mixWithVoid(pointColors[sourceIndex], edge.kind === 'metadata' ? 0.44 : 0.18));
   }
+
+  const world = buildNeuralAtlasLayout(
+    nodes.map((node, index) => ({
+      id: node.id,
+      seedX: node.seed_x,
+      seedY: node.seed_y,
+      community: pointCommunities[index],
+      degree: pointDegrees[index],
+    })),
+    visibleEdges.map((edge): [number, number] => [
+      pointIndexById.get(edge.source_id)!,
+      pointIndexById.get(edge.target_id)!,
+    ]),
+  );
 
   const focusPointIndex = focusId ? pointIndexById.get(focusId) : undefined;
   let focus: CosmosFocusNeighborhood | null = null;
@@ -112,9 +133,12 @@ export function buildCosmosGraphData(
     pointIds: nodes.map((node) => node.id),
     pointLabels: nodes.map((node) => presentStoredText(node.label)),
     pointKinds: nodes.map((node) => node.kind),
-    pointPositions: nodes.flatMap((node) => [node.seed_x, node.seed_y]),
+    pointPositions: world.positions,
     pointDegrees,
     pointCommunities,
+    clusterCenters: world.clusterCenters,
+    clusterStrengths: world.clusterStrengths,
+    worldExtent: world.extent,
     pointColors,
     pointSizes: pointDegrees.map(neuronSizeForDegree),
     pointShapes: nodes.map(() => 0),
@@ -128,7 +152,7 @@ export function buildCosmosGraphData(
 }
 
 function neuronSizeForDegree(degree: number): number {
-  return 9 + Math.min(25, Math.sqrt(degree) * 6.5);
+  return 3 + Math.min(5, Math.log2(Math.max(0, degree) + 1) * 1.35);
 }
 
 function detectCommunities(

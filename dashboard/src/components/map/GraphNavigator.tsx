@@ -15,7 +15,13 @@ export default function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onE
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const visibleIds = connectedNodeIds(focusNodeId, nodes, edges);
   return (
-    <section className="graph-navigator" aria-labelledby="graph-navigator-heading">
+    <section
+      className="graph-navigator"
+      aria-labelledby="graph-navigator-heading"
+      data-semantic-graph="true"
+      data-visible-count={visibleIds.length}
+      data-focus-id={focusNodeId ?? ''}
+    >
       <header><h3 id="graph-navigator-heading">Nearby memories</h3><span>{visibleIds.length} in this trail</span></header>
       <p className="sr-only">Choose a visible memory or one of its neighbors. Each row lets you focus it or reveal more connections.</p>
       <ul>

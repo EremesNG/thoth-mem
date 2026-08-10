@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Compass, RotateCcw, Search, SlidersHorizontal } from 'lucide-react';
+import { Compass, RotateCcw, Search } from 'lucide-react';
 
 import { api } from '../../api/client.js';
 import type {
@@ -27,20 +27,15 @@ import {
 } from './context-store.js';
 import MemoryMapSurface from './MemoryMapSurface.js';
 import { frontierToMapData, nodeIdToObservationId, scopeToMapParams } from './observatory-utils.js';
-import MemoryLens from './MemoryLens.js';
 import InstrumentDock from './InstrumentDock.js';
 import { mergeVizSlices } from '../map/map-state.js';
 import { connectedNodeIds, graphCommandForKey, type GraphCommand, type GraphViewportCommand } from '../map/map-navigation.js';
 import { presentStoredText } from '../safe-presentation.js';
-import ObservatoryScopeBar, { normalizeScopeForFilters } from './ObservatoryScopeBar.js';
-
-const surfaces: Array<{ id: ObservatorySurface; label: string }> = [
-  { id: 'map', label: 'Explore' },
-  { id: 'recall', label: 'Find related' },
-  { id: 'timeline', label: 'Follow the story' },
-  { id: 'ledger', label: 'See what changed' },
-  { id: 'health', label: 'Check readiness' },
-];
+import { normalizeScopeForFilters } from './ObservatoryScopeBar.js';
+import NeuralAtlasWorkspace from './NeuralAtlasWorkspace.js';
+import AtlasDock from './AtlasDock.js';
+import AtlasScopePanel from './AtlasScopePanel.js';
+import MemoryOverview from './MemoryOverview.js';
 
 interface FocusCommitOptions {
   activeSurface?: ObservatorySurface;
@@ -83,8 +78,7 @@ export default function ObservatoryWorkspace() {
   const [filterReloadKey, setFilterReloadKey] = useState(0);
   const [graphCommand, setGraphCommand] = useState<{ id: number; type: GraphViewportCommand } | null>(null);
   const [paused, setPaused] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const [lensOpen, setLensOpen] = useState(false);
-  const focusTargetRef = useRef<HTMLDivElement | null>(null);
+  const [lensOpen, setLensOpen] = useState(() => initialStateFromLocation().activeSurface !== 'map');
   const sliceRequestRef = useRef(0);
   const frontierRequestRef = useRef(0);
   const frontierControllerRef = useRef<AbortController | null>(null);
@@ -147,14 +141,11 @@ export default function ObservatoryWorkspace() {
       restoringHistoryRef.current = restoredStateKey;
       setState((current) => ({ ...current, ...parsed, scope: parsed.scope, visibleNodeIds: [], focusTrail: parsed.focusNodeId ? [parsed.focusNodeId] : [], focusTrailIndex: parsed.focusNodeId ? 0 : -1 }));
       setEdgeSelection(null);
+      setLensOpen(parsed.activeSurface !== 'map');
     };
     window.addEventListener('popstate', restore);
     return () => window.removeEventListener('popstate', restore);
   }, []);
-
-  useEffect(() => {
-    focusTargetRef.current?.focus();
-  }, [state.activeSurface, state.focusNodeId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -428,7 +419,9 @@ export default function ObservatoryWorkspace() {
       const nextNodeId = ids[nextIndex];
       commitNodeFocus(nextNodeId, { appendTrail: true, lens: 'closed' });
     }
-    else if (command === 'select') { if (state.focusNodeId) setLensOpen(true); }
+    else if (command === 'select') {
+      if (state.focusNodeId) commitNodeFocus(state.focusNodeId, { activeSurface: 'map', lens: 'open' });
+    }
     else setGraphCommand({ id: Date.now(), type: command });
   }, [commitNodeFocus, expandNode, mapData, state.focusNodeId]);
 
@@ -445,11 +438,11 @@ export default function ObservatoryWorkspace() {
   }, [runGraphCommand]);
 
   return (
-    <section className="observatory-workspace" data-testid="observatory-workspace">
+    <NeuralAtlasWorkspace>
       <header className="observatory-header">
         <div>
-          <span className="observatory-kicker"><Compass size={15} /> Memory universe</span>
-          <h1>Explore your memory</h1>
+          <span className="observatory-kicker"><Compass size={15} /> Neural Atlas</span>
+          <h1>Memory universe</h1>
           <p>Follow connections between decisions, discoveries, sessions, and the ideas that shaped them.</p>
         </div>
         <div className="observatory-toolbar">
@@ -460,35 +453,18 @@ export default function ObservatoryWorkspace() {
           <button type="button" className="map-icon-button" onClick={() => { setState(createInitialObservatoryState()); setEdgeSelection(null); setLensOpen(false); }} title="Reset observatory">
             <RotateCcw size={15} />
           </button>
-          <button type="button" className="map-icon-button" onClick={() => setReloadKey((key) => key + 1)} title="Refresh observatory">
-            <SlidersHorizontal size={15} />
-          </button>
+          <AtlasScopePanel
+            scope={state.scope}
+            density={state.density}
+            filters={availableFilters}
+            loading={!filtersResolved}
+            error={filterError}
+            onScopeChange={patchScope}
+            onDensityChange={(density) => setState((current) => ({ ...current, density }))}
+            onRetry={() => setFilterReloadKey((key) => key + 1)}
+          />
         </div>
       </header>
-
-      <nav className="observatory-tabs" aria-label="Ways to explore memory">
-        {surfaces.map((surface) => (
-          <button
-            key={surface.id}
-            type="button"
-            className={state.activeSurface === surface.id ? 'active' : ''}
-            onClick={() => setState((current) => ({ ...current, activeSurface: surface.id }))}
-          >
-            {surface.label}
-          </button>
-        ))}
-      </nav>
-
-      <ObservatoryScopeBar
-        scope={state.scope}
-        density={state.density}
-        filters={availableFilters}
-        loading={!filtersResolved}
-        error={filterError}
-        onScopeChange={patchScope}
-        onDensityChange={(density) => setState((current) => ({ ...current, density }))}
-        onRetry={() => setFilterReloadKey((key) => key + 1)}
-      />
       {state.focusNodeId && (
         <div className="active-focus-summary">
           <span>Exploring</span>
@@ -536,9 +512,7 @@ export default function ObservatoryWorkspace() {
         <span>Memory sources <strong>{loading.context ? 'gathering' : context?.context_token ? 'ready' : 'using the visible map'}</strong></span>
       </div>
 
-      <div ref={focusTargetRef} tabIndex={-1} className="observatory-focus-target" aria-label={`Active ${state.activeSurface} surface`} />
-
-      <div className="observatory-grid" data-lens-open={String(lensOpen)}>
+      <div className="observatory-grid" data-dock-open={String(lensOpen)}>
         <MemoryMapSurface
           data={mapData}
           selection={selection}
@@ -547,20 +521,64 @@ export default function ObservatoryWorkspace() {
           loading={loading.map}
           error={error}
           onSelect={(nextSelection) => {
-            if (nextSelection?.kind === 'node') commitNodeFocus(nextSelection.id, { lens: 'open' });
+            if (nextSelection?.kind === 'node') commitNodeFocus(nextSelection.id, { activeSurface: 'map', lens: 'open' });
             else setEdgeSelection(nextSelection);
           }}
           onExpand={expandNode}
-          onPivot={pivotWithNode}
           onRefresh={() => setReloadKey((key) => key + 1)}
           command={graphCommand}
           onCommand={runGraphCommand}
           paused={paused}
           onPausedChange={setPaused}
         />
-        <InstrumentDock active={state.activeSurface} recall={recall} timeline={timeline} ledger={ledger} health={health} context={context} focusNodeId={state.focusNodeId} query={state.scope.query ?? ''} loading={loading} error={instrumentErrors[state.activeSurface]} onRetry={retryActiveInstrument} onQuery={(query) => patchScope({ query })} onRecallRefresh={() => state.contextToken && loadRecall(state.contextToken)} onLoadMore={() => state.contextToken && loadTimeline(state.contextToken, timeline?.continuation ?? null)} onPivotToken={pivotWithToken} onPivotNode={pivotWithNode} />
-        <MemoryLens nodeId={state.focusNodeId} node={mapData?.nodes.find((node) => node.id === state.focusNodeId) ?? null} connectedNodes={state.focusNodeId && mapData ? connectedNodeIds(state.focusNodeId, mapData.nodes, mapData.edges).filter((id) => id !== state.focusNodeId).map((id) => mapData.nodes.find((node) => node.id === id)).filter((node): node is NonNullable<typeof node> => Boolean(node)) : []} knownNodes={mapData?.nodes ?? []} project={state.scope.project} open={lensOpen} onClose={() => setLensOpen(false)} onExpand={expandNode} onPivot={pivotWithNode} onConnected={(nodeId) => pivotWithNode(nodeId, 'map')} />
+        <AtlasDock
+          active={state.activeSurface}
+          open={lensOpen}
+          onOpen={() => setLensOpen(true)}
+          onClose={() => setLensOpen(false)}
+          onActiveChange={(activeSurface) => {
+            setState((current) => ({ ...current, activeSurface }));
+            setLensOpen(true);
+          }}
+          overview={(
+            <MemoryOverview
+              nodeId={state.focusNodeId}
+              node={mapData?.nodes.find((node) => node.id === state.focusNodeId) ?? null}
+              connectedNodes={state.focusNodeId && mapData
+                ? connectedNodeIds(state.focusNodeId, mapData.nodes, mapData.edges)
+                    .filter((id) => id !== state.focusNodeId)
+                    .map((id) => mapData.nodes.find((node) => node.id === id))
+                    .filter((node): node is NonNullable<typeof node> => Boolean(node))
+                : []}
+              knownNodes={mapData?.nodes ?? []}
+              project={state.scope.project}
+              onExpand={expandNode}
+              onPivot={pivotWithNode}
+              onConnected={(nodeId) => pivotWithNode(nodeId, 'map')}
+            />
+          )}
+          instrument={(
+            <InstrumentDock
+              active={state.activeSurface}
+              recall={recall}
+              timeline={timeline}
+              ledger={ledger}
+              health={health}
+              context={context}
+              focusNodeId={state.focusNodeId}
+              query={state.scope.query ?? ''}
+              loading={loading}
+              error={instrumentErrors[state.activeSurface]}
+              onRetry={retryActiveInstrument}
+              onQuery={(query) => patchScope({ query })}
+              onRecallRefresh={() => state.contextToken && loadRecall(state.contextToken)}
+              onLoadMore={() => state.contextToken && loadTimeline(state.contextToken, timeline?.continuation ?? null)}
+              onPivotToken={pivotWithToken}
+              onPivotNode={pivotWithNode}
+            />
+          )}
+        />
       </div>
-    </section>
+    </NeuralAtlasWorkspace>
   );
 }

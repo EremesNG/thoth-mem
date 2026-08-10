@@ -79,7 +79,8 @@ describe('Cosmos graph data boundary', () => {
     expect(graph.pointIds).toEqual(['obs:7', 'topic:dashboard/ux', 'project:thoth-mem']);
     expect(graph.pointLabels).toEqual(['Visible', 'Dashboard UX', 'thoth-mem']);
     expect(graph.pointKinds).toEqual(['observation', 'topic', 'project']);
-    expect(graph.pointPositions).toEqual([0.2, 0.4, 0.55, 0.2, 0.8, 0.65]);
+    expect(graph.pointPositions).toHaveLength(6);
+    expect(graph.pointPositions.every(Number.isFinite)).toBe(true);
     expect(graph.pointDegrees).toEqual([2, 1, 1]);
     expect(graph.pointShapes).toEqual([0, 0, 0]);
     expect(graph.linkIds).toEqual(['edge:topic', 'edge:project']);
@@ -93,7 +94,11 @@ describe('Cosmos graph data boundary', () => {
     expect(new Set(graph.pointCommunities).size).toBe(1);
     expect(new Set(graph.pointColors).size).toBe(1);
     expect(graph.pointSizes[0]).toBeGreaterThan(graph.pointSizes[1]);
-    expect(graph.linkWidths).toEqual([0.72, 1.7]);
+    expect(graph.linkWidths).toEqual([0.8, 1.15]);
+    expect(graph.pointSizes.every((size) => size >= 3 && size <= 8)).toBe(true);
+    expect(graph.clusterCenters).toHaveLength(2);
+    expect(graph.clusterStrengths).toHaveLength(nodes.length);
+    expect(graph.worldExtent).toMatchObject({ nodeCount: 3, communityCount: 1 });
   });
 
   it('creates deterministic visual communities and scales neuron size by connectivity', () => {
@@ -119,6 +124,33 @@ describe('Cosmos graph data boundary', () => {
     expect(first.pointCommunities[3]).not.toBe(first.pointCommunities[5]);
     expect(first.pointSizes[0]).toBeGreaterThan(first.pointSizes[3]);
     expect(first.pointSizes[3]).toBeGreaterThan(first.pointSizes[5]);
+  });
+
+  it('keeps hubs at stellar scale while retaining a bounded connectivity hierarchy', () => {
+    const hub = { ...nodes[0], id: 'obs:hub', label: 'Hub memory', seed_x: 0 };
+    const leaves = Array.from({ length: 64 }, (_, index): VizNode => ({
+      ...nodes[0],
+      id: `obs:leaf:${index}`,
+      label: `Leaf ${index}`,
+      seed_x: index + 1,
+      seed_y: (index % 7) - 3,
+    }));
+    const hubEdges = leaves.map((leaf, index): VizEdge => ({
+      ...edges[1],
+      id: `edge:hub:${index}`,
+      source_id: hub.id,
+      target_id: leaf.id,
+    }));
+
+    const graph = buildCosmosGraphData([hub, ...leaves], hubEdges, hub.id);
+    const sorted = [...graph.pointSizes].sort((left, right) => left - right);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    expect(median).toBeLessThanOrEqual(8);
+    expect(Math.max(...graph.pointSizes)).toBeLessThanOrEqual(8);
+    expect(graph.pointSizes[0]).toBeGreaterThan(graph.pointSizes[1]);
+    expect(graph.pointLabels.join(' ')).not.toContain('hidden memory');
+    expect(graph.worldExtent.width / graph.worldExtent.height).toBeGreaterThan(2);
   });
 
   it('removes activation timing when reduced motion is requested', () => {

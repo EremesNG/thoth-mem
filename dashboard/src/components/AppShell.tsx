@@ -11,6 +11,7 @@ const navigation = [
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const { location } = useRouter();
+  const atlasRoute = location.pathname === '/' || location.pathname === '/console/graph';
   const [open, setOpen] = useState(false);
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 720px)').matches);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -40,6 +41,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <nav>{navigation.map(({ href, label, icon: Icon }, index) => <Link key={href} to={href} className={(href === '/' ? location.pathname === '/' || location.pathname === '/console/graph' : location.pathname === href) ? 'active' : ''}><span className="rail-index">0{index + 1}</span><Icon /><span>{label}</span></Link>)}</nav>
       <footer><span className="health-beacon" /> Your local memory <small>Stays on this machine</small></footer>
     </aside>
-    <main ref={mainRef} className="app-main">{children}</main>
+    <main ref={mainRef} className={`app-main ${atlasRoute ? 'atlas-route' : ''}`}>{children}</main>
   </div>;
 }

@@ -41,6 +41,7 @@ describe('dashboard dropdown consistency', () => {
   it('uses one searchable selector pattern across the observatory and Control Room', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.goto('/');
+      await browser.click('button[aria-controls="atlas-scope-panel"]');
       await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
 
       expect(await browser.count('.guided-scope-bar .guided-select')).toBe(6);

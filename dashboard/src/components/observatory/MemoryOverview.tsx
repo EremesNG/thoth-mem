@@ -1,19 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, BookOpen, GitBranch, Loader2, Orbit, RotateCcw, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, GitBranch, Loader2, Orbit, RotateCcw } from 'lucide-react';
 
 import { api, type VizInspectNodeResponse, type VizNode } from '../../api/client.js';
 import { presentMemorySummary, presentNodeKind, presentObservationType } from '../dashboard-presentation.js';
 import { presentStoredText } from '../safe-presentation.js';
 import { nodeIdToObservationId } from './observatory-utils.js';
 
-interface MemoryLensProps {
+interface MemoryOverviewProps {
   nodeId: string | null;
   node?: VizNode | null;
   connectedNodes?: VizNode[];
   knownNodes?: VizNode[];
   project?: string;
-  open: boolean;
-  onClose: () => void;
   onExpand: (nodeId: string) => void;
   onPivot: (nodeId: string, target: 'recall' | 'timeline' | 'ledger') => void;
   onConnected: (nodeId: string) => void;
@@ -23,14 +21,23 @@ function metadataValue(details: VizInspectNodeResponse | null, key: string): unk
   return details?.metadata[key];
 }
 
-export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNodes = [], project, open, onClose, onExpand, onPivot, onConnected }: MemoryLensProps) {
+export default function MemoryOverview({
+  nodeId,
+  node,
+  connectedNodes = [],
+  knownNodes = [],
+  project,
+  onExpand,
+  onPivot,
+  onConnected,
+}: MemoryOverviewProps) {
   const [details, setDetails] = useState<VizInspectNodeResponse | null>(null);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const requestRef = useRef(0);
 
   useEffect(() => {
-    if (!nodeId || !open || node?.kind !== 'observation' || nodeIdToObservationId(nodeId) === null) {
+    if (!nodeId || node?.kind !== 'observation' || nodeIdToObservationId(nodeId) === null) {
       setDetails(null);
       setError('');
       return;
@@ -40,19 +47,21 @@ export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNod
     setDetails(null);
     setError('');
     api.inspectVizNode(nodeId, { project }, controller.signal)
-      .then((value) => { if (requestId === requestRef.current) setDetails(value); })
+      .then((value) => {
+        if (requestId === requestRef.current) setDetails(value);
+      })
       .catch((cause: Error) => {
-        if (cause.name !== 'AbortError' && requestId === requestRef.current) setError(presentStoredText(cause.message, 280));
+        if (cause.name !== 'AbortError' && requestId === requestRef.current) {
+          setError(presentStoredText(cause.message, 280));
+        }
       });
     return () => {
       controller.abort();
       requestRef.current += 1;
     };
-  }, [node?.kind, nodeId, open, project, retry]);
+  }, [node?.kind, nodeId, project, retry]);
 
-  if (!open) return null;
-
-  const title = presentStoredText(details?.label ?? node?.label) || 'Selected memory';
+  const title = presentStoredText(details?.label ?? node?.label) || 'Choose a memory';
   const kind = details?.kind ?? node?.kind ?? 'observation';
   const summary = presentMemorySummary(details?.snippet ?? node?.snippet) || 'No public summary is available yet.';
   const connectionIds = details?.links.length ? details.links : connectedNodes.map(({ id }) => id);
@@ -60,18 +69,30 @@ export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNod
   const isObservation = kind === 'observation';
 
   return (
-    <aside className="memory-lens" role="dialog" aria-labelledby="memory-lens-heading">
+    <section className="memory-overview" aria-labelledby="memory-overview-heading">
       <header>
         <div>
-          <span className="lens-kicker"><Orbit size={14} /> Memory details</span>
-          <h2 id="memory-lens-heading">{title}</h2>
+          <span className="lens-kicker"><Orbit size={14} /> Memory overview</span>
+          <h2 id="memory-overview-heading">{title}</h2>
         </div>
-        <button type="button" className="icon-control" onClick={onClose} aria-label="Close memory details"><X size={17} /></button>
       </header>
 
-      {!nodeId && <p>Choose a memory from the constellation to understand it here.</p>}
-      {nodeId && isObservation && !details && !error && <div className="lens-state" role="status"><Loader2 className="spin-icon" /> Gathering its story…</div>}
-      {error && <div className="lens-state degraded" role="alert"><AlertTriangle /> <span>These details could not be loaded. {error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}><RotateCcw size={14} /> Try again</button></div>}
+      {!nodeId && (
+        <div className="atlas-dock-empty">
+          <Orbit size={24} aria-hidden="true" />
+          <p>Select a star to understand the memory and follow its connections.</p>
+        </div>
+      )}
+      {nodeId && isObservation && !details && !error && (
+        <div className="lens-state" role="status"><Loader2 className="spin-icon" /> Gathering its story…</div>
+      )}
+      {error && (
+        <div className="lens-state degraded" role="alert">
+          <AlertTriangle />
+          <span>These details could not be loaded. {error}</span>
+          <button type="button" onClick={() => setRetry((value) => value + 1)}><RotateCcw size={14} /> Try again</button>
+        </div>
+      )}
 
       {nodeId && (
         <>
@@ -81,8 +102,8 @@ export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNod
             <p>{summary}</p>
           </section>
 
-          <section className="lens-section" aria-labelledby="lens-belongs-heading">
-            <h3 id="lens-belongs-heading">Where it belongs</h3>
+          <section className="lens-section" aria-labelledby="overview-belongs-heading">
+            <h3 id="overview-belongs-heading">Where it belongs</h3>
             <dl className="lens-provenance">
               <div><dt>Project</dt><dd>{presentStoredText(node?.project ?? metadataValue(details, 'project')) || 'Across projects'}</dd></div>
               <div><dt>Session</dt><dd>{presentStoredText(node?.session_id ?? metadataValue(details, 'session_id')) || 'No session attached'}</dd></div>
@@ -104,7 +125,13 @@ export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNod
               <ul>{connectionIds.slice(0, 16).map((id, index) => {
                 const connectedNode = connectedById.get(id);
                 const fallbackKind = presentNodeKind(id.split(':', 1)[0]);
-                return <li key={id}><button type="button" onClick={() => onConnected(id)}>{presentStoredText(connectedNode?.label) || `${fallbackKind} ${index + 1}`}</button></li>;
+                return (
+                  <li key={id}>
+                    <button type="button" onClick={() => onConnected(id)}>
+                      {presentStoredText(connectedNode?.label) || `${fallbackKind} ${index + 1}`}
+                    </button>
+                  </li>
+                );
               })}</ul>
             </section>
           )}
@@ -114,11 +141,13 @@ export default function MemoryLens({ nodeId, node, connectedNodes = [], knownNod
             <code>{presentStoredText(nodeId)}</code>
             <dl className="lens-technical-list">
               <div><dt>Node kind</dt><dd>{presentStoredText(kind)}</dd></div>
-              {details && Object.entries(details.metadata).slice(0, 12).map(([key, value]) => <div key={key}><dt>{presentStoredText(key)}</dt><dd>{presentStoredText(value)}</dd></div>)}
+              {details && Object.entries(details.metadata).slice(0, 12).map(([key, value]) => (
+                <div key={key}><dt>{presentStoredText(key)}</dt><dd>{presentStoredText(value)}</dd></div>
+              ))}
             </dl>
           </details>
         </>
       )}
-    </aside>
+    </section>
   );
 }

@@ -8,7 +8,6 @@ import GraphNavigator from '../map/GraphNavigator.js';
 import type { GraphCommand, GraphViewportCommand } from '../map/map-navigation.js';
 import { deriveGraphPhase } from './resource-state.js';
 import ResourceStateNotice from './ResourceStateNotice.js';
-import { presentMemorySummary, presentObservationType } from '../dashboard-presentation.js';
 
 interface MemoryMapSurfaceProps {
   data: MapData | null;
@@ -19,7 +18,6 @@ interface MemoryMapSurfaceProps {
   error: string | null;
   onSelect: (selection: MapSelection) => void;
   onExpand: (nodeId: string) => void;
-  onPivot: (nodeId: string, target: 'timeline' | 'ledger' | 'recall') => void;
   onRefresh: () => void;
   command: { id: number; type: GraphViewportCommand } | null;
   onCommand: (type: GraphCommand) => void;
@@ -36,7 +34,6 @@ export default function MemoryMapSurface({
   error,
   onSelect,
   onExpand,
-  onPivot,
   onRefresh,
   command,
   onCommand,
@@ -44,7 +41,6 @@ export default function MemoryMapSurface({
   onPausedChange,
 }: MemoryMapSurfaceProps) {
   const selectedNodeId = selection?.kind === 'node' ? selection.id : focusNodeId;
-  const selectedNode = selectedNodeId ? data?.nodes.find((node) => node.id === selectedNodeId) : null;
   const phase = deriveGraphPhase({ loading, hasData:Boolean(data), nodeCount:data?.nodes.length??0, dense:data?.state==='dense', truncated:Boolean(data?.truncated), exhausted:Boolean(frontier?.exhausted), degraded:data?.health.semantic_state==='degraded', error:Boolean(error) });
 
   return (
@@ -60,13 +56,13 @@ export default function MemoryMapSurface({
         </div>
       </div>
 
-      <div className="observatory-frontier-strip" aria-live="polite">
+      <div className="observatory-frontier-strip" aria-live="polite" data-exhausted={String(Boolean(frontier?.exhausted))}>
         <strong>{frontier?.added_node_ids.length ? `${frontier.added_node_ids.length} new memories revealed` : 'Your current memory neighborhood'}</strong>
         <span>{frontier?.exhausted ? 'You have reached the edge of this trail' : 'More related memories are available'}</span>
       </div>
       <ResourceStateNotice phase={phase} onAction={onRefresh} />
 
-      <div className="observatory-map-grid">
+      <div className="observatory-map-layer">
         <main className="map-stage observatory-map-stage">
           {error && (
             <div className="map-state-banner danger">
@@ -78,55 +74,29 @@ export default function MemoryMapSurface({
             </div>
           )}
           {data && <MapCanvas nodes={data.nodes} edges={data.edges} state={data.state} selection={selection} onSelect={onSelect} command={command} paused={paused} onPausedChange={onPausedChange} semanticState={data.health.semantic_state} truncated={data.truncated} />}
-          <div className="graph-command-bar" role="toolbar" aria-label="Memory map view controls">
-            <button type="button" onClick={() => onCommand('fit')} title="Fit visible nodes (0)" aria-label="Fit all memories"><Maximize2 /></button>
-            <button type="button" onClick={() => onCommand('zoom-in')} title="Zoom in (+)" aria-label="Zoom in"><Plus /></button>
-            <button type="button" onClick={() => onCommand('zoom-out')} title="Zoom out (-)" aria-label="Zoom out"><Minus /></button>
-            <button type="button" onClick={() => onCommand('reset')} title="Reset viewport (R)" aria-label="Reset view"><RotateCcw /></button>
-            <button type="button" className={paused ? 'active' : ''} onClick={() => onCommand('toggle-pause')} title="Pause or resume (P)" aria-label={paused ? 'Resume motion' : 'Pause motion'}>{paused ? <Play /> : <Pause />}</button>
-          </div>
-          <div className="graph-pan-pad" role="toolbar" aria-label="Move around the memory map">
-            <button type="button" onClick={() => onCommand('pan-left')} title="Pan left (H)" aria-label="Move left">←</button>
-            <button type="button" onClick={() => onCommand('pan-up')} title="Pan up (K)" aria-label="Move up">↑</button>
-            <button type="button" onClick={() => onCommand('pan-down')} title="Pan down (J)" aria-label="Move down">↓</button>
-            <button type="button" onClick={() => onCommand('pan-right')} title="Pan right (L)" aria-label="Move right">→</button>
-          </div>
-          <div className="graph-trail-bar" role="toolbar" aria-label="Explore the selected memory trail">
-            <button type="button" onClick={() => onCommand('previous')} title="Previous connected memory (Arrow Left)"><ChevronLeft /><span>Previous</span></button>
-            <button type="button" onClick={() => onCommand('next')} title="Next connected memory (Arrow Right)"><ChevronRight /><span>Next</span></button>
-            <button type="button" onClick={() => onCommand('select')} disabled={!selectedNodeId} title="Activate Memory Lens (Enter)"><Eye /><span>Details</span></button>
-            <button type="button" className="primary" onClick={() => onCommand('expand')} disabled={!selectedNodeId} title="Expand selected memory (E)"><GitBranch /><span>Explore connections</span></button>
-            <button type="button" onClick={() => onCommand('clear')} title="Clear focus (Escape)" aria-label="Clear selected memory"><CircleX /></button>
+          <div className="atlas-control-cluster" aria-label="Neural Atlas controls">
+            <div className="graph-command-bar" role="toolbar" aria-label="Memory map view controls">
+              <button type="button" onClick={() => onCommand('fit')} title="Fit visible nodes (0)" aria-label="Fit all memories"><Maximize2 /></button>
+              <button type="button" onClick={() => onCommand('zoom-in')} title="Zoom in (+)" aria-label="Zoom in"><Plus /></button>
+              <button type="button" onClick={() => onCommand('zoom-out')} title="Zoom out (-)" aria-label="Zoom out"><Minus /></button>
+              <button type="button" onClick={() => onCommand('reset')} title="Reset viewport (R)" aria-label="Reset view"><RotateCcw /></button>
+              <button type="button" className={paused ? 'active' : ''} onClick={() => onCommand('toggle-pause')} title="Pause or resume (P)" aria-label={paused ? 'Resume motion' : 'Pause motion'}>{paused ? <Play /> : <Pause />}</button>
+            </div>
+            <div className="graph-pan-pad" role="toolbar" aria-label="Move around the memory map">
+              <button type="button" onClick={() => onCommand('pan-left')} title="Pan left (H)" aria-label="Move left">←</button>
+              <button type="button" onClick={() => onCommand('pan-up')} title="Pan up (K)" aria-label="Move up">↑</button>
+              <button type="button" onClick={() => onCommand('pan-down')} title="Pan down (J)" aria-label="Move down">↓</button>
+              <button type="button" onClick={() => onCommand('pan-right')} title="Pan right (L)" aria-label="Move right">→</button>
+            </div>
+            <div className="graph-trail-bar" data-active={String(Boolean(selectedNodeId))} role="toolbar" aria-label="Explore the selected memory trail">
+              <button type="button" onClick={() => onCommand('previous')} title="Previous connected memory (Arrow Left)"><ChevronLeft /><span>Previous</span></button>
+              <button type="button" onClick={() => onCommand('next')} title="Next connected memory (Arrow Right)"><ChevronRight /><span>Next</span></button>
+              <button type="button" onClick={() => onCommand('select')} disabled={!selectedNodeId} title="Open memory overview (Enter)"><Eye /><span>Details</span></button>
+              <button type="button" className="primary" onClick={() => onCommand('expand')} disabled={!selectedNodeId} title="Expand selected memory (E)"><GitBranch /><span>Explore connections</span></button>
+              <button type="button" onClick={() => onCommand('clear')} title="Clear focus (Escape)" aria-label="Clear selected memory"><CircleX /></button>
+            </div>
           </div>
         </main>
-
-        <aside className="observatory-map-inspector" aria-label="Map frontier inspector">
-          {selectedNode ? (
-            <>
-              <span className="badge badge-primary">Selected memory</span>
-              <h3>{sanitizeMapText(selectedNode.label)}</h3>
-              <p>{presentMemorySummary(selectedNode.snippet) || 'This memory has no additional summary yet.'}</p>
-              <dl className="map-provenance">
-                <div><dt>Project</dt><dd>{sanitizeMapText(selectedNode.project) || 'Any'}</dd></div>
-                <div><dt>Topic</dt><dd>{sanitizeMapText(selectedNode.topic_key) || 'None'}</dd></div>
-                <div><dt>Memory type</dt><dd>{selectedNode.type ? presentObservationType(selectedNode.type) : 'Not categorized'}</dd></div>
-              </dl>
-              <div className="map-inspector-actions">
-                <button type="button" className="map-load-button" onClick={() => onExpand(selectedNode.id)} disabled={frontier?.exhausted}>
-                  <GitBranch size={15} />
-                  Explore connections
-                </button>
-                <button type="button" className="map-link-button" onClick={() => onPivot(selectedNode.id, 'timeline')}>See when this happened</button>
-                <button type="button" className="map-link-button" onClick={() => onPivot(selectedNode.id, 'ledger')}>Review its history</button>
-              </div>
-            </>
-          ) : (
-            <div className="map-inspector-empty">
-              <MapIcon size={24} />
-              <p>Choose a memory to understand its story and follow its connections.</p>
-            </div>
-          )}
-        </aside>
       </div>
       {data && <GraphNavigator nodes={data.nodes} edges={data.edges} focusNodeId={selectedNodeId ?? null} onFocus={(id) => onSelect({ kind: 'node', id })} onExpand={onExpand} />}
     </section>

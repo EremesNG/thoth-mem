@@ -33,8 +33,6 @@
 .observatory-context-strip strong { color: var(--starlight-secondary); }
 .observatory-focus-target { outline: 0; }
 .observatory-grid { position: relative; display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; }
-.observatory-grid[data-lens-open='true'] .observatory-map-grid { grid-template-columns: minmax(0,1fr); }
-.observatory-grid[data-lens-open='true'] .observatory-map-inspector { display: none; }
 .observatory-map-surface,.instrument-dock { min-width: 0; border: 1px solid var(--line); background: rgba(11,16,20,.72); padding: 12px; }
 .observatory-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 .observatory-panel-header h2 { margin-top: 4px; }
@@ -62,7 +60,6 @@
 .graph-trail-bar button.primary { border-color: rgba(93,141,255,.34); background: linear-gradient(135deg,rgba(44,100,215,.48),rgba(94,55,189,.5)); color: #f8fbff; }
 .graph-trail-bar button:disabled { opacity: .3; cursor: not-allowed; }
 .graph-trail-bar svg { width: 15px; flex: 0 0 auto; }
-.observatory-map-grid { display: grid; grid-template-columns: minmax(0,3fr) minmax(240px,1fr); min-height: 610px; border-top: 1px solid var(--line-soft); }
 .map-stage { position: relative; min-width: 0; min-height: 610px; overflow: hidden; background: #030915; box-shadow: inset 0 0 90px rgba(0,2,9,.88); }
 .map-canvas-shell,.map-canvas { width: 100%; height: 100%; min-height: 610px; display: block; }
 .map-canvas-shell { position: relative; overflow: hidden; isolation: isolate; background: #030915; }
@@ -94,8 +91,6 @@
 .map-canvas-shell[data-paused='true'] .cosmos-camera-status > span { background: #f6c453; box-shadow: 0 0 10px rgba(246,196,83,.48); }
 @keyframes cosmos-status-pulse { from { opacity: .45; transform: scale(.82); } to { opacity: 1; transform: scale(1.18); } }
 @keyframes neural-focus-breathe { 0%,100% { opacity: .56; scale: .96; } 50% { opacity: .86; scale: 1.08; } }
-.observatory-map-inspector { border-left: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 12px; background: var(--nebula-basin); }
-.observatory-map-inspector p { font-size: .86rem; }
 .map-provenance,.lens-provenance { display: grid; gap: 7px; margin: 0; padding-block: 10px; border-block: 1px solid var(--line-soft); }
 .map-provenance div,.lens-provenance div { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 8px; }
 dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { margin: 0; overflow-wrap: anywhere; }
@@ -103,7 +98,21 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
 .map-state-banner { position: absolute; z-index: 2; inset: 12px 12px auto; display:flex;gap:8px;align-items:center;padding:10px;background:var(--nebula-elevated);border:1px solid var(--degraded-coral); }
 .graph-navigator { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
 .graph-navigator header { display:flex;justify-content:space-between;color:var(--starlight-tertiary);font:.68rem var(--font-mono); }.graph-navigator ul { display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px;max-height:150px;overflow:auto;padding:6px 0;margin:0;list-style:none; }.graph-navigator li { display:grid;grid-template-columns:1fr 34px;background:var(--nebula-inset);border-left:2px solid transparent; }.graph-navigator li.active{border-color:var(--ion-focus)}.graph-navigator button{border:0;background:transparent;text-align:left;padding:8px;color:var(--starlight-secondary);font:.68rem var(--font-mono)}.graph-navigator .navigator-expand{text-align:center;border-left:1px solid var(--line-soft)}
-.memory-lens { position: fixed; z-index: 12; right: 24px; top: 24px; width: min(410px,calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow:auto; display:grid;gap:14px;padding:18px;border:1px solid rgba(120,191,221,.3);border-radius:16px;background:linear-gradient(160deg,rgba(17,31,49,.98),rgba(8,15,27,.98));box-shadow:0 26px 78px rgba(0,0,0,.52);backdrop-filter:blur(18px); }.memory-lens header{display:flex;justify-content:space-between;gap:12px}.memory-lens header>div{min-width:0;display:grid;gap:4px}.memory-lens header h2{margin:0;color:#f5fbff;font-size:1.15rem;line-height:1.25;overflow-wrap:anywhere}.lens-kicker{display:inline-flex;align-items:center;gap:6px;color:#9eeaff;font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.memory-lens .node-kind{width:fit-content;color:var(--engram-amber);font:.68rem var(--font-sans);font-weight:700}.lens-summary,.lens-section,.lens-connections{display:grid;gap:7px}.lens-summary h3,.lens-section h3,.lens-connections h3{margin:0;color:var(--starlight-secondary);font-size:.76rem}.lens-summary p{margin:0;color:var(--starlight-primary);font-size:.88rem;line-height:1.5}.lens-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}.lens-actions .lens-primary-action{grid-column:1/-1;min-height:42px;border-color:rgba(91,211,236,.42);background:linear-gradient(135deg,rgba(33,120,154,.62),rgba(91,61,174,.56));color:#fff}.lens-state{display:flex;align-items:center;gap:8px;min-height:100px}.lens-state.degraded{color:var(--degraded-coral)}.lens-connections ul{display:grid;gap:4px;padding:0;margin:0;list-style:none}.lens-connections button{width:100%;border:1px solid var(--line-soft);border-radius:8px;background:var(--nebula-inset);padding:9px;text-align:left;color:var(--starlight-secondary)}
+.memory-overview { display: grid; gap: 14px; }
+.memory-overview header { display: flex; justify-content: space-between; gap: 12px; }
+.memory-overview header > div { min-width: 0; display: grid; gap: 4px; }
+.memory-overview header h2 { margin: 0; color: #f5fbff; font-size: 1.15rem; line-height: 1.25; overflow-wrap: anywhere; }
+.lens-kicker { display: inline-flex; align-items: center; gap: 6px; color: #9eeaff; font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.memory-overview .node-kind { width: fit-content; color: var(--engram-amber); font: .68rem var(--font-sans); font-weight: 700; }
+.lens-summary,.lens-section,.lens-connections { display: grid; gap: 7px; }
+.lens-summary h3,.lens-section h3,.lens-connections h3 { margin: 0; color: var(--starlight-secondary); font-size: .76rem; }
+.lens-summary p { margin: 0; color: var(--starlight-primary); font-size: .88rem; line-height: 1.5; }
+.lens-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.lens-actions .lens-primary-action { grid-column: 1/-1; min-height: 42px; border-color: rgba(91,211,236,.42); background: linear-gradient(135deg,rgba(33,120,154,.62),rgba(91,61,174,.56)); color: #fff; }
+.lens-state { display: flex; align-items: center; gap: 8px; min-height: 100px; }
+.lens-state.degraded { color: var(--degraded-coral); }
+.lens-connections ul { display: grid; gap: 4px; padding: 0; margin: 0; list-style: none; }
+.lens-connections button { width: 100%; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--nebula-inset); padding: 9px; text-align: left; color: var(--starlight-secondary); }
 .technical-disclosure { border-top: 1px solid var(--line-soft); padding-top: 9px; color: var(--starlight-tertiary); }
 .technical-disclosure summary { width: fit-content; color: var(--starlight-tertiary); font-size: .68rem; cursor: pointer; }
 .technical-disclosure[open] summary { margin-bottom: 9px; color: var(--starlight-secondary); }
@@ -115,8 +124,472 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
 .focus-trail { justify-content:flex-end;margin-bottom:8px;color:var(--starlight-tertiary);font:.68rem var(--font-mono); }
 .badge { width:fit-content;color:var(--engram-amber);font:.65rem var(--font-mono);text-transform:uppercase; }
 .error-container,.observatory-error { padding:10px;border:1px solid var(--degraded-coral);color:var(--degraded-coral); }
-@supports not (backdrop-filter: blur(1px)) { .memory-lens { background: var(--nebula-elevated); } }
 @media (prefers-reduced-motion: reduce) { .cosmos-camera-status > span,.cosmos-node-aura { animation: none !important; transform: none !important; } }
-@media (max-width: 1080px) { .guided-scope-fields{grid-template-columns:repeat(3,minmax(0,1fr))}.observatory-map-grid{grid-template-columns:1fr}.observatory-map-inspector{border-left:0;border-top:1px solid var(--line);min-height:180px}.observatory-map-grid,.map-stage,.map-canvas-shell,.map-canvas{min-height:520px} }
-@media (max-width: 720px) { .observatory-workspace{padding:10px}.observatory-header{align-items:stretch;flex-direction:column}.observatory-toolbar{width:100%}.observatory-search{min-width:0;flex:1}.guided-scope-heading{align-items:flex-start;flex-direction:column}.guided-scope-resource{width:100%;justify-content:space-between}.guided-scope-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.observatory-map-grid,.map-stage,.map-canvas-shell,.map-canvas{min-height:430px}.memory-lens{inset:auto 0 0;width:100%;max-height:70svh;border-inline:0}.recall-lanes{grid-template-columns:1fr}.graph-command-bar{right:8px;bottom:8px}.graph-command-bar button svg{width:17px}.graph-pan-pad{display:none}.graph-trail-bar{left:8px;bottom:8px;max-width:calc(100% - 64px)}.graph-trail-bar button span{display:none}.graph-trail-bar button{width:38px;padding:0;justify-content:center}.cosmos-node-label[data-role='neighbor']{display:none} }
+@media (max-width: 1080px) { .guided-scope-fields { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@media (max-width: 720px) {
+  .observatory-workspace { padding: 10px; }
+  .observatory-header { align-items: stretch; flex-direction: column; }
+  .observatory-toolbar { width: 100%; }
+  .observatory-search { min-width: 0; flex: 1; }
+  .guided-scope-heading { align-items: flex-start; flex-direction: column; }
+  .guided-scope-resource { width: 100%; justify-content: space-between; }
+  .guided-scope-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .recall-lanes { grid-template-columns: 1fr; }
+  .graph-command-bar { right: 8px; bottom: 8px; }
+  .graph-command-bar button svg { width: 17px; }
+  .graph-pan-pad { display: none; }
+  .graph-trail-bar { left: 8px; bottom: 8px; max-width: calc(100% - 64px); }
+  .graph-trail-bar button span { display: none; }
+  .graph-trail-bar button { width: 38px; padding: 0; justify-content: center; }
+  .cosmos-node-label[data-role='neighbor'] { display: none; }
+}
 @media (max-width: 430px) { .guided-scope-fields{grid-template-columns:1fr}.guided-scope-resource span{max-width:58%} }
+
+/* Immersive Neural Atlas: the graph owns the viewport; chrome floats inside it. */
+.neural-atlas-workspace {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 0;
+  background:
+    radial-gradient(ellipse at 48% 44%, rgba(18, 72, 105, .13), transparent 46%),
+    #020610;
+}
+.neural-atlas-workspace > .observatory-header {
+  position: absolute;
+  z-index: 12;
+  top: 14px;
+  left: 18px;
+  right: 18px;
+  min-height: 54px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid rgba(136, 180, 224, .15);
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(4, 10, 21, .88), rgba(4, 10, 21, .7));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .2);
+  backdrop-filter: blur(16px);
+}
+.neural-atlas-workspace > .observatory-header h1 {
+  font-size: clamp(1rem, 1.35vw, 1.24rem);
+  letter-spacing: -.02em;
+}
+.neural-atlas-workspace > .observatory-header p { display: none; }
+.neural-atlas-workspace .observatory-toolbar { min-width: 0; }
+.neural-atlas-workspace .atlas-scope-control { position: relative; flex: 0 0 auto; }
+.neural-atlas-workspace .atlas-scope-trigger {
+  width: auto;
+  padding: 0 10px;
+  display: inline-flex;
+  gap: 7px;
+  color: var(--starlight-secondary);
+}
+.neural-atlas-workspace .atlas-scope-trigger strong {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(83, 214, 235, .18);
+  color: #baf6ff;
+  font: 700 .62rem var(--font-mono);
+}
+.neural-atlas-workspace .atlas-scope-popover {
+  position: fixed;
+  z-index: 30;
+  top: 82px;
+  right: 18px;
+  width: min(1080px, calc(100vw - 270px));
+  max-height: calc(100dvh - 100px);
+  pointer-events: none;
+}
+.neural-atlas-workspace .atlas-scope-popover[data-open='true'] { pointer-events: auto; }
+.neural-atlas-workspace .atlas-scope-popover .guided-scope-bar {
+  position: relative;
+  max-height: calc(100dvh - 100px);
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border-color: rgba(136, 180, 224, .22);
+  background: linear-gradient(145deg, rgba(7, 17, 33, .97), rgba(3, 8, 18, .95));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .54);
+  backdrop-filter: blur(22px);
+}
+.neural-atlas-workspace .atlas-scope-popover .guided-scope-heading { padding-right: 36px; }
+.neural-atlas-workspace .atlas-scope-close {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(136, 180, 224, .16);
+  border-radius: 8px;
+  background: rgba(8, 20, 36, .86);
+  color: var(--starlight-secondary);
+  cursor: pointer;
+}
+.neural-atlas-workspace > .active-focus-summary,
+.neural-atlas-workspace > .focus-trail,
+.neural-atlas-workspace > .observatory-context-strip,
+.neural-atlas-workspace > .error-container {
+  position: absolute;
+  z-index: 12;
+}
+.neural-atlas-workspace > .active-focus-summary,
+.neural-atlas-workspace > .observatory-context-strip {
+  inline-size: 1px;
+  block-size: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.neural-atlas-workspace > .focus-trail { top: 82px; left: 50%; translate: -50% 0; margin: 0; }
+.neural-atlas-workspace > .observatory-context-strip {
+  inset: auto;
+}
+.neural-atlas-workspace > .error-container { top: 82px; left: 22px; right: 82px; }
+.neural-atlas-workspace > .observatory-focus-target { position: absolute; }
+.neural-atlas-workspace > .observatory-grid {
+  position: absolute;
+  z-index: 1;
+  inset: 64px 0 0;
+  min-height: 0;
+  gap: 0;
+}
+.neural-atlas-workspace .observatory-map-surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.neural-atlas-workspace .observatory-panel-header,
+.neural-atlas-workspace .observatory-frontier-strip,
+.neural-atlas-workspace .resource-state-notice { position: absolute; z-index: 8; }
+.neural-atlas-workspace .observatory-panel-header {
+  display: none;
+}
+.neural-atlas-workspace .observatory-panel-header > div:first-child { display: none; }
+.neural-atlas-workspace .map-health-strip {
+  margin-left: auto;
+  padding: 6px 9px;
+  border: 1px solid rgba(136, 180, 224, .13);
+  border-radius: 999px;
+  background: rgba(4, 10, 21, .72);
+  backdrop-filter: blur(12px);
+}
+.neural-atlas-workspace .observatory-frontier-strip {
+  top: 52px;
+  left: 22px;
+  width: max-content;
+  max-width: min(460px, calc(100% - 44px));
+  padding: 6px 9px;
+  border: 1px solid rgba(136, 180, 224, .12);
+  border-radius: 9px;
+  background: rgba(4, 10, 21, .7);
+}
+.neural-atlas-workspace .observatory-frontier-strip[data-exhausted='true'],
+.neural-atlas-workspace .resource-state-notice.exhausted,
+.neural-atlas-workspace .resource-state-notice.sparse,
+.neural-atlas-workspace .resource-state-notice.dense { display: none; }
+.neural-atlas-workspace .resource-state-notice { top: 92px; left: 22px; }
+.neural-atlas-workspace .observatory-map-layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  min-height: 0;
+  border: 0;
+}
+.neural-atlas-workspace .map-stage,
+.neural-atlas-workspace .map-canvas-shell,
+.neural-atlas-workspace .map-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.neural-atlas-workspace .map-stage { background: #020610; }
+.neural-atlas-workspace .graph-navigator {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.neural-atlas-workspace .observatory-map-surface:has(.map-canvas-shell[data-renderer-status='failed']) .graph-navigator {
+  z-index: 7;
+  left: 50%;
+  bottom: 76px;
+  inline-size: min(700px, calc(100% - 40px));
+  block-size: auto;
+  max-height: min(240px, 34dvh);
+  translate: -50% 0;
+  margin: 0;
+  padding: 10px;
+  overflow: hidden;
+  clip-path: none;
+  border: 1px solid rgba(136, 180, 224, .18);
+  border-radius: 12px;
+  background: rgba(4, 10, 21, .9);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .38);
+  backdrop-filter: blur(16px);
+}
+.neural-atlas-workspace .observatory-map-surface:has(.map-canvas-shell[data-renderer-status='failed']) .graph-navigator ul {
+  max-height: min(170px, 24dvh);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.neural-atlas-workspace .atlas-control-cluster {
+  position: absolute;
+  z-index: 9;
+  left: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+  max-width: calc(100% - 32px);
+}
+.neural-atlas-workspace .atlas-control-cluster .graph-command-bar,
+.neural-atlas-workspace .atlas-control-cluster .graph-pan-pad,
+.neural-atlas-workspace .atlas-control-cluster .graph-trail-bar {
+  position: static;
+}
+.neural-atlas-workspace .atlas-control-cluster .graph-pan-pad { display: none; }
+.neural-atlas-workspace .atlas-control-cluster .graph-trail-bar[data-active='false'] { display: none; }
+.neural-atlas-workspace .atlas-control-cluster .graph-trail-bar { max-width: min(560px, calc(100vw - 430px)); }
+.neural-atlas-workspace .atlas-dock {
+  position: absolute;
+  z-index: 14;
+  top: 18px;
+  right: 18px;
+  bottom: 18px;
+  width: min(390px, calc(100% - 36px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(136, 180, 224, .2);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(7, 17, 33, .94), rgba(3, 8, 18, .91));
+  box-shadow: 0 28px 78px rgba(0, 0, 0, .46);
+  backdrop-filter: blur(20px);
+  transition: width 180ms cubic-bezier(.2, 0, 0, 1), background 180ms ease;
+}
+.neural-atlas-workspace .atlas-dock[data-open='false'] {
+  width: 54px;
+  grid-template-rows: auto 1fr;
+  background: rgba(4, 10, 21, .82);
+}
+.atlas-dock-header {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px 9px 14px;
+  border-bottom: 1px solid rgba(136, 180, 224, .12);
+}
+.atlas-dock-header > div { display: grid; gap: 2px; min-width: 0; }
+.atlas-dock-header span { color: var(--starlight-tertiary); font: .62rem var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.atlas-dock-header strong { color: var(--starlight-primary); font-size: .84rem; }
+.atlas-dock-close {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(136, 180, 224, .16);
+  border-radius: 8px;
+  background: rgba(8, 20, 36, .78);
+  cursor: pointer;
+}
+.atlas-dock-close svg { width: 16px; }
+.atlas-dock[data-open='false'] .atlas-dock-header { justify-content: center; padding: 9px; }
+.atlas-dock[data-open='false'] .atlas-dock-header > div { display: none; }
+.atlas-dock-tabs.observatory-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+  margin: 0;
+  padding: 6px;
+  border: 0;
+  border-bottom: 1px solid rgba(136, 180, 224, .12);
+  overflow: visible;
+}
+.atlas-dock-tabs.observatory-tabs button {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  padding: 5px 3px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: .62rem;
+}
+.atlas-dock-tabs.observatory-tabs button svg { width: 15px; }
+.atlas-dock-tabs.observatory-tabs button.active {
+  border: 1px solid rgba(102, 218, 242, .24);
+  background: rgba(35, 103, 134, .25);
+  color: #effcff;
+}
+.atlas-dock[data-open='false'] .atlas-dock-tabs.observatory-tabs {
+  grid-template-columns: 1fr;
+  align-content: start;
+  border-bottom: 0;
+}
+.atlas-dock[data-open='false'] .atlas-dock-tabs span { display: none; }
+.atlas-dock-body { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.atlas-dock .memory-overview {
+  position: static;
+  z-index: auto;
+  width: auto;
+  max-height: none;
+  min-height: 100%;
+  overflow: visible;
+  gap: 14px;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.atlas-dock .memory-overview header { padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
+.atlas-dock-empty { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; }
+.atlas-dock-empty svg { color: var(--ion-focus); opacity: .78; }
+.atlas-dock-empty p { max-width: 260px; color: var(--starlight-tertiary); font-size: .84rem; }
+.atlas-dock .instrument-dock {
+  position: static;
+  inset: auto;
+  width: auto;
+  max-height: none;
+  min-height: 100%;
+  overflow: visible;
+  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+@media (max-width: 1080px) {
+  .neural-atlas-workspace .observatory-map-layer,
+  .neural-atlas-workspace .map-stage,
+  .neural-atlas-workspace .map-canvas-shell,
+  .neural-atlas-workspace .map-canvas { min-height: 0; }
+}
+
+@media (max-width: 1200px) {
+  .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar {
+    max-width: none;
+    overflow: hidden;
+  }
+  .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar button {
+    width: 38px;
+    padding: 0;
+    justify-content: center;
+  }
+  .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar button span { display: none; }
+}
+
+@media (max-width: 720px) {
+  .neural-atlas-workspace { padding: 0; }
+  .neural-atlas-workspace > .observatory-header {
+    top: 8px;
+    left: calc(var(--atlas-visual-left, 0px) + 8px);
+    right: auto;
+    width: calc(var(--atlas-visual-width, 100vw) - 16px);
+    flex-direction: row;
+    align-items: center;
+  }
+  .neural-atlas-workspace > .observatory-header > div:first-child { display: none; }
+  .neural-atlas-workspace .observatory-toolbar {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px;
+  }
+  .neural-atlas-workspace .observatory-search { min-width: 0; }
+  .neural-atlas-workspace .atlas-scope-trigger span { display: none; }
+  .neural-atlas-workspace .atlas-scope-popover {
+    top: 70px;
+    left: calc(var(--atlas-visual-left, 0px) + 8px);
+    right: auto;
+    width: calc(var(--atlas-visual-width, 100vw) - 16px);
+    max-height: calc(var(--atlas-visual-height, 100dvh) - 130px);
+  }
+  .neural-atlas-workspace .atlas-scope-popover .guided-scope-bar { max-height: calc(var(--atlas-visual-height, 100dvh) - 130px); }
+  .neural-atlas-workspace .atlas-scope-popover .guided-scope-fields { grid-template-columns: 1fr; }
+  .neural-atlas-workspace > .observatory-grid { inset: 60px 0 0; }
+  .neural-atlas-workspace .observatory-panel-header,
+  .neural-atlas-workspace .observatory-frontier-strip,
+  .neural-atlas-workspace .resource-state-notice { display: none; }
+  .neural-atlas-workspace .atlas-dock {
+    position: fixed;
+    inset: auto;
+    top: calc(var(--atlas-visual-top, 0px) + var(--atlas-visual-height, 100dvh) - var(--atlas-sheet-height, min(70dvh, 620px)));
+    left: var(--atlas-visual-left, 0px);
+    width: var(--atlas-visual-width, 100vw);
+    min-width: 0;
+    max-width: var(--atlas-visual-width, 100vw);
+    height: var(--atlas-sheet-height, min(70dvh, 620px));
+    min-height: 0;
+    max-height: none;
+    border-radius: 16px 16px 0 0;
+  }
+  .neural-atlas-workspace .atlas-dock[data-open='false'] {
+    inset: auto;
+    top: calc(var(--atlas-visual-top, 0px) + var(--atlas-visual-height, 100dvh) - 60px);
+    left: calc(var(--atlas-visual-left, 0px) + var(--atlas-visual-width, 100vw) - 60px);
+    width: 52px;
+    height: 52px;
+    min-height: 52px;
+    max-height: 52px;
+    border-radius: 12px;
+  }
+  .neural-atlas-workspace .atlas-dock[data-open='false'] .atlas-dock-tabs { display: none; }
+  .neural-atlas-workspace .atlas-dock-tabs span { display: none; }
+  .neural-atlas-workspace .atlas-dock-body,
+  .neural-atlas-workspace .instrument-dock,
+  .neural-atlas-workspace .memory-overview { min-width: 0; overflow-wrap: anywhere; }
+  .neural-atlas-workspace .atlas-control-cluster {
+    position: fixed;
+    left: calc(var(--atlas-visual-left, 0px) + 8px);
+    right: auto;
+    bottom: calc(var(--atlas-visual-bottom-inset, 0px) + 8px);
+    max-width: calc(var(--atlas-visual-width, 100vw) - 16px);
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .neural-atlas-workspace .observatory-grid[data-dock-open='true'] .atlas-control-cluster {
+    z-index: 15;
+    bottom: calc(var(--atlas-visual-bottom-inset, 0px) + var(--atlas-sheet-height, min(70dvh, 620px)) + 8px);
+  }
+  .neural-atlas-workspace .atlas-control-cluster .graph-pan-pad { display: none; }
+  .neural-atlas-workspace .atlas-control-cluster .graph-command-bar {
+    grid-template-columns: repeat(5, 30px);
+    gap: 1px;
+    padding: 3px;
+  }
+  .neural-atlas-workspace .atlas-control-cluster .graph-command-bar button,
+  .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar button {
+    width: 30px;
+    min-height: 30px;
+  }
+  .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar {
+    max-width: none;
+    gap: 1px;
+    padding: 3px;
+    overflow: hidden;
+  }
+}

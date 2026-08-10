@@ -22,6 +22,9 @@ export interface CosmosRuntimeSnapshot {
   paused: boolean;
   reducedMotion: boolean;
   error: string | null;
+  worldWidth: number;
+  worldHeight: number;
+  worldAspect: number;
 }
 
 export interface CosmosNodeOverlay {
@@ -37,6 +40,12 @@ export interface CosmosNodeOverlay {
   labelWidth: number;
   labelHeight: number;
   labelVisible: boolean;
+}
+
+export interface CosmosMotionProbe {
+  x: number;
+  y: number;
+  tick: number;
 }
 
 type UnplacedCosmosNodeOverlay = Omit<
@@ -147,6 +156,7 @@ export interface CosmosGraphRuntimeCallbacks {
   onSelect: (selection: MapSelection) => void;
   onHover: (hover: { label: string; x: number; y: number } | null) => void;
   onNodeOverlays: (overlays: CosmosNodeOverlay[]) => void;
+  onMotionProbe: (probe: CosmosMotionProbe | null) => void;
   onSnapshot: (snapshot: CosmosRuntimeSnapshot) => void;
 }
 
@@ -167,6 +177,9 @@ const INITIAL_SNAPSHOT: CosmosRuntimeSnapshot = {
   paused: false,
   reducedMotion: false,
   error: null,
+  worldWidth: 0,
+  worldHeight: 0,
+  worldAspect: 1,
 };
 
 export class CosmosGraphRuntime {
@@ -177,6 +190,7 @@ export class CosmosGraphRuntime {
   private activationGeneration = 0;
   private activationTimers = new Set<number>();
   private settleTimer: number | null = null;
+  private ambientTimer: number | null = null;
   private pointerProbeTimer: number | null = null;
   private overlayFrame: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -184,9 +198,19 @@ export class CosmosGraphRuntime {
   private overlayIncludesNeighbors = false;
   private destroyed = false;
   private canvas: HTMLCanvasElement | null = null;
+  private simulationTick = 0;
+  private lastMotionProbeAt = 0;
   private readonly contextLostHandler = (event: Event) => {
     event.preventDefault();
     this.fail('The rich memory constellation lost its graphics context.');
+  };
+  private readonly visibilityHandler = () => {
+    if (document.hidden) {
+      this.clearAmbientMotion();
+      this.graph.pause();
+      return;
+    }
+    this.startAmbientMotion();
   };
 
   private constructor(
@@ -215,50 +239,53 @@ export class CosmosGraphRuntime {
     const { Graph } = await import('@cosmos.gl/graph');
     let runtime: CosmosGraphRuntime | null = null;
     const graph = new Graph(host, {
-      backgroundColor: '#030915',
+      backgroundColor: '#020610',
+      spaceSize: 4_096,
       pointDefaultColor: '#36c8ff',
       pointDefaultShape: 0,
-      pointGreyoutColor: '#10243a',
-      pointGreyoutOpacity: 0.08,
-      pointDefaultSize: 12,
-      pointOpacity: 0.92,
+      pointGreyoutColor: '#315b78',
+      pointGreyoutOpacity: 0.42,
+      pointDefaultSize: 4,
+      pointOpacity: 1,
       pointSizeScale: 1,
+      scalePointsOnZoom: false,
       renderHoveredPointRing: true,
       hoveredPointRingColor: '#f2fbff',
       focusedPointRingColor: [0.72, 0.92, 1, 0.72],
       outlinedPointRingColor: [0.45, 0.78, 1, 0.42],
-      linkDefaultColor: '#225979',
-      linkOpacity: 0.62,
-      linkGreyoutOpacity: 0.045,
-      linkDefaultWidth: 0.72,
+      linkDefaultColor: '#3f789e',
+      linkOpacity: 0.92,
+      linkGreyoutOpacity: 0.28,
+      linkDefaultWidth: 0.8,
       linkColorInterpolateFromEndpoints: true,
       curvedLinks: true,
       curvedLinkSegments: 24,
-      curvedLinkWeight: 0.72,
-      curvedLinkControlPointDistance: 0.32,
+      curvedLinkWeight: 0.32,
+      curvedLinkControlPointDistance: 0.14,
       linkDefaultArrows: true,
-      linkArrowsSizeScale: 0.62,
+      linkArrowsSizeScale: 0.44,
       linkDashLength: 6,
       linkDashGap: 5,
       transitionDuration: options.motion.transitionDuration,
       simulationDecay: 2_600,
-      simulationGravity: 0.08,
-      simulationCenter: 0.12,
-      simulationRepulsion: 0.46,
-      simulationLinkSpring: 0.42,
-      simulationLinkDistance: 2.8,
-      simulationFriction: 0.86,
-      simulationCluster: 0,
+      simulationGravity: 0.025,
+      simulationCenter: 0.04,
+      simulationRepulsion: 1,
+      simulationLinkSpring: 0.18,
+      simulationLinkDistance: 80,
+      simulationFriction: 0.9,
+      simulationCluster: 0.08,
       simulationCollision: 1,
-      simulationCollisionPadding: 7,
+      simulationCollisionPadding: 2,
       enableDrag: true,
       enableZoom: true,
       enableSimulation: true,
       enableSimulationDuringZoom: false,
-      fitViewOnInit: true,
+      fitViewOnInit: false,
       fitViewDelay: options.reducedMotion ? 0 : 160,
       fitViewDuration: options.motion.transitionDuration,
       fitViewPadding: 0.12,
+      rescalePositions: false,
       randomSeed: 'thoth-memory-constellation',
       attribution: '',
       onPointClick: (index) => runtime?.selectPoint(index),
@@ -266,7 +293,7 @@ export class CosmosGraphRuntime {
       onBackgroundClick: () => callbacks.onSelect(null),
       onPointMouseOver: (index, _position, event) => runtime?.hoverPoint(index, event),
       onPointMouseOut: () => callbacks.onHover(null),
-      onSimulationTick: () => runtime?.requestOverlayLayout(),
+      onSimulationTick: () => runtime?.handleSimulationTick(),
       onZoom: () => runtime?.requestOverlayLayout(),
     });
 
@@ -290,6 +317,7 @@ export class CosmosGraphRuntime {
       runtime.resizeObserver = new ResizeObserver(() => runtime?.handleResize());
       runtime.resizeObserver.observe(host);
     }
+    document.addEventListener('visibilitychange', runtime.visibilityHandler);
     runtime.emit({ status: 'ready' });
     runtime.setPaused(options.paused);
     return runtime;
@@ -312,6 +340,7 @@ export class CosmosGraphRuntime {
 
     this.cancelActivation();
     this.cancelSettle();
+    this.clearAmbientMotion();
 
     const isInitial = this.data === null;
     const isExpansion =
@@ -325,6 +354,9 @@ export class CosmosGraphRuntime {
     this.previousPointIds = pointIds;
     this.previousLinkIds = linkIds;
     this.graph.setPointPositions(new Float32Array(data.pointPositions));
+    this.graph.setPointClusters(data.pointCommunities);
+    this.graph.setClusterPositions(data.clusterCenters);
+    this.graph.setPointClusterStrength(new Float32Array(data.clusterStrengths));
     this.graph.setPointColors(colorsToFloat32(data.pointColors));
     this.graph.setPointSizes(new Float32Array(data.pointSizes));
     this.graph.setPointShapes(new Float32Array(data.pointShapes));
@@ -334,14 +366,27 @@ export class CosmosGraphRuntime {
     this.graph.setLinkStyles(new Float32Array(data.edges.map((edge) => edge.kind === 'metadata' ? 1 : 0)));
     this.graph.setLinkArrows(data.linkArrows);
     if (!this.snapshot.paused && !this.snapshot.reducedMotion) this.graph.unpause();
-    this.graph.render(isInitial ? 0.86 : 0.5, duration);
-    if (isInitial) this.graph.fitView(duration, 0.12, !this.snapshot.paused && !this.snapshot.reducedMotion);
+    this.graph.render(isInitial ? 0.22 : isExpansion ? 0.1 : 0.06, duration);
+    if (!this.snapshot.paused && !this.snapshot.reducedMotion) {
+      this.graph.start(isInitial ? 0.18 : isExpansion ? 0.1 : 0.04);
+    }
+    if (isInitial) {
+      this.graph.fitViewByPointPositions(
+        data.pointPositions,
+        duration,
+        0.08,
+        !this.snapshot.paused && !this.snapshot.reducedMotion,
+      );
+    }
 
     this.emit({
       datasetVersion: this.snapshot.datasetVersion + 1,
       lastTransition: transition,
       motionPhase: isInitial ? 'settling' : duration > 0 ? 'transitioning' : 'idle',
       initialSettled: isInitial && duration === 0 ? true : this.snapshot.initialSettled,
+      worldWidth: data.worldExtent.width,
+      worldHeight: data.worldExtent.height,
+      worldAspect: data.worldExtent.width / data.worldExtent.height,
     });
 
     const settleDelay = isInitial ? this.motion.initialSettleMs : duration;
@@ -355,6 +400,7 @@ export class CosmosGraphRuntime {
   focus(focusId: string | null, focus: CosmosFocusNeighborhood | null): void {
     if (this.destroyed || !this.data) return;
     this.cancelActivation();
+    this.clearAmbientMotion();
     this.graph.pause();
     if (!focusId || !focus) {
       this.overlayFocus = null;
@@ -369,6 +415,7 @@ export class CosmosGraphRuntime {
       this.graph.setPointSizes(new Float32Array(this.data.pointSizes));
       this.graph.render(undefined, this.snapshot.reducedMotion ? 0 : this.motion.transitionDuration);
       this.emit({ focusId: null, motionPhase: 'idle' });
+      this.startAmbientMotion();
       return;
     }
 
@@ -425,10 +472,10 @@ export class CosmosGraphRuntime {
     if (this.destroyed) return;
     const duration = this.snapshot.reducedMotion ? 0 : this.motion.transitionDuration;
     const simulation = false;
-    if (command === 'fit') this.graph.fitView(duration, 0.12, simulation);
+    if (command === 'fit') this.fitAll(duration);
     if (command === 'zoom-in') this.graph.setZoomLevel(Math.min(8, this.graph.getZoomLevel() * 1.25), duration, simulation);
     if (command === 'zoom-out') this.graph.setZoomLevel(Math.max(0.15, this.graph.getZoomLevel() * 0.8), duration, simulation);
-    if (command === 'reset') this.graph.fitView(duration, 0.12, simulation);
+    if (command === 'reset') this.fitAll(duration);
     if (command.startsWith('pan-')) {
       const shift = command === 'pan-left' ? [120, 0] : command === 'pan-right' ? [-120, 0] : command === 'pan-up' ? [0, 120] : [0, -120];
       const positions = this.graph.getPointPositions().map((value, index) => value + shift[index % 2]);
@@ -440,11 +487,15 @@ export class CosmosGraphRuntime {
 
   setPaused(paused: boolean): void {
     if (this.destroyed) return;
-    if (paused || this.snapshot.reducedMotion) this.graph.pause();
-    else this.graph.unpause();
+    this.emit({ paused });
+    if (paused || this.snapshot.reducedMotion) {
+      this.clearAmbientMotion();
+      this.graph.pause();
+    } else {
+      this.startAmbientMotion();
+    }
     if (paused) this.schedulePointerProbe();
     else this.clearPointerProbe();
-    this.emit({ paused });
   }
 
   setReducedMotion(reducedMotion: boolean, motion: CosmosMotionConfig): void {
@@ -458,11 +509,12 @@ export class CosmosGraphRuntime {
     if (reducedMotion) {
       this.cancelActivation();
       this.cancelSettle();
+      this.clearAmbientMotion();
       this.graph.pause();
       this.emit({ reducedMotion: true, motionPhase: 'idle', initialSettled: true });
     } else {
       this.emit({ reducedMotion: false });
-      if (!this.snapshot.paused) this.graph.unpause();
+      this.startAmbientMotion();
     }
   }
 
@@ -471,13 +523,16 @@ export class CosmosGraphRuntime {
     this.destroyed = true;
     this.cancelActivation();
     this.cancelSettle();
+    this.clearAmbientMotion();
     this.cancelOverlayFrame();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    document.removeEventListener('visibilitychange', this.visibilityHandler);
     this.canvas?.removeEventListener('webglcontextlost', this.contextLostHandler);
     this.clearPointerProbe();
     this.callbacks.onHover(null);
     this.callbacks.onNodeOverlays([]);
+    this.callbacks.onMotionProbe(null);
     this.graph.destroy();
     this.snapshot = { ...this.snapshot, status: 'disposed', motionPhase: 'idle' };
     this.callbacks.onSnapshot({ ...this.snapshot });
@@ -510,8 +565,8 @@ export class CosmosGraphRuntime {
     if (!this.data) return [];
     const neighbors = new Set(focus.neighborPointIndices);
     return this.data.pointSizes.map((size, index) => {
-      if (index === focus.pointIndex) return size * 1.34;
-      if (neighbors.has(index)) return size * 1.08;
+      if (index === focus.pointIndex) return Math.min(10, size * 1.16);
+      if (neighbors.has(index)) return Math.min(9, size * 1.04);
       return size;
     });
   }
@@ -524,10 +579,28 @@ export class CosmosGraphRuntime {
     });
   }
 
+  private handleSimulationTick(): void {
+    if (this.destroyed) return;
+    this.simulationTick += 1;
+    this.requestOverlayLayout();
+    const now = performance.now();
+    if (!this.data?.pointIds.length || now - this.lastMotionProbeAt < 180) return;
+    this.lastMotionProbeAt = now;
+    const positions = this.graph.getPointPositions();
+    const [x, y] = this.graph.spaceToScreenPosition([positions[0], positions[1]]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.callbacks.onMotionProbe({ x, y, tick: this.simulationTick });
+  }
+
   private handleResize(): void {
     if (this.destroyed) return;
-    if (this.overlayFocus) this.fitFocusNeighborhood(this.overlayFocus, 0);
     this.requestOverlayLayout();
+  }
+
+  private fitAll(duration: number): void {
+    if (!this.data) return;
+    const positions = Array.from(this.graph.getPointPositions());
+    this.graph.fitViewByPointPositions(positions, duration, 0.08, false);
   }
 
   private fitFocusNeighborhood(focus: CosmosFocusNeighborhood, duration: number): void {
@@ -635,16 +708,46 @@ export class CosmosGraphRuntime {
 
   private finishMotion(initial: boolean): void {
     if (this.destroyed) return;
-    this.graph.pause();
-    if (initial) this.graph.fitView(0, 0.12, false);
+    this.graph.stop();
+    if (initial) this.fitAll(0);
     this.requestOverlayLayout();
     this.emit({ motionPhase: 'idle', initialSettled: initial ? true : this.snapshot.initialSettled });
+    this.startAmbientMotion();
+  }
+
+  private startAmbientMotion(): void {
+    this.clearAmbientMotion();
+    if (
+      this.destroyed
+      || !this.data?.pointIds.length
+      || this.snapshot.status !== 'ready'
+      || this.snapshot.paused
+      || this.snapshot.reducedMotion
+      || document.hidden
+    ) {
+      this.graph.pause();
+      return;
+    }
+    this.graph.unpause();
+    this.graph.start(0.0015);
+    this.ambientTimer = window.setInterval(() => {
+      if (this.destroyed || this.snapshot.paused || this.snapshot.reducedMotion || document.hidden) return;
+      this.graph.unpause();
+      this.graph.start(0.0013);
+    }, 1_800);
+  }
+
+  private clearAmbientMotion(): void {
+    if (this.ambientTimer === null) return;
+    window.clearInterval(this.ambientTimer);
+    this.ambientTimer = null;
   }
 
   private fail(message: string): void {
     if (this.destroyed) return;
     this.cancelActivation();
     this.cancelSettle();
+    this.clearAmbientMotion();
     this.graph.pause();
     this.emit({ status: 'failed', motionPhase: 'idle', error: message });
   }
