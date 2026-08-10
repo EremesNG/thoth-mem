@@ -15,19 +15,19 @@ export default function HealthIndexingSurface({ health, contextHealth }: HealthI
     <section className="observatory-panel health-surface" aria-labelledby="health-heading" data-testid="health-indexing-surface">
       <div className="observatory-panel-header">
         <div>
-          <span className="observatory-kicker"><DatabaseZap size={14} /> Health & Indexing</span>
-          <h2 id="health-heading">Lane readiness</h2>
+          <span className="observatory-kicker"><DatabaseZap size={14} /> Memory readiness</span>
+          <h2 id="health-heading">Check what is ready to explore</h2>
         </div>
         {degraded ? <AlertTriangle size={18} className="health-warning" /> : <CheckCircle2 size={18} className="health-ready" />}
       </div>
 
       <div className="health-grid">
         <div>
-          <span>Semantic index</span>
-          <strong>{current?.semantic_state ?? 'unknown'}</strong>
+          <span>Meaning-based search</span>
+          <strong>{current?.semantic_state === 'ready' ? 'Ready' : current?.semantic_state === 'degraded' ? 'Partly ready' : 'Preparing'}</strong>
         </div>
         <div>
-          <span>Pending jobs</span>
+          <span>Memories preparing</span>
           <strong>{current?.pending_jobs ?? 0}</strong>
         </div>
       </div>
@@ -36,8 +36,8 @@ export default function HealthIndexingSurface({ health, contextHealth }: HealthI
         <Activity size={15} />
         <p>
           {degraded
-            ? 'Semantic lanes may be stale or partial; lexical, facts, and visible provenance remain usable.'
-            : 'All visible lanes are ready for scoped recall, map traversal, timeline, and ledger pivots.'}
+            ? 'Some meaning-based connections are still preparing. Saved memories and visible facts remain available.'
+            : 'Everything needed for search, exploration, history, and connected facts is ready.'}
         </p>
       </div>
     </section>

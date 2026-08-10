@@ -1,0 +1,122 @@
+.observatory-workspace { min-width: 0; padding: 20px clamp(12px,2vw,28px) 32px; }
+.observatory-header { display: flex; justify-content: space-between; gap: 16px; align-items: end; padding: 8px 0 16px; }
+.observatory-header > div:first-child { display: grid; gap: 4px; }
+.observatory-header h1 { margin: 0; letter-spacing: -.025em; }
+.observatory-header p { max-width: 660px; margin: 0; color: var(--starlight-tertiary); font-size: .82rem; line-height: 1.45; }
+.observatory-kicker { display: inline-flex; gap: 6px; align-items: center; color: var(--ion-focus); font: 700 .68rem var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.observatory-toolbar,.observatory-search,.observatory-tabs,.observatory-context-strip,.observatory-frontier-strip,.map-health-strip,.graph-command-bar,.focus-trail { display: flex; align-items: center; gap: 8px; }
+.observatory-search { min-width: min(360px,40vw); background: var(--nebula-inset); border: 1px solid var(--line); padding-left: 10px; }
+.observatory-search input { width: 100%; border: 0; }
+.map-icon-button,.icon-control { min-width: 38px; min-height: 38px; display: inline-grid; place-items: center; border: 1px solid var(--line); background: var(--nebula-plate); cursor: pointer; }
+.observatory-tabs { border-block: 1px solid var(--line-soft); padding: 6px 0; overflow-x: auto; }
+.observatory-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--starlight-tertiary); padding: 9px 14px; cursor: pointer; }
+.observatory-tabs button.active { color: var(--starlight-primary); border-bottom-color: var(--ion-focus); }
+.guided-scope-bar { position: relative; z-index: 9; display: grid; gap: 10px; margin: 12px 0; padding: 12px; border: 1px solid rgba(128,174,216,.18); border-radius: 13px; background: linear-gradient(135deg,rgba(13,22,37,.9),rgba(8,14,26,.82)); box-shadow: 0 12px 38px rgba(0,0,0,.18); }
+.guided-scope-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.guided-scope-heading > div:first-child { display: grid; gap: 3px; }
+.guided-scope-heading p { margin: 0; color: var(--starlight-tertiary); font-size: .75rem; }
+.guided-scope-kicker { display: inline-flex; align-items: center; gap: 6px; color: #b8edff; font-size: .76rem; font-weight: 700; }
+.guided-scope-resource { display: flex; align-items: center; justify-content: flex-end; gap: 9px; color: var(--starlight-tertiary); font-size: .7rem; }
+.guided-scope-resource button { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(126,174,213,.2); border-radius: 8px; background: rgba(14,27,44,.74); color: var(--starlight-secondary); padding: 0 9px; cursor: pointer; white-space: nowrap; }
+.guided-scope-resource button:hover { border-color: rgba(111,218,244,.36); color: #fff; }
+.guided-scope-resource button:disabled { opacity: .45; cursor: wait; }
+.guided-scope-bar[data-resource-state='error'] .guided-scope-resource { color: var(--degraded-coral); }
+.guided-scope-fields { display: grid; grid-template-columns: repeat(4,minmax(120px,1fr)) repeat(2,minmax(142px,.82fr)); gap: 8px; }
+.guided-filter-summary,.active-focus-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--starlight-tertiary); font-size: .68rem; }
+.guided-filter-summary button,.active-focus-summary button { min-height: 28px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(121,171,211,.2); border-radius: 999px; background: rgba(11,25,42,.78); color: var(--starlight-secondary); padding: 4px 8px; cursor: pointer; }
+.guided-filter-summary button strong { color: #a9dced; font-size: .61rem; text-transform: uppercase; letter-spacing: .04em; }
+.guided-filter-summary button:hover,.active-focus-summary button:hover { border-color: rgba(111,218,244,.4); color: #fff; }
+.active-focus-summary { margin: -4px 0 10px; }
+.active-focus-summary button span { margin-left: 3px; color: var(--degraded-coral); }
+.observatory-context-strip { flex-wrap: wrap; color: var(--starlight-tertiary); font: .72rem var(--font-sans); padding: 0 0 10px; }
+.observatory-context-strip span { border-right: 1px solid var(--line); padding-right: 10px; }
+.observatory-context-strip strong { color: var(--starlight-secondary); }
+.observatory-focus-target { outline: 0; }
+.observatory-grid { position: relative; display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; }
+.observatory-grid[data-lens-open='true'] .observatory-map-grid { grid-template-columns: minmax(0,1fr); }
+.observatory-grid[data-lens-open='true'] .observatory-map-inspector { display: none; }
+.observatory-map-surface,.instrument-dock { min-width: 0; border: 1px solid var(--line); background: rgba(11,16,20,.72); padding: 12px; }
+.observatory-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.observatory-panel-header h2 { margin-top: 4px; }
+.map-health-strip,.observatory-frontier-strip { color: var(--starlight-tertiary); font: .68rem var(--font-mono); }
+.observatory-frontier-strip { padding: 8px 0; border-top: 1px solid var(--line-soft); }
+.resource-state-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:32px; padding:6px 0; border-top:1px solid var(--line-soft); color:var(--starlight-tertiary); font:.68rem var(--font-mono); }
+.resource-state-notice > span { display: grid; gap: 2px; }
+.resource-state-notice > span strong { color: var(--starlight-secondary); font: 700 .72rem var(--font-sans); }
+.resource-state-notice > span small { font: .68rem/1.35 var(--font-sans); }
+.resource-state-notice.degraded,.resource-state-notice.error,.resource-state-notice.failed-inspection { color:var(--degraded-coral); }
+.resource-state-notice button { min-height:28px; padding:4px 9px; border:1px solid var(--line); border-radius:4px; background:var(--nebula-inset); color:inherit; }
+.graph-command-bar { position: absolute; z-index: 7; right: 14px; bottom: 14px; display: grid; gap: 1px; padding: 5px; border: 1px solid rgba(136,180,224,.2); border-radius: 14px; background: rgba(4,10,21,.8); box-shadow: 0 14px 38px rgba(0,0,0,.34); backdrop-filter: blur(14px); }
+.graph-command-bar button,.lens-actions button,.instrument-dock button,.focus-trail button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); background: var(--nebula-plate); padding: 0 10px; cursor: pointer; }
+.graph-command-bar button { width: 38px; min-height: 38px; padding: 0; border-color: transparent; border-radius: 9px; background: transparent; color: rgba(220,237,252,.72); }
+.graph-command-bar button:hover { border-color: rgba(111,218,244,.26); background: rgba(38,80,112,.32); color: #f5fbff; }
+.graph-command-bar button:disabled { opacity: .3; cursor: not-allowed; }
+.graph-command-bar svg { width: 16px; }
+.graph-command-bar button.active { color: #b9f4ff; border-color: rgba(111,218,244,.34); background: rgba(34,101,128,.28); }
+.graph-pan-pad { position: absolute; z-index: 7; right: 68px; bottom: 14px; display: grid; grid-template-columns: repeat(2,30px); gap: 2px; padding: 5px; border: 1px solid rgba(136,180,224,.16); border-radius: 12px; background: rgba(4,10,21,.72); backdrop-filter: blur(12px); }
+.graph-pan-pad button { width: 30px; min-height: 30px; border: 0; border-radius: 7px; background: transparent; color: rgba(220,237,252,.62); cursor: pointer; }
+.graph-pan-pad button:hover { background: rgba(38,80,112,.3); color: #fff; }
+.graph-trail-bar { position: absolute; z-index: 7; left: 14px; bottom: 14px; display: flex; gap: 3px; max-width: calc(100% - 190px); padding: 5px; border: 1px solid rgba(136,180,224,.18); border-radius: 14px; background: rgba(4,10,21,.8); box-shadow: 0 14px 38px rgba(0,0,0,.28); backdrop-filter: blur(14px); }
+.graph-trail-bar button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: rgba(220,237,252,.72); font-size: .72rem; cursor: pointer; white-space: nowrap; }
+.graph-trail-bar button:hover { border-color: rgba(111,218,244,.22); background: rgba(38,80,112,.3); color: #fff; }
+.graph-trail-bar button.primary { border-color: rgba(93,141,255,.34); background: linear-gradient(135deg,rgba(44,100,215,.48),rgba(94,55,189,.5)); color: #f8fbff; }
+.graph-trail-bar button:disabled { opacity: .3; cursor: not-allowed; }
+.graph-trail-bar svg { width: 15px; flex: 0 0 auto; }
+.observatory-map-grid { display: grid; grid-template-columns: minmax(0,3fr) minmax(240px,1fr); min-height: 610px; border-top: 1px solid var(--line-soft); }
+.map-stage { position: relative; min-width: 0; min-height: 610px; overflow: hidden; background: #030915; box-shadow: inset 0 0 90px rgba(0,2,9,.88); }
+.map-canvas-shell,.map-canvas { width: 100%; height: 100%; min-height: 610px; display: block; }
+.map-canvas-shell { position: relative; overflow: hidden; isolation: isolate; background: #030915; }
+.map-canvas-shell::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; background: radial-gradient(ellipse at center,transparent 42%,rgba(2,5,12,.34) 74%,rgba(1,3,9,.76)); }
+.cosmos-nebula-field { position: absolute; z-index: 1; inset: 0; overflow: hidden; pointer-events: none; mix-blend-mode: screen; }
+.cosmos-nebula-field span { position: absolute; width: 38%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle,color-mix(in srgb,var(--nebula-color) 22%,transparent),transparent 67%); filter: blur(32px); opacity: .52; }
+.cosmos-nebula-field span:nth-child(1) { left: 5%; top: 7%; }
+.cosmos-nebula-field span:nth-child(2) { right: 7%; top: 8%; }
+.cosmos-nebula-field span:nth-child(3) { right: 16%; bottom: 4%; }
+.cosmos-nebula-field span:nth-child(4) { left: 9%; bottom: 2%; }
+.cosmos-nebula-field span:nth-child(5) { left: 35%; top: 31%; width: 32%; }
+.cosmos-graph-host { position: relative; z-index: 0; isolation: isolate; }
+.cosmos-graph-host canvas { display: block; width: 100% !important; height: 100% !important; outline: 0; }
+.cosmos-graph-host canvas:focus-visible { outline: 2px solid #73e9ff; outline-offset: -4px; }
+.cosmos-renderer-status,.cosmos-renderer-fallback { position: absolute; z-index: 5; inset: 50% auto auto 50%; translate: -50% -50%; display: grid; gap: 9px; max-width: min(360px,calc(100% - 32px)); padding: 16px 18px; border: 1px solid rgba(116,213,236,.28); border-radius: 12px; background: rgba(10,18,32,.92); box-shadow: 0 18px 60px rgba(0,0,0,.34); color: var(--starlight-secondary); text-align: center; backdrop-filter: blur(14px); }
+.cosmos-renderer-fallback button { min-height: 40px; border: 1px solid rgba(116,213,236,.34); border-radius: 8px; background: rgba(28,49,72,.82); color: var(--starlight-primary); cursor: pointer; }
+.cosmos-point-tooltip { position: absolute; z-index: 8; translate: 14px calc(-100% - 14px); max-width: min(280px,calc(100% - 24px)); padding: 8px 10px; border: 1px solid rgba(116,213,236,.3); border-radius: 9px; background: rgba(5,11,23,.94); box-shadow: 0 10px 32px rgba(0,0,0,.38); color: #edfaff; font-size: .78rem; line-height: 1.35; pointer-events: none; backdrop-filter: blur(12px); }
+.cosmos-focus-layer { position: absolute; z-index: 3; inset: 0; overflow: hidden; pointer-events: none; }
+.cosmos-node-overlay { position: absolute; width: 0; height: 0; pointer-events: none; }
+.cosmos-node-aura { position: absolute; left: 50%; top: 50%; width: var(--node-aura-size); height: var(--node-aura-size); translate: -50% -50%; border-radius: 50%; background: radial-gradient(circle,color-mix(in srgb,#fff 88%,var(--node-color)) 0 3%,color-mix(in srgb,var(--node-color) 52%,transparent) 18%,color-mix(in srgb,var(--node-color) 18%,transparent) 43%,transparent 72%); box-shadow: 0 0 22px color-mix(in srgb,var(--node-color) 42%,transparent); opacity: .7; }
+.cosmos-node-aura[data-role='focus'] { outline: 1px solid color-mix(in srgb,var(--node-color) 46%,transparent); outline-offset: -4px; animation: neural-focus-breathe 2.8s ease-in-out infinite; }
+.cosmos-node-aura[data-role='neighbor'] { opacity: .38; }
+.cosmos-node-label { position: absolute; box-sizing: border-box; display: flex; align-items: center; max-width: 190px; min-height: 0; padding: 5px 8px; border: 1px solid color-mix(in srgb,var(--node-color) 34%,rgba(255,255,255,.08)); border-radius: 7px; background: rgba(4,10,21,.88); box-shadow: 0 8px 24px rgba(0,0,0,.32); color: rgba(240,248,255,.92); font: 600 .7rem/1.25 var(--font-sans); text-align: left; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; pointer-events: auto; backdrop-filter: blur(10px); }
+.cosmos-node-label[data-role='focus'] { padding: 7px 10px; border-color: color-mix(in srgb,var(--node-color) 58%,rgba(255,255,255,.16)); color: #fff; font-size: .76rem; }
+.cosmos-node-label:hover { background: rgba(11,25,43,.96); }
+.cosmos-camera-status { position: absolute; z-index: 4; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 6px 10px; border: 1px solid rgba(122,158,203,.2); border-radius: 999px; background: rgba(6,12,23,.72); color: rgba(222,239,255,.76); font-size: .72rem; letter-spacing: .01em; backdrop-filter: blur(10px); }
+.cosmos-camera-status > span { width: 7px; height: 7px; border-radius: 50%; background: #72def0; box-shadow: 0 0 12px rgba(91,216,238,.72); }
+.map-canvas-shell[data-motion-phase='settling'] .cosmos-camera-status > span,.map-canvas-shell[data-motion-phase='activating'] .cosmos-camera-status > span,.map-canvas-shell[data-motion-phase='transitioning'] .cosmos-camera-status > span { animation: cosmos-status-pulse .9s ease-in-out infinite alternate; }
+.map-canvas-shell[data-paused='true'] .cosmos-camera-status > span { background: #f6c453; box-shadow: 0 0 10px rgba(246,196,83,.48); }
+@keyframes cosmos-status-pulse { from { opacity: .45; transform: scale(.82); } to { opacity: 1; transform: scale(1.18); } }
+@keyframes neural-focus-breathe { 0%,100% { opacity: .56; scale: .96; } 50% { opacity: .86; scale: 1.08; } }
+.observatory-map-inspector { border-left: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 12px; background: var(--nebula-basin); }
+.observatory-map-inspector p { font-size: .86rem; }
+.map-provenance,.lens-provenance { display: grid; gap: 7px; margin: 0; padding-block: 10px; border-block: 1px solid var(--line-soft); }
+.map-provenance div,.lens-provenance div { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 8px; }
+dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { margin: 0; overflow-wrap: anywhere; }
+.map-inspector-actions { display: grid; gap: 6px; }.map-inspector-actions button { min-height: 36px; border: 1px solid var(--line); background: var(--nebula-plate); cursor:pointer; }
+.map-state-banner { position: absolute; z-index: 2; inset: 12px 12px auto; display:flex;gap:8px;align-items:center;padding:10px;background:var(--nebula-elevated);border:1px solid var(--degraded-coral); }
+.graph-navigator { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.graph-navigator header { display:flex;justify-content:space-between;color:var(--starlight-tertiary);font:.68rem var(--font-mono); }.graph-navigator ul { display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px;max-height:150px;overflow:auto;padding:6px 0;margin:0;list-style:none; }.graph-navigator li { display:grid;grid-template-columns:1fr 34px;background:var(--nebula-inset);border-left:2px solid transparent; }.graph-navigator li.active{border-color:var(--ion-focus)}.graph-navigator button{border:0;background:transparent;text-align:left;padding:8px;color:var(--starlight-secondary);font:.68rem var(--font-mono)}.graph-navigator .navigator-expand{text-align:center;border-left:1px solid var(--line-soft)}
+.memory-lens { position: fixed; z-index: 12; right: 24px; top: 24px; width: min(410px,calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow:auto; display:grid;gap:14px;padding:18px;border:1px solid rgba(120,191,221,.3);border-radius:16px;background:linear-gradient(160deg,rgba(17,31,49,.98),rgba(8,15,27,.98));box-shadow:0 26px 78px rgba(0,0,0,.52);backdrop-filter:blur(18px); }.memory-lens header{display:flex;justify-content:space-between;gap:12px}.memory-lens header>div{min-width:0;display:grid;gap:4px}.memory-lens header h2{margin:0;color:#f5fbff;font-size:1.15rem;line-height:1.25;overflow-wrap:anywhere}.lens-kicker{display:inline-flex;align-items:center;gap:6px;color:#9eeaff;font-size:.68rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.memory-lens .node-kind{width:fit-content;color:var(--engram-amber);font:.68rem var(--font-sans);font-weight:700}.lens-summary,.lens-section,.lens-connections{display:grid;gap:7px}.lens-summary h3,.lens-section h3,.lens-connections h3{margin:0;color:var(--starlight-secondary);font-size:.76rem}.lens-summary p{margin:0;color:var(--starlight-primary);font-size:.88rem;line-height:1.5}.lens-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}.lens-actions .lens-primary-action{grid-column:1/-1;min-height:42px;border-color:rgba(91,211,236,.42);background:linear-gradient(135deg,rgba(33,120,154,.62),rgba(91,61,174,.56));color:#fff}.lens-state{display:flex;align-items:center;gap:8px;min-height:100px}.lens-state.degraded{color:var(--degraded-coral)}.lens-connections ul{display:grid;gap:4px;padding:0;margin:0;list-style:none}.lens-connections button{width:100%;border:1px solid var(--line-soft);border-radius:8px;background:var(--nebula-inset);padding:9px;text-align:left;color:var(--starlight-secondary)}
+.technical-disclosure { border-top: 1px solid var(--line-soft); padding-top: 9px; color: var(--starlight-tertiary); }
+.technical-disclosure summary { width: fit-content; color: var(--starlight-tertiary); font-size: .68rem; cursor: pointer; }
+.technical-disclosure[open] summary { margin-bottom: 9px; color: var(--starlight-secondary); }
+.technical-disclosure code { display: block; padding: 7px; border-radius: 6px; background: var(--nebula-inset); color: var(--ion-focus); font: .66rem var(--font-mono); overflow-wrap: anywhere; }
+.lens-technical-list { display: grid; gap: 5px; margin: 8px 0 0; }
+.lens-technical-list div { display: grid; grid-template-columns: minmax(70px,.45fr) minmax(0,1fr); gap: 8px; }
+.instrument-dock { max-height: min(680px,78vh); overflow:auto; }
+.observatory-side-stack,.recall-lanes,.timeline-list,.ledger-sections { display:grid;gap:10px; }.recall-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}.recall-lane,.timeline-event,.ledger-section,.health-card { padding:12px;border:1px solid var(--line-soft);background:var(--nebula-basin); }
+.focus-trail { justify-content:flex-end;margin-bottom:8px;color:var(--starlight-tertiary);font:.68rem var(--font-mono); }
+.badge { width:fit-content;color:var(--engram-amber);font:.65rem var(--font-mono);text-transform:uppercase; }
+.error-container,.observatory-error { padding:10px;border:1px solid var(--degraded-coral);color:var(--degraded-coral); }
+@supports not (backdrop-filter: blur(1px)) { .memory-lens { background: var(--nebula-elevated); } }
+@media (prefers-reduced-motion: reduce) { .cosmos-camera-status > span,.cosmos-node-aura { animation: none !important; transform: none !important; } }
+@media (max-width: 1080px) { .guided-scope-fields{grid-template-columns:repeat(3,minmax(0,1fr))}.observatory-map-grid{grid-template-columns:1fr}.observatory-map-inspector{border-left:0;border-top:1px solid var(--line);min-height:180px}.observatory-map-grid,.map-stage,.map-canvas-shell,.map-canvas{min-height:520px} }
+@media (max-width: 720px) { .observatory-workspace{padding:10px}.observatory-header{align-items:stretch;flex-direction:column}.observatory-toolbar{width:100%}.observatory-search{min-width:0;flex:1}.guided-scope-heading{align-items:flex-start;flex-direction:column}.guided-scope-resource{width:100%;justify-content:space-between}.guided-scope-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.observatory-map-grid,.map-stage,.map-canvas-shell,.map-canvas{min-height:430px}.memory-lens{inset:auto 0 0;width:100%;max-height:70svh;border-inline:0}.recall-lanes{grid-template-columns:1fr}.graph-command-bar{right:8px;bottom:8px}.graph-command-bar button svg{width:17px}.graph-pan-pad{display:none}.graph-trail-bar{left:8px;bottom:8px;max-width:calc(100% - 64px)}.graph-trail-bar button span{display:none}.graph-trail-bar button{width:38px;padding:0;justify-content:center}.cosmos-node-label[data-role='neighbor']{display:none} }
+@media (max-width: 430px) { .guided-scope-fields{grid-template-columns:1fr}.guided-scope-resource span{max-width:58%} }

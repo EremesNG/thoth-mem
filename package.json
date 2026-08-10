@@ -45,7 +45,7 @@
     "release:major": "npm version major --ignore-scripts=false && git push --follow-tags"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
   },
   "keywords": [
     "mcp",

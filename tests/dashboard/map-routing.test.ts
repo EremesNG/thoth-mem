@@ -12,11 +12,11 @@ describe('dashboard v2 routing', () => {
     expect(DASHBOARD_ROUTES.indexing).toBe('/console/indexing');
     expect(DASHBOARD_ROUTES.graphLite).toBe('/console/graph');
 
-    expect(resolveDashboardRoute('/')).toBe('retrieval');
+    expect(resolveDashboardRoute('/')).toBe('observatory');
     expect(resolveDashboardRoute('/console/operations')).toBe('operations');
     expect(resolveDashboardRoute('/console/traces')).toBe('traces');
     expect(resolveDashboardRoute('/console/indexing')).toBe('indexing');
-    expect(resolveDashboardRoute('/console/graph')).toBe('graphLite');
+    expect(resolveDashboardRoute('/console/graph')).toBe('observatoryAlias');
   });
 
   it('keeps API and legacy paths out of dashboard route resolution', () => {
@@ -31,7 +31,7 @@ describe('dashboard v2 routing', () => {
 
   it('keeps the graph dashboard deep link distinct from graph API routes', () => {
     expect(DASHBOARD_ROUTES.graphLite).toBe('/console/graph');
-    expect(resolveDashboardRoute('/console/graph')).toBe('graphLite');
+    expect(resolveDashboardRoute('/console/graph')).toBe('observatoryAlias');
     expect(resolveDashboardRoute('/projects/thoth-mem/graph')).toBe('unknown');
   });
 

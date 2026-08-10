@@ -1,4 +1,4 @@
-# Dashboard UI
+# Dashboard UI — Neural Observatory
 
 ## Responsibility
 
@@ -6,11 +6,17 @@ Owns the React/Vite operations console, browser routing/state, visualization and
 
 ## Entry points and flow
 
-- `dashboard/src/main.tsx`, `App.tsx`, `routes.ts`, `router.tsx`: application bootstrap and browser routing.
+- `dashboard/src/main.tsx`, `App.tsx`, `routes.ts`, `router.tsx`: thin application bootstrap and normalized pathname/search routing. `/` is the canonical graph observatory; `/console/graph` is its reloadable alias.
 - `dashboard/src/api/client.ts`: typed HTTP client and client-side response shapes.
-- `dashboard/src/components/`: overview, search, project/topic/observation views.
-- `dashboard/src/components/map/` and `observatory/`: graph/map projection, state, rendering, filters, recall/timeline/health surfaces.
-- `dashboard/src/index.css`: shared styling; `dashboard/vite.config.ts`: build integration.
+- `dashboard/src/components/AppShell.tsx`: responsive command rail/drawer and one-step Observatory/Control Room navigation.
+- `dashboard/src/components/map/cosmos-graph-data.ts` and `cosmos-graph-runtime.ts`: the pure GPU adapter and sole cosmos.gl lifecycle. The approved visual grammar is an ArcRift-inspired organic neural field—circular degree-scaled nodes, deterministic community colors, curved directional links, local focus labels, and subdued unrelated context—without copying ArcRift code, layout, or branding.
+- `dashboard/src/components/map/MapCanvas.tsx`, `GraphNavigator.tsx`, and `observatory/MemoryMapSurface.tsx`: renderer facade, DOM-backed semantic navigation, viewport commands, and the preserved non-GPU exploration path.
+- `dashboard/src/components/GuidedSelect.tsx` and `observatory/ObservatoryScopeBar.tsx`: the shared closed searchable selector used across Observatory and Control Room. Project changes invalidate and reload dependent session/topic/type/relation choices before graph requests resume. Semantic cue search is the only unrestricted observatory filter text field.
+- `dashboard/src/components/dashboard-presentation.ts` and `safe-presentation.ts`: centralized human labels, collision-safe option presentation, bounded technical disclosure, and mandatory private-text removal.
+- `dashboard/src/components/observatory/`: graph coordination, Memory Lens, and goal-oriented related-memory/story/history/readiness instruments.
+- `dashboard/src/components/control-room/`: operations, traces, indexing and confirmed state-changing commands at `/console/operations`, `/console/traces`, and `/console/indexing`.
+- `dashboard/src/components/safe-presentation.ts`: mandatory stored-text and bounded-result presentation boundary. Both `<private>` and `[private]` blocks must be removed before rendering.
+- `dashboard/src/index.css` imports `styles/shell.css`, `styles/observatory.css`, `styles/control-room.css`, and the shared `styles/controls.css`; all fonts and assets remain local.
 
 The dashboard is served through the HTTP bridge at `/`; `/docs` remains the OpenAPI surface. Client changes that require a new or changed endpoint must treat [surfaces](surfaces.md) as an overlay and verify both sides of the contract.
 
@@ -18,13 +24,21 @@ The dashboard is served through the HTTP bridge at `/`; `/docs` remains the Open
 
 - Preserve browser history/popstate behavior and URL decoding in the custom router.
 - Keep client types aligned with actual HTTP payloads; do not infer a server contract from a component alone.
-- Preserve safe rendering for stored content; inspect `SafeMarkdown.tsx` before changing markdown/content presentation.
-- Map and observatory code separates state/projection/rendering; avoid unrelated visual rewrites during behavior fixes.
-- No dashboard test script is declared. Do not invent one or claim browser/end-to-end coverage that is not present.
+- All stored labels, snippets, trace bodies and command results must use the central safe-presentation adapter. Raw private-marked text is never a permissible fallback.
+- `ObservatoryWorkspace` is the sole graph coordinator and `MapCanvas` is the sole canvas/zoom lifecycle. Dataset replacement and unmount must abort requests and detach observers/listeners.
+- `ObservatoryState.focusNodeId` is the single source of truth for node focus; only edge selection remains separate. Initial URLs, popstate, token pivots, node pivots, traversal, trail restoration, clear, and invalid-focus recovery must keep URL, context, GPU focus, semantic navigation, and Lens identity aligned.
+- cosmos.gl is dynamically imported only after a WebGL2 capability check. A failed or lost graphics context must keep current scope, selection, `GraphNavigator`, and instruments usable; Retry remounts one renderer instance and restores the same focus.
+- Focus and neighbor labels are prioritized in screen space: focus is always shown, lower-priority neighbor labels may be omitted when no collision-free placement exists, and layout is recomputed after simulation, camera, or host-size changes.
+- Structured scope controls commit only values returned by filter metadata (plus the explicit unfiltered choice). Search text inside a combobox is never a committed API/URL value. Metadata requests are abortable and generation guarded; stale project-dependent results cannot restore cleared choices.
+- User-facing copy names goals and outcomes first. Canonical node IDs, relation tokens, trace evidence, lane identifiers, and operation details belong inside bounded technical disclosure unless required for the task itself.
+- Canvas interaction always has a keyboard command and DOM-backed semantic equivalent. Preserve focus-visible, controlled live regions, narrow-screen sheets/drawer and reduced-motion behavior.
+- Graph requests remain bounded by current HTTP caps; dense low-zoom views thin nonessential edges and expansion merges stable node/edge IDs.
+- Create observation, graph rebuild and index rebuild require explicit confirmation and a pending lock.
+- No dashboard package test script is declared. Root Vitest owns dashboard tests, including the in-repository real-Chrome harness; every harness run must close CDP, Chrome, Vite, HTTP bridge, SQLite store, ports, and temporary profiles under bounded cleanup.
 
 ## Tests and verification
 
-Use root Vitest suites in `tests/dashboard/` plus `tests/http-viz.test.ts` or `tests/http-server.test.ts` when contracts change. Run `pnpm run dashboard:typecheck`; use focused tests first, then the root build when TypeScript/build output changes. Visual behavior may require explicit browser QA, but no automated browser command is confirmed by current manifests.
+Use root Vitest suites in `tests/dashboard/` plus `tests/http-viz.test.ts` when visualization contracts are exercised. Run `pnpm run dashboard:typecheck`, `pnpm exec vitest run tests/dashboard`, `pnpm exec vitest run tests/http-viz.test.ts`, then `pnpm run build`. Visual changes require real-browser QA at 1440×900, 1024×768, and 360×800, 200% page scale, coarse pointer, reduced motion, GPU-disabled fallback/retry, local-only networking, and zero horizontal page overflow. Record whether the invoked Vitest browser harness or another explicit browser tool supplied the evidence.
 
 ## Escalate context
 

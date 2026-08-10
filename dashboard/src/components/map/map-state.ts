@@ -1,5 +1,6 @@
 import type { VizDensityState, VizEdge, VizNode, VizSliceResponse } from '../../api/client.js';
 import type { MapFilters } from './map-types.js';
+import { presentStoredText } from '../safe-presentation.js';
 
 export const DEFAULT_MAP_FILTERS: MapFilters = {
   project: '',
@@ -19,13 +20,7 @@ export function isWorkspaceRoute(path: string): boolean {
 }
 
 export function sanitizeMapText(value: string | null | undefined): string {
-  if (!value) return '';
-
-  return value
-    .replace(/<private>[\s\S]*?<\/private>/gi, ' ')
-    .replace(/\[private\][\s\S]*?\[\/private\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return presentStoredText(value);
 }
 
 export function parseMapFilters(search: string): MapFilters {
@@ -78,6 +73,13 @@ export function mergeVizSlices(base: VizSliceResponse, incoming: VizSliceRespons
     nodes: Array.from(nodes.values()),
     edges: Array.from(edges.values()),
   };
+}
+
+export function mergeVizSlicesWithOutcome(base: VizSliceResponse, incoming: VizSliceResponse) {
+  const visibleNodes = new Set(base.nodes.map((node) => node.id));
+  const addedNodeIds = incoming.nodes.filter((node) => !visibleNodes.has(node.id)).map((node) => node.id);
+  const alreadyVisibleNodeIds = incoming.nodes.filter((node) => visibleNodes.has(node.id)).map((node) => node.id);
+  return { slice: mergeVizSlices(base, incoming), addedNodeIds, alreadyVisibleNodeIds, continuation: incoming.continuation, exhausted: !incoming.continuation && addedNodeIds.length === 0 };
 }
 
 export function selectVisibleEdges(edges: VizEdge[], zoom: number, state: VizDensityState): VizEdge[] {

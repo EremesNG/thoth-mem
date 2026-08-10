@@ -3,7 +3,7 @@ import type { MapData } from '../map/map-types.js';
 
 export function nodeIdToObservationId(nodeId: string | null): number | null {
   if (!nodeId) return null;
-  const match = nodeId.match(/(\d+)$/);
+  const match = nodeId.match(/^obs:(\d+)$/);
   return match ? Number(match[1]) : null;
 }
 
@@ -50,5 +50,11 @@ export function formatShortDate(value: string): string {
 }
 
 export function readableLane(value: string): string {
-  return value.replace(/-/g, ' ');
+  const labels: Record<string, string> = {
+    lexical: 'Same words',
+    'sentence-vector': 'Similar meaning',
+    'chunk-vector': 'Related passages',
+    'fact-kg': 'Connected facts',
+  };
+  return labels[value] ?? value.replace(/-/g, ' ');
 }

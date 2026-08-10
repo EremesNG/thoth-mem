@@ -724,14 +724,14 @@ export const api = {
     const query = new URLSearchParams();
     if (params?.project) query.append('project', params.project);
     const queryString = query.toString();
-    return apiFetch<VizInspectNodeResponse>(`/viz/inspect/node/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+    return apiFetch<VizInspectNodeResponse>(`/viz/inspect/node/${id.split(':').map(encodeURIComponent).join(':')}${queryString ? `?${queryString}` : ''}`, { signal });
   },
 
   inspectVizEdge: (id: string, params?: { project?: string }, signal?: AbortSignal): Promise<VizInspectEdgeResponse> => {
     const query = new URLSearchParams();
     if (params?.project) query.append('project', params.project);
     const queryString = query.toString();
-    return apiFetch<VizInspectEdgeResponse>(`/viz/inspect/edge/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+    return apiFetch<VizInspectEdgeResponse>(`/viz/inspect/edge/${id.split(':').map(encodeURIComponent).join(':')}${queryString ? `?${queryString}` : ''}`, { signal });
   },
 
   getVizFilters: (params?: { project?: string; session_id?: string }, signal?: AbortSignal): Promise<VizFiltersResponse> => {

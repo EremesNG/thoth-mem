@@ -1,6 +1,8 @@
 import { Filter, RefreshCw, RotateCcw, Search } from 'lucide-react';
 
 import type { VizFiltersResponse } from '../../api/client.js';
+import GuidedSelect from '../GuidedSelect.js';
+import { presentObservationType, presentRelation } from '../dashboard-presentation.js';
 import type { MapFilters } from './map-types.js';
 import { DEFAULT_MAP_FILTERS } from './map-state.js';
 
@@ -35,6 +37,9 @@ export default function MapFiltersPanel({
   onLoadMore,
 }: MapFiltersPanelProps) {
   const patch = (next: Partial<MapFilters>) => onChange({ ...filters, ...next, continuation: null });
+  const typeOptions = (availableFilters?.types ?? []).map((value) => ({ value, label: presentObservationType(value) }));
+  const relationOptions = (availableFilters?.relations.length ? availableFilters.relations : fallbackRelations)
+    .map((value) => ({ value, label: presentRelation(value) }));
 
   return (
     <aside className="map-filter-rail" aria-label="Map filters">
@@ -83,22 +88,22 @@ export default function MapFiltersPanel({
       </label>
 
       <div className="map-field-grid">
-        <label className="map-field">
-          <span>Type</span>
-          <select value={filters.type} onChange={(event) => patch({ type: event.target.value as MapFilters['type'] })}>
-            <option value="">All</option>
-            {availableFilters?.types.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-        </label>
+        <GuidedSelect
+          label="Type"
+          value={filters.type || undefined}
+          options={typeOptions}
+          allLabel="All types"
+          emptyMessage="No memory types found"
+          onChange={(value) => patch({ type: (value ?? '') as MapFilters['type'] })}
+        />
 
-        <label className="map-field">
-          <span>Relation</span>
-          <select value={filters.relation} onChange={(event) => patch({ relation: event.target.value })}>
-            <option value="">All</option>
-            {(availableFilters?.relations.length ? availableFilters.relations : fallbackRelations)
-              .map((relation) => <option key={relation} value={relation}>{relation}</option>)}
-          </select>
-        </label>
+        <GuidedSelect
+          label="Relation"
+          value={filters.relation || undefined}
+          options={relationOptions}
+          allLabel="All connections"
+          onChange={(value) => patch({ relation: value ?? '' })}
+        />
       </div>
 
       <label className="map-field">

@@ -7,6 +7,9 @@ const apiBaseUrl = `http://localhost:${process.env.THOTH_HTTP_PORT ?? '7438'}`;
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    mainFields: ['module', 'browser', 'jsnext:main', 'jsnext'],
+  },
   root: resolve(__dirname),
   base: '/',
   build: {

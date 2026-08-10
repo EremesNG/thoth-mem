@@ -1,7 +1,25 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import { api, normalizeProjectGraphResponse } from '../../dashboard/src/api/client.js';
 import type { ProjectGraphFact, ProjectGraphResponse } from '../../dashboard/src/api/client.js';
+
+describe('dashboard graph dependency inventory', () => {
+  it('ships the approved local MIT cosmos engine without Cosmograph licensing', () => {
+    const dashboardPackage = JSON.parse(readFileSync(new URL('../../dashboard/package.json', import.meta.url), 'utf8')) as { dependencies: Record<string, string> };
+    const cosmosPackage = JSON.parse(readFileSync(new URL('../../dashboard/node_modules/@cosmos.gl/graph/package.json', import.meta.url), 'utf8')) as { name: string; version: string; license: string };
+    const lockfile = readFileSync(new URL('../../pnpm-lock.yaml', import.meta.url), 'utf8');
+    const runtime = readFileSync(new URL('../../dashboard/src/components/map/cosmos-graph-runtime.ts', import.meta.url), 'utf8');
+
+    expect(dashboardPackage.dependencies['@cosmos.gl/graph']).toMatch(/^\^3\.4\./);
+    expect(Object.keys(dashboardPackage.dependencies).some((name) => /cosmograph/i.test(name))).toBe(false);
+    expect(cosmosPackage).toMatchObject({ name: '@cosmos.gl/graph', version: '3.4.0', license: 'MIT' });
+    expect(lockfile).toContain('@cosmos.gl/graph@3.4.0');
+    expect(lockfile).not.toMatch(/cosmograph/i);
+    expect(runtime).toContain("import('@cosmos.gl/graph')");
+    expect(runtime).not.toMatch(/https?:\/\//);
+  });
+});
 
 describe('api.getMcpVersion', () => {
   it('reads the MCP version from the OpenAPI info payload', async () => {
@@ -184,8 +202,8 @@ describe('viz client routes', () => {
       expect(String(calls[0].input)).toContain('query=token');
       expect(String(calls[1].input)).toBe('/viz/expand');
       expect(calls[1].init?.method).toBe('POST');
-      expect(String(calls[2].input)).toContain('/viz/inspect/node/obs%3A1?project=p1');
-      expect(String(calls[3].input)).toContain('/viz/inspect/edge/edge%3A1?project=p1');
+      expect(String(calls[2].input)).toContain('/viz/inspect/node/obs:1?project=p1');
+      expect(String(calls[3].input)).toContain('/viz/inspect/edge/edge:1?project=p1');
       expect(String(calls[4].input)).toContain('/viz/filters?project=p1&session_id=s1');
       expect(String(calls[5].input)).toContain('/viz/health?project=p1');
     } finally {

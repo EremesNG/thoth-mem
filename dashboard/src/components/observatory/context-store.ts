@@ -10,6 +10,9 @@ export interface ObservatoryState {
   visibleNodeIds: string[];
   continuation: string | null;
   lanes: ObservatoryLane[];
+  density: 'focus' | 'balanced' | 'wide';
+  focusTrail: string[];
+  focusTrailIndex: number;
 }
 
 export const DEFAULT_OBSERVATORY_LANES: ObservatoryLane[] = ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'];
@@ -24,6 +27,9 @@ export function createInitialObservatoryState(): ObservatoryState {
     visibleNodeIds: [],
     continuation: null,
     lanes: [...DEFAULT_OBSERVATORY_LANES],
+    density: 'balanced',
+    focusTrail: [],
+    focusTrailIndex: -1,
   };
 }
 
@@ -41,6 +47,8 @@ export function applyObservatoryPivot(state: ObservatoryState, input: { contextT
     contextToken: input.contextToken,
     focusNodeId: input.focusNodeId,
     scope: { ...state.scope, ...(input.scope ?? {}) },
+    focusTrail: [...state.focusTrail.slice(0, state.focusTrailIndex + 1), input.focusNodeId].slice(-24),
+    focusTrailIndex: Math.min(23, state.focusTrailIndex + 1),
   };
 }
 
@@ -55,7 +63,7 @@ export function mergeVisibleNodeIds(state: ObservatoryState, nodeIds: string[]):
   };
 }
 
-export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'focusNodeId' | 'activeSurface' | 'continuation'> {
+export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
   const params = new URLSearchParams(search);
   const surface = parseObservatorySurface(params.get('surface'));
   const scope: ObservatoryScope = {};
@@ -83,6 +91,7 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
     focusNodeId: params.get('focus') || null,
     activeSurface: surface,
     continuation: params.get('continuation'),
+    density: params.get('density') === 'focus' || params.get('density') === 'wide' ? params.get('density') as 'focus' | 'wide' : 'balanced',
   };
 }
 
@@ -99,10 +108,11 @@ export function serializeObservatoryState(state: ObservatoryState): string {
   if (state.scope.time_from) params.set('time_from', state.scope.time_from);
   if (state.scope.time_to) params.set('time_to', state.scope.time_to);
   if (state.continuation) params.set('continuation', state.continuation);
+  if (state.density !== 'balanced') params.set('density', state.density);
   return params.toString();
 }
 
-export function buildObservatoryUrl(state: ObservatoryState, basePath = '/observatory'): string {
+export function buildObservatoryUrl(state: ObservatoryState, basePath = '/'): string {
   const search = serializeObservatoryState(state);
   return `${basePath}${search ? `?${search}` : ''}`;
 }
@@ -122,3 +132,12 @@ export function parseObservatorySurface(value: string | null): ObservatorySurfac
   }
   return DEFAULT_OBSERVATORY_SURFACE;
 }
+
+export function recoverObservatoryFocus(state: ObservatoryState, visibleNodeIds: string[]): ObservatoryState {
+  if (!state.focusNodeId || visibleNodeIds.includes(state.focusNodeId)) return { ...state, visibleNodeIds };
+  return { ...state, focusNodeId: null, visibleNodeIds, focusTrail: [], focusTrailIndex: -1 };
+}
+
+export type InstrumentCache<T> = Record<Exclude<ObservatorySurface, 'map'>, T | null>;
+export function createInstrumentCache<T>(): InstrumentCache<T> { return { recall: null, timeline: null, ledger: null, health: null }; }
+export function retainInstrumentState<T>(cache: InstrumentCache<T>, surface: Exclude<ObservatorySurface, 'map'>, value: T): InstrumentCache<T> { return { ...cache, [surface]: value }; }
