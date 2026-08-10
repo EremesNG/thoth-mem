@@ -3,30 +3,54 @@
 ## Requirements
 
 ### Requirement: Dashboard MUST Provide a Connected Observatory Workspace
-The dashboard MUST present a connected observatory workspace composed of Recall Workspace, Memory Map, Timeline, Knowledge Ledger, and Health & Indexing surfaces in one coordinated product experience.
 
-#### Scenario: Observatory surfaces are available in one workspace
-- GIVEN a user opens the dashboard
-- WHEN the default dashboard workspace is rendered
-- THEN the UI MUST expose all five observatory surfaces as connected, navigable surfaces rather than isolated tools
+Recall, timeline, ledger, and health MUST be presented as supporting instruments that inherit the current graph scope/focus when their existing contracts support it and preserve graph context when opened or closed.
 
-#### Scenario: Surface state remains coordinated
-- GIVEN a user changes project/session/topic/time scope in any observatory surface
-- WHEN another surface becomes active
-- THEN shared scope state MUST remain synchronized unless the user explicitly resets it
+#### Scenario: US4 - Use memory instruments in context 1
+
+- **GIVEN** a focused node
+- **WHEN** the user opens recall, timeline, ledger, or health
+- **THEN** the instrument is scoped to the same context whenever its HTTP contract supports that scope
+
+#### Scenario: US4 - Use memory instruments in context 2
+
+- **GIVEN** no node is focused
+- **WHEN** an instrument opens
+- **THEN** it uses the active global scope and clearly identifies that no node-specific pivot is applied
+
+#### Scenario: US4 - Use memory instruments in context 3
+
+- **GIVEN** the user closes or switches an instrument
+- **WHEN** the graph regains focus
+- **THEN** its selected node and viewport remain usable
 
 ### Requirement: Dashboard MUST Preserve Context Across Cross-Surface Pivots
-Cross-surface pivots MUST preserve active context including selected entity focus, project/session scope, topic key filters, time window, retrieval evidence context, and relation filters when available.
 
-#### Scenario: Recall evidence pivots to map without losing scope
-- GIVEN Recall Workspace returns ranked evidence under active project, session, and topic filters
-- WHEN the user pivots a selected evidence item into Memory Map
-- THEN the map MUST open focused on the related entity neighborhood while preserving the active scope and filters
+Guided selector changes MUST normalize one shared scope for graph, Lens, supporting instruments, URL state, and browser history, including visible recovery when dependent selections become invalid.
 
-#### Scenario: Timeline event pivots to ledger with preserved context
-- GIVEN a user is viewing a constrained timeline window
-- WHEN the user pivots from a timeline event into Knowledge Ledger
-- THEN ledger provenance and extracted fields MUST load for that event without dropping the current timeline/project/session context
+#### Scenario: US2 - Refine the graph without invalid filters 1
+
+- **GIVEN** visualization filter metadata is available
+- **WHEN** the scope bar renders
+- **THEN** project, session, topic, type, relation, and density use closed or searchable selection controls and only the semantic search cue remains free text
+
+#### Scenario: US2 - Refine the graph without invalid filters 2
+
+- **GIVEN** a project selection changes the valid session, topic, type, or relation option set
+- **WHEN** dependent metadata resolves
+- **THEN** invalid dependent selections clear visibly and the user is offered only compatible choices
+
+#### Scenario: US2 - Refine the graph without invalid filters 3
+
+- **GIVEN** the user chooses or removes a filter
+- **WHEN** the graph and an instrument update
+- **THEN** both receive the same normalized scope and browser history can restore it
+
+#### Scenario: US2 - Refine the graph without invalid filters 4
+
+- **GIVEN** filter metadata is loading, empty, or unavailable
+- **WHEN** the user opens a selector
+- **THEN** the control communicates that state without falling back to unrestricted text entry
 
 ### Requirement: Dashboard MUST Expose Memory Semantics in UI Behavior
 Dashboard behavior MUST make observation type, What/Why/Where/Learned structure, topic keys, sessions, projects, vectors, KG/fact relationships, provenance, and index health directly meaningful through filters, labels, drilldowns, and navigation affordances.
@@ -42,30 +66,60 @@ Dashboard behavior MUST make observation type, What/Why/Where/Learned structure,
 - THEN provenance/source context and indexing health status MUST be visible alongside those results
 
 ### Requirement: Depth and Neighbor Expansion MUST Represent Real Traversal Frontiers
-Depth controls and neighbor expansion MUST represent bounded graph/semantic traversal frontiers, returning incremental unseen neighborhoods and explicit frontier state (added, already-visible, exhausted) rather than re-showing the same subgraph as expansion progress.
 
-#### Scenario: Depth increases traversal radius
-- GIVEN a selected focus node with depth set to N
-- WHEN the user increases depth to N+1
-- THEN traversal MUST include additional reachable frontier entities for that step when available
+The dashboard MUST expand a focused node through existing bounded visualization/frontier contracts, deduplicate merged nodes and edges, preserve current selection, and report added, already-visible, truncated, continuation, or exhausted outcomes.
 
-#### Scenario: Neighbor expansion reports frontier outcomes
-- GIVEN a selected node has partial neighborhood rendered
-- WHEN the user invokes expand neighbors
-- THEN the dashboard MUST indicate whether new neighbors were added, all candidates were already visible, or no additional neighbors remain
+#### Scenario: US2 - Follow a trail of related memories 1
 
-### Requirement: Dashboard MUST Remain Local-First, Privacy-Safe, and Read-Only
-The observatory workspace MUST remain local-first and read-only, and MUST preserve privacy-safe rendering boundaries for map, recall, timeline, ledger, and health surfaces.
+- **GIVEN** a project, session, topic, type, relation, or text cue
+- **WHEN** the user applies it
+- **THEN** the graph and supporting instruments resolve the same visible scope and display removable active filters
 
-#### Scenario: Exploration remains non-mutating
-- GIVEN a user navigates across all observatory surfaces
-- WHEN available actions are inspected
-- THEN no create/update/delete memory mutation action MUST be available in this change scope
+#### Scenario: US2 - Follow a trail of related memories 2
 
-#### Scenario: Private content remains protected across surfaces
-- GIVEN source memory includes private-tagged content
-- WHEN summaries, labels, and previews are rendered
-- THEN disallowed private-tag content MUST NOT be exposed by default in any observatory surface
+- **GIVEN** a selected node
+- **WHEN** the user opens its memory lens
+- **THEN** enriched details and actions for expansion, recall, timeline, or ledger are available when the node supports them
+
+#### Scenario: US2 - Follow a trail of related memories 3
+
+- **GIVEN** a sequence of focused nodes
+- **WHEN** the user uses focus back/forward or browser back/forward
+- **THEN** the prior scope, focused node, and usable viewport are restored
+
+#### Scenario: US2 - Follow a trail of related memories 4
+
+- **GIVEN** an expanded neighborhood contains nodes already visible
+- **WHEN** the result is merged
+- **THEN** node and edge identity remains unique and the user sees what was added or exhausted
+
+### Requirement: Local-first visual delivery
+
+The renderer, selectors, labels, fonts, and animations MUST be packaged locally under dependencies compatible with the repository license and MUST NOT transmit graph or filter data to external services.
+
+#### Scenario: US4 - Retain a usable observatory across devices and renderer failures 1
+
+- **GIVEN** the rich canvas is active
+- **WHEN** focus, hover, selection, expansion, or filtering changes it
+- **THEN** the DOM-backed graph navigator exposes the same visible and selected memory state
+
+#### Scenario: US4 - Retain a usable observatory across devices and renderer failures 2
+
+- **GIVEN** the GPU renderer cannot initialize or loses its context
+- **WHEN** the failure is detected
+- **THEN** the observatory presents a bounded recovery action and the semantic navigator remains usable
+
+#### Scenario: US4 - Retain a usable observatory across devices and renderer failures 3
+
+- **GIVEN** a narrow viewport or 200% text zoom
+- **WHEN** selectors, Memory Lens, or instruments open
+- **THEN** the graph remains reachable and the page does not overflow horizontally
+
+#### Scenario: US4 - Retain a usable observatory across devices and renderer failures 4
+
+- **GIVEN** stored content contains supported private markers
+- **WHEN** any new label, tooltip, selector, or technical disclosure renders it
+- **THEN** private content remains absent
 
 ### Requirement: Dashboard MUST Default to an Observatory Workspace
 The dashboard MUST open to an observatory workspace where the Memory Map is one primary connected surface among Recall Workspace, Timeline, Knowledge Ledger, and Health & Indexing, rather than being the whole default product experience.
@@ -82,13 +136,27 @@ The dashboard MUST open to an observatory workspace where the Memory Map is one 
 
 ## Production Hardening Dashboard V2 Requirements
 
-### Requirement: Dashboard V2 MUST Be Rebuilt as an Operator Console
-The dashboard MUST be replaced by a v2 operator console that treats the old dashboard components as disposable and centers current production workflows.
+### Requirement: Canonical graph home
 
-#### Scenario: Dashboard defaults to operations console
-- GIVEN a user opens `/`
-- WHEN the dashboard loads
-- THEN the first viewport MUST show current runtime health, retrieval lane status, trace activity, and actionable navigation
+The dashboard MUST make the graph-first Neural Observatory the canonical initial workspace and MUST load a bounded initial graph slice after scope resolution without requiring a separate load button.
+
+#### Scenario: US1 - Explore the memory nebula 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the dashboard finishes resolving its initial scope
+- **THEN** the memory graph is the dominant workspace and loads a bounded initial slice automatically
+
+#### Scenario: US1 - Explore the memory nebula 2
+
+- **GIVEN** a graph with multiple node kinds and communities
+- **WHEN** it renders
+- **THEN** kind, focus, relationship strength, and health are distinguishable without relying on color alone
+
+#### Scenario: US1 - Explore the memory nebula 3
+
+- **GIVEN** the graph is larger than the viewport
+- **WHEN** the user pans, zooms, fits, pauses, or resumes it
+- **THEN** the viewport changes predictably without losing the current focus
 
 ### Requirement: Dashboard MUST Visualize Four Retrieval Lanes
 Dashboard V2 MUST make sentence vector, chunk vector, lexical FTS, and knowledge graph lanes visible in recall results, lane status, and explanatory details.
@@ -99,12 +167,26 @@ Dashboard V2 MUST make sentence vector, chunk vector, lexical FTS, and knowledge
 - THEN the UI MUST show primary lane, supporting lanes, graph enrichment, score, and retrieval contract
 
 ### Requirement: Dashboard MUST Display MCP and HTTP Traces
-Dashboard V2 MUST provide trace list and detail views for MCP and HTTP operations, including request, response, status, duration, timestamps, project/session context, and sanitized payload indicators.
 
-#### Scenario: Operator inspects a tool response
-- GIVEN a `mem_save` trace exists
-- WHEN the user opens the trace detail
-- THEN the dashboard MUST show sanitized request and response payloads plus status and timing
+Administrative results MUST expose available trace or operation identifiers and a relevant follow-up action without rendering raw unbounded payloads as the primary presentation.
+
+#### Scenario: US5 - Administer the memory engine safely 1
+
+- **GIVEN** the dashboard is in the observatory
+- **WHEN** the user opens the control room
+- **THEN** operations, traces, and indexing are clearly secondary but reachable in one navigation step
+
+#### Scenario: US5 - Administer the memory engine safely 2
+
+- **GIVEN** a state-changing or expensive command
+- **WHEN** the user initiates it
+- **THEN** scope and impact are shown before confirmation and duplicate submission is prevented while it runs
+
+#### Scenario: US5 - Administer the memory engine safely 3
+
+- **GIVEN** an operation succeeds or fails
+- **WHEN** it completes
+- **THEN** the result, traceability information, and a safe next action are visible without exposing private content
 
 ### Requirement: Dashboard MUST Display Indexing and Background Job Health
 Dashboard V2 MUST show queue counts, running/pending/failed jobs, stale/degraded lanes, vector coverage, recent errors, and rebuild actions.
@@ -115,12 +197,26 @@ Dashboard V2 MUST show queue counts, running/pending/failed jobs, stale/degraded
 - THEN the stale lane MUST be labeled with coverage and recommended actions
 
 ### Requirement: Dashboard MUST Reproduce CLI and HTTP Operations
-Dashboard V2 MUST expose controls for the operations available through CLI and HTTP, with safe inputs, clear mutation labels, response previews, and trace links.
 
-#### Scenario: Operator runs a CLI-equivalent search
-- GIVEN a user enters a query in the operations console
-- WHEN they execute the search operation
-- THEN the dashboard MUST call the HTTP equivalent and display the response and resulting trace
+The redesigned control room MUST preserve create-observation, operation catalog/result, trace filtering/detail, indexing status, graph rebuild, and index rebuild behaviors supported by the current HTTP client.
+
+#### Scenario: US5 - Administer the memory engine safely 1
+
+- **GIVEN** the dashboard is in the observatory
+- **WHEN** the user opens the control room
+- **THEN** operations, traces, and indexing are clearly secondary but reachable in one navigation step
+
+#### Scenario: US5 - Administer the memory engine safely 2
+
+- **GIVEN** a state-changing or expensive command
+- **WHEN** the user initiates it
+- **THEN** scope and impact are shown before confirmation and duplicate submission is prevented while it runs
+
+#### Scenario: US5 - Administer the memory engine safely 3
+
+- **GIVEN** an operation succeeds or fails
+- **WHEN** it completes
+- **THEN** the result, traceability information, and a safe next action are visible without exposing private content
 
 ### Requirement: Dashboard V2 MUST Be Modern, Minimal, and Animated with Motion
 The dashboard MUST use a cohesive design system, restrained density, accessible controls, lucide icons, and Motion-powered staged transitions and microinteractions.
@@ -131,9 +227,29 @@ The dashboard MUST use a cohesive design system, restrained density, accessible 
 - THEN Motion animations MUST be subtle, interruptible, and must not cause text overlap or layout shift
 
 ### Requirement: Dashboard MUST Be Responsive and Visually Verified
-Dashboard V2 MUST remain usable at desktop and mobile widths and MUST pass browser visual QA before completion.
 
-#### Scenario: Mobile viewport remains usable
-- GIVEN the dashboard is opened at mobile width
-- WHEN primary panels render
-- THEN controls and text MUST fit without incoherent overlap
+The observatory MUST adapt navigation, scope controls, instruments, and memory lens into usable drawers or sheets on narrow viewports and MUST honor `prefers-reduced-motion` without hiding state changes.
+
+#### Scenario: US3 - Navigate without pointer-only barriers 1
+
+- **GIVEN** the graph canvas has focus
+- **WHEN** the user invokes documented keyboard controls
+- **THEN** zoom, fit, pause/resume, focus movement, selection, and clearing have visible results and pointer-equivalent outcomes
+
+#### Scenario: US3 - Navigate without pointer-only barriers 2
+
+- **GIVEN** canvas content is not directly exposed as DOM nodes
+- **WHEN** assistive technology reads the graph workspace
+- **THEN** a synchronized semantic navigator exposes visible/focused memories and their connected neighbors as operable controls
+
+#### Scenario: US3 - Navigate without pointer-only barriers 3
+
+- **GIVEN** reduced motion is requested
+- **WHEN** focus changes or panels open
+- **THEN** semantic state changes remain visible without continuous simulation or nonessential animation
+
+#### Scenario: US3 - Navigate without pointer-only barriers 4
+
+- **GIVEN** a narrow viewport
+- **WHEN** the user opens navigation or the memory lens
+- **THEN** controls become an accessible drawer or sheet without creating horizontal page overflow
