@@ -253,3 +253,125 @@ The observatory MUST adapt navigation, scope controls, instruments, and memory l
 - **GIVEN** a narrow viewport
 - **WHEN** the user opens navigation or the memory lens
 - **THEN** controls become an accessible drawer or sheet without creating horizontal page overflow
+
+### Requirement: Dominant atlas workspace
+
+The default dashboard MUST present the Neural Atlas as a single dominant workspace that fills the usable application viewport and keeps primary graph controls reachable without document-level scrolling.
+
+#### Scenario: US1 - See the whole living memory field 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the default dashboard opens
+- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+
+#### Scenario: US1 - See the whole living memory field 2
+
+- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
+- **WHEN** it is laid out and fitted
+- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+
+#### Scenario: US1 - See the whole living memory field 3
+
+- **GIVEN** a dense graph
+- **WHEN** it settles at the whole-graph view
+- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+
+#### Scenario: US1 - See the whole living memory field 4
+
+- **GIVEN** relationships of different classes
+- **WHEN** the graph is at rest
+- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+
+### Requirement: Co-located instrument dock
+
+Related, Story, Changes, and Health navigation MUST live inside the same bounded dock/sheet as its active content, with its navigation remaining reachable while that content scrolls.
+
+#### Scenario: US4 - Use instruments where their controls live 1
+
+- **GIVEN** an atlas with no instrument open
+- **WHEN** the user opens Related, Story, Changes, or Health
+- **THEN** the instrument tabs appear immediately adjacent to the active content in the inspector dock or mobile sheet
+
+#### Scenario: US4 - Use instruments where their controls live 2
+
+- **GIVEN** an instrument with long content
+- **WHEN** the user scrolls it and switches tabs
+- **THEN** the tab strip stays reachable inside that bounded surface without document-level scrolling
+
+#### Scenario: US4 - Use instruments where their controls live 3
+
+- **GIVEN** a focused memory and camera position
+- **WHEN** the user switches or closes instruments
+- **THEN** graph focus, camera, scope, and URL remain usable
+
+### Requirement: Shared graph and instrument context
+
+Instrument open, close, switch, retry, and pivot actions MUST inherit compatible graph scope/focus and MUST preserve the selected node, camera, semantic navigator, and graph availability.
+
+#### Scenario: US4 - Use instruments where their controls live 1
+
+- **GIVEN** an atlas with no instrument open
+- **WHEN** the user opens Related, Story, Changes, or Health
+- **THEN** the instrument tabs appear immediately adjacent to the active content in the inspector dock or mobile sheet
+
+#### Scenario: US4 - Use instruments where their controls live 2
+
+- **GIVEN** an instrument with long content
+- **WHEN** the user scrolls it and switches tabs
+- **THEN** the tab strip stays reachable inside that bounded surface without document-level scrolling
+
+#### Scenario: US4 - Use instruments where their controls live 3
+
+- **GIVEN** a focused memory and camera position
+- **WHEN** the user switches or closes instruments
+- **THEN** graph focus, camera, scope, and URL remain usable
+
+### Requirement: Compact guided scope overlay
+
+Search and the six structured guided selectors MUST be available from compact atlas controls that can collapse without reserving permanent graph height, while active scope remains visible and removable.
+
+#### Scenario: US5 - Shape the view without shrinking it 1
+
+- **GIVEN** filter metadata is ready
+- **WHEN** the user opens the filter control
+- **THEN** the shared Project, Session, Topic, Connection, Memory type, and Field of view selectors appear in a bounded overlay attached to the atlas
+
+#### Scenario: US5 - Shape the view without shrinking it 2
+
+- **GIVEN** filters are collapsed
+- **WHEN** the user explores the graph
+- **THEN** only concise active-scope cues remain and the full filter form does not reserve permanent graph height
+
+#### Scenario: US5 - Shape the view without shrinking it 3
+
+- **GIVEN** a filter, focus, or frontier change
+- **WHEN** browser Back or Forward is used
+- **THEN** canonical scope, focused node, dock context, and a usable graph viewport are restored
+
+### Requirement: Private local-first presentation
+
+Every new label, tooltip, inspector, filter cue, instrument result, and technical disclosure MUST use the established private-safe presentation boundary, and graph/filter data MUST remain within locally packaged same-origin behavior.
+
+#### Scenario: US6 - Retain trust and access under real conditions 1
+
+- **GIVEN** a narrow viewport
+- **WHEN** the inspector, instruments, or filters open
+- **THEN** they become accessible sheets/drawers without horizontal overflow and without making the graph unreachable
+
+#### Scenario: US6 - Retain trust and access under real conditions 2
+
+- **GIVEN** WebGL initialization or context recovery fails
+- **WHEN** the rich renderer is unavailable
+- **THEN** the synchronized semantic navigator, current scope, focused memory, and one bounded Retry action remain usable
+
+#### Scenario: US6 - Retain trust and access under real conditions 3
+
+- **GIVEN** stored labels, snippets, provenance, or instrument results contain supported private markers
+- **WHEN** any atlas surface renders them
+- **THEN** marked content is absent from the DOM, canvas-adjacent labels, history, and external network traffic
+
+#### Scenario: US6 - Retain trust and access under real conditions 4
+
+- **GIVEN** rapid scope, focus, expansion, route, resize, or renderer changes
+- **WHEN** old asynchronous work completes
+- **THEN** stale responses, timers, simulations, observers, and listeners cannot replace or mutate the active atlas

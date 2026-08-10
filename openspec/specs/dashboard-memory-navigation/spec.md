@@ -251,3 +251,347 @@ If rich graph rendering is unavailable, the dashboard MUST keep scope controls a
 - **GIVEN** stored content contains supported private markers
 - **WHEN** any new label, tooltip, selector, or technical disclosure renders it
 - **THEN** private content remains absent
+
+### Requirement: World-first graph geometry
+
+The graph MUST compute and retain spatial positions in a world coordinate space that is not constrained to the canvas rectangle, and fitting MUST adapt the camera/canvas to the resulting extent rather than reshape the constellation to a square.
+
+#### Scenario: US1 - See the whole living memory field 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the default dashboard opens
+- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+
+#### Scenario: US1 - See the whole living memory field 2
+
+- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
+- **WHEN** it is laid out and fitted
+- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+
+#### Scenario: US1 - See the whole living memory field 3
+
+- **GIVEN** a dense graph
+- **WHEN** it settles at the whole-graph view
+- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+
+#### Scenario: US1 - See the whole living memory field 4
+
+- **GIVEN** relationships of different classes
+- **WHEN** the graph is at rest
+- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+
+### Requirement: Aspect-preserving fit and resize
+
+Initial fit, explicit fit, viewport resize, and drawer/sheet transitions MUST keep every included node reachable, preserve world aspect and focus, and avoid involuntary refits after ordinary manual pan or zoom.
+
+#### Scenario: US1 - See the whole living memory field 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the default dashboard opens
+- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+
+#### Scenario: US1 - See the whole living memory field 2
+
+- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
+- **WHEN** it is laid out and fitted
+- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+
+#### Scenario: US1 - See the whole living memory field 3
+
+- **GIVEN** a dense graph
+- **WHEN** it settles at the whole-graph view
+- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+
+#### Scenario: US1 - See the whole living memory field 4
+
+- **GIVEN** relationships of different classes
+- **WHEN** the graph is at rest
+- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+
+### Requirement: Living but bounded motion
+
+Normal mode MUST provide subtle continuous ambient motion plus interruptible settle, focus, camera, and expansion transitions; Pause and reduced motion MUST stop nonessential movement while preserving every state result.
+
+#### Scenario: US2 - Navigate without losing the atlas 1
+
+- **GIVEN** normal motion preferences
+- **WHEN** the graph finishes its initial entrance
+- **THEN** it retains subtle bounded ambient motion and visibly reheats when new memories are revealed
+
+#### Scenario: US2 - Navigate without losing the atlas 2
+
+- **GIVEN** the user pauses motion or requests reduced motion
+- **WHEN** data, focus, or camera state changes
+- **THEN** the semantic result remains visible without continuous drift or nonessential animation
+
+#### Scenario: US2 - Navigate without losing the atlas 3
+
+- **GIVEN** any supported desktop or mobile viewport
+- **WHEN** the user is viewing any part of the graph
+- **THEN** one compact set of fit, zoom, pause, and reset controls remains visible inside the atlas
+
+#### Scenario: US2 - Navigate without losing the atlas 4
+
+- **GIVEN** a selected memory with unseen neighbors
+- **WHEN** the user reveals connections
+- **THEN** new nodes enter around their real frontier, the camera remains usable, and existing nodes are not abruptly replaced
+
+### Requirement: Persistent atlas controls
+
+Fit, zoom, pause/resume, reset, focus traversal, selection, expansion, and clear actions MUST remain operable and visibly reachable within the atlas at supported viewport sizes.
+
+#### Scenario: US2 - Navigate without losing the atlas 1
+
+- **GIVEN** normal motion preferences
+- **WHEN** the graph finishes its initial entrance
+- **THEN** it retains subtle bounded ambient motion and visibly reheats when new memories are revealed
+
+#### Scenario: US2 - Navigate without losing the atlas 2
+
+- **GIVEN** the user pauses motion or requests reduced motion
+- **WHEN** data, focus, or camera state changes
+- **THEN** the semantic result remains visible without continuous drift or nonessential animation
+
+#### Scenario: US2 - Navigate without losing the atlas 3
+
+- **GIVEN** any supported desktop or mobile viewport
+- **WHEN** the user is viewing any part of the graph
+- **THEN** one compact set of fit, zoom, pause, and reset controls remains visible inside the atlas
+
+#### Scenario: US2 - Navigate without losing the atlas 4
+
+- **GIVEN** a selected memory with unseen neighbors
+- **WHEN** the user reveals connections
+- **THEN** new nodes enter around their real frontier, the camera remains usable, and existing nodes are not abruptly replaced
+
+### Requirement: Stable spatial interaction
+
+Pointer and keyboard pan, zoom, focus, drag, and traversal MUST preserve selection and camera continuity, use the current world projection, and never require a pointer-only prerequisite.
+
+#### Scenario: US2 - Navigate without losing the atlas 1
+
+- **GIVEN** normal motion preferences
+- **WHEN** the graph finishes its initial entrance
+- **THEN** it retains subtle bounded ambient motion and visibly reheats when new memories are revealed
+
+#### Scenario: US2 - Navigate without losing the atlas 2
+
+- **GIVEN** the user pauses motion or requests reduced motion
+- **WHEN** data, focus, or camera state changes
+- **THEN** the semantic result remains visible without continuous drift or nonessential animation
+
+#### Scenario: US2 - Navigate without losing the atlas 3
+
+- **GIVEN** any supported desktop or mobile viewport
+- **WHEN** the user is viewing any part of the graph
+- **THEN** one compact set of fit, zoom, pause, and reset controls remains visible inside the atlas
+
+#### Scenario: US2 - Navigate without losing the atlas 4
+
+- **GIVEN** a selected memory with unseen neighbors
+- **WHEN** the user reveals connections
+- **THEN** new nodes enter around their real frontier, the camera remains usable, and existing nodes are not abruptly replaced
+
+### Requirement: In-place non-modal inspector
+
+Selecting a memory MUST open a bounded non-modal inspector inside the atlas context, keep the graph visible, and provide human-readable summary, provenance, relationships, and supported exploration actions.
+
+#### Scenario: US3 - Inspect a memory in place 1
+
+- **GIVEN** a visible memory
+- **WHEN** it is selected
+- **THEN** a non-modal inspector opens inside the atlas boundary and the graph remains visible behind or beside the bounded overlay
+
+#### Scenario: US3 - Inspect a memory in place 2
+
+- **GIVEN** the page or graph is not at its initial position
+- **WHEN** selection opens or updates the inspector
+- **THEN** document scroll does not jump and autofocus does not move the user to the top of the page
+
+#### Scenario: US3 - Inspect a memory in place 3
+
+- **GIVEN** an open inspector
+- **WHEN** another node is focused through pointer, keyboard, history, or a connected-memory action
+- **THEN** URL, graph highlight, semantic navigator, inspector, and focus trail describe the same node
+
+#### Scenario: US3 - Inspect a memory in place 4
+
+- **GIVEN** the inspector opens or closes on desktop
+- **WHEN** its visibility changes
+- **THEN** it does not permanently remove a fixed column from the graph or force the world into a different aspect ratio
+
+### Requirement: Scroll and focus stability
+
+Opening, updating, or closing selection details MUST NOT change document scroll position, unexpectedly steal keyboard focus, or move the user to the top of the page.
+
+#### Scenario: US3 - Inspect a memory in place 1
+
+- **GIVEN** a visible memory
+- **WHEN** it is selected
+- **THEN** a non-modal inspector opens inside the atlas boundary and the graph remains visible behind or beside the bounded overlay
+
+#### Scenario: US3 - Inspect a memory in place 2
+
+- **GIVEN** the page or graph is not at its initial position
+- **WHEN** selection opens or updates the inspector
+- **THEN** document scroll does not jump and autofocus does not move the user to the top of the page
+
+#### Scenario: US3 - Inspect a memory in place 3
+
+- **GIVEN** an open inspector
+- **WHEN** another node is focused through pointer, keyboard, history, or a connected-memory action
+- **THEN** URL, graph highlight, semantic navigator, inspector, and focus trail describe the same node
+
+#### Scenario: US3 - Inspect a memory in place 4
+
+- **GIVEN** the inspector opens or closes on desktop
+- **WHEN** its visibility changes
+- **THEN** it does not permanently remove a fixed column from the graph or force the world into a different aspect ratio
+
+### Requirement: Restorable atlas state
+
+Canonical scope, focused node, focus trail, active instrument, dock state where appropriate, and usable viewport MUST remain synchronized through pointer/keyboard pivots, deep links, and browser history recovery.
+
+#### Scenario: US3 - Inspect a memory in place 1
+
+- **GIVEN** a visible memory
+- **WHEN** it is selected
+- **THEN** a non-modal inspector opens inside the atlas boundary and the graph remains visible behind or beside the bounded overlay
+
+#### Scenario: US3 - Inspect a memory in place 2
+
+- **GIVEN** the page or graph is not at its initial position
+- **WHEN** selection opens or updates the inspector
+- **THEN** document scroll does not jump and autofocus does not move the user to the top of the page
+
+#### Scenario: US3 - Inspect a memory in place 3
+
+- **GIVEN** an open inspector
+- **WHEN** another node is focused through pointer, keyboard, history, or a connected-memory action
+- **THEN** URL, graph highlight, semantic navigator, inspector, and focus trail describe the same node
+
+#### Scenario: US3 - Inspect a memory in place 4
+
+- **GIVEN** the inspector opens or closes on desktop
+- **WHEN** its visibility changes
+- **THEN** it does not permanently remove a fixed column from the graph or force the world into a different aspect ratio
+
+#### Scenario: US5 - Shape the view without shrinking it 1
+
+- **GIVEN** filter metadata is ready
+- **WHEN** the user opens the filter control
+- **THEN** the shared Project, Session, Topic, Connection, Memory type, and Field of view selectors appear in a bounded overlay attached to the atlas
+
+#### Scenario: US5 - Shape the view without shrinking it 2
+
+- **GIVEN** filters are collapsed
+- **WHEN** the user explores the graph
+- **THEN** only concise active-scope cues remain and the full filter form does not reserve permanent graph height
+
+#### Scenario: US5 - Shape the view without shrinking it 3
+
+- **GIVEN** a filter, focus, or frontier change
+- **WHEN** browser Back or Forward is used
+- **THEN** canonical scope, focused node, dock context, and a usable graph viewport are restored
+
+### Requirement: Spatial frontier expansion
+
+Bounded neighbor expansion MUST deduplicate existing graph identity, introduce added nodes near the actual focused frontier through purposeful motion, and report added, already-visible, truncated, continuation, or exhausted outcomes.
+
+#### Scenario: US2 - Navigate without losing the atlas 1
+
+- **GIVEN** normal motion preferences
+- **WHEN** the graph finishes its initial entrance
+- **THEN** it retains subtle bounded ambient motion and visibly reheats when new memories are revealed
+
+#### Scenario: US2 - Navigate without losing the atlas 2
+
+- **GIVEN** the user pauses motion or requests reduced motion
+- **WHEN** data, focus, or camera state changes
+- **THEN** the semantic result remains visible without continuous drift or nonessential animation
+
+#### Scenario: US2 - Navigate without losing the atlas 3
+
+- **GIVEN** any supported desktop or mobile viewport
+- **WHEN** the user is viewing any part of the graph
+- **THEN** one compact set of fit, zoom, pause, and reset controls remains visible inside the atlas
+
+#### Scenario: US2 - Navigate without losing the atlas 4
+
+- **GIVEN** a selected memory with unseen neighbors
+- **WHEN** the user reveals connections
+- **THEN** new nodes enter around their real frontier, the camera remains usable, and existing nodes are not abruptly replaced
+
+#### Scenario: US5 - Shape the view without shrinking it 1
+
+- **GIVEN** filter metadata is ready
+- **WHEN** the user opens the filter control
+- **THEN** the shared Project, Session, Topic, Connection, Memory type, and Field of view selectors appear in a bounded overlay attached to the atlas
+
+#### Scenario: US5 - Shape the view without shrinking it 2
+
+- **GIVEN** filters are collapsed
+- **WHEN** the user explores the graph
+- **THEN** only concise active-scope cues remain and the full filter form does not reserve permanent graph height
+
+#### Scenario: US5 - Shape the view without shrinking it 3
+
+- **GIVEN** a filter, focus, or frontier change
+- **WHEN** browser Back or Forward is used
+- **THEN** canonical scope, focused node, dock context, and a usable graph viewport are restored
+
+### Requirement: Semantic renderer parity
+
+The DOM-backed graph navigator MUST expose the same visible and focused nodes, connected-neighbor actions, and command outcomes as the rich renderer, including during renderer failure and recovery.
+
+#### Scenario: US6 - Retain trust and access under real conditions 1
+
+- **GIVEN** a narrow viewport
+- **WHEN** the inspector, instruments, or filters open
+- **THEN** they become accessible sheets/drawers without horizontal overflow and without making the graph unreachable
+
+#### Scenario: US6 - Retain trust and access under real conditions 2
+
+- **GIVEN** WebGL initialization or context recovery fails
+- **WHEN** the rich renderer is unavailable
+- **THEN** the synchronized semantic navigator, current scope, focused memory, and one bounded Retry action remain usable
+
+#### Scenario: US6 - Retain trust and access under real conditions 3
+
+- **GIVEN** stored labels, snippets, provenance, or instrument results contain supported private markers
+- **WHEN** any atlas surface renders them
+- **THEN** marked content is absent from the DOM, canvas-adjacent labels, history, and external network traffic
+
+#### Scenario: US6 - Retain trust and access under real conditions 4
+
+- **GIVEN** rapid scope, focus, expansion, route, resize, or renderer changes
+- **WHEN** old asynchronous work completes
+- **THEN** stale responses, timers, simulations, observers, and listeners cannot replace or mutate the active atlas
+
+### Requirement: Bounded asynchronous lifecycle
+
+Scope, focus, frontier, instrument, resize, animation, and renderer work MUST be abortable or generation-guarded as applicable, and all renderer instances, simulations, observers, timers, animation frames, and listeners MUST be released when superseded or unmounted.
+
+#### Scenario: US6 - Retain trust and access under real conditions 1
+
+- **GIVEN** a narrow viewport
+- **WHEN** the inspector, instruments, or filters open
+- **THEN** they become accessible sheets/drawers without horizontal overflow and without making the graph unreachable
+
+#### Scenario: US6 - Retain trust and access under real conditions 2
+
+- **GIVEN** WebGL initialization or context recovery fails
+- **WHEN** the rich renderer is unavailable
+- **THEN** the synchronized semantic navigator, current scope, focused memory, and one bounded Retry action remain usable
+
+#### Scenario: US6 - Retain trust and access under real conditions 3
+
+- **GIVEN** stored labels, snippets, provenance, or instrument results contain supported private markers
+- **WHEN** any atlas surface renders them
+- **THEN** marked content is absent from the DOM, canvas-adjacent labels, history, and external network traffic
+
+#### Scenario: US6 - Retain trust and access under real conditions 4
+
+- **GIVEN** rapid scope, focus, expansion, route, resize, or renderer changes
+- **WHEN** old asynchronous work completes
+- **THEN** stale responses, timers, simulations, observers, and listeners cannot replace or mutate the active atlas

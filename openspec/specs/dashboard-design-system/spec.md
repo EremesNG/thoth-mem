@@ -201,3 +201,87 @@ Graph motion MUST communicate loading, focus, expansion, and camera changes thro
 - **GIVEN** motion is paused or reduced motion is requested
 - **WHEN** graph state changes
 - **THEN** every semantic result remains visible without continuous or nonessential animation
+
+### Requirement: Star-scale memory hierarchy
+
+Memory cores MUST use a tightly bounded star-like size scale in which connectivity remains perceivable without allowing hubs, focus, or neighbor states to become bubble-sized; focus MUST rely primarily on halo, contrast, and local labels.
+
+#### Scenario: US1 - See the whole living memory field 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the default dashboard opens
+- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+
+#### Scenario: US1 - See the whole living memory field 2
+
+- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
+- **WHEN** it is laid out and fitted
+- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+
+#### Scenario: US1 - See the whole living memory field 3
+
+- **GIVEN** a dense graph
+- **WHEN** it settles at the whole-graph view
+- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+
+#### Scenario: US1 - See the whole living memory field 4
+
+- **GIVEN** relationships of different classes
+- **WHEN** the graph is at rest
+- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+
+### Requirement: Legible synaptic relationships
+
+Curved links MUST remain visible at rest against the atlas background, communicate relationship emphasis without color alone, brighten clearly for focus/hover, and retain subdued but perceptible unrelated context.
+
+#### Scenario: US1 - See the whole living memory field 1
+
+- **GIVEN** a populated memory store
+- **WHEN** the default dashboard opens
+- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+
+#### Scenario: US1 - See the whole living memory field 2
+
+- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
+- **WHEN** it is laid out and fitted
+- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+
+#### Scenario: US1 - See the whole living memory field 3
+
+- **GIVEN** a dense graph
+- **WHEN** it settles at the whole-graph view
+- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+
+#### Scenario: US1 - See the whole living memory field 4
+
+- **GIVEN** relationships of different classes
+- **WHEN** the graph is at rest
+- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+
+### Requirement: Responsive atlas surfaces
+
+Desktop MUST use bounded overlay/dock surfaces and narrow/coarse-pointer layouts MUST use accessible sheets or drawers that keep the atlas reachable, avoid horizontal overflow, and remain usable at 200% text zoom.
+
+#### Scenario: US6 - Retain trust and access under real conditions 1
+
+- **GIVEN** a narrow viewport
+- **WHEN** the inspector, instruments, or filters open
+- **THEN** they become accessible sheets/drawers without horizontal overflow and without making the graph unreachable
+
+#### Scenario: US6 - Retain trust and access under real conditions 2
+
+- **GIVEN** WebGL initialization or context recovery fails
+- **WHEN** the rich renderer is unavailable
+- **THEN** the synchronized semantic navigator, current scope, focused memory, and one bounded Retry action remain usable
+
+#### Scenario: US6 - Retain trust and access under real conditions 3
+
+- **GIVEN** stored labels, snippets, provenance, or instrument results contain supported private markers
+- **WHEN** any atlas surface renders them
+- **THEN** marked content is absent from the DOM, canvas-adjacent labels, history, and external network traffic
+
+#### Scenario: US6 - Retain trust and access under real conditions 4
+
+- **GIVEN** rapid scope, focus, expansion, route, resize, or renderer changes
+- **WHEN** old asynchronous work completes
+- **THEN** stale responses, timers, simulations, observers, and listeners cannot replace or mutate the active atlas
