@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildObservatoryUrl, createInitialObservatoryState, parseObservatorySearch, recoverObservatoryFocus, serializeObservatoryState } from '../../dashboard/src/components/observatory/context-store.js';
+import { applyObservatoryPivot, buildObservatoryUrl, createInitialObservatoryState, navigateObservatoryTrail, parseObservatorySearch, recoverObservatoryFocus, serializeObservatoryState } from '../../dashboard/src/components/observatory/context-store.js';
 import { withDashboardBrowser } from './dashboard-browser-harness.js';
 
 describe('observatory deep-link state', () => {
   it('round-trips scope, density, cue, instrument and focus identifiers', () => {
-    const state = { ...createInitialObservatoryState(), scope: { project:'thoth-mem', session_id:'s1', topic_key:'routing', type:'decision' as const, relation:'SUPPORTS', query:'why' }, density:'wide' as const, focusNodeId:'obs:42', activeSurface:'timeline' as const };
+    const state = { ...createInitialObservatoryState(), level:'neighborhood' as const, communityId:'community:42', scope: { project_token:'facet:project:opaque', session_token:'facet:session:opaque', topic_token:'facet:topic:opaque', type:'decision' as const, relation:'SUPPORTS', query:'why' }, density:'wide' as const, focusNodeId:'obs:42', activeSurface:'timeline' as const };
     const parsed = parseObservatorySearch(serializeObservatoryState(state));
-    expect(parsed).toMatchObject({ scope: state.scope, density:'wide', focusNodeId:'obs:42', activeSurface:'timeline' });
+    expect(parsed).toMatchObject({ level:'neighborhood', communityId:'community:42', scope: state.scope, density:'wide', focusNodeId:'obs:42', activeSurface:'timeline' });
     expect(buildObservatoryUrl(state)).toMatch(/^\/?/);
     expect(buildObservatoryUrl(state)).not.toContain('contextToken');
   });
@@ -14,138 +14,129 @@ describe('observatory deep-link state', () => {
     expect(parseObservatorySearch('?surface=unknown&density=chaos')).toMatchObject({ activeSurface:'map', density:'balanced' });
   });
   it('clears a missing deep-link focus without losing scope', () => {
-    const state = { ...createInitialObservatoryState(), scope:{project:'p'}, focusNodeId:'obs:missing', focusTrail:['obs:missing'], focusTrailIndex:0 };
-    expect(recoverObservatoryFocus(state, ['obs:1'])).toMatchObject({scope:{project:'p'},focusNodeId:null,visibleNodeIds:['obs:1'],focusTrail:[],focusTrailIndex:-1});
+    const state = { ...createInitialObservatoryState(), level:'neighborhood' as const, communityId:'community:p', scope:{project_token:'facet:project:p'}, focusNodeId:'obs:missing', focusTrail:['obs:missing'], focusTrailIndex:0 };
+    expect(recoverObservatoryFocus(state, ['obs:1'])).toMatchObject({level:'universe',communityId:null,scope:{project_token:'facet:project:p'},focusNodeId:null,visibleNodeIds:['obs:1'],focusTrail:[],focusTrailIndex:-1});
   });
-  it('restores a populated three-state semantic history and recovers a deleted deep-link focus', async () => {
+  it('rejects raw facet URLs and restores full semantic locations without appending history', () => {
+    expect(parseObservatorySearch('?project=%3Cprivate%3ESECRET%3C%2Fprivate%3E&level=community&community=community%3Aold')).toMatchObject({
+      level: 'universe', communityId: null, focusNodeId: null, scope: {},
+    });
+    let state = createInitialObservatoryState();
+    state = applyObservatoryPivot(state, { contextToken:'ctx-1', level:'community', communityId:'community:1', focusNodeId:null });
+    state = applyObservatoryPivot(state, { contextToken:'ctx-2', level:'neighborhood', communityId:'community:1', focusNodeId:'obs:1' });
+    expect(state.locationTrail).toHaveLength(3);
+    const back = navigateObservatoryTrail(state, -1);
+    expect(back).toMatchObject({ level:'community', communityId:'community:1', focusNodeId:null, locationTrailIndex:1 });
+    const forward = navigateObservatoryTrail(back, 1);
+    expect(forward).toMatchObject({ level:'neighborhood', communityId:'community:1', focusNodeId:'obs:1', locationTrailIndex:2 });
+    expect(forward.locationTrail).toHaveLength(3);
+  });
+  it('restores Universe, Community, and Neighborhood through browser history and recovers invalid focus', async () => {
     await withDashboardBrowser(async (browser) => {
-      const graphCount = async () => { await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`); return await browser.count('.graph-navigator li'); };
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1');
-      const states: Array<{url:string;nodes:number}> = [{url:await browser.url(),nodes:await graphCount()}];
-      await browser.clickText('.graph-navigator li > button:first-child','Project: browser-nebula');
-      await browser.waitFor(`location.search.includes('focus=project')`); states.push({url:await browser.url(),nodes:await graphCount()});
-      await browser.waitFor(`document.querySelectorAll('.memory-overview .lens-connections button').length > 0`);
-      await browser.click('.memory-overview .lens-connections button');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus')?.startsWith('obs:')`); states.push({url:await browser.url(),nodes:await graphCount()});
-      await browser.back(); states.push({url:await browser.url(),nodes:await graphCount()});
-      await browser.back(); states.push({url:await browser.url(),nodes:await graphCount()});
-      await browser.forward(); states.push({url:await browser.url(),nodes:await graphCount()});
-      expect(states.every((state) => state.nodes > 0)).toBe(true);
-      expect(states.map((state) => new URL(state.url).searchParams.get('focus'))).toEqual(['obs:1',expect.stringMatching(/^project:/),expect.stringMatching(/^obs:/),expect.stringMatching(/^project:/),'obs:1',expect.stringMatching(/^project:/)]);
-
-      await browser.goto('/?project=browser-nebula&focus=deleted-node');
-      await browser.waitFor(`!new URLSearchParams(location.search).has('focus') && document.querySelectorAll('.graph-navigator li').length > 0`);
-      expect(await graphCount()).toBeGreaterThan(0);
-      expect(new URL(await browser.url()).searchParams.get('focus')).toBeNull();
-    }, { observations: 16 });
-  }, 40_000);
-
-  it('keeps URL, context, GPU, semantic navigation and Lens synchronized through the focus trail', async () => {
-    await withDashboardBrowser(async (browser) => {
-      const urlFocus = () => browser.evaluate<string>(`new URLSearchParams(location.search).get('focus') ?? ''`);
-      const contextLabel = () => browser.text('.observatory-context-strip span:nth-child(3) strong');
-      const assertFocusSeams = async (focusId: string, label: string) => {
-        expect(await urlFocus()).toBe(focusId);
-        expect(await contextLabel()).toBe(label);
-        expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-focus-id')).toBe(focusId);
-        expect(await browser.text('.graph-navigator li.active > button:first-child')).toContain(label);
-        expect(await browser.text('.memory-overview h2')).toBe(label);
+      const graphCount = async () => {
+        await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+        return await browser.count('.graph-navigator li');
       };
-
-      await browser.goto('/?project=browser-nebula');
-      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
-      await browser.clickText('.graph-navigator li > button:first-child', 'Browser memory 1');
-      await browser.waitFor(`new URLSearchParams(location.search).has('focus') && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === new URLSearchParams(location.search).get('focus')`);
-
-      await browser.click('button[title="Next connected memory (Arrow Right)"]');
-      await browser.waitFor(`new URLSearchParams(location.search).has('focus') && document.querySelector('.focus-trail')?.textContent?.includes('1 / 1')`);
-      const previousFocus = await urlFocus();
-      const previousLabel = await contextLabel();
-
-      await browser.click('button[title="Next connected memory (Arrow Right)"]');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(previousFocus)} && document.querySelector('.focus-trail')?.textContent?.includes('2 / 2')`);
-      const nextFocus = await urlFocus();
-      const nextLabel = await contextLabel();
-      await browser.click('button[title="Open memory overview (Enter)"]');
-      await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent === ${JSON.stringify(nextLabel)}`);
-
-      await browser.clickText('.focus-trail button', 'Back');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(previousFocus)}`);
-      await assertFocusSeams(previousFocus, previousLabel);
-
-      await browser.clickText('.focus-trail button', 'Forward');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(nextFocus)}`);
-      await assertFocusSeams(nextFocus, nextLabel);
-    }, { observations: 16 });
-  }, 40_000);
-
-  it('ignores a superseded frontier fallback failure after focus changes', async () => {
-    await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula');
-      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
-      await browser.setRoutes([
-        { includes: '/observatory/map/frontier', status: 503, body: 'stale frontier failure' },
-        { includes: '/viz/slice', status: 503, delayMs: 1_200, body: 'stale fallback failure' },
+      await browser.goto('/');
+      const states: Array<{ url: string; nodes: number }> = [{ url: await browser.url(), nodes: await graphCount() }];
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community'`);
+      states.push({ url: await browser.url(), nodes: await graphCount() });
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood'`);
+      states.push({ url: await browser.url(), nodes: await graphCount() });
+      await browser.back(); states.push({ url: await browser.url(), nodes: await graphCount() });
+      await browser.back(); states.push({ url: await browser.url(), nodes: await graphCount() });
+      await browser.forward(); states.push({ url: await browser.url(), nodes: await graphCount() });
+      expect(states.every((state) => state.nodes > 0)).toBe(true);
+      expect(states.map((state) => new URL(state.url).searchParams.get('level'))).toEqual([
+        null, 'community', 'neighborhood', 'community', null, 'community',
       ]);
 
-      await browser.click('.graph-navigator li > button:first-child');
-      await browser.waitFor(`new URLSearchParams(location.search).has('focus')`);
-      const firstFocus = new URL(await browser.url()).searchParams.get('focus');
-      for (let attempt = 0; attempt < 20 && !browser.requests.some(({ url }) => url.includes('/viz/slice')); attempt += 1) {
-        await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 25))`);
-      }
-      expect(browser.requests.some(({ url }) => url.includes('/viz/slice'))).toBe(true);
-
-      await browser.clearRoutes();
-      await browser.click('button[title="Next connected memory (Arrow Right)"]');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(firstFocus)} && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === new URLSearchParams(location.search).get('focus')`);
-      await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 1_500))`);
-
-      expect(await browser.text('.observatory-error')).not.toContain('stale frontier failure');
+      const communityId = new URL(states[1]!.url).searchParams.get('community');
+      await browser.goto(`/?level=neighborhood&community=${encodeURIComponent(communityId ?? '')}&focus=obs%3A999999`);
+      await browser.waitFor(`!new URLSearchParams(location.search).has('focus') && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'universe'`);
+      expect(await graphCount()).toBeGreaterThan(0);
     }, { observations: 16 });
-  }, 40_000);
+  }, 45_000);
 
-  it('normalizes dependent choices before graph loading and rejects stale metadata races', async () => {
+  it('keeps URL, GPU, semantic navigation and Lens synchronized through the semantic focus trail', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula&session_id=missing-session&topic_key=missing-topic');
+      const urlFocus = () => browser.evaluate<string>(`new URLSearchParams(location.search).get('focus') ?? ''`);
+      const activeLabel = () => browser.text('.graph-navigator li.active > button:first-child');
+      const assertFocusSeams = async (focusId: string, label: string) => {
+        expect(await urlFocus()).toBe(focusId);
+        expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-focus-id')).toBe(focusId);
+        expect(await activeLabel()).toBe(label);
+        expect(await browser.text('.memory-overview h2')).toBe(label.replace(/^Memory:\s*/, '').split(',')[0]);
+      };
+
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+      const communityId = await browser.evaluate<string>(`fetch('/viz/atlas?level=universe&page_size=250')
+        .then((response) => response.json())
+        .then((atlas) => [...atlas.nodes].sort((left, right) => (right.member_count ?? 0) - (left.member_count ?? 0))[0]?.id ?? '')`);
+      expect(communityId).toBeTruthy();
+      await browser.click(`.graph-navigator li[data-node-id="${communityId}"] > button:first-child`);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community'`);
+      await browser.waitFor(`(document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete') || Boolean(document.querySelector('.observatory-error')?.textContent)`);
+      expect(await browser.text('.observatory-error')).toBe('');
+      expect(await browser.count('.graph-navigator li[data-node-id^="obs:"]')).toBeGreaterThan(1);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === new URLSearchParams(location.search).get('focus')`);
+      const previousFocus = await urlFocus();
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li.active')?.getAttribute('data-node-id') === ${JSON.stringify(previousFocus)} && document.querySelectorAll('.graph-navigator li[data-node-id^="obs:"]').length > 1`);
+      const previousLabel = await activeLabel();
+
+      await browser.click('.graph-navigator li[data-node-id^="obs:"]:not(.active) > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(previousFocus)} && document.querySelector('.graph-navigator li.active')?.getAttribute('data-node-id') === new URLSearchParams(location.search).get('focus')`);
+      const nextFocus = await urlFocus();
+      const nextLabel = await activeLabel();
+
+      await browser.clickText('.focus-trail button', 'Back');
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(previousFocus)} && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(previousFocus)} && document.querySelector('.graph-navigator li.active')?.getAttribute('data-node-id') === ${JSON.stringify(previousFocus)}`);
+      await assertFocusSeams(previousFocus, previousLabel);
+      await browser.clickText('.focus-trail button', 'Forward');
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(nextFocus)} && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(nextFocus)} && document.querySelector('.graph-navigator li.active')?.getAttribute('data-node-id') === ${JSON.stringify(nextFocus)}`);
+      await assertFocusSeams(nextFocus, nextLabel);
+    }, { observations: 84 });
+  }, 45_000);
+
+  it('rejects a superseded semantic response and preserves token-only filter history', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
       await browser.click('button[aria-controls="atlas-scope-panel"]');
-      await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]') && !new URLSearchParams(location.search).has('session_id') && !new URLSearchParams(location.search).has('topic_key')`);
-      expect(browser.requests.filter(({ url }) => url.includes('/viz/slice')).every(({ url }) => !url.includes('missing-session') && !url.includes('missing-topic'))).toBe(true);
-
-      await browser.setRoutes([{
-        includes: '/viz/filters?project=browser-nebula',
-        status: 200,
-        delayMs: 450,
-        body: { projects: ['browser-nebula'], sessions: ['stale-session'], topic_keys: ['stale-topic'], types: ['manual'], relations: ['STALE_RELATION'] },
-      }]);
-      await browser.clickText('.guided-scope-resource button', 'Refresh choices');
-      await browser.waitFor(`document.querySelector('.guided-scope-bar')?.getAttribute('data-resource-state') === 'loading'`);
-      await browser.click('button[aria-label="Clear Project"]');
-      await browser.waitFor(`!new URLSearchParams(location.search).has('project') && document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
-      await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 550))`);
-      expect(new URL(await browser.url()).searchParams.get('project')).toBeNull();
-      expect(await browser.evaluate(`document.querySelector('[role="combobox"][aria-label="Project"]')?.value`)).toBe('All projects');
-
-      await browser.clearRoutes();
+      await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
       await browser.click('[role="combobox"][aria-label="Project"]');
       await browser.fill('[role="combobox"][aria-label="Project"]', 'browser');
       await browser.key('ArrowDown');
       await browser.key('Enter');
-      await browser.waitFor(`new URLSearchParams(location.search).get('project') === 'browser-nebula' && document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
-      await browser.click('[role="combobox"][aria-label="Session"]');
-      await browser.fill('[role="combobox"][aria-label="Session"]', 'browser-session');
-      await browser.key('ArrowDown');
-      await browser.key('Enter');
-      await browser.waitFor(`new URLSearchParams(location.search).get('session_id') === 'browser-session'`);
+      await browser.waitFor(`Boolean(new URLSearchParams(location.search).get('project_token')) && document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
+      const projectToken = new URL(await browser.url()).searchParams.get('project_token');
+      expect(await browser.url()).not.toContain('browser-nebula');
+
+      const currentAtlas = await browser.evaluate<Record<string, unknown>>(`fetch('/viz/atlas?level=universe&page_size=250&project_token=${encodeURIComponent(projectToken ?? '')}').then((response) => response.json())`);
+      await browser.setRoutes([{
+        includes: '/viz/atlas',
+        status: 503,
+        delayMs: 800,
+        body: { ...currentAtlas, generation: 'superseded-atlas-fixture' },
+      }]);
+      await browser.clickText('.guided-scope-resource button', 'Refresh choices');
+      await browser.waitFor(`document.querySelector('.guided-scope-bar')?.getAttribute('data-resource-state') === 'loading'`);
+      await browser.clearRoutes();
+      await browser.click('button[aria-label="Clear Project"]');
+      await browser.waitFor(`!new URLSearchParams(location.search).has('project_token') && document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
+      await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 950))`);
+      expect(await browser.text('.observatory-error')).not.toContain('superseded-atlas-fixture');
+      expect(await browser.evaluate(`document.querySelector('[role="combobox"][aria-label="Project"]')?.value`)).toBe('All projects');
 
       await browser.back();
-      await browser.waitFor(`new URLSearchParams(location.search).get('project') === 'browser-nebula' && !new URLSearchParams(location.search).has('session_id') && document.querySelector('[role="combobox"][aria-label="Session"]')?.value === 'Any session'`);
-      await browser.back();
-      expect(await browser.url()).toBe(`${browser.origin}/`);
-      await browser.waitFor(`document.querySelector('.guided-scope-bar[data-resource-state="ready"]') && document.querySelector('[role="combobox"][aria-label="Project"]')?.value === 'All projects'`);
+      await browser.waitFor(`new URLSearchParams(location.search).get('project_token') === ${JSON.stringify(projectToken)}`);
+      expect(await browser.url()).not.toContain('browser-nebula');
       await browser.forward();
-      await browser.waitFor(`new URLSearchParams(location.search).get('project') === 'browser-nebula' && document.querySelector('.guided-scope-bar[data-resource-state="ready"]')`);
-      expect(await browser.evaluate(`document.querySelector('[role="combobox"][aria-label="Project"]')?.value`)).toBe('browser-nebula');
-    }, { observations: 12 });
-  }, 40_000);
+      await browser.waitFor(`!new URLSearchParams(location.search).has('project_token')`);
+      expect(browser.requests.some(({ url }) => url.includes('/viz/graph'))).toBe(false);
+    }, { observations: 16 });
+  }, 50_000);
 });

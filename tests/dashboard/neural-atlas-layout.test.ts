@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildNeuralAtlasLayout,
+  preserveNeuralAtlasPositions,
   type NeuralAtlasLayoutNode,
 } from '../../dashboard/src/components/map/neural-atlas-layout.js';
 
@@ -98,5 +99,93 @@ describe('Neural Atlas world layout', () => {
 
     expect(Math.max(...within)).toBeLessThan(Math.min(...across));
     expect(layout.extent.width / layout.extent.height).toBeGreaterThan(1.35);
+  });
+
+  it('places disconnected universe regions in an organic halo instead of a rectangular frame', () => {
+    const nodes = Array.from({ length: 96 }, (_entry, index) => node(
+      `region:${index.toString().padStart(3, '0')}`,
+      index,
+      (index * 17) % 23,
+      index,
+      index < 24 ? (index === 0 ? 23 : 3) : 0,
+    ));
+    const links: Array<[number, number]> = [];
+    for (let index = 1; index < 24; index += 1) {
+      links.push([0, index]);
+      if (index > 1) links.push([index - 1, index]);
+    }
+
+    const layout = buildNeuralAtlasLayout(nodes, links, 'universe');
+    const xs = nodes.map((_entry, index) => layout.positions[index * 2]);
+    const ys = nodes.map((_entry, index) => layout.positions[index * 2 + 1]);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const width = maxX - minX;
+    const height = maxY - minY;
+    const perimeterIndices = nodes
+      .map((_entry, index) => index)
+      .filter((index) => Math.min(
+        (xs[index] - minX) / width,
+        (maxX - xs[index]) / width,
+        (ys[index] - minY) / height,
+        (maxY - ys[index]) / height,
+      ) <= 0.006);
+    const exactSideCounts = [
+      xs.filter((value) => Math.abs(value - minX) < 1e-6).length,
+      xs.filter((value) => Math.abs(value - maxX) < 1e-6).length,
+      ys.filter((value) => Math.abs(value - minY) < 1e-6).length,
+      ys.filter((value) => Math.abs(value - maxY) < 1e-6).length,
+    ];
+
+    expect(perimeterIndices.length).toBeLessThan(nodes.length * 0.2);
+    expect(Math.max(...exactSideCounts)).toBeLessThanOrEqual(2);
+  });
+
+  it('preserves existing world positions through incremental pages and repeated progression', () => {
+    const prefixNodes = [
+      node('alpha:anchor', -10, -2, 0, 5),
+      node('alpha:one', -7, 2, 0, 2),
+      node('beta:anchor', 8, -1, 1, 4),
+      node('beta:one', 11, 3, 1, 1),
+    ];
+    const expandedNodes = [
+      ...prefixNodes,
+      node('alpha:later', -2, 4, 0, 9),
+      node('beta:later', 17, -4, 1, 8),
+      node('gamma:anchor', 25, 2, 2, 6),
+    ];
+    const prefix = buildNeuralAtlasLayout(prefixNodes, [[0, 1], [2, 3]]);
+    const expanded = buildNeuralAtlasLayout(expandedNodes, [[0, 1], [2, 3], [0, 4], [2, 5], [5, 6]]);
+    const merged = preserveNeuralAtlasPositions(
+      prefixNodes.map((entry) => entry.id),
+      prefix.positions,
+      expandedNodes.map((entry) => entry.id),
+      expanded.positions,
+    );
+
+    expect(merged.slice(0, prefix.positions.length)).toEqual(prefix.positions);
+    expect(merged.slice(prefix.positions.length).every(Number.isFinite)).toBe(true);
+
+    let progressed = merged;
+    for (let step = 0; step < 24; step += 1) {
+      const proposed = expanded.positions.map((value, index) => value + ((step + index) % 3) - 1);
+      progressed = preserveNeuralAtlasPositions(
+        expandedNodes.map((entry) => entry.id),
+        progressed,
+        expandedNodes.map((entry) => entry.id),
+        proposed,
+      );
+    }
+    expect(progressed).toEqual(merged);
+
+    const xs = progressed.filter((_value, index) => index % 2 === 0);
+    const ys = progressed.filter((_value, index) => index % 2 === 1);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const height = Math.max(...ys) - Math.min(...ys);
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    expect(width / height).toBeGreaterThan(1.1);
   });
 });

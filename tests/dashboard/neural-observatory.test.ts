@@ -21,9 +21,17 @@ describe('neural observatory semantics', () => {
   it('opens memory details inside the atlas without moving the page, camera, or keyboard focus', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.viewport(1440, 900);
-      await browser.goto('/?project=browser-nebula');
+      await browser.goto('/');
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready' && document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li[data-node-id^="obs:"]')`);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true' && Boolean(document.querySelector('.memory-overview h2')?.textContent) && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && Boolean(document.querySelector('.map-stage'))`);
+      await browser.click('.atlas-dock-close');
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'false'`);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
       await browser.click('button[title="Zoom in (+)"]');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-last-command') === 'zoom-in'`);
       await browser.evaluate(`document.querySelector('.cosmos-graph-host canvas')?.focus()`);
 
       const before = await browser.evaluate<{
@@ -36,8 +44,8 @@ describe('neural observatory semantics', () => {
         return { scrollY, canvas: { width: canvas.width, height: canvas.height }, active: document.activeElement?.tagName ?? '' };
       })()`);
 
-      await browser.click('.graph-navigator li > button:first-child');
-      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true' && Boolean(document.querySelector('.memory-overview h2')?.textContent)`);
+      await browser.click('button[title="Open memory overview (Enter)"]');
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true' && Boolean(document.querySelector('.memory-overview h2')?.textContent) && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && Boolean(document.querySelector('.map-stage'))`);
 
       const after = await browser.evaluate<{
         scrollY: number;
@@ -73,7 +81,7 @@ describe('neural observatory semantics', () => {
   }, 40_000);
   it('presents exploration, details and administration around user goals', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula');
+      await browser.goto('/');
       await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
       expect(await browser.text('.observatory-header h1')).toContain('Memory universe');
       expect(await browser.text('.observatory-tabs')).toContain('Overview');
@@ -83,8 +91,10 @@ describe('neural observatory semantics', () => {
       expect(await browser.text('.observatory-tabs')).toContain('Health');
       expect(await browser.text('.observatory-context-strip')).not.toContain('Context:');
 
-      await browser.clickText('.graph-navigator li > button:first-child', 'Browser memory 1');
-      await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent?.includes('Browser memory 1')`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li[data-node-id^="obs:"]')`);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent?.includes('Browser memory')`);
       expect(await browser.text('.memory-overview .lens-kicker')).toContain('Memory overview');
       expect(await browser.count('.memory-overview .lens-primary-action')).toBe(1);
       expect(await browser.text('.memory-overview .lens-primary-action')).toContain('Explore connections');

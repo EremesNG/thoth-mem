@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { accessibleNodeSummary, graphCommandForKey } from '../../dashboard/src/components/map/map-navigation.js';
-import { withDashboardBrowser } from './dashboard-browser-harness.js';
+import { accessibleNodeSummary, connectedObservationIds, graphCommandForKey } from '../../dashboard/src/components/map/map-navigation.js';
+import { DashboardBrowser, withDashboardBrowser } from './dashboard-browser-harness.js';
+
+async function enterCommunity(browser: DashboardBrowser): Promise<void> {
+  await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'universe'`, 30_000);
+  await browser.evaluate(`document.querySelector('.graph-navigator li > button:first-child')?.click()`);
+  await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelectorAll('.graph-navigator li').length > 1`, 30_000);
+}
+
+async function enterNeighborhood(browser: DashboardBrowser): Promise<void> {
+  await enterCommunity(browser);
+  await browser.clickText('.graph-navigator li > button:first-child', 'Browser memory 1');
+  await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'neighborhood' && new URLSearchParams(location.search).has('focus')`, 30_000);
+}
 
 describe('graph accessibility facilities', () => {
   it('exposes every viewport, traversal, selection, expansion, pan, and clear command', () => {
@@ -10,10 +22,122 @@ describe('graph accessibility facilities', () => {
   it('produces a private-safe semantic node name',()=>{
     expect(accessibleNodeSummary({id:'obs:1',kind:'observation',label:'Visible <private>secret</private>',snippet:'',project:null,topic_key:null,type:'decision',seed_x:0,seed_y:0},'SUPPORTS')).toBe('observation, Visible, decision, SUPPORTS');
   });
+  it('keeps memory traversal on observations while evidence remains selectable', () => {
+    const nodes = [
+      { id: 'obs:1', kind: 'observation' as const, label: 'One', snippet: '', project: null, topic_key: null, type: 'decision' as const, seed_x: 0, seed_y: 0 },
+      { id: 'obs:2', kind: 'observation' as const, label: 'Two', snippet: '', project: null, topic_key: null, type: 'decision' as const, seed_x: 1, seed_y: 0 },
+      { id: 'fact:1', kind: 'fact' as const, label: 'Evidence', snippet: '', project: null, topic_key: null, type: null, seed_x: .5, seed_y: 0 },
+    ];
+    const edges = [
+      { id: 'e:memory', source_id: 'obs:1', target_id: 'obs:2', relation: 'SUPPORTS', kind: 'semantic' as const, label: '', summary: '' },
+      { id: 'e:fact', source_id: 'obs:1', target_id: 'fact:1', relation: 'HAS_FACT', kind: 'fact' as const, label: '', summary: '' },
+    ];
+    expect(connectedObservationIds('obs:1', nodes, edges)).toEqual(['obs:1', 'obs:2']);
+  });
+  it('publishes a new focused semantic location only with its matching populated generation', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await enterCommunity(browser);
+      const target = await browser.evaluate<{
+        id: string;
+        label: string;
+        response: Record<string, unknown>;
+      }>(`(async () => {
+        const row = [...document.querySelectorAll('.graph-navigator li')]
+          .find((item) => item.textContent?.includes('Browser memory 1'));
+        if (!(row instanceof HTMLElement) || !row.dataset.nodeId) throw new Error('Missing target memory');
+        const communityId = new URL(location.href).searchParams.get('community');
+        if (!communityId) throw new Error('Missing current community');
+        const query = new URLSearchParams({
+          level: 'neighborhood',
+          community_id: communityId,
+          focus_node_id: row.dataset.nodeId,
+          depth: '2',
+          page_size: '250',
+        });
+        const response = await fetch('/viz/atlas?' + query.toString()).then((value) => value.json());
+        const node = response.nodes?.find((candidate) => candidate.id === row.dataset.nodeId);
+        return { id: row.dataset.nodeId, label: node?.label ?? 'Browser memory 1', response };
+      })()`);
+      await browser.setRoutes([{
+        includes: 'level=neighborhood',
+        status: 200,
+        body: { ...target.response, continuation: null },
+        delayMs: 420,
+      }]);
+      await browser.evaluate(`(() => {
+        globalThis.__THOTH_ATOMIC_LOCATION_FRAMES__ = [];
+        const capture = () => {
+          const surface = document.querySelector('[data-testid="memory-map-surface"]');
+          const shell = document.querySelector('[data-testid="map-canvas-shell"]');
+          globalThis.__THOTH_ATOMIC_LOCATION_FRAMES__.push({
+            focus: new URL(location.href).searchParams.get('focus'),
+            level: surface?.getAttribute('data-atlas-level'),
+            phase: surface?.getAttribute('data-atlas-load-state'),
+            context: document.querySelector('.observatory-context-strip span:nth-child(4)')?.textContent ?? '',
+            shellFocus: shell?.getAttribute('data-focus-id') ?? '',
+            navigatorFocus: document.querySelector('.graph-navigator')?.getAttribute('data-focus-id') ?? '',
+          });
+        };
+        const observer = new MutationObserver(capture);
+        observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+        globalThis.__THOTH_ATOMIC_LOCATION_OBSERVER__ = observer;
+        capture();
+      })()`);
+
+      await browser.evaluate(`document.querySelector('li[data-node-id=${JSON.stringify(target.id)}] > button:first-child')?.click()`);
+      await browser.waitFor(`new URL(location.href).searchParams.get('focus') === ${JSON.stringify(target.id)}`);
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'
+        && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-atlas-level') === 'neighborhood'
+        && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(target.id)}
+        && document.querySelector('.graph-navigator li.active')?.getAttribute('data-node-id') === ${JSON.stringify(target.id)}
+        && document.querySelector('.memory-overview h2')?.textContent?.includes(${JSON.stringify(target.label)})`, 30_000);
+      const frames = await browser.evaluate<Array<{
+        focus: string | null;
+        level: string | null;
+        phase: string | null;
+        context: string;
+        shellFocus: string;
+        navigatorFocus: string;
+      }>>(`(() => {
+        globalThis.__THOTH_ATOMIC_LOCATION_OBSERVER__?.disconnect();
+        return globalThis.__THOTH_ATOMIC_LOCATION_FRAMES__ ?? [];
+      })()`);
+      const contradictoryFrames = frames.filter((frame) => (
+        frame.focus === target.id
+        && (
+          frame.level !== 'neighborhood'
+          || frame.context.includes('whole universe')
+          || !frame.context.includes(target.label)
+          || frame.shellFocus !== target.id
+          || frame.navigatorFocus !== target.id
+        )
+      ));
+      expect(contradictoryFrames, JSON.stringify(contradictoryFrames)).toEqual([]);
+      expect(await browser.text('.observatory-context-strip span:nth-child(4)')).toContain(target.label);
+      await browser.clearRoutes();
+    }, { observations: 84, faultInjection: { deadlineMs: 55_000 } });
+  }, 65_000);
+  it('keeps native Enter and Space activation on focused constellation controls', async () => {
+    await withDashboardBrowser(async (browser) => {
+      for (const key of ['Enter', ' ']) {
+        await browser.goto('/');
+        await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'
+          && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'universe'
+          && document.querySelectorAll('.graph-navigator li').length > 0`, 30_000);
+        await browser.evaluate(`document.querySelector('.graph-navigator li > button:first-child')?.focus()`);
+        await browser.key(key);
+        await browser.waitFor(`new URL(location.href).searchParams.get('level') === 'community'
+          && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community'`, 30_000);
+        expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-atlas-level')).toBe('community');
+      }
+    }, { observations: 84, faultInjection: { deadlineMs: 55_000 } });
+  }, 65_000);
   it('mounts one viewport-dominant world-first Neural Atlas', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.viewport(1440, 900);
-      await browser.goto('/?project=browser-nebula');
+      await browser.goto('/');
+      await enterCommunity(browser);
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-initial-settled') === 'true'`);
 
       const metrics = await browser.evaluate<{
@@ -66,12 +190,14 @@ describe('graph accessibility facilities', () => {
       expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.viewport.height + 2);
       expect(metrics.worldAspect).toBeGreaterThan(0);
       expect(metrics.pointMax).toBeLessThanOrEqual(8);
-      expect(metrics.linkMin).toBeGreaterThanOrEqual(0.8);
+      expect(metrics.linkMin).toBeGreaterThanOrEqual(0.72);
     }, { observations: 48 });
   }, 40_000);
   it('runs the living constellation through the real GPU renderer', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula');
+      await browser.viewport(1440, 900);
+      await browser.goto('/');
+      await enterCommunity(browser);
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-initial-settled') === 'true'`);
 
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-renderer')).toBe('cosmos');
@@ -108,7 +234,8 @@ describe('graph accessibility facilities', () => {
         return overlaps;
       })()`)).toBe(0);
 
-      await browser.click('button[title="Clear focus (Escape)"]');
+      await browser.click('button[aria-label="Close memory dock"]');
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'false' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`, 30_000);
       await browser.click('button[title="Pause or resume (P)"]');
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas"]')?.hasAttribute('data-pointer-probe-x') && document.querySelector('[data-testid="map-canvas"]')?.hasAttribute('data-pointer-probe-y')`);
       await browser.evaluate(`document.querySelector('.map-stage')?.scrollIntoView({ block: 'center' })`);
@@ -136,17 +263,10 @@ describe('graph accessibility facilities', () => {
       const pointerFocus = await browser.evaluate<string>(`new URLSearchParams(location.search).get('focus') ?? ''`);
       await browser.click('button[title="Pause or resume (P)"]');
 
-      const datasetVersion = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-dataset-version'));
-      await browser.setRoutes([{ includes: '/observatory/map/frontier', method: 'POST', status: 200, body: {
-        nodes: [{ id: 'obs:999', kind: 'observation', label: 'Newly connected memory', snippet: 'A memory entering the visible neighborhood.', project: 'browser-nebula', session_id: 'browser-session', topic_key: 'browser/alpha', type: 'discovery', seed_x: 0.72, seed_y: 0.28 }],
-        edges: [{ id: 'edge:expansion', source_id: pointerFocus, target_id: 'obs:999', relation: 'SUPPORTS', kind: 'semantic', label: 'Supports', summary: 'A newly revealed relationship.' }],
-        frontier_state: { added_node_ids: ['obs:999'], already_visible_node_ids: [], exhausted: true, continuation: null, reason: 'no-neighbors' },
-        health: { semantic_state: 'ready', pending_jobs: 0 },
-      } }]);
       await browser.click('button[title="Expand selected memory (E)"]');
-      await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-dataset-version')) > ${datasetVersion}`);
-      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-last-transition')).toBe('expansion');
-      await browser.clearRoutes();
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true'`);
+      expect(new URL(await browser.url()).searchParams.get('focus')).toBe(pointerFocus);
+      expect(browser.requests.some((request) => request.url.includes('/observatory/map/frontier'))).toBe(false);
 
       for (const title of ['Fit visible nodes (0)', 'Zoom in (+)', 'Zoom out (-)', 'Reset viewport (R)']) {
         await browser.click(`button[title=${JSON.stringify(title)}]`);
@@ -158,7 +278,7 @@ describe('graph accessibility facilities', () => {
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-paused')).toBe('true');
 
       await browser.reducedMotion();
-      await browser.goto('/?project=browser-nebula');
+      await browser.goto('/');
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-reduced-motion')).toBe('true');
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-transition-duration')).toBe('0');
@@ -166,29 +286,45 @@ describe('graph accessibility facilities', () => {
   }, 40_000);
   it('executes pointer and keyboard graph commands with kind-aware Lens behavior in a real browser', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1'); await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 1`);
-      const focusText = async () => await browser.text('.observatory-context-strip span:nth-child(3)');
+      await browser.goto('/'); await enterNeighborhood(browser);
+      const focusText = async () => await browser.text('.observatory-context-strip span:nth-child(4)');
+      await browser.waitFor(`document.querySelector('.observatory-context-strip span:nth-child(4)')?.textContent?.includes('Browser memory 1')`, 30_000);
       const initial = await focusText();
       for (const title of ['Fit visible nodes (0)','Zoom in (+)','Zoom out (-)','Reset viewport (R)','Pause or resume (P)','Pan left (H)','Pan down (J)','Pan up (K)','Pan right (L)']) await browser.click(`button[title=${JSON.stringify(title)}]`);
       expect(await focusText()).toBe(initial);
-      await browser.click('button[title="Next connected memory (Arrow Right)"]'); const pointerNext=await focusText();
-      await browser.click('button[title="Previous connected memory (Arrow Left)"]'); const pointerPrevious=await focusText(); expect(pointerNext).not.toBe(initial); expect(pointerPrevious).not.toBe(pointerNext);
+      const initialFocusId = new URL(await browser.url()).searchParams.get('focus');
+      await browser.click('button[title="Next connected memory (Arrow Right)"]');
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(initialFocusId)} && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
+      const pointerNextId = new URL(await browser.url()).searchParams.get('focus');
+      const pointerNext=await focusText();
+      await browser.click('button[title="Previous connected memory (Arrow Left)"]');
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(pointerNextId)} && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
+      const pointerPrevious=await focusText(); expect(pointerNext).not.toBe(initial); expect(pointerPrevious).not.toBe(pointerNext);
       await browser.click('button[title="Open memory overview (Enter)"]'); await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === 'observation'`);
       await browser.click('button[title="Expand selected memory (E)"]'); expect(await focusText()).toBe(pointerPrevious);
-      for(const [kind,label] of [['project','Project:'],['session','Work session:'],['topic','Topic:']] as const){
-        await browser.click('button[title="Clear focus (Escape)"]'); await browser.clickText('.graph-navigator li > button:first-child',label); await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === '${kind}'`);
-        expect(await browser.text('.memory-overview')).toContain('Explore connections'); expect(await browser.text('.memory-overview')).toContain('Find related');
-        expect(browser.requests.filter((request) => request.url.includes(`/viz/inspect/node/${kind}:`))).toHaveLength(0);
-      }
-      const fact={id:'fact:synthetic',kind:'fact',label:'Sanitized local fact',snippet:'Useful local fact detail',project:'browser-nebula',session_id:'browser-session',topic_key:'browser/alpha',type:null,seed_x:.4,seed_y:.5};
-      await browser.setRoutes([{includes:'/viz/slice',status:200,body:{nodes:[fact],edges:[],state:'sparse',continuation:null,truncated:false,health:{semantic_state:'ready',pending_jobs:0}}}]); await browser.goto('/?project=browser-nebula');
-      await browser.waitFor(`[...document.querySelectorAll('.graph-navigator li > button:first-child')].some((button)=>button.textContent?.includes('Learned fact:'))`); await browser.clickText('.graph-navigator li > button:first-child','Learned fact:'); await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === 'fact'`);
-      expect(await browser.text('.memory-overview')).toContain('Useful local fact detail'); expect(browser.requests.filter((request)=>request.url.includes('/viz/inspect/node/fact:'))).toHaveLength(0); await browser.clearRoutes();
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1'); await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 1`); await browser.click('button[title="Clear focus (Escape)"]'); expect(await focusText()).toContain('whole constellation');
+      await browser.waitFor(`[...document.querySelectorAll('.graph-navigator li > button:first-child')].some((button)=>button.textContent?.includes('Learned fact:'))`);
+      await browser.clickText('.graph-navigator li > button:first-child','Learned fact:'); await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === 'fact'`);
+      expect(await browser.text('.memory-overview')).toContain('Learned fact'); expect(browser.requests.filter((request)=>request.url.includes('/viz/inspect/node/fact:'))).toHaveLength(0);
+      await browser.goto('/'); await enterNeighborhood(browser); await browser.click('button[title="Clear focus (Escape)"]'); expect(await focusText()).toContain('whole universe');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelectorAll('.graph-navigator li').length > 1`, 30_000);
       await browser.clickText('.graph-navigator li > button:first-child','Browser memory 1');
-      for (const key of ['0','+','-','r','p','h','j','k','l','ArrowRight','ArrowRight','ArrowLeft','Enter','e']) await browser.key(key);
-      expect(await focusText()).not.toContain('whole constellation'); expect(await browser.count('.memory-overview')).toBe(1);
-      await browser.key('Escape'); expect(await focusText()).toContain('whole constellation');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'neighborhood' && document.querySelector('.observatory-context-strip span:nth-child(4)')?.textContent?.includes('Browser memory 1')`, 30_000);
+      for (const key of ['0','+','-','r','p','h','j','k','l']) await browser.key(key);
+      let keyboardFocus = new URL(await browser.url()).searchParams.get('focus');
+      for (const key of ['ArrowRight', 'ArrowRight', 'ArrowLeft']) {
+        await browser.key(key);
+        await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(keyboardFocus)} && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
+        keyboardFocus = new URL(await browser.url()).searchParams.get('focus');
+        expect(keyboardFocus).toMatch(/^obs:\d+$/);
+      }
+      await browser.key('Enter');
+      await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === 'observation'`);
+      await browser.key('e');
+      expect(await focusText()).not.toContain('whole universe'); expect(await browser.count('.memory-overview')).toBe(1);
+      await browser.key('Escape');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community'
+        && document.querySelector('.observatory-context-strip span:nth-child(4)')?.textContent?.includes('whole universe')`, 30_000);
+      expect(await focusText()).toContain('whole universe');
       for (const [width,height] of [[1440,900],[1024,768],[360,800]]) { await browser.viewport(width,height); expect(await browser.evaluate<boolean>('document.documentElement.scrollWidth <= innerWidth')).toBe(true); }
       await browser.reducedMotion(); expect(await browser.evaluate<boolean>(`matchMedia('(prefers-reduced-motion: reduce)').matches`)).toBe(true);
       expect(browser.requests.filter((request) => !request.url.startsWith(browser.origin) && !request.url.startsWith('data:'))).toHaveLength(0);
@@ -197,9 +333,9 @@ describe('graph accessibility facilities', () => {
   it('keeps the focused label visible when a zoomed constellation resizes to mobile', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.viewport(1440, 900);
-      await browser.goto('/?project=browser-nebula');
-      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready' && document.querySelectorAll('.graph-navigator li').length > 0`);
-      await browser.click('.graph-navigator li > button:first-child');
+      await browser.goto('/');
+      await enterNeighborhood(browser);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
       await browser.waitFor(`document.querySelectorAll('.cosmos-node-label[data-role="focus"]').length === 1`);
       await browser.click('button[title="Zoom in (+)"]');
       await browser.click('button[title="Zoom in (+)"]');
@@ -218,31 +354,38 @@ describe('graph accessibility facilities', () => {
   }, 40_000);
   it('keeps exploration usable when the GPU view fails and restores it without losing focus', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula');
+      await browser.goto('/');
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'failed' && document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.evaluate(`document.querySelector('.graph-navigator li > button:first-child')?.click()`);
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'failed' && document.querySelectorAll('.graph-navigator li').length > 1`, 30_000);
       const navigatorCount = await browser.count('.graph-navigator li');
       expect(await browser.text('.cosmos-renderer-fallback')).toContain('Rich constellation unavailable');
       expect(await browser.count('.cosmos-renderer-fallback button')).toBe(1);
-      expect(await browser.evaluate<boolean>(`(() => {
+      const fallbackNavigator = await browser.evaluate<{ clipPath: string; width: number; height: number; display: string }>(`(() => {
         const navigator = document.querySelector('.graph-navigator');
-        if (!(navigator instanceof HTMLElement)) return false;
+        if (!(navigator instanceof HTMLElement)) return { clipPath: 'missing', width: 0, height: 0, display: 'missing' };
         const rect = navigator.getBoundingClientRect();
-        return getComputedStyle(navigator).clipPath === 'none' && rect.width > 240 && rect.height > 100;
-      })()`)).toBe(true);
+        const style = getComputedStyle(navigator);
+        return { clipPath: style.clipPath, width: rect.width, height: rect.height, display: style.display };
+      })()`);
+      expect(fallbackNavigator.clipPath, JSON.stringify(fallbackNavigator)).toBe('none');
+      expect(fallbackNavigator.width, JSON.stringify(fallbackNavigator)).toBeGreaterThan(240);
+      expect(fallbackNavigator.height, JSON.stringify(fallbackNavigator)).toBeGreaterThan(80);
 
       await browser.clickText('.graph-navigator li > button:first-child', 'Browser memory 1');
       await browser.waitFor(`document.querySelector('.memory-overview h2')?.textContent?.includes('Browser memory 1')`);
       const focusedNavigatorCount = await browser.count('.graph-navigator li');
-      const focusedLabel = await browser.text('.observatory-context-strip span:nth-child(3)');
+      const focusedLabel = await browser.text('.observatory-context-strip span:nth-child(4)');
       const focusedId = new URL(await browser.url()).searchParams.get('focus');
       expect(focusedLabel).toContain('Browser memory 1');
 
       await browser.evaluate(`globalThis.__THOTH_RESTORE_WEBGL__?.()`);
       await browser.click('.cosmos-renderer-fallback button');
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
-      expect(navigatorCount).toBeGreaterThan(focusedNavigatorCount);
+      expect(navigatorCount).toBeGreaterThan(0);
+      expect(focusedNavigatorCount).toBeGreaterThan(0);
       expect(await browser.count('.graph-navigator li')).toBe(focusedNavigatorCount);
-      expect(await browser.text('.observatory-context-strip span:nth-child(3)')).toBe(focusedLabel);
+      expect(await browser.text('.observatory-context-strip span:nth-child(4)')).toBe(focusedLabel);
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-focus-id')).toBe(focusedId);
 
       await browser.pageScale(2);

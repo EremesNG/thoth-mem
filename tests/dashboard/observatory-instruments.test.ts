@@ -11,8 +11,12 @@ describe('bounded contextual instruments', () => {
   it('keeps instrument navigation beside its content while the atlas remains stable', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.viewport(1440, 900);
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1');
-      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li[data-node-id^="obs:"]')`);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`);
       const before = await browser.evaluate<{ nodes: number; width: number; height: number }>(`(() => {
         const canvas = document.querySelector('[data-testid="map-canvas-shell"]')?.getBoundingClientRect();
         if (!canvas) throw new Error('Missing atlas canvas');
@@ -49,32 +53,42 @@ describe('bounded contextual instruments', () => {
   }, 40_000);
   it('keeps initial deep links and Recall pivots synchronized with the rich and semantic graph', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1&q=Memory&surface=timeline');
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li[data-node-id^="obs:"]')`);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood'`);
+      const focusedUrl = new URL(await browser.url());
+      const initialFocus = focusedUrl.searchParams.get('focus');
+      focusedUrl.searchParams.set('surface', 'timeline');
+      focusedUrl.searchParams.set('q', 'Memory');
+      await browser.goto(`${focusedUrl.pathname}${focusedUrl.search}`);
       await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 1`);
-      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === 'obs:1'`);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(initialFocus)}`);
       await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true' && document.querySelector('.instrument-dock')?.getAttribute('aria-label') === 'Follow the story view'`);
       expect(await browser.attribute('.graph-navigator li.active > button:first-child', 'aria-current')).toBe('true');
 
-      await browser.setRoutes([
-        { includes: '/observatory/pivot', method: 'POST', status: 200, body: { context_token: 'pivot-context', scope: { project: 'browser-nebula' }, focus_node_id: 'obs:2', target: 'map' } },
-        { includes: '/observatory/map/frontier', method: 'POST', status: 200, body: { nodes: [], edges: [], frontier_state: { added_node_ids: [], already_visible_node_ids: ['obs:2'], exhausted: true, continuation: null, reason: 'no-neighbors' }, health: { semantic_state: 'ready', pending_jobs: 0 } } },
-      ]);
       await browser.clickText('.observatory-tabs button', 'Related');
-      await browser.waitFor(`document.querySelectorAll('button[title="Pivot to map"]').length > 0`);
-      await browser.click('button[title="Pivot to map"]');
-      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== 'obs:1'`);
+      await browser.waitFor(`document.querySelectorAll('button[title="Pivot to map"]').length > 1`);
+      await browser.click('button[title="Pivot to map"]', 1);
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') !== ${JSON.stringify(initialFocus)}`);
       const pivotFocus = await browser.evaluate<string>(`new URLSearchParams(location.search).get('focus') ?? ''`);
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(pivotFocus)}`);
       expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-focus-id')).toBe(pivotFocus);
       expect(await browser.attribute('.graph-navigator li.active > button:first-child', 'aria-current')).toBe('true');
-      await browser.clearRoutes();
     }, { observations: 12 });
   }, 40_000);
   it('switches, fails, retries, rejects stale work, and preserves the graph in a real browser', async () => {
     await withDashboardBrowser(async (browser) => {
-      await browser.goto('/?project=browser-nebula&focus=obs%3A1'); await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.goto('/'); await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('.graph-navigator li[data-node-id^="obs:"]')`);
+      await browser.click('.graph-navigator li[data-node-id^="obs:"] > button:first-child');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood' && document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelectorAll('.graph-navigator li').length > 0`);
+      const observationId = Number((new URL(await browser.url()).searchParams.get('focus') ?? '').replace('obs:', ''));
       const initialGraph=await browser.count('.graph-navigator li');
-      const cases=[['Related','/observatory/recall','recall','Try find related again'],['Story','/observatory/timeline','timeline','Try follow the story again'],['Changes','/observatory/ledger/1','ledger','Try see what changed again'],['Health','/observatory/health','health','Try check readiness again']] as const;
+      const cases=[['Related','/observatory/recall','recall','Try find related again'],['Story','/observatory/timeline','timeline','Try follow the story again'],['Changes',`/observatory/ledger/${observationId}`,'ledger','Try see what changed again'],['Health','/observatory/health','health','Try check readiness again']] as const;
       for(const [label,endpoint,id,retryLabel] of cases){
         await browser.clickText('.observatory-tabs button','Overview'); await browser.setRoutes([{includes:endpoint,status:503,body:{error:`${id} browser failure`}}]);
         await browser.clickText('.observatory-tabs button',label); await browser.waitFor(`[...document.querySelectorAll('.error-container button')].some((button)=>button.textContent?.includes(${JSON.stringify(retryLabel)}))`);
@@ -90,7 +104,7 @@ describe('bounded contextual instruments', () => {
       expect(await browser.attribute('.instrument-dock','aria-label')).toBe('Find related view');
       expect(browser.failedRequests.some((request)=>request.url.includes('/observatory/timeline')&&request.canceled)).toBe(true);
       expect(await browser.count('.graph-navigator li')).toBe(initialGraph); await browser.clearRoutes();
-      for(const endpoint of ['/observatory/recall','/observatory/timeline','/observatory/ledger/1','/observatory/health']) expect(browser.requests.some((request)=>request.url.includes(endpoint))).toBe(true);
+      for(const endpoint of ['/observatory/recall','/observatory/timeline',`/observatory/ledger/${observationId}`,'/observatory/health']) expect(browser.requests.some((request)=>request.url.includes(endpoint))).toBe(true);
       expect(browser.requests.filter((request)=>request.url.includes('/observatory/recall')||request.url.includes('/observatory/timeline')).every((request)=>new URL(request.url).searchParams.has('context_token'))).toBe(true);
     });
   },40_000);

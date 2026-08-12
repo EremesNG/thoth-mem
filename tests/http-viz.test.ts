@@ -57,6 +57,25 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
+async function resolveAtlasScopeTokens(
+  port: number,
+  projectLabel: string,
+  sessionLabel: string,
+): Promise<{ projectToken: string; sessionToken: string }> {
+  const response = await fetch(`http://127.0.0.1:${port}/viz/atlas?level=universe&page_size=150`);
+  if (!response.ok) throw new Error(`Unable to resolve semantic atlas facets: ${response.status}`);
+  const body = await response.json() as {
+    facets: {
+      projects: Array<{ token: string; label: string }>;
+      sessions: Array<{ token: string; label: string }>;
+    };
+  };
+  const projectToken = body.facets.projects.find((facet) => facet.label === projectLabel)?.token;
+  const sessionToken = body.facets.sessions.find((facet) => facet.label === sessionLabel)?.token;
+  if (!projectToken || !sessionToken) throw new Error(`Missing semantic atlas facets for ${projectLabel}/${sessionLabel}`);
+  return { projectToken, sessionToken };
+}
+
 describe('viz routes', () => {
   const active: Array<{ store: Store; stop: () => Promise<void>; port: number }> = [];
 
@@ -125,6 +144,225 @@ describe('viz routes', () => {
     const filtersBody = await filtersResponse.json();
     expect(filtersBody.sessions).toContain('viz-session-b');
     expect(filtersBody.relations).toContain('HAS_WHAT');
+  });
+
+  it('serves the token-safe semantic atlas and Observatory search flow through the real dispatcher', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:', { dedupeWindowMinutes: 0 });
+    const privateProjects = [
+      'http-atlas-<private>ALPHA_HTTP_SECRET</private>',
+      'http-atlas-<private>BETA_HTTP_SECRET</private>',
+    ];
+    for (let index = 0; index < 12; index += 1) {
+      store.saveObservation({
+        title: `HTTP semantic memory ${index}`,
+        content: `**What**: shared-http-evidence-${Math.floor(index / 4)}`,
+        project: privateProjects[index % 2],
+        session_id: `http-atlas-session-${index}`,
+        topic_key: `http/atlas/${index}`,
+        type: index % 2 === 0 ? 'decision' : 'discovery',
+      });
+    }
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const universeResponse = await fetch(`http://127.0.0.1:${port}/viz/atlas?level=universe`);
+    expect(universeResponse.status).toBe(200);
+    const universe = await universeResponse.json();
+    expect(universe).toMatchObject({
+      level: 'universe',
+      counts: { memory_count: 12, project_count: 2 },
+    });
+    expect(universe.nodes.every((node: { kind: string }) => node.kind === 'community')).toBe(true);
+    expect(new Set(universe.facets.projects.map((option: { token: string }) => option.token)).size).toBe(2);
+    const serializedUniverse = JSON.stringify(universe);
+    expect(serializedUniverse).not.toContain('ALPHA_HTTP_SECRET');
+    expect(serializedUniverse).not.toContain('BETA_HTTP_SECRET');
+    expect(serializedUniverse).not.toContain('<private>');
+
+    const projectToken = universe.facets.projects[0].token as string;
+    const communityId = universe.nodes[0].id as string;
+    const communityResponse = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?level=community&community_id=${encodeURIComponent(communityId)}&page_size=2`,
+    );
+    expect(communityResponse.status).toBe(200);
+    const community = await communityResponse.json();
+    expect(community.nodes.every((node: { kind: string }) => node.kind === 'observation')).toBe(true);
+    const focusNodeId = community.nodes[0].id as string;
+    const neighborhoodResponse = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?level=neighborhood&focus_node_id=${encodeURIComponent(focusNodeId)}&depth=2`,
+    );
+    expect(neighborhoodResponse.status).toBe(200);
+    const neighborhood = await neighborhoodResponse.json();
+    expect(neighborhood.navigation).toMatchObject({ focus_node_id: focusNodeId, depth: 2 });
+    expect(neighborhood.nodes.length).toBeLessThanOrEqual(300);
+
+    const invalidFacet = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?level=universe&project_token=facet%3Aproject%3Anot-current`,
+    );
+    expect(invalidFacet.status).toBe(400);
+    expect(await invalidFacet.json()).toMatchObject({ code: 'VIZ_ATLAS_FACET_INVALID', retryable: false });
+    const rawFacet = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?level=universe&project=${encodeURIComponent(privateProjects[0]!)}`,
+    );
+    expect(rawFacet.status).toBe(400);
+
+    const contextResponse = await fetch(
+      `http://127.0.0.1:${port}/observatory/context?project_token=${encodeURIComponent(projectToken)}&query=HTTP%20semantic`,
+    );
+    expect(contextResponse.status).toBe(200);
+    const context = await contextResponse.json();
+    expect(context.scope.project.token).toBe(projectToken);
+    const recallResponse = await fetch(
+      `http://127.0.0.1:${port}/observatory/recall?context_token=${encodeURIComponent(context.context_token)}&lanes=lexical&limit=2`,
+    );
+    expect(recallResponse.status).toBe(200);
+    const recall = await recallResponse.json();
+    const hit = recall.lanes.lexical[0];
+    expect(hit.project.token).toBe(projectToken);
+    expect(hit.community_id).toMatch(/^community:/);
+    const pivotResponse = await fetch(`http://127.0.0.1:${port}/observatory/pivot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pivot_token: hit.pivot_token, target: 'map' }),
+    });
+    expect(pivotResponse.status).toBe(200);
+    const pivot = await pivotResponse.json();
+    expect(pivot).toMatchObject({
+      focus_node_id: `obs:${hit.observation_id}`,
+      community_id: hit.community_id,
+      target: 'map',
+    });
+    expect(pivot.scope.project.token).toBe(projectToken);
+    expect(JSON.stringify({ context, recall, pivot })).not.toMatch(/ALPHA_HTTP_SECRET|BETA_HTTP_SECRET|<private>/);
+
+    const openApi = await (await fetch(`http://127.0.0.1:${port}/openapi.json`)).json();
+    expect(openApi.paths['/viz/atlas'].get.responses).toHaveProperty('409');
+    expect(openApi.components.schemas.SemanticAtlasPageResponse).toBeDefined();
+  });
+
+  it('serves complete scoped graph pages and rejects invalidated generations through the real bridge', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:', { dedupeWindowMinutes: 0 });
+    const tokens = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot'];
+    for (let index = 0; index < 6; index += 1) {
+      store.saveObservation({
+        title: `HTTP complete ${tokens[index]}`,
+        content: `**What**: HTTP graph page ${tokens[index]}`,
+        project: index === 5 ? 'other-project' : 'viz-http-complete',
+        session_id: index % 2 === 0 ? 'included-session' : 'other-session',
+        topic_key: index % 2 === 0 ? `included/topic-${index}` : `other/topic-${index}`,
+        type: index % 2 === 0 ? 'decision' : 'discovery',
+      });
+    }
+    expect(store.getDb().prepare(
+      "SELECT id FROM observations WHERE project = 'viz-http-complete' AND session_id = 'included-session' AND type = 'decision' AND deleted_at IS NULL"
+    ).all()).toHaveLength(3);
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const openApiResponse = await fetch(`http://127.0.0.1:${port}/openapi.json`);
+    expect(openApiResponse.status).toBe(200);
+    const openApi = await openApiResponse.json();
+    expect(openApi.paths['/viz/graph'].get.parameters.map((parameter: { name: string }) => parameter.name)).toEqual([
+      'project',
+      'session_id',
+      'topic_key',
+      'type',
+      'observation_type',
+      'relation',
+      'query',
+      'page_size',
+      'cursor',
+    ]);
+    expect(openApi.paths['/viz/graph'].get.parameters.at(-2).schema).toMatchObject({
+      type: 'integer',
+      minimum: 1,
+      maximum: 250,
+    });
+    expect(openApi.paths['/viz/graph'].get.responses).toMatchObject({
+      200: { content: { 'application/json': { schema: { $ref: '#/components/schemas/VizSliceResponse' } } } },
+      400: { $ref: '#/components/responses/VizGraphPageError' },
+      409: { $ref: '#/components/responses/VizGraphPageError' },
+    });
+    expect(openApi.components.schemas.VizGraphPageError).toMatchObject({
+      required: ['error', 'code', 'retryable'],
+      properties: {
+        code: { enum: ['VIZ_GRAPH_CURSOR_INVALID', 'VIZ_GRAPH_GENERATION_STALE'] },
+        retryable: { type: 'boolean' },
+      },
+    });
+
+    const base = `http://127.0.0.1:${port}/viz/graph?project=viz-http-complete&session_id=included-session&type=decision&observation_type=decision&relation=HAS_TYPE&query=HTTP&page_size=1`;
+    const topicFiltered = await fetch(`${base}&topic_key=included%2Ftopic-2`);
+    expect(topicFiltered.status).toBe(200);
+    await expect(topicFiltered.json()).resolves.toMatchObject({
+      nodes: expect.arrayContaining([expect.objectContaining({
+        kind: 'observation',
+        topic_key: 'included/topic-2',
+      })]),
+    });
+    const pages: Array<{ nodes: Array<{ id: string }>; edges: Array<{ id: string; source_id: string; target_id: string }>; continuation: string | null; truncated: boolean }> = [];
+    let cursor: string | null = null;
+    do {
+      const response = await fetch(`${base}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      expect(response.status).toBe(200);
+      const page = await response.json();
+      const nodeIds = new Set(page.nodes.map((node: { id: string }) => node.id));
+      expect(page.edges.every((edge: { source_id: string; target_id: string }) => (
+        nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id)
+      ))).toBe(true);
+      pages.push(page);
+      cursor = page.continuation;
+    } while (cursor);
+
+    expect(
+      pages.length,
+      JSON.stringify(pages.map((page) => ({ nodes: page.nodes.map((node) => node.id), continuation: page.continuation }))),
+    ).toBeGreaterThanOrEqual(3);
+    expect(pages.at(-1)).toMatchObject({ continuation: null, truncated: false });
+    expect(new Set(pages.flatMap((page) => page.nodes.filter((node) => node.id.startsWith('obs:')).map((node) => node.id))).size).toBe(3);
+    const drainedEdgeIds = pages.flatMap((page) => page.edges.map((edge) => edge.id));
+    expect(new Set(drainedEdgeIds).size).toBe(drainedEdgeIds.length);
+    expect(pages.some((page) => page.edges.length > 3)).toBe(true);
+
+    const malformed = await fetch(`${base}&cursor=not-a-cursor`);
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ code: 'VIZ_GRAPH_CURSOR_INVALID' });
+
+    for (const pageSize of [0, 251]) {
+      const outOfBounds = await fetch(`${base.replace('page_size=1', `page_size=${pageSize}`)}`);
+      expect(outOfBounds.status).toBe(400);
+      await expect(outOfBounds.json()).resolves.toMatchObject({ error: expect.any(String) });
+    }
+
+    const first = await fetch(base);
+    const firstBody = await first.json();
+    const replayedScope = await fetch(
+      `http://127.0.0.1:${port}/viz/graph?project=other-project&page_size=1&cursor=${encodeURIComponent(firstBody.continuation)}`,
+    );
+    expect(replayedScope.status).toBe(400);
+    await expect(replayedScope.json()).resolves.toMatchObject({ code: 'VIZ_GRAPH_CURSOR_INVALID' });
+
+    store.getDb().prepare(
+      "UPDATE observations SET title = 'Generation changed', updated_at = datetime('now') WHERE id = (SELECT id FROM observations WHERE project = 'viz-http-complete' AND session_id = 'included-session' ORDER BY id LIMIT 1)"
+    ).run();
+    const stale = await fetch(`${base}&cursor=${encodeURIComponent(firstBody.continuation)}`);
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      code: 'VIZ_GRAPH_GENERATION_STALE',
+      retryable: true,
+    });
+
+    const compatibility = await fetch(`http://127.0.0.1:${port}/viz/slice?project=viz-http-complete&max_nodes=20&max_edges=20`);
+    expect(compatibility.status).toBe(200);
+    await expect(compatibility.json()).resolves.toMatchObject({
+      nodes: expect.any(Array),
+      edges: expect.any(Array),
+      health: expect.any(Object),
+    });
   });
 
   it('rebuilds graph-lite facts through HTTP POST /graph/rebuild without legacy table dependency', async () => {
@@ -212,7 +450,8 @@ describe('viz routes', () => {
     await bridge.start();
     active.push({ store, port, stop: () => bridge.stop() });
 
-    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project=obs-http&session_id=obs-session&query=jwt`);
+    const { projectToken, sessionToken } = await resolveAtlasScopeTokens(port, 'obs-http', 'obs-session');
+    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project_token=${encodeURIComponent(projectToken)}&session_token=${encodeURIComponent(sessionToken)}&query=jwt`);
     expect(contextResponse.status).toBe(200);
     const contextBody = await contextResponse.json();
     expect(contextBody.context_token).toBeTypeOf('string');
@@ -356,7 +595,8 @@ describe('viz routes', () => {
     await bridge.start();
     active.push({ store, port, stop: () => bridge.stop() });
 
-    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project=obs-http-lane&session_id=obs-http-session&query=lexical-only`);
+    const { projectToken, sessionToken } = await resolveAtlasScopeTokens(port, 'obs-http-lane', 'obs-http-session');
+    const contextResponse = await fetch(`http://127.0.0.1:${port}/observatory/context?project_token=${encodeURIComponent(projectToken)}&session_token=${encodeURIComponent(sessionToken)}&query=lexical-only`);
     expect(contextResponse.status).toBe(200);
     const contextBody = await contextResponse.json();
 

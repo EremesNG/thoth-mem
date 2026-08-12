@@ -239,12 +239,114 @@ export class DashboardBrowser {
   async captureScreenshot(): Promise<string> { const response=await this.cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});return String(response.data??''); }
 }
 
+function seedDashboardStore(store: Store, observationCount: number, ownerToken: string): number {
+  const db = store.getDb();
+  const topicKey = (index: number) => index === 1
+    ? 'browser/alpha'
+    : index === 2
+      ? 'browser/beta'
+      : `browser/topic-${index}`;
+  const upsertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
+     VALUES (?, 'concept', ?, '[]', '{}', datetime('now'))
+     ON CONFLICT(entity_key) DO UPDATE SET updated_at = datetime('now')
+     RETURNING id`,
+  );
+  const insertTriple = db.prepare(
+    `INSERT OR IGNORE INTO kg_triples (
+      subject_entity_id, relation, object_entity_id, source_type, source_id,
+      project, topic_key, provenance, confidence, triple_hash, extractor_version
+    ) VALUES (?, ?, ?, 'observation', ?, 'browser-nebula', ?, ?, 0.9, ?, 'dashboard-browser-harness')`,
+  );
+  const entityId = (key: string, label: string): number => (
+    upsertEntity.get(`browser:${key}`, label) as { id: number }
+  ).id;
+  const addStructuralEvidence = (observationId: number, index: number) => {
+    const region = Math.floor((index - 1) / 50);
+    const subjectId = entityId(`memory:${index}`, `Browser memory ${index}`);
+    const regionId = entityId(`region:${region}`, `Browser region ${region + 1}`);
+    insertTriple.run(
+      subjectId,
+      'USES',
+      regionId,
+      observationId,
+      topicKey(index),
+      `observation:${observationId}`,
+      `browser:${observationId}:USES:${region}`,
+    );
+    if (index > 1 && (index - 1) % 50 === 0) {
+      const bridgeId = entityId(`bridge:${region - 1}:${region}`, `Region ${region} to ${region + 1}`);
+      const previousObservationId = observationId - 1;
+      const previousSubjectId = entityId(`memory:${index - 1}`, `Browser memory ${index - 1}`);
+      insertTriple.run(
+        previousSubjectId,
+        'REFERENCES',
+        bridgeId,
+        previousObservationId,
+        topicKey(index - 1),
+        `observation:${previousObservationId}`,
+        `browser:${previousObservationId}:REFERENCES:${region - 1}:${region}`,
+      );
+      insertTriple.run(
+        subjectId,
+        'REFERENCES',
+        bridgeId,
+        observationId,
+        topicKey(index),
+        `observation:${observationId}`,
+        `browser:${observationId}:REFERENCES:${region - 1}:${region}`,
+      );
+    }
+  };
+
+  if (observationCount <= 500) {
+    let ownerObservationId = 0;
+    for (let index = 1; index <= observationCount; index += 1) {
+      const saved = store.saveObservation({
+        title: `Browser memory ${index}`,
+        content: `**What**: Browser region ${Math.floor((index - 1) / 50) + 1}\n**Why**: Supports ${Math.max(1, index - 1)}\n**Where**: Browser test atlas\n**Learned**: <private>HIDDEN_${index}</private> Public ${index} ${ownerToken}`,
+        project: 'browser-nebula',
+        session_id: 'browser-session',
+        topic_key: topicKey(index),
+        type: index % 2 ? 'decision' : 'discovery',
+      });
+      ownerObservationId = saved.observation.id;
+      addStructuralEvidence(saved.observation.id, index);
+    }
+    return ownerObservationId;
+  }
+
+  return db.transaction(() => {
+    db.prepare(
+      `INSERT OR IGNORE INTO sessions (id, project, directory) VALUES ('browser-session', 'browser-nebula', NULL)`,
+    ).run();
+    const insertObservation = db.prepare(
+      `INSERT INTO observations (
+        id, session_id, type, title, content, project, scope, topic_key,
+        normalized_hash, created_at, updated_at
+      ) VALUES (?, 'browser-session', ?, ?, ?, 'browser-nebula', 'project', ?, ?, datetime('now'), datetime('now'))`,
+    );
+    for (let index = 1; index <= observationCount; index += 1) {
+      insertObservation.run(
+        index,
+        index % 2 ? 'decision' : 'discovery',
+        `Browser memory ${index}`,
+        `Browser region ${Math.floor((index - 1) / 50) + 1}. Public ${index} ${ownerToken}`,
+        topicKey(index),
+        `browser-hash-${index}`,
+      );
+      addStructuralEvidence(index, index);
+    }
+    return observationCount;
+  })();
+}
+
 export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Promise<T>,options:DashboardBrowserOptions={}):Promise<T>{
   const fault=options.faultInjection;const controller=new AbortController();const deadlineMs=fault?.deadlineMs??35_000;const deadline=setTimeout(()=>controller.abort(abortError(`Dashboard browser lifecycle deadline exceeded after ${deadlineMs}ms`)),deadlineMs);
   const ownerToken=randomBytes(12).toString('hex');
   let store:Store|null=null;let bridge:ReturnType<typeof createHttpBridge>|null=null;let vite:ViteDevServer|null=null;let chrome:ChildProcess|null=null;let cdp:CdpConnection|null=null;let profile='';let result:T|undefined;let failure:Error|null=null;
   try{
-    store=new Store(':memory:');let ownerObservationId=0;for(let index=1;index<=(options.observations??12);index+=1){const saved=store.saveObservation({title:`Browser memory ${index}`,content:`**What**: Memory ${index}\n**Why**: Supports ${Math.max(1,index-1)}\n**Learned**: <private>HIDDEN_${index}</private> Public ${index} ${ownerToken}`,project:'browser-nebula',session_id:'browser-session',topic_key:index<7?'browser/alpha':'browser/beta',type:index%2?'decision':'discovery'});ownerObservationId=saved.observation.id;}
+    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken);
     const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
     const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
     const chromePath=['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe','C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(existsSync);if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');

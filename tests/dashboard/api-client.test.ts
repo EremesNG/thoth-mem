@@ -126,6 +126,68 @@ describe('normalizeProjectGraphResponse', () => {
 });
 
 describe('viz client routes', () => {
+  it('builds complete graph requests, classifies stale generations, and propagates aborts', async () => {
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      return new Response(JSON.stringify({
+        nodes: [],
+        edges: [],
+        state: 'empty',
+        continuation: null,
+        truncated: false,
+        health: { semantic_state: 'ready', pending_jobs: 0 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await api.getVizGraphPage({
+        project: 'p1',
+        session_id: 's1',
+        topic_key: 't/1',
+        type: 'decision',
+        observation_type: 'decision',
+        relation: 'HAS_WHAT',
+        query: 'token',
+        page_size: 250,
+        cursor: 'opaque+/=',
+      }, controller.signal);
+
+      const url = String(calls[0].input);
+      expect(url).toContain('/viz/graph?project=p1');
+      expect(url).toContain('session_id=s1');
+      expect(url).toContain('topic_key=t%2F1');
+      expect(url).toContain('observation_type=decision');
+      expect(url).toContain('relation=HAS_WHAT');
+      expect(url).toContain('query=token');
+      expect(url).toContain('page_size=250');
+      expect(url).toContain('cursor=opaque%2B%2F%3D');
+      expect(calls[0].init?.signal).toBe(controller.signal);
+
+      globalThis.fetch = (async () => new Response(JSON.stringify({
+        error: 'Graph generation changed',
+        code: 'VIZ_GRAPH_GENERATION_STALE',
+        retryable: true,
+      }), { status: 409, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+      await expect(api.getVizGraphPage({ project: 'p1', cursor: 'stale' })).rejects.toMatchObject({
+        status: 409,
+        body: { code: 'VIZ_GRAPH_GENERATION_STALE', retryable: true },
+      });
+
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      })) as typeof fetch;
+      const abortController = new AbortController();
+      const aborted = api.getVizGraphPage({ project: 'p1' }, abortController.signal);
+      abortController.abort(new DOMException('Stopped', 'AbortError'));
+      await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('builds viz slice/expand/inspect/filter/health requests', async () => {
     const originalFetch = globalThis.fetch;
     const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
@@ -219,9 +281,24 @@ describe('observatory client routes', () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ input, init });
       const url = String(input);
+      if (url.startsWith('/viz/atlas')) {
+        return new Response(JSON.stringify({
+          level: 'neighborhood',
+          generation: 'g1',
+          nodes: [],
+          edges: [],
+          counts: { memory_count: 1, project_count: 1, community_count: 1 },
+          coverage: { state: 'fresh' },
+          facets: { projects: [{ kind: 'project', token: 'facet:project:p1', label: 'Project one', count: 1 }], sessions: [], topics: [], types: ['decision'], relations: [] },
+          navigation: { community_id: 'community:1', focus_node_id: 'obs:1', depth: 2 },
+          continuation: null,
+          truncated: false,
+          health: { semantic_state: 'ready', pending_jobs: 0 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       if (url.startsWith('/observatory/context')) {
         return new Response(JSON.stringify({
-          scope: {},
+          scope: { project: { kind: 'project', token: 'facet:project:p1', label: 'Project one' }, session: null, topic: null, type: null, relation: null, query: 'jwt', time_from: null, time_to: null },
           context_token: 'ctx',
           health: { semantic_state: 'ready', pending_jobs: 0 },
           capabilities: { viz_fallback_available: true, observatory_routes_available: true },
@@ -236,8 +313,9 @@ describe('observatory client routes', () => {
       if (url === '/observatory/pivot') {
         return new Response(JSON.stringify({
           context_token: 'ctx',
-          scope: {},
+          scope: { project: { kind: 'project', token: 'facet:project:p1', label: 'Project one' }, session: null, topic: null, type: null, relation: null, query: 'jwt', time_from: null, time_to: null },
           focus_node_id: 'obs:1',
+          community_id: 'community:1',
           target: 'map',
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
@@ -286,7 +364,7 @@ describe('observatory client routes', () => {
     }) as typeof fetch;
 
     try {
-      await api.getObservatoryContext({ project: 'p1', query: 'jwt' });
+      await api.getObservatoryContext({ project_token: 'facet:project:p1', query: 'jwt' });
       await api.getObservatoryRecall({ context_token: 'ctx', lanes: ['lexical', 'fact-kg'] });
       await api.resolveObservatoryPivot({ pivot_token: 'tok', target: 'map' });
       await api.getObservatoryMapFrontier({ context_token: 'ctx', focus_node_id: 'obs:1', max_nodes: 10 });
@@ -294,8 +372,19 @@ describe('observatory client routes', () => {
       await api.getObservatoryTimeline({ context_token: 'ctx', limit: 20 });
       await api.getObservatoryHealth({ project: 'p1' });
       await api.getVizSlice({ project: 'p1' });
+      const abortController = new AbortController();
+      const atlas = await api.getSemanticAtlasPage({
+        level: 'neighborhood',
+        project_token: 'facet:project:p1',
+        community_id: 'community:1',
+        focus_node_id: 'obs:1',
+        depth: 2,
+        page_size: 100,
+        cursor: 'next',
+      }, abortController.signal);
 
-      expect(String(calls[0].input)).toContain('/observatory/context?project=p1');
+      expect(String(calls[0].input)).toContain('/observatory/context?project_token=facet%3Aproject%3Ap1');
+      expect(String(calls[0].input)).not.toContain('project=p1');
       expect(String(calls[1].input)).toContain('/observatory/recall?context_token=ctx');
       expect(String(calls[1].input)).toContain('lanes=lexical%2Cfact-kg');
       expect(String(calls[2].input)).toBe('/observatory/pivot');
@@ -305,6 +394,12 @@ describe('observatory client routes', () => {
       expect(String(calls[5].input)).toContain('/observatory/timeline?context_token=ctx');
       expect(String(calls[6].input)).toContain('/observatory/health?project=p1');
       expect(String(calls[7].input)).toContain('/viz/slice?project=p1');
+      expect(String(calls[8].input)).toContain('/viz/atlas?level=neighborhood');
+      expect(String(calls[8].input)).toContain('project_token=facet%3Aproject%3Ap1');
+      expect(String(calls[8].input)).toContain('community_id=community%3A1');
+      expect(String(calls[8].input)).toContain('focus_node_id=obs%3A1');
+      expect(calls[8].init?.signal).toBe(abortController.signal);
+      expect(atlas.navigation.community_id).toBe('community:1');
     } finally {
       globalThis.fetch = originalFetch;
     }

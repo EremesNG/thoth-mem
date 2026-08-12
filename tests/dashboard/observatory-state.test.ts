@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import { beginRequest, boundedError, canCommitRequest, createResourceState, deriveGraphPhase, type ResourcePhase } from '../../dashboard/src/components/observatory/resource-state.js';
-import ResourceStateNotice from '../../dashboard/src/components/observatory/ResourceStateNotice.js';
+import ResourceStateNotice, { FullAtlasStateNotice } from '../../dashboard/src/components/observatory/ResourceStateNotice.js';
+import type { FullAtlasLoadPhase } from '../../dashboard/src/components/observatory/full-atlas-loader.js';
 
 const dashboardRequire = createRequire(new URL('../../dashboard/package.json', import.meta.url));
 const { createElement } = dashboardRequire('react');
@@ -30,5 +31,17 @@ describe('observatory resource state', () => {
     expect(deriveGraphPhase({...base,hasData:false,nodeCount:0})).toBe('empty');
     expect(deriveGraphPhase({...base,truncated:true})).toBe('truncated');
     expect(deriveGraphPhase({...base,degraded:true})).toBe('degraded');
+  });
+  it('names every automatic full-atlas phase and reserves actions for recoverable failure', () => {
+    const phases: FullAtlasLoadPhase[] = ['initial', 'streaming', 'restarting', 'complete', 'partial-error'];
+    const rendered = phases.map((phase) => renderToStaticMarkup(createElement(FullAtlasStateNotice, { phase, onRetry: () => undefined })));
+    expect(new Set(rendered).size).toBe(phases.length);
+    expect(rendered.join(' ')).not.toMatch(/Reveal more/i);
+    expect(rendered.slice(0, -1).every((html) => !html.includes('<button'))).toBe(true);
+    expect(rendered.at(-1)).toContain('aria-label="Retry full atlas"');
+
+    const truncated = renderToStaticMarkup(createElement(ResourceStateNotice, { phase: 'truncated', onAction: () => undefined }));
+    expect(truncated).not.toMatch(/Reveal more/i);
+    expect(truncated).toContain('loading');
   });
 });

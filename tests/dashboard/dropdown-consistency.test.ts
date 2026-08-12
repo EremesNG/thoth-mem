@@ -52,6 +52,8 @@ describe('dashboard dropdown consistency', () => {
       const expectedAppearance = observatoryAppearance[0];
 
       await browser.click('[role="combobox"][aria-label="Field of view"]');
+      expect(await browser.count('body > .guided-select-popover')).toBe(1);
+      expect(await browser.count('.guided-select > .guided-select-popover')).toBe(0);
       await browser.fill('[role="combobox"][aria-label="Field of view"]', 'wide');
       await browser.key('ArrowDown');
       await browser.key('Enter');
@@ -65,6 +67,7 @@ describe('dashboard dropdown consistency', () => {
       expect((await browser.evaluate<ControlAppearance[]>(appearanceScript('.control-room'))).every((appearance) => JSON.stringify(appearance) === JSON.stringify(expectedAppearance))).toBe(true);
 
       await browser.click('[role="combobox"][aria-label="Memory type"]');
+      expect(await browser.count('body > .guided-select-popover')).toBe(1);
       await browser.fill('[role="combobox"][aria-label="Memory type"]', 'architecture');
       await browser.key('ArrowDown');
       await browser.key('Enter');
@@ -79,6 +82,7 @@ describe('dashboard dropdown consistency', () => {
 
       const requestCount = browser.requests.length;
       await browser.click('[role="combobox"][aria-label="Activity source"]');
+      expect(await browser.count('body > .guided-select-popover')).toBe(1);
       await browser.fill('[role="combobox"][aria-label="Activity source"]', 'agent tools');
       await browser.key('ArrowDown');
       await browser.key('Enter');
@@ -90,12 +94,29 @@ describe('dashboard dropdown consistency', () => {
       expect(await browser.evaluate<boolean>('document.documentElement.scrollWidth <= innerWidth')).toBe(true);
       await browser.click('[role="combobox"][aria-label="Memory action"]');
       await browser.waitFor(`document.querySelector('[role="listbox"][aria-label="Memory action choices"]')`);
-      expect(await browser.evaluate<boolean>(`(() => {
+      await browser.pageScale(2);
+      await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 250))`);
+      const zoomGeometry = await browser.evaluate<{
+        popover: [number, number, number, number];
+        visual: [number, number, number, number];
+        portaled: boolean;
+      }>(`(() => {
         const popover = document.querySelector('.guided-select-popover');
-        if (!(popover instanceof HTMLElement)) return false;
+        const visual = window.visualViewport;
+        if (!(popover instanceof HTMLElement) || !visual) throw new Error('Missing zoom geometry');
         const bounds = popover.getBoundingClientRect();
-        return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
-      })()`)).toBe(true);
+        return {
+          popover: [bounds.left, bounds.top, bounds.right, bounds.bottom],
+          visual: [visual.offsetLeft, visual.offsetTop, visual.width, visual.height],
+          portaled: popover.parentElement === document.body,
+        };
+      })()`);
+      expect(zoomGeometry.portaled).toBe(true);
+      expect(zoomGeometry.popover[0], JSON.stringify(zoomGeometry)).toBeGreaterThanOrEqual(zoomGeometry.visual[0] + 7);
+      expect(zoomGeometry.popover[2], JSON.stringify(zoomGeometry)).toBeLessThanOrEqual(zoomGeometry.visual[0] + zoomGeometry.visual[2] - 7);
+      expect(zoomGeometry.popover[1], JSON.stringify(zoomGeometry)).toBeGreaterThanOrEqual(zoomGeometry.visual[1] + 7);
+      expect(zoomGeometry.popover[3], JSON.stringify(zoomGeometry)).toBeLessThanOrEqual(zoomGeometry.visual[1] + zoomGeometry.visual[3] - 7);
+      await browser.pageScale(1);
     }, { observations: 12 });
   }, 40_000);
 });

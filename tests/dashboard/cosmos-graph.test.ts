@@ -4,7 +4,12 @@ import type { VizEdge, VizNode } from '../../dashboard/src/api/client.js';
 import {
   buildCosmosGraphData,
   cosmosMotionConfig,
+  focusCosmosGraphData,
 } from '../../dashboard/src/components/map/cosmos-graph-data.js';
+import {
+  prepareCosmosGraphWorkerResponse,
+  responseMatchesWorkerIdentity,
+} from '../../dashboard/src/components/map/cosmos-graph-worker.js';
 
 const nodes: VizNode[] = [
   {
@@ -98,7 +103,28 @@ describe('Cosmos graph data boundary', () => {
     expect(graph.pointSizes.every((size) => size >= 3 && size <= 8)).toBe(true);
     expect(graph.clusterCenters).toHaveLength(2);
     expect(graph.clusterStrengths).toHaveLength(nodes.length);
+    expect(graph.communityAnchorIds).toEqual(['obs:7']);
+    expect(graph.communityAnchorIndices).toEqual([0]);
+    expect(graph.extentAnchorIds.length).toBeGreaterThanOrEqual(2);
+    expect(graph.extentAnchorIds.length).toBeLessThanOrEqual(4);
+    expect(graph.extentAnchorIndices.map((index) => graph.pointIds[index])).toEqual(graph.extentAnchorIds);
     expect(graph.worldExtent).toMatchObject({ nodeCount: 3, communityCount: 1 });
+  });
+
+  it('projects focus without rebuilding prepared graph geometry', () => {
+    const prepared = buildCosmosGraphData(nodes, edges, null);
+    const focused = focusCosmosGraphData(prepared, 'obs:7');
+
+    expect(focused).not.toBe(prepared);
+    expect(focused.pointPositions).toBe(prepared.pointPositions);
+    expect(focused.pointCommunities).toBe(prepared.pointCommunities);
+    expect(focused.links).toBe(prepared.links);
+    expect(focused.focus).toEqual({
+      pointIndex: 0,
+      neighborPointIndices: [1, 2],
+      linkIndices: [0, 1],
+    });
+    expect(focusCosmosGraphData(focused, null).focus).toBeNull();
   });
 
   it('creates deterministic visual communities and scales neuron size by connectivity', () => {
@@ -151,6 +177,192 @@ describe('Cosmos graph data boundary', () => {
     expect(graph.pointSizes[0]).toBeGreaterThan(graph.pointSizes[1]);
     expect(graph.pointLabels.join(' ')).not.toContain('hidden memory');
     expect(graph.worldExtent.width / graph.worldExtent.height).toBeGreaterThan(2);
+  });
+
+  it('keeps each pinned community anchor stable as incremental page prefixes change degree rankings', () => {
+    const prefixNodes: VizNode[] = [
+      { ...nodes[0], id: 'obs:anchor', label: 'Original anchor', topic_key: 'stable-community' },
+      { ...nodes[0], id: 'obs:leaf', label: 'First leaf', topic_key: 'stable-community' },
+    ];
+    const prefixEdges: VizEdge[] = [{
+      ...edges[1],
+      id: 'edge:prefix',
+      source_id: 'obs:anchor',
+      target_id: 'obs:leaf',
+    }];
+    const prefix = buildCosmosGraphData(prefixNodes, prefixEdges, null);
+    const expandedNodes: VizNode[] = [
+      ...prefixNodes,
+      { ...nodes[0], id: 'obs:new-hub', label: 'Later high-degree memory', topic_key: 'stable-community' },
+      ...Array.from({ length: 8 }, (_, index): VizNode => ({
+        ...nodes[0],
+        id: `obs:new-leaf:${index}`,
+        label: `Later leaf ${index}`,
+        topic_key: 'stable-community',
+      })),
+    ];
+    const expandedEdges: VizEdge[] = [
+      ...prefixEdges,
+      ...Array.from({ length: 8 }, (_, index): VizEdge => ({
+        ...edges[1],
+        id: `edge:later:${index}`,
+        source_id: 'obs:new-hub',
+        target_id: `obs:new-leaf:${index}`,
+      })),
+    ];
+
+    const withoutHistory = buildCosmosGraphData(expandedNodes, expandedEdges, null);
+    const withHistory = buildCosmosGraphData(
+      expandedNodes,
+      expandedEdges,
+      null,
+      prefix.communityAnchorIds,
+    );
+
+    expect(prefix.communityAnchorIds).toEqual(['obs:anchor']);
+    expect(withoutHistory.communityAnchorIds).toEqual(['obs:new-hub']);
+    expect(withHistory.communityAnchorIds).toEqual(prefix.communityAnchorIds);
+    expect(withHistory.pointIds[withHistory.communityAnchorIndices[0]]).toBe('obs:anchor');
+  });
+
+  it('selects a bounded deterministic set of anchors on every world edge', () => {
+    const prefixNodes = nodes.slice(0, 2);
+    const prefixEdges = edges.slice(0, 1);
+    const prefix = buildCosmosGraphData(prefixNodes, prefixEdges, null);
+    const repeatedPrefix = buildCosmosGraphData(prefixNodes, prefixEdges, null);
+    const first = buildCosmosGraphData(nodes, edges, null);
+    const second = buildCosmosGraphData(nodes, edges, null);
+    const coordinates = first.extentAnchorIndices.map((index) => ({
+      x: first.pointPositions[index * 2],
+      y: first.pointPositions[index * 2 + 1],
+    }));
+    const xs = first.pointPositions.filter((_value, index) => index % 2 === 0);
+    const ys = first.pointPositions.filter((_value, index) => index % 2 === 1);
+
+    expect(prefix.extentAnchorIds).toEqual(repeatedPrefix.extentAnchorIds);
+    expect(prefix.extentAnchorIndices).toEqual(repeatedPrefix.extentAnchorIndices);
+    expect(first.extentAnchorIds).toEqual(second.extentAnchorIds);
+    expect(first.extentAnchorIds.length).toBeGreaterThanOrEqual(2);
+    expect(first.extentAnchorIds.length).toBeLessThanOrEqual(4);
+    expect(coordinates.some(({ x }) => x === Math.min(...xs))).toBe(true);
+    expect(coordinates.some(({ x }) => x === Math.max(...xs))).toBe(true);
+    expect(coordinates.some(({ y }) => y === Math.min(...ys))).toBe(true);
+    expect(coordinates.some(({ y }) => y === Math.max(...ys))).toBe(true);
+  });
+
+  it('retains every dense point and link identity without visual thinning', () => {
+    const denseNodes = Array.from({ length: 512 }, (_, index): VizNode => ({
+      ...nodes[0],
+      id: `obs:dense:${index}`,
+      label: `Dense memory ${index}`,
+      topic_key: `dense/community-${index % 12}`,
+      seed_x: index % 64,
+      seed_y: Math.floor(index / 64),
+    }));
+    const denseEdges = Array.from({ length: 1_024 }, (_, index): VizEdge => ({
+      ...edges[1],
+      id: `edge:dense:${index}`,
+      source_id: denseNodes[index % denseNodes.length].id,
+      target_id: denseNodes[(index * 17 + 23) % denseNodes.length].id,
+    }));
+
+    const graph = buildCosmosGraphData(denseNodes, denseEdges, null);
+
+    expect(graph.pointIds).toEqual(denseNodes.map((node) => node.id));
+    expect(graph.linkIds).toEqual(denseEdges.map((edge) => edge.id));
+    expect(graph.links).toHaveLength(denseEdges.length * 2);
+    expect(graph.communityAnchorIds).toHaveLength(12);
+  });
+
+  it('preserves server-owned galaxies and scales semantic marks by level evidence', () => {
+    const universeNodes: VizNode[] = [
+      {
+        ...nodes[0],
+        id: 'community:small',
+        kind: 'community',
+        label: 'Small constellation',
+        semantic_level: 'universe',
+        community_id: 'community:small',
+        member_count: 100,
+        project_count: 3,
+        project: null,
+        topic_key: null,
+      },
+      {
+        ...nodes[0],
+        id: 'community:large',
+        kind: 'community',
+        label: 'Large constellation',
+        semantic_level: 'universe',
+        community_id: 'community:large',
+        member_count: 1_000,
+        project_count: 12,
+        project: null,
+        topic_key: null,
+      },
+    ];
+    const universeEdges: VizEdge[] = [{
+      ...edges[1],
+      id: 'aggregate:small-large',
+      source_id: 'community:small',
+      target_id: 'community:large',
+      kind: 'aggregate',
+      relation: 'RELATED_COMMUNITIES',
+      label: 'Related constellations',
+      weight: 64,
+      evidence_count: 64,
+    }];
+
+    const first = buildCosmosGraphData(universeNodes, universeEdges, 'community:small');
+    const repeated = buildCosmosGraphData(universeNodes, universeEdges, 'community:small');
+
+    expect(first.pointCommunityKeys).toEqual(['community:small', 'community:large']);
+    expect(first.pointCommunities[0]).not.toBe(first.pointCommunities[1]);
+    expect(first.pointSizes[1]).toBeGreaterThan(first.pointSizes[0]);
+    expect(first.pointSizes.every((size) => size >= 4 && size <= 12)).toBe(true);
+    expect(first.linkWidths[0]).toBeGreaterThan(1.15);
+    expect(first.focus?.pointIndex).toBe(0);
+    expect(first.pointCommunityKeys).toEqual(repeated.pointCommunityKeys);
+    expect(first.pointSizes).toEqual(repeated.pointSizes);
+    expect(first.linkWidths).toEqual(repeated.linkWidths);
+  });
+
+  it('echoes semantic level generations through deterministic worker preparation', () => {
+    const request = {
+      requestId: 12,
+      level: 'universe' as const,
+      generation: 'atlas-generation-a',
+      nodes: [{
+        ...nodes[0],
+        id: 'community:one',
+        kind: 'community' as const,
+        semantic_level: 'universe' as const,
+        community_id: 'community:one',
+        member_count: 320,
+      }],
+      edges: [],
+      previousCommunityAnchorIds: [],
+    };
+
+    const first = prepareCosmosGraphWorkerResponse(request);
+    const repeated = prepareCosmosGraphWorkerResponse(request);
+
+    expect(first).toEqual(repeated);
+    expect(first).toMatchObject({
+      requestId: 12,
+      level: 'universe',
+      generation: 'atlas-generation-a',
+      ok: true,
+    });
+    expect(responseMatchesWorkerIdentity(first, request)).toBe(true);
+    expect(responseMatchesWorkerIdentity(first, {
+      ...request,
+      generation: 'atlas-generation-b',
+    })).toBe(false);
+    expect(responseMatchesWorkerIdentity(first, {
+      ...request,
+      level: 'community',
+    })).toBe(false);
   });
 
   it('removes activation timing when reduced motion is requested', () => {
