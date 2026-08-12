@@ -1,6 +1,7 @@
 # Delta for Knowledge Graph
 
 ## ADDED Requirements
+
 ### Requirement: Broad Memory Content MUST Be Extracted into Typed Knowledge Triples
 Saved user prompts, observations, session-summary-like memory content, and conversation-like text MUST be processed into subject-relation-object triples with typed entities and typed relations.
 
@@ -21,30 +22,6 @@ The KG extractor MUST define a thoth-mem adapted taxonomy with at least 22 entit
 - GIVEN the KG extraction taxonomy is initialized
 - WHEN taxonomy metadata is inspected by tests or diagnostics
 - THEN it MUST expose at least 22 entity categories and at least 20 relation categories
-
-### Requirement: KG Records MUST Preserve Provenance and Confidence
-Knowledge triples MUST include source linkage, extraction metadata, and confidence metadata for ranking/fusion.
-
-#### Scenario: Triple includes source and confidence
-- GIVEN a persisted triple
-- WHEN retrieval/ranking reads KG evidence
-- THEN source memory identity, extractor metadata, and confidence metadata MUST be available
-
-### Requirement: KG Extraction MUST Be Idempotent and Update-Safe
-KG extraction MUST converge safely across retries, restarts, and source-content updates without duplicating equivalent triples.
-
-#### Scenario: Repeated extraction converges
-- GIVEN the same source content is extracted more than once
-- WHEN extraction results are persisted
-- THEN equivalent triples MUST be upserted or deduplicated without duplicate ranking evidence
-
-### Requirement: `observation_facts` MUST Remain Compatible as Graph-lite Fallback/Source
-Existing graph-lite `observation_facts` behavior MUST remain compatible and may be used as fallback/source when broader KG extraction is unavailable or partial.
-
-#### Scenario: Graph-lite remains queryable
-- GIVEN broader KG extraction is degraded or incomplete
-- WHEN graph retrieval is requested
-- THEN `observation_facts`-backed graph-lite results MUST still be available
 
 ### Requirement: KG Evidence MUST Participate in Fused Retrieval Ranking
 Graph/KG retrieval output MUST participate alongside sentence semantic, chunk semantic, and lexical FTS5 lanes in final ranking.
@@ -166,27 +143,8 @@ repeated runs (deduplicated by entity key and `triple_hash`).
 - GIVEN backfill has already run for an observation
 - WHEN backfill runs again for the same observation
 - THEN no duplicate entities or triples MUST be created (deduplicated by entity
-  key and `triple_hash`)## MODIFIED Requirements
+  key and `triple_hash`)
 
-## REMOVED Requirements
-### Requirement: `observation_facts` MUST Remain Compatible as Graph-lite Fallback/Source
-**Reason:** REV3 of the validated discovery finding (`review/thoth-mem/graph-gap`)
-established that `observation_facts` is a redundant legacy precursor, not a
-designed degraded-mode fallback. Its 7 relations and string subjects are a lossy
-subset of the rich KG, and both stores populate deterministically from the same
-content (the deterministic extractor always runs first), so there is no separate
-fallback lane that survives when `kg_triples` is absent. Consolidating onto
-`kg_triples` as the single source of graph truth removes the parallel duplication
-and unblocks B2/B3.
-
-**Migration:** All former `observation_facts` consumers obtain the
-`ObservationFact` projection from the KG-backed adapter
-(`getObservationFactsFromKg`, see the store delta). Legacy already-saved data is
-covered by operator-triggered deterministic backfill (see the indexing delta).
-The `observation_facts` table and its indexes are dropped via an idempotent,
-gated migration after backfill and reader migration are verified (see the store
-delta). The portable sync/export format is unaffected (it never serialized
-`observation_facts`).## MODIFIED Requirements
 ### Requirement: KG Records MUST Preserve Provenance and Confidence
 Knowledge triples MUST include source linkage, extraction metadata, and
 confidence metadata for ranking/fusion. This applies to BOTH the synchronous
@@ -912,6 +870,7 @@ Community construction and summaries MUST prefer current KG facts over supersede
 # Delta for Knowledge Graph
 
 ## ADDED Requirements
+
 ### Requirement: Community Health MUST Use a Stable Graph Freshness Basis
 Community-summary health MUST be based on a stable graph freshness basis or graph signature that can determine whether committed community summaries match the current project KG state. The basis MUST account for eligible KG entities/triples, source observation coverage, supersession markings, and pruning effects relevant to community construction.
 
@@ -971,3 +930,173 @@ The KG/community layer MUST retain enough latest job metadata for health readers
 ## Handoff Hints
 - Design should locate the existing community run/artifact metadata first and add only the minimal freshness basis needed for reliable health.
 - Verification should cover fresh, stale, rebuilding, failed, degraded, missing, and disabled states.
+
+### Requirement: Complete legacy-safe representation
+
+Semantic projection MUST include every current scoped observation exactly once even when KG, embedding, topic, or community-summary coverage is absent, and MUST expose bounded coverage/degraded metadata instead of dropping or fabricating memory relationships.
+
+#### Scenario: US1 - Trust what the atlas counts and connects 1
+
+- **GIVEN** distinct canonical values with identical long prefixes
+- **WHEN** visualization identities are derived repeatedly
+- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+
+#### Scenario: US1 - Trust what the atlas counts and connects 2
+
+- **GIVEN** an observation with project, session, type, topic, and content facts
+- **WHEN** raw diagnostic topology is assembled
+- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+
+#### Scenario: US1 - Trust what the atlas counts and connects 3
+
+- **GIVEN** a mixed visualization payload
+- **WHEN** counts are presented
+- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+
+#### Scenario: US1 - Trust what the atlas counts and connects 4
+
+- **GIVEN** legacy observations with incomplete KG or semantic coverage
+- **WHEN** the semantic projection is built
+- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+
+#### Scenario: US1 - Trust what the atlas counts and connects 5
+
+- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
+- **WHEN** facet choices and scoped reads are produced
+- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+
+### Requirement: Observation-to-observation projection
+
+Atlas communities MUST be detected from a deterministic weighted projection whose primary nodes are current observations and whose eligible edges represent semantic or structural memory relationships; project, session, type, topic, and synthetic metadata relationships MUST remain facets/provenance and MUST NOT participate as community nodes or clustering edges.
+
+#### Scenario: US2 - Survey the complete memory universe 1
+
+- **GIVEN** a sufficiently large active scope
+- **WHEN** Universe loads
+- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+
+#### Scenario: US2 - Survey the complete memory universe 2
+
+- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
+- **WHEN** communities and layout forces are constructed
+- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+
+#### Scenario: US2 - Survey the complete memory universe 3
+
+- **GIVEN** a natural community larger than the Community navigation budget
+- **WHEN** the Universe projection is committed
+- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+
+#### Scenario: US2 - Survey the complete memory universe 4
+
+- **GIVEN** relationships between memories in different communities
+- **WHEN** Universe renders
+- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+
+#### Scenario: US2 - Survey the complete memory universe 5
+
+- **GIVEN** observations without eligible semantic relationships
+- **WHEN** Universe renders
+- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+
+### Requirement: Superhub-resistant partitioning
+
+Deterministic community partitioning MUST exclude configured metadata classes and high-degree projection superhubs from the partitioning decision, then reattach eligible hub observations by deterministic weighted neighborhood evidence so one hub cannot collapse unrelated memory regions.
+
+#### Scenario: US2 - Survey the complete memory universe 1
+
+- **GIVEN** a sufficiently large active scope
+- **WHEN** Universe loads
+- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+
+#### Scenario: US2 - Survey the complete memory universe 2
+
+- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
+- **WHEN** communities and layout forces are constructed
+- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+
+#### Scenario: US2 - Survey the complete memory universe 3
+
+- **GIVEN** a natural community larger than the Community navigation budget
+- **WHEN** the Universe projection is committed
+- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+
+#### Scenario: US2 - Survey the complete memory universe 4
+
+- **GIVEN** relationships between memories in different communities
+- **WHEN** Universe renders
+- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+
+#### Scenario: US2 - Survey the complete memory universe 5
+
+- **GIVEN** observations without eligible semantic relationships
+- **WHEN** Universe renders
+- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+
+### Requirement: Bounded deterministic communities
+
+For sufficiently large scopes, partitioning MUST yield 30–150 stable navigable communities; any community above 1,000 observations or the configured maximum scope fraction MUST be recursively and deterministically subdivided, while small scopes MAY yield fewer communities and every observation MUST retain one primary assignment.
+
+#### Scenario: US2 - Survey the complete memory universe 1
+
+- **GIVEN** a sufficiently large active scope
+- **WHEN** Universe loads
+- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+
+#### Scenario: US2 - Survey the complete memory universe 2
+
+- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
+- **WHEN** communities and layout forces are constructed
+- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+
+#### Scenario: US2 - Survey the complete memory universe 3
+
+- **GIVEN** a natural community larger than the Community navigation budget
+- **WHEN** the Universe projection is committed
+- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+
+#### Scenario: US2 - Survey the complete memory universe 4
+
+- **GIVEN** relationships between memories in different communities
+- **WHEN** Universe renders
+- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+
+#### Scenario: US2 - Survey the complete memory universe 5
+
+- **GIVEN** observations without eligible semantic relationships
+- **WHEN** Universe renders
+- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+
+### Requirement: Freshness and deterministic fallback
+
+Semantic atlas reads MUST distinguish fresh, stale, missing, rebuilding, failed, and degraded community state; they MUST prefer committed current artifacts when valid and otherwise use a deterministic bounded local fallback or expose one actionable recovery without requiring embeddings, an LLM, or a remote service.
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+
+- **GIVEN** the normal observatory route
+- **WHEN** it loads
+- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+
+- **GIVEN** the user explicitly opens bounded technical diagnostics
+- **WHEN** Raw graph mode is confirmed
+- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+
+- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
+- **WHEN** a semantic level is requested
+- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+
+- **GIVEN** WebGL failure or reduced motion
+- **WHEN** the active semantic level changes
+- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+
+- **GIVEN** private-marked source values or superseded requests
+- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic

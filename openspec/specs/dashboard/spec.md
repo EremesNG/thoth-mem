@@ -138,25 +138,43 @@ The dashboard MUST open to an observatory workspace where the Memory Map is one 
 
 ### Requirement: Canonical graph home
 
-The dashboard MUST make the graph-first Neural Observatory the canonical initial workspace and MUST load a bounded initial graph slice after scope resolution without requiring a separate load button.
+The canonical graph workspace MUST automatically load the complete current visualization graph matching the active scope through progressive bounded pages and MUST NOT require a separate load or reveal-more action.
 
-#### Scenario: US1 - Explore the memory nebula 1
+#### Scenario: US2 - See the complete graph for the active scope 1
 
-- **GIVEN** a populated memory store
-- **WHEN** the dashboard finishes resolving its initial scope
-- **THEN** the memory graph is the dominant workspace and loads a bounded initial slice automatically
+- **GIVEN** a graph larger than one HTTP page
+- **WHEN** the observatory resolves its active scope
+- **THEN** it automatically follows every continuation until the complete current scoped graph is present without requiring “Reveal more”
 
-#### Scenario: US1 - Explore the memory nebula 2
+#### Scenario: US2 - See the complete graph for the active scope 2
 
-- **GIVEN** a graph with multiple node kinds and communities
-- **WHEN** it renders
-- **THEN** kind, focus, relationship strength, and health are distinguishable without relying on color alone
+- **GIVEN** pages contain repeated project, session, topic, node, or relationship identities
+- **WHEN** they merge
+- **THEN** each node and edge appears exactly once and every rendered edge has both endpoints
 
-#### Scenario: US1 - Explore the memory nebula 3
+#### Scenario: US2 - See the complete graph for the active scope 3
 
-- **GIVEN** the graph is larger than the viewport
-- **WHEN** the user pans, zooms, fits, pauses, or resumes it
-- **THEN** the viewport changes predictably without losing the current focus
+- **GIVEN** the graph is still arriving
+- **WHEN** the user watches or interacts
+- **THEN** a concise loading state and current counts remain visible while already loaded nodes stay navigable
+
+#### Scenario: US2 - See the complete graph for the active scope 4
+
+- **GIVEN** the user changes scope while pages are in flight
+- **WHEN** older pages resolve
+- **THEN** they cannot enter the new graph and the new scope begins its own complete load
+
+#### Scenario: US2 - See the complete graph for the active scope 5
+
+- **GIVEN** the user changes Field of view
+- **WHEN** the atlas updates
+- **THEN** presentation and camera detail may change but the complete scoped node and edge set remains included
+
+#### Scenario: US2 - See the complete graph for the active scope 6
+
+- **GIVEN** a source fact is inserted, deleted, updated, or superseded between continuation requests
+- **WHEN** the next page validates its cursor
+- **THEN** the server rejects that stale graph generation and the observatory discards the mixed accumulator and automatically restarts from a fresh first page within a bounded retry budget
 
 ### Requirement: Dashboard MUST Visualize Four Retrieval Lanes
 Dashboard V2 MUST make sentence vector, chunk vector, lexical FTS, and knowledge graph lanes visible in recall results, lane status, and explanatory details.
@@ -328,50 +346,124 @@ Instrument open, close, switch, retry, and pivot actions MUST inherit compatible
 
 ### Requirement: Compact guided scope overlay
 
-Search and the six structured guided selectors MUST be available from compact atlas controls that can collapse without reserving permanent graph height, while active scope remains visible and removable.
+The compact filter surface MUST keep every open selector listbox visibly tethered above the atlas overlay, allow the listbox to outlive panel clipping without reserving graph space, and restore focus predictably when it closes.
 
-#### Scenario: US5 - Shape the view without shrinking it 1
+#### Scenario: US3 - Choose filters from an unclipped top layer 1
 
-- **GIVEN** filter metadata is ready
-- **WHEN** the user opens the filter control
-- **THEN** the shared Project, Session, Topic, Connection, Memory type, and Field of view selectors appear in a bounded overlay attached to the atlas
+- **GIVEN** a selector inside the scrollable filter overlay
+- **WHEN** it opens
+- **THEN** its listbox is promoted above that overlay and is not clipped by any ancestor overflow boundary
 
-#### Scenario: US5 - Shape the view without shrinking it 2
+#### Scenario: US3 - Choose filters from an unclipped top layer 2
 
-- **GIVEN** filters are collapsed
-- **WHEN** the user explores the graph
-- **THEN** only concise active-scope cues remain and the full filter form does not reserve permanent graph height
+- **GIVEN** insufficient room below or beside a trigger
+- **WHEN** the listbox opens or the visual viewport changes
+- **THEN** it flips or clamps while remaining tethered to the trigger and fully hit-testable
 
-#### Scenario: US5 - Shape the view without shrinking it 3
+#### Scenario: US3 - Choose filters from an unclipped top layer 3
 
-- **GIVEN** a filter, focus, or frontier change
-- **WHEN** browser Back or Forward is used
-- **THEN** canonical scope, focused node, dock context, and a usable graph viewport are restored
+- **GIVEN** keyboard-only use
+- **WHEN** the user opens, searches, navigates, commits, escapes, or tabs away
+- **THEN** the combobox/listbox semantics and canonical-value contract remain complete
+
+#### Scenario: US3 - Choose filters from an unclipped top layer 4
+
+- **GIVEN** mobile or 200% page scale
+- **WHEN** a selector opens
+- **THEN** the trigger and listbox remain inside the visual viewport without horizontal page overflow
 
 ### Requirement: Private local-first presentation
 
-Every new label, tooltip, inspector, filter cue, instrument result, and technical disclosure MUST use the established private-safe presentation boundary, and graph/filter data MUST remain within locally packaged same-origin behavior.
+Complete graph pages, loading progress, selector portals, semantic fallback, and renderer diagnostics MUST remain same-origin and private-safe through the established presentation boundary.
 
-#### Scenario: US6 - Retain trust and access under real conditions 1
+#### Scenario: US4 - Retain access and trust at full density 1
 
-- **GIVEN** a narrow viewport
-- **WHEN** the inspector, instruments, or filters open
-- **THEN** they become accessible sheets/drawers without horizontal overflow and without making the graph unreachable
+- **GIVEN** thousands of nodes and relationships
+- **WHEN** the graph is loading or fully present
+- **THEN** primary controls, semantic navigation, selection, filtering, and camera commands remain responsive and usable
 
-#### Scenario: US6 - Retain trust and access under real conditions 2
+#### Scenario: US4 - Retain access and trust at full density 2
 
 - **GIVEN** WebGL initialization or context recovery fails
 - **WHEN** the rich renderer is unavailable
-- **THEN** the synchronized semantic navigator, current scope, focused memory, and one bounded Retry action remain usable
+- **THEN** the complete loaded semantic graph, active scope, focus, and one bounded Retry remain usable
 
-#### Scenario: US6 - Retain trust and access under real conditions 3
+#### Scenario: US4 - Retain access and trust at full density 3
 
-- **GIVEN** stored labels, snippets, provenance, or instrument results contain supported private markers
-- **WHEN** any atlas surface renders them
-- **THEN** marked content is absent from the DOM, canvas-adjacent labels, history, and external network traffic
+- **GIVEN** private-marked stored text
+- **WHEN** graph pages, progress, labels, selectors, or fallback content render
+- **THEN** private content remains absent from DOM, URL/history, diagnostics, and external network traffic
 
-#### Scenario: US6 - Retain trust and access under real conditions 4
+#### Scenario: US4 - Retain access and trust at full density 4
 
-- **GIVEN** rapid scope, focus, expansion, route, resize, or renderer changes
-- **WHEN** old asynchronous work completes
-- **THEN** stale responses, timers, simulations, observers, and listeners cannot replace or mutate the active atlas
+- **GIVEN** a route change, scope change, abort, failure, or unmount
+- **WHEN** background page loads or animation work completes
+- **THEN** no stale state, request, timer, frame, observer, simulation, browser process, or temporary profile survives its owner
+
+### Requirement: Truthful graph accounting
+
+User-facing atlas counts MUST distinguish current observation memories, projects, semantic communities, supporting entities, and relationships; aggregate or helper nodes MUST NOT be labeled or counted as memories.
+
+#### Scenario: US1 - Trust what the atlas counts and connects 1
+
+- **GIVEN** distinct canonical values with identical long prefixes
+- **WHEN** visualization identities are derived repeatedly
+- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+
+#### Scenario: US1 - Trust what the atlas counts and connects 2
+
+- **GIVEN** an observation with project, session, type, topic, and content facts
+- **WHEN** raw diagnostic topology is assembled
+- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+
+#### Scenario: US1 - Trust what the atlas counts and connects 3
+
+- **GIVEN** a mixed visualization payload
+- **WHEN** counts are presented
+- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+
+#### Scenario: US1 - Trust what the atlas counts and connects 4
+
+- **GIVEN** legacy observations with incomplete KG or semantic coverage
+- **WHEN** the semantic projection is built
+- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+
+#### Scenario: US1 - Trust what the atlas counts and connects 5
+
+- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
+- **WHEN** facet choices and scoped reads are produced
+- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+
+### Requirement: Facets instead of metadata stars
+
+Project, session, and topic controls MUST use structured choices with one stable opaque token, private-safe label, and bounded count; each token MUST resolve server-side to exactly one internal canonical value even when multiple values have the same safe label. Type and relation controls MUST remain bounded canonical choices. All facets MUST refine or describe Universe and Community as guided controls, counts, labels, or boundaries and MUST NOT appear as equivalent memory stars outside an explicitly requested Neighborhood or Raw diagnostic explanation.
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 1
+
+- **GIVEN** a Universe galaxy
+- **WHEN** the user activates it
+- **THEN** Community displays only its assigned observation memories, bounded to 1,000 or fewer, with project/session/topic/type available as facets rather than peer stars
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 2
+
+- **GIVEN** a Community memory
+- **WHEN** the user focuses it
+- **THEN** Neighborhood displays that memory plus the most relevant one- or two-hop observations and supporting facts within a 300-node cap
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 3
+
+- **GIVEN** a level transition
+- **WHEN** the user uses in-app Back/Forward or browser history
+- **THEN** level, community, scope, focused observation, semantic navigator, Lens, and usable camera restore coherently without appending duplicate trail entries
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 4
+
+- **GIVEN** a search result outside the currently open Community
+- **WHEN** the user pivots to it through the token-safe Observatory Context/Recall/Pivot flow
+- **THEN** its owning community and bounded Neighborhood become visible with the same opaque-token scope and without loading the raw global graph or serializing canonical facet values
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 5
+
+- **GIVEN** different zoom levels or focus states
+- **WHEN** links render
+- **THEN** Universe shows aggregate links, Community shows relevant observation relationships, and Neighborhood shows complete local supporting relationships without changing the underlying membership of that level

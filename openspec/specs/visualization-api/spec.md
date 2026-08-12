@@ -3,7 +3,7 @@
 ## Requirements
 
 ### Requirement: Visualization API MUST Provide an Observatory Query Model
-The dashboard-facing API MUST provide a unified observatory query model that supports Recall Workspace, Memory Map, Timeline, Knowledge Ledger, and Health & Indexing surfaces under shared scope controls.
+Dashboard-facing and MCP-consumed observatory reads MUST share compatible scope controls for pivoting across recall, map, timeline, ledger, and related surfaces.
 
 #### Scenario: Shared scope can drive multiple surfaces
 - GIVEN the dashboard requests observatory data with project/session/topic/time scope
@@ -42,7 +42,7 @@ Neighbor expansion and depth traversal operations MUST return frontier semantics
 - THEN the API MUST return an explicit exhausted-frontier outcome instead of repeating prior results as if new
 
 ### Requirement: Visualization API MUST Return Provenance-Rich, Structured Memory Semantics
-Dashboard-facing payloads for observatory views MUST expose observation type, What/Why/Where/Learned fields when available, topic keys, session/project identities, vector/graph evidence attribution, and provenance references needed for explanation.
+Visualization and observatory payloads MUST expose observable provenance, observation type, What/Why/Where/Learned fields when available, topic keys, session/project identities, vector/graph evidence attribution, and provenance references needed for explanation, and MUST distinguish current facts from historical data.
 
 #### Scenario: Ledger-capable payload includes structured fields
 - GIVEN a dashboard request for observation-level or fact-level detail
@@ -94,10 +94,246 @@ Map/neighborhood expansion contracts MUST return frontier state that separates n
 ### Requirement: Community Summary Reads MUST Remain Inspection-Oriented
 Community summary APIs MUST expose bounded status and committed-summary inspection metadata and must not claim global-answer capabilities.
 
-## MODIFIED for graph-navigation-v2
+### Requirement: Complete scoped graph pagination
 
-### Requirement: Visualization API MUST Provide an Observatory Query Model
-Dashboard-facing and MCP-consumed observatory reads MUST share compatible scope controls for pivoting across recall, map, timeline, ledger, and related surfaces.
+The visualization graph contract MUST provide deterministic scope-bound continuation pages with stable ordering, no artificial total-result cap, an explicit terminal continuation state, and page-level bounds that protect each request. Every cursor MUST identify one validated current graph generation; insertion, deletion, update, or supersession between pages MUST invalidate that cursor so the client can discard the mixed accumulator and automatically restart from a fresh first page within a bounded budget.
 
-### Requirement: Visualization API MUST Return Provenance-Rich, Structured Memory Semantics
-Visualization and observatory payloads MUST expose observable provenance, topic keys, session/project identities, and distinguish current facts from historical data.
+#### Scenario: US2 - See the complete graph for the active scope 1
+
+- **GIVEN** a graph larger than one HTTP page
+- **WHEN** the observatory resolves its active scope
+- **THEN** it automatically follows every continuation until the complete current scoped graph is present without requiring “Reveal more”
+
+#### Scenario: US2 - See the complete graph for the active scope 2
+
+- **GIVEN** pages contain repeated project, session, topic, node, or relationship identities
+- **WHEN** they merge
+- **THEN** each node and edge appears exactly once and every rendered edge has both endpoints
+
+#### Scenario: US2 - See the complete graph for the active scope 3
+
+- **GIVEN** the graph is still arriving
+- **WHEN** the user watches or interacts
+- **THEN** a concise loading state and current counts remain visible while already loaded nodes stay navigable
+
+#### Scenario: US2 - See the complete graph for the active scope 4
+
+- **GIVEN** the user changes scope while pages are in flight
+- **WHEN** older pages resolve
+- **THEN** they cannot enter the new graph and the new scope begins its own complete load
+
+#### Scenario: US2 - See the complete graph for the active scope 5
+
+- **GIVEN** the user changes Field of view
+- **WHEN** the atlas updates
+- **THEN** presentation and camera detail may change but the complete scoped node and edge set remains included
+
+#### Scenario: US2 - See the complete graph for the active scope 6
+
+- **GIVEN** a source fact is inserted, deleted, updated, or superseded between continuation requests
+- **WHEN** the next page validates its cursor
+- **THEN** the server rejects that stale graph generation and the observatory discards the mixed accumulator and automatically restarts from a fresh first page within a bounded retry budget
+
+### Requirement: Collision-resistant visualization identity
+
+Every derived visualization node, aggregate, and relationship identity MUST hash the complete canonical kind and value with a stable collision-resistant representation; it MUST NOT truncate a human-readable value prefix, merge distinct canonical values, or change with input order, pagination, scope replay, or process restart.
+
+#### Scenario: US1 - Trust what the atlas counts and connects 1
+
+- **GIVEN** distinct canonical values with identical long prefixes
+- **WHEN** visualization identities are derived repeatedly
+- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+
+#### Scenario: US1 - Trust what the atlas counts and connects 2
+
+- **GIVEN** an observation with project, session, type, topic, and content facts
+- **WHEN** raw diagnostic topology is assembled
+- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+
+#### Scenario: US1 - Trust what the atlas counts and connects 3
+
+- **GIVEN** a mixed visualization payload
+- **WHEN** counts are presented
+- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+
+#### Scenario: US1 - Trust what the atlas counts and connects 4
+
+- **GIVEN** legacy observations with incomplete KG or semantic coverage
+- **WHEN** the semantic projection is built
+- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+
+#### Scenario: US1 - Trust what the atlas counts and connects 5
+
+- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
+- **WHEN** facet choices and scoped reads are produced
+- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+
+### Requirement: Corrected heterogeneous topology
+
+Raw diagnostic projection MUST create at most one node for one canonical entity, MUST connect every emitted non-isolate through an explicit relationship, MUST NOT emit duplicate project/topic representations for one semantic relationship, and MUST NOT emit dangling edge endpoints.
+
+#### Scenario: US1 - Trust what the atlas counts and connects 1
+
+- **GIVEN** distinct canonical values with identical long prefixes
+- **WHEN** visualization identities are derived repeatedly
+- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+
+#### Scenario: US1 - Trust what the atlas counts and connects 2
+
+- **GIVEN** an observation with project, session, type, topic, and content facts
+- **WHEN** raw diagnostic topology is assembled
+- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+
+#### Scenario: US1 - Trust what the atlas counts and connects 3
+
+- **GIVEN** a mixed visualization payload
+- **WHEN** counts are presented
+- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+
+#### Scenario: US1 - Trust what the atlas counts and connects 4
+
+- **GIVEN** legacy observations with incomplete KG or semantic coverage
+- **WHEN** the semantic projection is built
+- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+
+#### Scenario: US1 - Trust what the atlas counts and connects 5
+
+- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
+- **WHEN** facet choices and scoped reads are produced
+- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+
+### Requirement: Universe aggregate contract
+
+Universe reads MUST return bounded community nodes with stable IDs, private-safe human labels, member/project counts, coverage/freshness state, and weighted cross-community edges whose provenance counts are traceable without returning every raw edge.
+
+#### Scenario: US2 - Survey the complete memory universe 1
+
+- **GIVEN** a sufficiently large active scope
+- **WHEN** Universe loads
+- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+
+#### Scenario: US2 - Survey the complete memory universe 2
+
+- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
+- **WHEN** communities and layout forces are constructed
+- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+
+#### Scenario: US2 - Survey the complete memory universe 3
+
+- **GIVEN** a natural community larger than the Community navigation budget
+- **WHEN** the Universe projection is committed
+- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+
+#### Scenario: US2 - Survey the complete memory universe 4
+
+- **GIVEN** relationships between memories in different communities
+- **WHEN** Universe renders
+- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+
+#### Scenario: US2 - Survey the complete memory universe 5
+
+- **GIVEN** observations without eligible semantic relationships
+- **WHEN** Universe renders
+- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+
+### Requirement: Community detail contract
+
+Community reads MUST return the complete assigned observation set for one stable community within the 1,000-observation budget, relevant observation-to-observation relationships, facet summaries, deterministic continuation where needed, and an explicit outcome when an old community identity is no longer current.
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 1
+
+- **GIVEN** a Universe galaxy
+- **WHEN** the user activates it
+- **THEN** Community displays only its assigned observation memories, bounded to 1,000 or fewer, with project/session/topic/type available as facets rather than peer stars
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 2
+
+- **GIVEN** a Community memory
+- **WHEN** the user focuses it
+- **THEN** Neighborhood displays that memory plus the most relevant one- or two-hop observations and supporting facts within a 300-node cap
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 3
+
+- **GIVEN** a level transition
+- **WHEN** the user uses in-app Back/Forward or browser history
+- **THEN** level, community, scope, focused observation, semantic navigator, Lens, and usable camera restore coherently without appending duplicate trail entries
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 4
+
+- **GIVEN** a search result outside the currently open Community
+- **WHEN** the user pivots to it through the token-safe Observatory Context/Recall/Pivot flow
+- **THEN** its owning community and bounded Neighborhood become visible with the same opaque-token scope and without loading the raw global graph or serializing canonical facet values
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 5
+
+- **GIVEN** different zoom levels or focus states
+- **WHEN** links render
+- **THEN** Universe shows aggregate links, Community shows relevant observation relationships, and Neighborhood shows complete local supporting relationships without changing the underlying membership of that level
+
+### Requirement: Bounded Neighborhood contract
+
+Neighborhood reads MUST accept one focused observation, preserve active scope, expose one- or two-hop relevant observation relationships plus supporting fact/provenance nodes, cap the rendered result at 300 nodes with explicit continuation or omission metadata, and retain deterministic frontier semantics.
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 1
+
+- **GIVEN** a Universe galaxy
+- **WHEN** the user activates it
+- **THEN** Community displays only its assigned observation memories, bounded to 1,000 or fewer, with project/session/topic/type available as facets rather than peer stars
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 2
+
+- **GIVEN** a Community memory
+- **WHEN** the user focuses it
+- **THEN** Neighborhood displays that memory plus the most relevant one- or two-hop observations and supporting facts within a 300-node cap
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 3
+
+- **GIVEN** a level transition
+- **WHEN** the user uses in-app Back/Forward or browser history
+- **THEN** level, community, scope, focused observation, semantic navigator, Lens, and usable camera restore coherently without appending duplicate trail entries
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 4
+
+- **GIVEN** a search result outside the currently open Community
+- **WHEN** the user pivots to it through the token-safe Observatory Context/Recall/Pivot flow
+- **THEN** its owning community and bounded Neighborhood become visible with the same opaque-token scope and without loading the raw global graph or serializing canonical facet values
+
+#### Scenario: US3 - Move from galaxy to memory and its synapses 5
+
+- **GIVEN** different zoom levels or focus states
+- **WHEN** links render
+- **THEN** Universe shows aggregate links, Community shows relevant observation relationships, and Neighborhood shows complete local supporting relationships without changing the underlying membership of that level
+
+### Requirement: Generation-consistent semantic reads
+
+Universe, Community, and Neighborhood pagination or expansion MUST be bound to normalized scope and one validated source/community generation; stale mutations MUST reject mixed continuations, and clients MUST discard invalid accumulators, restart within a bounded budget, and prevent superseded callbacks from mutating the active level.
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+
+- **GIVEN** the normal observatory route
+- **WHEN** it loads
+- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+
+- **GIVEN** the user explicitly opens bounded technical diagnostics
+- **WHEN** Raw graph mode is confirmed
+- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+
+- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
+- **WHEN** a semantic level is requested
+- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+
+- **GIVEN** WebGL failure or reduced motion
+- **WHEN** the active semantic level changes
+- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+
+- **GIVEN** private-marked source values or superseded requests
+- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
