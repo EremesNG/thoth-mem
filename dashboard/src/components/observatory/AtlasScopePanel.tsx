@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { SlidersHorizontal, X } from 'lucide-react';
 
-import type { ObservatoryScope, VizFiltersResponse } from '../../api/client.js';
+import type { ObservatoryScope, SemanticAtlasPageResponse } from '../../api/client.js';
 import type { ObservatoryState } from './context-store.js';
 import ObservatoryScopeBar from './ObservatoryScopeBar.js';
 
 interface AtlasScopePanelProps {
   scope: ObservatoryScope;
   density: ObservatoryState['density'];
-  filters: VizFiltersResponse | null;
+  filters: SemanticAtlasPageResponse['facets'] | null;
   loading: boolean;
   error: string | null;
   onScopeChange: (scope: ObservatoryScope) => void;
@@ -17,7 +17,7 @@ interface AtlasScopePanelProps {
 }
 
 function activeScopeCount(scope: ObservatoryScope, density: ObservatoryState['density']): number {
-  return [scope.project, scope.session_id, scope.topic_key, scope.relation, scope.type].filter(Boolean).length
+  return [scope.project_token, scope.session_token, scope.topic_token, scope.relation, scope.type].filter(Boolean).length
     + (density === 'balanced' ? 0 : 1);
 }
 

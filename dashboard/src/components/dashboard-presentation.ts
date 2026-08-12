@@ -2,6 +2,7 @@ import type { ObservationType, VizNode } from '../api/client.js';
 import { presentStoredText } from './safe-presentation.js';
 
 const nodeKinds: Record<VizNode['kind'], string> = {
+  community: 'Constellation',
   observation: 'Memory',
   fact: 'Learned fact',
   session: 'Work session',
@@ -52,6 +53,9 @@ const densities = {
 } as const;
 
 const filterKeys: Record<string, string> = {
+  project_token: 'Project',
+  session_token: 'Session',
+  topic_token: 'Topic',
   project: 'Project',
   session_id: 'Session',
   topic_key: 'Topic',
@@ -66,7 +70,7 @@ const resourceStates: Record<string, { label: string; explanation: string }> = {
   empty: { label: 'Nothing here yet', explanation: 'Try widening the view or removing a filter.' },
   sparse: { label: 'A small constellation', explanation: 'Only a few matching memories are connected here.' },
   dense: { label: 'A rich constellation', explanation: 'Focus a memory to reveal its closest connections.' },
-  truncated: { label: 'More memories are available', explanation: 'Explore connections to bring the next nearby memories into view.' },
+  truncated: { label: 'More memories are loading', explanation: 'The next nearby memories will join this view automatically.' },
   exhausted: { label: 'You reached the edge', explanation: 'No more connected memories match this view.' },
   degraded: { label: 'Some memories are still preparing', explanation: 'Available results remain usable while background work finishes.' },
   aborted: { label: 'The previous view was replaced', explanation: 'Only the latest selection will be shown.' },

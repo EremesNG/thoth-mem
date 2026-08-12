@@ -3,195 +3,356 @@ import { Compass, RotateCcw, Search } from 'lucide-react';
 
 import { api } from '../../api/client.js';
 import type {
+  AtlasLevel,
   ObservatoryContextResponse,
   ObservatoryFrontierState,
   ObservatoryLedgerResponse,
   ObservatoryRecallResponse,
   ObservatoryScope,
   ObservatoryTimelineResponse,
-  VizFiltersResponse,
+  SemanticAtlasPageRequest,
+  SemanticAtlasPageResponse,
   VizHealthResponse,
 } from '../../api/client.js';
 import type { MapData, MapSelection } from '../map/map-types.js';
+import type { MapCanvasRenderCommit } from '../map/MapCanvas.js';
+import { connectedNodeIds, connectedObservationIds, graphCommandForKey, type GraphCommand, type GraphViewportCommand } from '../map/map-navigation.js';
+import { semanticAtlasPageToVizSlice } from '../map/map-state.js';
+import { presentStoredText } from '../safe-presentation.js';
+import AtlasDock from './AtlasDock.js';
+import AtlasDiagnostics from './AtlasDiagnostics.js';
+import AtlasScopePanel from './AtlasScopePanel.js';
+import InstrumentDock from './InstrumentDock.js';
+import MemoryMapSurface from './MemoryMapSurface.js';
+import MemoryOverview from './MemoryOverview.js';
+import NeuralAtlasWorkspace from './NeuralAtlasWorkspace.js';
 import {
   applyObservatoryPivot,
   applyObservatoryScope,
   buildObservatoryUrl,
   createInitialObservatoryState,
-  mergeVisibleNodeIds,
+  navigateObservatoryTrail,
+  observatoryScopeFromTokenScope,
   parseObservatorySearch,
   serializeObservatoryState,
-  recoverObservatoryFocus,
+  type ObservatoryLocation,
   type ObservatoryState,
   type ObservatorySurface,
 } from './context-store.js';
-import MemoryMapSurface from './MemoryMapSurface.js';
-import { frontierToMapData, nodeIdToObservationId, scopeToMapParams } from './observatory-utils.js';
-import InstrumentDock from './InstrumentDock.js';
-import { mergeVizSlices } from '../map/map-state.js';
-import { connectedNodeIds, graphCommandForKey, type GraphCommand, type GraphViewportCommand } from '../map/map-navigation.js';
-import { presentStoredText } from '../safe-presentation.js';
-import { normalizeScopeForFilters } from './ObservatoryScopeBar.js';
-import NeuralAtlasWorkspace from './NeuralAtlasWorkspace.js';
-import AtlasDock from './AtlasDock.js';
-import AtlasScopePanel from './AtlasScopePanel.js';
-import MemoryOverview from './MemoryOverview.js';
+import { nodeIdToObservationId, scopeToMapParams } from './observatory-utils.js';
+import { loadFullAtlas, type FullAtlasSnapshot } from './full-atlas-loader.js';
+import {
+  loadSemanticAtlas,
+  type SemanticAtlasSnapshot,
+} from './semantic-atlas-loader.js';
 
-interface FocusCommitOptions {
-  activeSurface?: ObservatorySurface;
-  appendTrail?: boolean;
-  trailIndex?: number;
-  lens?: 'open' | 'closed' | 'preserve';
-  updateState?: (current: ObservatoryState) => ObservatoryState;
+const INITIAL_ATLAS_SNAPSHOT: SemanticAtlasSnapshot = {
+  phase: 'initial',
+  data: null,
+  continuation: null,
+  pagesLoaded: 0,
+  restartCount: 0,
+  error: null,
+  errorCode: null,
+  recoveryLevel: null,
+};
+
+const INITIAL_RAW_SNAPSHOT: FullAtlasSnapshot = {
+  phase: 'initial',
+  data: null,
+  continuation: null,
+  pagesLoaded: 0,
+  restartCount: 0,
+  error: null,
+  errorCode: null,
+};
+
+interface SemanticAtlasPrefetchEntry {
+  controller: AbortController;
+  generation: string;
+  promise: Promise<SemanticAtlasPageResponse | null>;
+  response?: SemanticAtlasPageResponse | null;
+}
+
+function semanticAtlasRequestCacheKey(request: SemanticAtlasPageRequest): string {
+  return JSON.stringify(Object.fromEntries(
+    Object.entries(request).sort(([left], [right]) => left.localeCompare(right)),
+  ));
 }
 
 function initialStateFromLocation(): ObservatoryState {
   const parsed = parseObservatorySearch(window.location.search);
   return {
     ...createInitialObservatoryState(),
+    ...parsed,
     scope: parsed.scope,
-    focusNodeId: parsed.focusNodeId,
-    activeSurface: parsed.activeSurface,
-    continuation: parsed.continuation,
-    density: parsed.density,
+    locationTrail: [{
+      level: parsed.level,
+      communityId: parsed.communityId,
+      focusNodeId: parsed.focusNodeId,
+    }],
+    locationTrailIndex: 0,
   };
+}
+
+function pageSizeFor(level: AtlasLevel, density: ObservatoryState['density']): number {
+  if (level === 'universe') return 150;
+  if (level === 'neighborhood') return 250;
+  if (density === 'focus') return 120;
+  if (density === 'wide') return 500;
+  return 250;
+}
+
+function semanticAtlasRequestForState(state: ObservatoryState): SemanticAtlasPageRequest {
+  return {
+    ...scopeToMapParams(state.scope),
+    level: state.level,
+    ...(state.communityId ? { community_id: state.communityId } : {}),
+    ...(state.focusNodeId ? { focus_node_id: state.focusNodeId } : {}),
+    ...(state.level === 'neighborhood' ? { depth: 2 as const } : {}),
+    page_size: pageSizeFor(state.level, state.density),
+  };
+}
+
+function sameLocation(left: ObservatoryLocation, right: ObservatoryLocation): boolean {
+  return left.level === right.level
+    && left.communityId === right.communityId
+    && left.focusNodeId === right.focusNodeId;
 }
 
 export default function ObservatoryWorkspace() {
   const [state, setState] = useState<ObservatoryState>(initialStateFromLocation);
+  const [presentedState, setPresentedState] = useState<ObservatoryState>(initialStateFromLocation);
   const [context, setContext] = useState<ObservatoryContextResponse | null>(null);
+  const [presentedContext, setPresentedContext] = useState<ObservatoryContextResponse | null>(null);
   const [recall, setRecall] = useState<ObservatoryRecallResponse | null>(null);
   const [mapData, setMapData] = useState<MapData | null>(null);
+  const [presentedMapData, setPresentedMapData] = useState<MapData | null>(null);
   const [timeline, setTimeline] = useState<ObservatoryTimelineResponse | null>(null);
   const [ledger, setLedger] = useState<ObservatoryLedgerResponse | null>(null);
   const [health, setHealth] = useState<VizHealthResponse | null>(null);
   const [frontier, setFrontier] = useState<ObservatoryFrontierState | null>(null);
-  const [availableFilters, setAvailableFilters] = useState<VizFiltersResponse | null>(null);
-  const [filterLoading, setFilterLoading] = useState(true);
-  const [filterError, setFilterError] = useState<string | null>(null);
-  const [validatedFilterScopeKey, setValidatedFilterScopeKey] = useState<string | null>(null);
-  const [edgeSelection, setEdgeSelection] = useState<Extract<NonNullable<MapSelection>, { kind: 'edge' }> | null>(null);
-  const [loading, setLoading] = useState({ context: true, recall: false, map: false, timeline: false, ledger: false });
+  const [presentedFrontier, setPresentedFrontier] = useState<ObservatoryFrontierState | null>(null);
+  const [localSelection, setLocalSelection] = useState<MapSelection>(null);
+  const [loading, setLoading] = useState({
+    context: true,
+    recall: false,
+    map: true,
+    timeline: false,
+    ledger: false,
+  });
   const [error, setError] = useState<string | null>(null);
   const [instrumentErrors, setInstrumentErrors] = useState<Partial<Record<ObservatorySurface, string>>>({});
-  const [reloadKey, setReloadKey] = useState(0);
-  const [filterReloadKey, setFilterReloadKey] = useState(0);
+  const [atlasRetryKey, setAtlasRetryKey] = useState(0);
+  const [atlasLoad, setAtlasLoad] = useState<SemanticAtlasSnapshot>(INITIAL_ATLAS_SNAPSHOT);
+  const [rendererCommit, setRendererCommit] = useState<MapCanvasRenderCommit | null>(null);
+  const [rawLoad, setRawLoad] = useState<FullAtlasSnapshot>(INITIAL_RAW_SNAPSHOT);
+  const [diagnosticMode, setDiagnosticMode] = useState<'semantic' | 'loading' | 'raw' | 'refused' | 'error'>('semantic');
+  const [rawError, setRawError] = useState<string | null>(null);
   const [graphCommand, setGraphCommand] = useState<{ id: number; type: GraphViewportCommand } | null>(null);
   const [paused, setPaused] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const [lensOpen, setLensOpen] = useState(() => initialStateFromLocation().activeSurface !== 'map');
-  const sliceRequestRef = useRef(0);
-  const frontierRequestRef = useRef(0);
-  const frontierControllerRef = useRef<AbortController | null>(null);
-  const committedMapScopeRef = useRef<string | null>(null);
-  const historyRef = useRef(serializeObservatoryState(initialStateFromLocation()));
-  const restoringHistoryRef = useRef<string | null>(null);
-  const instrumentRequestRef = useRef({ recall: 0, timeline: 0, ledger: 0, health: 0 });
+  const [lensOpen, setLensOpen] = useState(() => {
+    const initial = initialStateFromLocation();
+    return initial.activeSurface !== 'map' || initial.level === 'neighborhood';
+  });
+  const atlasRequestRef = useRef(0);
+  const rawRequestRef = useRef(0);
+  const rawControllerRef = useRef<AbortController | null>(null);
+  const diagnosticModeRef = useRef(diagnosticMode);
   const contextRequestRef = useRef(0);
-  const filterRequestRef = useRef(0);
+  const instrumentRequestRef = useRef({ recall: 0, timeline: 0, ledger: 0, health: 0 });
+  const historyRef = useRef(serializeObservatoryState(initialStateFromLocation()));
+  const initialUrlCanonicalizedRef = useRef(false);
+  const restoringHistoryRef = useRef<string | null>(null);
+  const atlasResumeRef = useRef<{
+    requestKey: string;
+    data: NonNullable<SemanticAtlasSnapshot['data']>;
+    continuation: string;
+  } | null>(null);
+  const semanticAtlasPrefetchRef = useRef(new Map<string, SemanticAtlasPrefetchEntry>());
+  const semanticAtlasGenerationRef = useRef<string | null>(null);
+  const atlasRequestValueRef = useRef<SemanticAtlasPageRequest>({ level: 'universe', page_size: 150 });
+  const stateRef = useRef(state);
+  const presentedStateRef = useRef(presentedState);
+  const mapDataRef = useRef(mapData);
+  const presentedMapDataRef = useRef(presentedMapData);
+  const atlasLoadRef = useRef(atlasLoad);
+  const contextRef = useRef(context);
+  const frontierRef = useRef(frontier);
+  const pendingLensOpenRef = useRef<boolean | null>(null);
 
-  const serializedState = useMemo(() => serializeObservatoryState(state), [state]);
-  const selection = useMemo<MapSelection>(
-    () => edgeSelection ?? (state.focusNodeId ? { kind: 'node', id: state.focusNodeId } : null),
-    [edgeSelection, state.focusNodeId],
+  const rendererSelection = useMemo<MapSelection>(
+    () => localSelection ?? (state.focusNodeId ? { kind: 'node', id: state.focusNodeId } : null),
+    [localSelection, state.focusNodeId],
   );
-  const filterScopeKey = state.scope.project ?? '';
-  const filtersResolved = !filterLoading && validatedFilterScopeKey === filterScopeKey;
+  const presentedSelection = useMemo<MapSelection>(
+    () => localSelection ?? (presentedState.focusNodeId ? { kind: 'node', id: presentedState.focusNodeId } : null),
+    [localSelection, presentedState.focusNodeId],
+  );
+  const selectedNodeId = presentedSelection?.kind === 'node' ? presentedSelection.id : presentedState.focusNodeId;
+  const serializedState = useMemo(() => serializeObservatoryState(presentedState), [presentedState]);
+  const atlasRequest = useMemo<SemanticAtlasPageRequest>(() => semanticAtlasRequestForState(state), [
+    state.communityId,
+    state.density,
+    state.focusNodeId,
+    state.level,
+    state.scope.project_token,
+    state.scope.query,
+    state.scope.relation,
+    state.scope.session_token,
+    state.scope.time_from,
+    state.scope.time_to,
+    state.scope.topic_token,
+    state.scope.type,
+  ]);
+  const atlasRequestKey = useMemo(() => JSON.stringify(atlasRequest), [atlasRequest]);
+  atlasRequestValueRef.current = atlasRequest;
+  semanticAtlasGenerationRef.current = atlasLoad.data?.generation ?? semanticAtlasGenerationRef.current;
+  diagnosticModeRef.current = diagnosticMode;
+  stateRef.current = state;
+  presentedStateRef.current = presentedState;
+  mapDataRef.current = mapData;
+  presentedMapDataRef.current = presentedMapData;
+  atlasLoadRef.current = atlasLoad;
+  contextRef.current = context;
+  frontierRef.current = frontier;
 
-  const commitNodeFocus = useCallback((nodeId: string, options: FocusCommitOptions = {}) => {
-    setState((current) => {
-      const nextState = options.updateState?.(current) ?? current;
-      let focusTrail = nextState.focusTrail;
-      let focusTrailIndex = nextState.focusTrailIndex;
-      if (options.appendTrail) {
-        focusTrail = [...nextState.focusTrail.slice(0, nextState.focusTrailIndex + 1), nodeId].slice(-24);
-        focusTrailIndex = focusTrail.length - 1;
-      } else if (options.trailIndex !== undefined) {
-        focusTrailIndex = options.trailIndex;
+  const fetchSemanticAtlasPage = useCallback((
+    request: SemanticAtlasPageRequest,
+    signal: AbortSignal,
+  ): Promise<SemanticAtlasPageResponse> => {
+    if (!request.cursor) {
+      const requestKey = semanticAtlasRequestCacheKey(request);
+      const prefetched = semanticAtlasPrefetchRef.current.get(requestKey);
+      if (prefetched && prefetched.generation === semanticAtlasGenerationRef.current) {
+        return prefetched.promise.then((response) => (
+          response ?? api.getSemanticAtlasPage(request, signal)
+        ));
       }
-      return {
-        ...nextState,
-        focusNodeId: nodeId,
-        activeSurface: options.activeSurface ?? nextState.activeSurface,
-        focusTrail,
-        focusTrailIndex,
-      };
-    });
-    setEdgeSelection(null);
-    if (options.lens !== undefined && options.lens !== 'preserve') setLensOpen(options.lens === 'open');
+    }
+    return api.getSemanticAtlasPage(request, signal);
   }, []);
+
+  const prefetchSemanticCommunity = useCallback((communityId: string) => {
+    const generation = semanticAtlasGenerationRef.current;
+    const currentRequest = atlasRequestValueRef.current;
+    if (!generation || currentRequest.level !== 'universe') return;
+    const request: SemanticAtlasPageRequest = {
+      ...currentRequest,
+      level: 'community',
+      community_id: communityId,
+      page_size: 250,
+    };
+    const requestKey = semanticAtlasRequestCacheKey(request);
+    const current = semanticAtlasPrefetchRef.current.get(requestKey);
+    if (current?.generation === generation) return;
+    current?.controller.abort();
+    const controller = new AbortController();
+    const entry: SemanticAtlasPrefetchEntry = {
+      controller,
+      generation,
+      promise: Promise.resolve(null),
+    };
+    entry.promise = api.getSemanticAtlasPage(request, controller.signal)
+      .then((response) => {
+        entry.response = response;
+        return response;
+      })
+      .catch(() => {
+        entry.response = null;
+        return null;
+      });
+    semanticAtlasPrefetchRef.current.set(requestKey, entry);
+    if (semanticAtlasPrefetchRef.current.size > 6) {
+      const oldestKey = semanticAtlasPrefetchRef.current.keys().next().value as string | undefined;
+      if (oldestKey && oldestKey !== requestKey) {
+        semanticAtlasPrefetchRef.current.get(oldestKey)?.controller.abort();
+        semanticAtlasPrefetchRef.current.delete(oldestKey);
+      }
+    }
+  }, []);
+
+  useEffect(() => () => {
+    for (const entry of semanticAtlasPrefetchRef.current.values()) entry.controller.abort();
+    semanticAtlasPrefetchRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    if (atlasLoad.phase !== 'complete' || atlasLoad.data?.level !== 'universe') return;
+    const firstCommunity = atlasLoad.data.nodes.find((node) => node.kind === 'community');
+    if (!firstCommunity) return;
+    const timer = window.setTimeout(() => prefetchSemanticCommunity(firstCommunity.id), 0);
+    return () => window.clearTimeout(timer);
+  }, [atlasLoad.data, atlasLoad.phase, prefetchSemanticCommunity]);
+
+  const beginSemanticTransition = useCallback(() => {
+    atlasResumeRef.current = null;
+    atlasRequestRef.current += 1;
+    setAtlasLoad({ ...INITIAL_ATLAS_SNAPSHOT });
+    setRendererCommit(null);
+    setFrontier(null);
+    setLoading((current) => ({ ...current, map: true }));
+    setError(null);
+  }, []);
+
+  useEffect(() => {
+    if (initialUrlCanonicalizedRef.current) return;
+    initialUrlCanonicalizedRef.current = true;
+    const canonicalUrl = buildObservatoryUrl(presentedState);
+    if (`${window.location.pathname}${window.location.search}` !== canonicalUrl) {
+      window.history.replaceState(null, '', canonicalUrl);
+    }
+  }, [presentedState]);
 
   useEffect(() => {
     if (restoringHistoryRef.current !== null) {
       if (serializedState === restoringHistoryRef.current) {
         historyRef.current = serializedState;
         restoringHistoryRef.current = null;
+        window.history.replaceState(null, '', buildObservatoryUrl(presentedState));
       }
       return;
     }
     if (serializedState === historyRef.current) return;
     historyRef.current = serializedState;
-    window.history.pushState(null, '', buildObservatoryUrl(state));
-  }, [serializedState, state]);
+    window.history.pushState(null, '', buildObservatoryUrl(presentedState));
+  }, [presentedState, serializedState]);
 
   useEffect(() => {
     const restore = () => {
       const parsed = parseObservatorySearch(window.location.search);
-      const restoredStateKey = serializeObservatoryState({ ...createInitialObservatoryState(), ...parsed, scope: parsed.scope });
+      const restoredStateKey = serializeObservatoryState({
+        ...createInitialObservatoryState(),
+        ...parsed,
+        scope: parsed.scope,
+      });
       historyRef.current = restoredStateKey;
       restoringHistoryRef.current = restoredStateKey;
-      setState((current) => ({ ...current, ...parsed, scope: parsed.scope, visibleNodeIds: [], focusTrail: parsed.focusNodeId ? [parsed.focusNodeId] : [], focusTrailIndex: parsed.focusNodeId ? 0 : -1 }));
-      setEdgeSelection(null);
-      setLensOpen(parsed.activeSurface !== 'map');
+      window.history.replaceState(null, '', buildObservatoryUrl(presentedStateRef.current));
+      beginSemanticTransition();
+      setState((current) => {
+        const target: ObservatoryLocation = {
+          level: parsed.level,
+          communityId: parsed.communityId,
+          focusNodeId: parsed.focusNodeId,
+        };
+        const restoredIndex = current.locationTrail.findIndex((location) => sameLocation(location, target));
+        return {
+          ...current,
+          ...parsed,
+          scope: parsed.scope,
+          visibleNodeIds: [],
+          locationTrailIndex: restoredIndex >= 0 ? restoredIndex : current.locationTrailIndex,
+        };
+      });
+      setLocalSelection(null);
+      pendingLensOpenRef.current = parsed.activeSurface !== 'map' || parsed.level === 'neighborhood';
     };
     window.addEventListener('popstate', restore);
     return () => window.removeEventListener('popstate', restore);
-  }, []);
+  }, [beginSemanticTransition]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const requestId = ++filterRequestRef.current;
-    const requestScopeKey = state.scope.project ?? '';
-    setFilterLoading(true);
-    setFilterError(null);
-    setAvailableFilters(null);
-    api.getVizFilters({ project: state.scope.project }, controller.signal)
-      .then((response) => {
-        if (requestId !== filterRequestRef.current) return;
-        setAvailableFilters(response);
-        setValidatedFilterScopeKey(requestScopeKey);
-        setState((current) => {
-          if ((current.scope.project ?? '') !== requestScopeKey) return current;
-          const normalizedScope = normalizeScopeForFilters(current.scope, response);
-          if (serializeObservatoryState({ ...current, scope: normalizedScope }) === serializeObservatoryState(current)) return current;
-          setEdgeSelection(null);
-          setLensOpen(false);
-          return {
-            ...current,
-            scope: normalizedScope,
-            focusNodeId: null,
-            visibleNodeIds: [],
-            continuation: null,
-            focusTrail: [],
-            focusTrailIndex: -1,
-          };
-        });
-      })
-      .catch((cause: Error) => {
-        if (cause.name === 'AbortError' || requestId !== filterRequestRef.current) return;
-        setValidatedFilterScopeKey(requestScopeKey);
-        setFilterError(cause.message || 'Filter choices are unavailable');
-      })
-      .finally(() => {
-        if (requestId === filterRequestRef.current) setFilterLoading(false);
-      });
-    return () => {
-      controller.abort();
-      filterRequestRef.current += 1;
-    };
-  }, [filterReloadKey, state.scope.project]);
-
-  useEffect(() => {
-    if (!filtersResolved) return;
     const controller = new AbortController();
     const requestId = ++contextRequestRef.current;
     setLoading((current) => ({ ...current, context: true }));
@@ -199,115 +360,196 @@ export default function ObservatoryWorkspace() {
       .then((response) => {
         if (requestId !== contextRequestRef.current) return;
         setContext(response);
-        setState((current) => applyObservatoryScope(current, response.scope, response.context_token));
+        if (JSON.stringify(stateRef.current.scope) === JSON.stringify(presentedStateRef.current.scope)) {
+          setPresentedContext(response);
+        }
+        setState((current) => applyObservatoryScope(
+          current,
+          observatoryScopeFromTokenScope(response.scope),
+          response.context_token,
+        ));
       })
-      .catch((err: Error) => {
-        if (err.name !== 'AbortError' && requestId === contextRequestRef.current) setError(err.message || 'Failed to load observatory context');
+      .catch((cause: Error) => {
+        if (cause.name !== 'AbortError' && requestId === contextRequestRef.current) {
+          setError(cause.message || 'Failed to load observatory context');
+        }
       })
-      .finally(() => { if (requestId === contextRequestRef.current) setLoading((current) => ({ ...current, context: false })); });
-    return () => { controller.abort(); contextRequestRef.current += 1; };
-  }, [filtersResolved, reloadKey, state.scope.project, state.scope.session_id, state.scope.topic_key, state.scope.query, state.scope.type, state.scope.relation, state.scope.time_from, state.scope.time_to]);
+      .finally(() => {
+        if (requestId === contextRequestRef.current) {
+          setLoading((current) => ({ ...current, context: false }));
+        }
+      });
+    return () => {
+      controller.abort();
+      contextRequestRef.current += 1;
+    };
+  }, [
+    state.scope.project_token,
+    state.scope.query,
+    state.scope.relation,
+    state.scope.session_token,
+    state.scope.time_from,
+    state.scope.time_to,
+    state.scope.topic_token,
+    state.scope.type,
+  ]);
 
   useEffect(() => {
-    if (!filtersResolved) return;
     const controller = new AbortController();
-    const requestId = ++sliceRequestRef.current;
-    const requestScope = JSON.stringify(scopeToMapParams(state.scope));
-    frontierControllerRef.current?.abort();
-    frontierRequestRef.current += 1;
-    const caps = state.density === 'focus' ? { max_nodes: 60, max_edges: 140 } : state.density === 'wide' ? { max_nodes: 220, max_edges: 520 } : { max_nodes: 120, max_edges: 360 };
-    setLoading((current) => ({ ...current, map: true }));
-    api.getVizSlice({ ...scopeToMapParams(state.scope), depth: state.density === 'wide' ? 2 : 1, ...caps }, controller.signal).then((slice) => {
-      if (requestId !== sliceRequestRef.current) return;
-      committedMapScopeRef.current = requestScope;
-      setMapData(slice);
-      setFrontier({ added_node_ids: slice.nodes.map((node) => node.id), already_visible_node_ids: [], exhausted: !slice.continuation, continuation: slice.continuation, reason: slice.continuation ? 'limit' : 'no-neighbors' });
-      setState((current) => {
-        if (!current.focusNodeId || slice.nodes.some((node) => node.id === current.focusNodeId)) return recoverObservatoryFocus(current, slice.nodes.map((node) => node.id));
-        setEdgeSelection(null); setLensOpen(false);
-        return { ...current, focusNodeId: null, visibleNodeIds: slice.nodes.map((node) => node.id), focusTrail: [], focusTrailIndex: -1 };
+    const requestId = ++atlasRequestRef.current;
+    const resume = atlasResumeRef.current?.requestKey === atlasRequestKey
+      ? atlasResumeRef.current
+      : null;
+    atlasResumeRef.current = null;
+    setError(null);
+
+    const publishSnapshot = (snapshot: SemanticAtlasSnapshot) => {
+      if (requestId !== atlasRequestRef.current) return;
+      setAtlasLoad(snapshot);
+      if (diagnosticModeRef.current !== 'semantic') return;
+      const busy = snapshot.phase === 'initial'
+        || snapshot.phase === 'streaming'
+        || snapshot.phase === 'restarting';
+      setLoading((current) => ({ ...current, map: busy }));
+
+      if (snapshot.phase === 'recovery') {
+        const level = snapshot.recoveryLevel ?? 'universe';
+        setLocalSelection(null);
+        pendingLensOpenRef.current = false;
+        setState((current) => applyObservatoryPivot(current, {
+          level,
+          communityId: level === 'universe' ? null : current.communityId,
+          focusNodeId: null,
+        }));
+        return;
+      }
+
+      if (!snapshot.data) {
+        if (!mapDataRef.current) {
+          setMapData(null);
+          setFrontier(null);
+        }
+        return;
+      }
+
+      const mapped = semanticAtlasPageToVizSlice(snapshot.data);
+      const visibleNodeIds = mapped.nodes.map((node) => node.id);
+      const nextFrontier: ObservatoryFrontierState = {
+        added_node_ids: visibleNodeIds,
+        already_visible_node_ids: [],
+        exhausted: snapshot.phase === 'complete' && !snapshot.continuation,
+        continuation: snapshot.continuation,
+        reason: snapshot.continuation ? 'limit' : 'no-neighbors',
+      };
+      setMapData(mapped);
+      setFrontier(nextFrontier);
+      if (
+        snapshot.phase === 'streaming'
+        && !presentedMapDataRef.current
+        && sameLocation(presentedStateRef.current, stateRef.current)
+      ) {
+        setPresentedMapData(mapped);
+        setPresentedFrontier(nextFrontier);
+      }
+      setState((current) => ({
+        ...current,
+        visibleNodeIds,
+        continuation: snapshot.continuation,
+      }));
+    };
+
+    const prefetched = !resume
+      ? semanticAtlasPrefetchRef.current.get(semanticAtlasRequestCacheKey(atlasRequest))
+      : null;
+    if (
+      prefetched?.response
+      && prefetched.generation === semanticAtlasGenerationRef.current
+      && !prefetched.response.continuation
+    ) {
+      publishSnapshot({
+        phase: 'complete',
+        data: prefetched.response,
+        continuation: null,
+        pagesLoaded: 1,
+        restartCount: 0,
+        error: null,
+        errorCode: null,
+        recoveryLevel: null,
       });
-    }).catch((cause: Error) => { if (cause.name !== 'AbortError' && requestId === sliceRequestRef.current) setError(cause.message); }).finally(() => { if (requestId === sliceRequestRef.current) setLoading((current) => ({ ...current, map: false })); });
-    return () => { controller.abort(); sliceRequestRef.current += 1; };
-  }, [filtersResolved, reloadKey, state.density, state.scope.project, state.scope.session_id, state.scope.topic_key, state.scope.query, state.scope.type, state.scope.relation]);
+      return () => {
+        controller.abort();
+        atlasRequestRef.current += 1;
+      };
+    }
+
+    void loadSemanticAtlas({
+      request: atlasRequest,
+      signal: controller.signal,
+      fetchPage: fetchSemanticAtlasPage,
+      initialData: resume?.data,
+      initialCursor: resume?.continuation,
+      onSnapshot: publishSnapshot,
+    }).catch((cause: Error) => {
+      if (cause.name !== 'AbortError' && requestId === atlasRequestRef.current) {
+        setError(cause.message || 'Failed to load semantic atlas');
+      }
+    });
+
+    return () => {
+      controller.abort();
+      atlasRequestRef.current += 1;
+    };
+  }, [atlasRequest, atlasRequestKey, atlasRetryKey, fetchSemanticAtlasPage]);
 
   useEffect(() => () => {
-    frontierControllerRef.current?.abort();
-    frontierRequestRef.current += 1;
+    rawControllerRef.current?.abort();
+    rawRequestRef.current += 1;
   }, []);
 
   const loadRecall = useCallback((contextToken: string, signal?: AbortSignal) => {
     const requestId = ++instrumentRequestRef.current.recall;
     setLoading((current) => ({ ...current, recall: true }));
     api.getObservatoryRecall({ context_token: contextToken, lanes: state.lanes, limit: 8 }, signal)
-      .then((value) => { if (requestId === instrumentRequestRef.current.recall) { setRecall(value); setInstrumentErrors((current) => ({ ...current, recall: undefined })); } })
-      .catch((err: Error) => {
-        if (err.name !== 'AbortError' && requestId === instrumentRequestRef.current.recall) setInstrumentErrors((current) => ({ ...current, recall: err.message || 'Failed to load recall lanes' }));
+      .then((value) => {
+        if (requestId !== instrumentRequestRef.current.recall) return;
+        setRecall(value);
+        setInstrumentErrors((current) => ({ ...current, recall: undefined }));
       })
-      .finally(() => { if (requestId === instrumentRequestRef.current.recall) setLoading((current) => ({ ...current, recall: false })); });
-  }, [state.lanes]);
-
-  const loadMap = useCallback((contextToken: string, focusNodeId: string, visibleNodeIds: string[], continuation: string | null, signal?: AbortSignal) => {
-    frontierControllerRef.current?.abort();
-    const controller = new AbortController();
-    frontierControllerRef.current = controller;
-    const abort = () => controller.abort();
-    signal?.addEventListener('abort', abort, { once: true });
-    const requestId = ++frontierRequestRef.current;
-    const requestScope = JSON.stringify(scopeToMapParams(state.scope));
-    setLoading((current) => ({ ...current, map: true }));
-    api.getObservatoryMapFrontier({
-      context_token: contextToken,
-      focus_node_id: focusNodeId,
-      visible_node_ids: visibleNodeIds,
-      continuation: continuation ?? undefined,
-      max_nodes: 120,
-      max_edges: 360,
-    }, controller.signal)
-      .then((response) => {
-        if (requestId !== frontierRequestRef.current || committedMapScopeRef.current !== requestScope) return;
-        const incoming = frontierToMapData(response);
-        setMapData((current) => current ? mergeVizSlices(current, incoming) : incoming);
-        setFrontier(response.frontier_state);
-        setState((current) => ({
-          ...mergeVisibleNodeIds(current, response.nodes.map((node) => node.id)),
-          continuation: response.frontier_state.continuation,
-        }));
-      })
-      .catch(async (err: Error) => {
-        if (err.name === 'AbortError') return;
-        try {
-          const fallback = await api.getVizSlice({ ...scopeToMapParams(state.scope), depth: 1, max_nodes: 120, max_edges: 360 }, controller.signal);
-          if (requestId !== frontierRequestRef.current || committedMapScopeRef.current !== requestScope) return;
-          setMapData(fallback);
-          setFrontier({
-            added_node_ids: fallback.nodes.map((node) => node.id),
-            already_visible_node_ids: [],
-            exhausted: !fallback.continuation,
-            continuation: fallback.continuation,
-            reason: fallback.continuation ? 'limit' : 'no-neighbors',
-          });
-        } catch (fallbackError) {
-          const fallbackWasAborted = fallbackError instanceof Error && fallbackError.name === 'AbortError';
-          if (fallbackWasAborted || controller.signal.aborted || requestId !== frontierRequestRef.current || committedMapScopeRef.current !== requestScope) return;
-          setError(err.message || 'Failed to load memory map frontier');
+      .catch((cause: Error) => {
+        if (cause.name !== 'AbortError' && requestId === instrumentRequestRef.current.recall) {
+          setInstrumentErrors((current) => ({ ...current, recall: cause.message || 'Failed to load recall lanes' }));
         }
       })
       .finally(() => {
-        signal?.removeEventListener('abort', abort);
-        if (requestId === frontierRequestRef.current) setLoading((current) => ({ ...current, map: false }));
+        if (requestId === instrumentRequestRef.current.recall) {
+          setLoading((current) => ({ ...current, recall: false }));
+        }
       });
-  }, [state.scope]);
+  }, [state.lanes]);
 
   const loadTimeline = useCallback((contextToken: string, continuation: string | null, signal?: AbortSignal) => {
     const requestId = ++instrumentRequestRef.current.timeline;
     setLoading((current) => ({ ...current, timeline: true }));
-    api.getObservatoryTimeline({ context_token: contextToken, limit: 16, continuation: continuation ?? undefined }, signal)
-      .then((value) => { if (requestId === instrumentRequestRef.current.timeline) { setTimeline(value); setInstrumentErrors((current) => ({ ...current, timeline: undefined })); } })
-      .catch((err: Error) => {
-        if (err.name !== 'AbortError' && requestId === instrumentRequestRef.current.timeline) setInstrumentErrors((current) => ({ ...current, timeline: err.message || 'Failed to load timeline' }));
+    api.getObservatoryTimeline({
+      context_token: contextToken,
+      limit: 16,
+      continuation: continuation ?? undefined,
+    }, signal)
+      .then((value) => {
+        if (requestId !== instrumentRequestRef.current.timeline) return;
+        setTimeline(value);
+        setInstrumentErrors((current) => ({ ...current, timeline: undefined }));
       })
-      .finally(() => { if (requestId === instrumentRequestRef.current.timeline) setLoading((current) => ({ ...current, timeline: false })); });
+      .catch((cause: Error) => {
+        if (cause.name !== 'AbortError' && requestId === instrumentRequestRef.current.timeline) {
+          setInstrumentErrors((current) => ({ ...current, timeline: cause.message || 'Failed to load timeline' }));
+        }
+      })
+      .finally(() => {
+        if (requestId === instrumentRequestRef.current.timeline) {
+          setLoading((current) => ({ ...current, timeline: false }));
+        }
+      });
   }, []);
 
   const loadLedger = useCallback((focusNodeId: string | null, signal?: AbortSignal) => {
@@ -316,21 +558,30 @@ export default function ObservatoryWorkspace() {
     if (!observationId) {
       setLedger(null);
       setLoading((current) => ({ ...current, ledger: false }));
-      setInstrumentErrors((current) => ({ ...current, ledger: undefined }));
       return;
     }
     setLoading((current) => ({ ...current, ledger: true }));
     api.getObservatoryLedger(observationId, signal)
-      .then((value) => { if (requestId === instrumentRequestRef.current.ledger) { setLedger(value); setInstrumentErrors((current) => ({ ...current, ledger: undefined })); } })
-      .catch((err: Error) => {
-        if (err.name !== 'AbortError' && requestId === instrumentRequestRef.current.ledger) setInstrumentErrors((current) => ({ ...current, ledger: err.message || 'Failed to load ledger' }));
+      .then((value) => {
+        if (requestId !== instrumentRequestRef.current.ledger) return;
+        setLedger(value);
+        setInstrumentErrors((current) => ({ ...current, ledger: undefined }));
       })
-      .finally(() => { if (requestId === instrumentRequestRef.current.ledger) setLoading((current) => ({ ...current, ledger: false })); });
+      .catch((cause: Error) => {
+        if (cause.name !== 'AbortError' && requestId === instrumentRequestRef.current.ledger) {
+          setInstrumentErrors((current) => ({ ...current, ledger: cause.message || 'Failed to load ledger' }));
+        }
+      })
+      .finally(() => {
+        if (requestId === instrumentRequestRef.current.ledger) {
+          setLoading((current) => ({ ...current, ledger: false }));
+        }
+      });
   }, []);
 
-  const loadHealth = useCallback((project?: string, signal?: AbortSignal) => {
+  const loadHealth = useCallback((signal?: AbortSignal) => {
     const requestId = ++instrumentRequestRef.current.health;
-    api.getObservatoryHealth({ project }, signal)
+    api.getObservatoryHealth({}, signal)
       .then((value) => {
         if (requestId !== instrumentRequestRef.current.health) return;
         setHealth(value);
@@ -344,90 +595,276 @@ export default function ObservatoryWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!state.contextToken) return;
+    if (!state.contextToken || state.activeSurface === 'map') return;
     const controller = new AbortController();
-    const instrument = state.activeSurface === 'map' ? null : state.activeSurface;
+    const instrument = state.activeSurface;
     if (instrument === 'recall') loadRecall(state.contextToken, controller.signal);
     if (instrument === 'timeline') loadTimeline(state.contextToken, null, controller.signal);
-    if (instrument === 'health') loadHealth(state.scope.project, controller.signal);
+    if (instrument === 'health') loadHealth(controller.signal);
     if (instrument === 'ledger') loadLedger(state.focusNodeId, controller.signal);
-    if (state.focusNodeId) loadMap(state.contextToken, state.focusNodeId, state.visibleNodeIds, null, controller.signal);
     return () => {
       controller.abort();
-      if (instrument) instrumentRequestRef.current[instrument] += 1;
+      instrumentRequestRef.current[instrument] += 1;
     };
-  }, [loadHealth, loadLedger, loadMap, loadRecall, loadTimeline, reloadKey, state.activeSurface, state.contextToken, state.focusNodeId, state.scope.project]);
+  }, [loadHealth, loadLedger, loadRecall, loadTimeline, state.activeSurface, state.contextToken, state.focusNodeId]);
+
+  const commitLocation = useCallback((
+    location: ObservatoryLocation,
+    options: { activeSurface?: ObservatorySurface; lens?: boolean } = {},
+  ) => {
+    beginSemanticTransition();
+    pendingLensOpenRef.current = options.lens ?? location.level === 'neighborhood';
+    setLocalSelection(null);
+    setState((current) => ({
+      ...applyObservatoryPivot(current, {
+        level: location.level,
+        communityId: location.communityId,
+        focusNodeId: location.focusNodeId,
+      }),
+      activeSurface: options.activeSurface ?? 'map',
+      visibleNodeIds: [],
+      continuation: null,
+    }));
+  }, [beginSemanticTransition]);
+
+  const activateNode = useCallback((nodeId: string, target: ObservatorySurface = 'map') => {
+    const node = presentedMapData?.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return;
+    if (presentedState.level === 'universe' && node.kind === 'community') {
+      commitLocation({ level: 'community', communityId: node.community_id ?? node.id, focusNodeId: null });
+      return;
+    }
+    if (node.kind === 'observation') {
+      const communityId = node.community_id ?? presentedState.communityId;
+      if (
+        presentedState.level === 'neighborhood'
+        && presentedState.focusNodeId === node.id
+        && presentedState.communityId === communityId
+      ) {
+        setState((current) => current.activeSurface === target
+          ? current
+          : { ...current, activeSurface: target });
+        setPresentedState((current) => current.activeSurface === target
+          ? current
+          : { ...current, activeSurface: target });
+        setLocalSelection(null);
+        setLensOpen(true);
+        return;
+      }
+      commitLocation({
+        level: 'neighborhood',
+        communityId,
+        focusNodeId: node.id,
+      }, { activeSurface: target, lens: true });
+      return;
+    }
+    setLocalSelection({ kind: 'node', id: node.id });
+    setLensOpen(true);
+  }, [commitLocation, presentedMapData?.nodes, presentedState.communityId, presentedState.focusNodeId, presentedState.level]);
+
+  const patchScope = (patch: ObservatoryScope) => {
+    rawControllerRef.current?.abort();
+    rawRequestRef.current += 1;
+    diagnosticModeRef.current = 'semantic';
+    setDiagnosticMode('semantic');
+    setRawLoad(INITIAL_RAW_SNAPSHOT);
+    beginSemanticTransition();
+    pendingLensOpenRef.current = false;
+    setLocalSelection(null);
+    setState((current) => ({
+      ...applyObservatoryScope(current, patch),
+      level: 'universe',
+      communityId: null,
+      focusNodeId: null,
+      visibleNodeIds: [],
+      continuation: null,
+      locationTrail: [{ level: 'universe', communityId: null, focusNodeId: null }],
+      locationTrailIndex: 0,
+    }));
+  };
+
+  const retryAtlas = () => {
+    atlasResumeRef.current = atlasLoad.errorCode !== 'VIZ_ATLAS_GENERATION_STALE'
+      && atlasLoad.data
+      && atlasLoad.continuation
+      ? { requestKey: atlasRequestKey, data: atlasLoad.data, continuation: atlasLoad.continuation }
+      : null;
+    setError(null);
+    setAtlasRetryKey((value) => value + 1);
+  };
+
+  const openRawDiagnostics = () => {
+    const semantic = atlasLoad.data;
+    if (!semantic) return;
+    if (
+      !semantic.navigation.raw_rich_render_safe
+      || semantic.counts.raw_entity_count > semantic.navigation.raw_rich_render_limit
+    ) {
+      diagnosticModeRef.current = 'refused';
+      setDiagnosticMode('refused');
+      return;
+    }
+
+    rawControllerRef.current?.abort();
+    const controller = new AbortController();
+    rawControllerRef.current = controller;
+    const requestId = ++rawRequestRef.current;
+    diagnosticModeRef.current = 'loading';
+    setDiagnosticMode('loading');
+    setRawError(null);
+    setRawLoad(INITIAL_RAW_SNAPSHOT);
+    void loadFullAtlas({
+      request: { page_size: 250 },
+      signal: controller.signal,
+      fetchPage: (request, signal) => api.getVizGraphPage(request, signal),
+      onSnapshot: (snapshot) => {
+        if (requestId !== rawRequestRef.current) return;
+        setRawLoad(snapshot);
+        setLoading((current) => ({
+          ...current,
+          map: snapshot.phase === 'initial' || snapshot.phase === 'streaming' || snapshot.phase === 'restarting',
+        }));
+        if (snapshot.data) {
+          diagnosticModeRef.current = 'raw';
+          setDiagnosticMode('raw');
+          setMapData(snapshot.data);
+          const nodeIds = snapshot.data.nodes.map((node) => node.id);
+          setFrontier({
+            added_node_ids: nodeIds,
+            already_visible_node_ids: [],
+            exhausted: snapshot.phase === 'complete',
+            continuation: snapshot.continuation,
+            reason: snapshot.continuation ? 'limit' : 'no-neighbors',
+          });
+        }
+        if (snapshot.phase === 'partial-error' && !snapshot.data) {
+          diagnosticModeRef.current = 'error';
+          setDiagnosticMode('error');
+          setRawError(snapshot.error);
+        }
+      },
+    }).catch((cause: Error) => {
+      if (cause.name === 'AbortError' || requestId !== rawRequestRef.current) return;
+      diagnosticModeRef.current = 'error';
+      setDiagnosticMode('error');
+      setRawError(cause.message || 'Raw diagnostics unavailable');
+    });
+  };
+
+  const exitRawDiagnostics = () => {
+    rawControllerRef.current?.abort();
+    rawRequestRef.current += 1;
+    diagnosticModeRef.current = 'semantic';
+    setDiagnosticMode('semantic');
+    setRawLoad(INITIAL_RAW_SNAPSHOT);
+    setRawError(null);
+    setLocalSelection(null);
+    setLensOpen(presentedState.level === 'neighborhood' || presentedState.activeSurface !== 'map');
+    if (atlasLoad.data) {
+      const mapped = semanticAtlasPageToVizSlice(atlasLoad.data);
+      setMapData(mapped);
+      setFrontier({
+        added_node_ids: mapped.nodes.map((node) => node.id),
+        already_visible_node_ids: [],
+        exhausted: atlasLoad.phase === 'complete' && !atlasLoad.continuation,
+        continuation: atlasLoad.continuation,
+        reason: atlasLoad.continuation ? 'limit' : 'no-neighbors',
+      });
+    }
+  };
 
   const retryActiveInstrument = () => {
     if (state.activeSurface === 'recall' && state.contextToken) loadRecall(state.contextToken);
     if (state.activeSurface === 'timeline' && state.contextToken) loadTimeline(state.contextToken, null);
     if (state.activeSurface === 'ledger') loadLedger(state.focusNodeId);
-    if (state.activeSurface === 'health') loadHealth(state.scope.project);
-  };
-
-  const patchScope = (scope: ObservatoryScope) => {
-    setEdgeSelection(null);
-    setLensOpen(false);
-    setState((current) => ({
-      ...applyObservatoryScope(current, scope),
-      focusNodeId: null,
-      visibleNodeIds: [],
-      continuation: null,
-      focusTrail: [],
-      focusTrailIndex: -1,
-    }));
+    if (state.activeSurface === 'health') loadHealth();
   };
 
   const pivotWithToken = async (pivotToken: string, target: ObservatorySurface) => {
     try {
-      const response = await api.resolveObservatoryPivot({ pivot_token: pivotToken, target: target === 'health' ? 'map' : target });
-      commitNodeFocus(response.focus_node_id, {
-        activeSurface: target,
-        lens: 'preserve',
-        updateState: (current) => ({
-          ...applyObservatoryPivot(current, {
-            contextToken: response.context_token,
-            focusNodeId: response.focus_node_id,
-            scope: response.scope,
-          }),
-          visibleNodeIds: [],
-          continuation: null,
-        }),
+      const response = await api.resolveObservatoryPivot({
+        pivot_token: pivotToken,
+        target: target === 'health' ? 'map' : target,
       });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve pivot');
+      beginSemanticTransition();
+      pendingLensOpenRef.current = true;
+      setLocalSelection(null);
+      setState((current) => ({
+        ...applyObservatoryPivot(current, {
+          contextToken: response.context_token,
+          level: 'neighborhood',
+          communityId: response.community_id,
+          focusNodeId: response.focus_node_id,
+          scope: observatoryScopeFromTokenScope(response.scope),
+        }),
+        activeSurface: target,
+        visibleNodeIds: [],
+        continuation: null,
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Failed to resolve pivot');
     }
   };
 
-  const pivotWithNode = (nodeId: string, target: ObservatorySurface) => {
-    commitNodeFocus(nodeId, { activeSurface: target, appendTrail: true, lens: 'open' });
-  };
-
-  const expandNode = useCallback((nodeId: string) => {
-    if (!state.contextToken) return;
-    loadMap(state.contextToken, nodeId, state.visibleNodeIds, state.continuation, undefined);
-  }, [loadMap, state.contextToken, state.continuation, state.visibleNodeIds]);
+  const selectMap = useCallback((nextSelection: MapSelection) => {
+    if (diagnosticModeRef.current === 'raw') {
+      setLocalSelection(nextSelection);
+      if (nextSelection?.kind === 'node') setLensOpen(true);
+    } else if (nextSelection?.kind === 'node') activateNode(nextSelection.id);
+    else setLocalSelection(nextSelection);
+  }, [activateNode]);
 
   const runGraphCommand = useCallback((command: GraphCommand) => {
-    if (command === 'clear') { setEdgeSelection(null); setState((current) => ({ ...current, focusNodeId: null })); setLensOpen(false); }
-    else if (command === 'expand') { if (state.focusNodeId) expandNode(state.focusNodeId); }
-    else if (command === 'next' || command === 'previous') {
-      if (!mapData?.nodes.length) return;
-      const ids = connectedNodeIds(state.focusNodeId, mapData.nodes, mapData.edges);
-      const currentIndex = Math.max(0, ids.indexOf(state.focusNodeId ?? ids[0]));
-      const nextIndex = command === 'next' ? (currentIndex + 1) % ids.length : (currentIndex - 1 + ids.length) % ids.length;
-      const nextNodeId = ids[nextIndex];
-      commitNodeFocus(nextNodeId, { appendTrail: true, lens: 'closed' });
+    if (diagnosticModeRef.current === 'raw') {
+      if (command === 'clear') {
+        setLocalSelection(null);
+        setLensOpen(false);
+      } else if (command !== 'expand' && command !== 'select' && command !== 'next' && command !== 'previous') {
+        setGraphCommand({ id: Date.now(), type: command });
+      }
+      return;
     }
-    else if (command === 'select') {
-      if (state.focusNodeId) commitNodeFocus(state.focusNodeId, { activeSurface: 'map', lens: 'open' });
+    if (command === 'clear') {
+      if (presentedState.level === 'neighborhood') {
+        commitLocation({ level: 'community', communityId: presentedState.communityId, focusNodeId: null });
+      } else if (presentedState.level === 'community') {
+        commitLocation({ level: 'universe', communityId: null, focusNodeId: null });
+      } else {
+        setLocalSelection(null);
+        setLensOpen(false);
+      }
+      return;
     }
-    else setGraphCommand({ id: Date.now(), type: command });
-  }, [commitNodeFocus, expandNode, mapData, state.focusNodeId]);
+    if (command === 'expand' || command === 'select') {
+      if (selectedNodeId) activateNode(selectedNodeId);
+      return;
+    }
+    if (command === 'next' || command === 'previous') {
+      if (!presentedMapData?.nodes.length) return;
+      const ids = presentedState.level === 'neighborhood'
+        ? connectedObservationIds(selectedNodeId ?? presentedState.focusNodeId, presentedMapData.nodes, presentedMapData.edges)
+        : connectedNodeIds(selectedNodeId, presentedMapData.nodes, presentedMapData.edges);
+      if (ids.length === 0) return;
+      const currentIndex = Math.max(0, ids.indexOf(selectedNodeId ?? ids[0]));
+      const nextIndex = command === 'next'
+        ? (currentIndex + 1) % ids.length
+        : (currentIndex - 1 + ids.length) % ids.length;
+      activateNode(ids[nextIndex]);
+      return;
+    }
+    setGraphCommand({ id: Date.now(), type: command });
+  }, [activateNode, commitLocation, presentedMapData, presentedState.communityId, presentedState.focusNodeId, presentedState.level, selectedNodeId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
+      if (
+        event.target instanceof HTMLInputElement
+        || event.target instanceof HTMLTextAreaElement
+        || event.target instanceof HTMLSelectElement
+        || event.target instanceof HTMLButtonElement
+        || event.target instanceof HTMLAnchorElement
+        || event.target instanceof HTMLDetailsElement
+      ) return;
       const command = graphCommandForKey(event.key);
       if (!command) return;
       runGraphCommand(command);
@@ -437,144 +874,238 @@ export default function ObservatoryWorkspace() {
     return () => window.removeEventListener('keydown', onKey);
   }, [runGraphCommand]);
 
+  const navigateTrail = (delta: -1 | 1) => {
+    const next = navigateObservatoryTrail(presentedState, delta);
+    if (next === presentedState) return;
+    beginSemanticTransition();
+    pendingLensOpenRef.current = next.level === 'neighborhood' || next.activeSurface !== 'map';
+    setLocalSelection(null);
+    setState(next);
+  };
+  const resetAtlas = () => {
+    rawControllerRef.current?.abort();
+    rawRequestRef.current += 1;
+    diagnosticModeRef.current = 'semantic';
+    setDiagnosticMode('semantic');
+    setRawLoad(INITIAL_RAW_SNAPSHOT);
+    beginSemanticTransition();
+    pendingLensOpenRef.current = false;
+    setState(createInitialObservatoryState());
+    setLocalSelection(null);
+  };
+
+  const handleRendererCommit = useCallback((commit: MapCanvasRenderCommit) => {
+    setRendererCommit(commit);
+    if (diagnosticModeRef.current !== 'semantic') return;
+    const targetState = stateRef.current;
+    const targetData = mapDataRef.current;
+    const targetLoad = atlasLoadRef.current;
+    const initialStreamingPresentation = targetLoad.phase === 'streaming'
+      && !presentedMapDataRef.current
+      && sameLocation(presentedStateRef.current, targetState);
+    if (
+      (targetLoad.phase !== 'complete' && !initialStreamingPresentation)
+      || !targetLoad.data
+      || !targetData?.atlas
+      || commit.level !== targetState.level
+      || commit.generation !== targetLoad.data.generation
+      || commit.generation !== targetData.atlas.generation
+      || commit.focusId !== targetState.focusNodeId
+      || commit.pointCount !== targetData.nodes.length
+    ) return;
+    setPresentedState(targetState);
+    setPresentedMapData(targetData);
+    setPresentedContext(contextRef.current);
+    setPresentedFrontier(frontierRef.current);
+    if (targetLoad.phase === 'complete') {
+      setLensOpen(pendingLensOpenRef.current ?? (
+        targetState.level === 'neighborhood' || targetState.activeSurface !== 'map'
+      ));
+      pendingLensOpenRef.current = null;
+    }
+  }, []);
+  const projectLabel = presentedContext?.scope.project?.label
+    ?? presentedMapData?.atlas?.navigation.scope.project?.label
+    ?? 'all projects';
+  const topicLabel = presentedContext?.scope.topic?.label
+    ?? presentedMapData?.atlas?.navigation.scope.topic?.label
+    ?? 'any topic';
+  const mapMatchesCurrentLocation = diagnosticMode === 'raw'
+    || presentedMapData?.atlas?.level === presentedState.level;
+  const selectedNode = mapMatchesCurrentLocation
+    ? presentedMapData?.nodes.find((node) => node.id === selectedNodeId) ?? null
+    : null;
+  const selectedMemoryLabel = presentStoredText(selectedNode?.label)
+    || (selectedNodeId ? 'Loading selected memory' : 'the whole universe');
+  const semanticRendererReady = Boolean(
+    diagnosticMode !== 'semantic'
+    || (
+      atlasLoad.phase === 'complete'
+      && atlasLoad.data
+      && mapData
+      && presentedMapData === mapData
+      && sameLocation(presentedState, state)
+      && rendererCommit
+      && rendererCommit.level === state.level
+      && rendererCommit.generation === atlasLoad.data.generation
+      && rendererCommit.focusId === state.focusNodeId
+      && rendererCommit.pointCount === mapData.nodes.length
+    )
+  );
+
   return (
     <NeuralAtlasWorkspace>
       <header className="observatory-header">
         <div>
           <span className="observatory-kicker"><Compass size={15} /> Neural Atlas</span>
           <h1>Memory universe</h1>
-          <p>Follow connections between decisions, discoveries, sessions, and the ideas that shaped them.</p>
+          <p>Move from constellations to memories, then reveal the evidence around one remembered moment.</p>
         </div>
         <div className="observatory-toolbar">
           <label className="observatory-search">
             <Search size={15} />
-            <input data-semantic-query="true" aria-label="Explore memories" value={state.scope.query ?? ''} onChange={(event) => patchScope({ query: event.target.value })} placeholder="Explore memories" />
+            <input
+              data-semantic-query="true"
+              aria-label="Explore memories"
+              value={state.scope.query ?? ''}
+              onChange={(event) => patchScope({ query: event.target.value || undefined })}
+              placeholder="Explore memories"
+            />
           </label>
-          <button type="button" className="map-icon-button" onClick={() => { setState(createInitialObservatoryState()); setEdgeSelection(null); setLensOpen(false); }} title="Reset observatory">
+          <button type="button" className="map-icon-button" onClick={resetAtlas} title="Reset observatory">
             <RotateCcw size={15} />
           </button>
+          <AtlasDiagnostics
+            mode={diagnosticMode}
+            rawEntityCount={atlasLoad.data?.counts.raw_entity_count ?? 0}
+            rawRelationshipCount={atlasLoad.data?.counts.raw_relationship_count ?? 0}
+            rawRichRenderLimit={atlasLoad.data?.navigation.raw_rich_render_limit ?? 5_000}
+            error={rawError}
+            onOpen={openRawDiagnostics}
+            onExit={exitRawDiagnostics}
+          />
           <AtlasScopePanel
             scope={state.scope}
             density={state.density}
-            filters={availableFilters}
-            loading={!filtersResolved}
-            error={filterError}
+            filters={atlasLoad.data?.facets ?? null}
+            loading={!atlasLoad.data && loading.map}
+            error={atlasLoad.phase === 'partial-error' ? atlasLoad.error : null}
             onScopeChange={patchScope}
-            onDensityChange={(density) => setState((current) => ({ ...current, density }))}
-            onRetry={() => setFilterReloadKey((key) => key + 1)}
+            onDensityChange={(density) => {
+              setState((current) => ({ ...current, density }));
+              setPresentedState((current) => ({ ...current, density }));
+            }}
+            onRetry={retryAtlas}
           />
         </div>
       </header>
-      {state.focusNodeId && (
+
+      {selectedNodeId && (
         <div className="active-focus-summary">
           <span>Exploring</span>
-          <button type="button" onClick={() => { setEdgeSelection(null); setLensOpen(false); setState((current) => ({ ...current, focusNodeId: null })); }}>
-            {presentStoredText(mapData?.nodes.find((node) => node.id === state.focusNodeId)?.label) || 'Selected memory'}
+          <button type="button" onClick={() => runGraphCommand('clear')}>
+            {presentStoredText(selectedNode?.label) || 'Selected memory'}
             <span aria-hidden="true">×</span>
           </button>
         </div>
       )}
 
-      {state.focusTrail.length > 0 && (
-        <div className="focus-trail" aria-label="Focus trail">
+      {presentedState.locationTrail.length > 1 && (
+        <div className="focus-trail" aria-label="Atlas trail">
+          <button type="button" disabled={presentedState.locationTrailIndex <= 0} onClick={() => navigateTrail(-1)}>Back</button>
+          <span>{presentedState.locationTrailIndex + 1} / {presentedState.locationTrail.length}</span>
           <button
             type="button"
-            disabled={state.focusTrailIndex <= 0}
-            onClick={() => {
-              const nextIndex = state.focusTrailIndex - 1;
-              const nextNodeId = state.focusTrail[nextIndex];
-              if (nextNodeId) commitNodeFocus(nextNodeId, { trailIndex: nextIndex, lens: 'preserve' });
-            }}
-          >
-            Back
-          </button>
-          <span>{state.focusTrailIndex + 1} / {state.focusTrail.length}</span>
-          <button
-            type="button"
-            disabled={state.focusTrailIndex >= state.focusTrail.length - 1}
-            onClick={() => {
-              const nextIndex = state.focusTrailIndex + 1;
-              const nextNodeId = state.focusTrail[nextIndex];
-              if (nextNodeId) commitNodeFocus(nextNodeId, { trailIndex: nextIndex, lens: 'preserve' });
-            }}
+            disabled={presentedState.locationTrailIndex >= presentedState.locationTrail.length - 1}
+            onClick={() => navigateTrail(1)}
           >
             Forward
           </button>
         </div>
       )}
 
-      {error && <div className="error-container observatory-error">{error}</div>}
+      {error && <div className="error-container observatory-error">{presentStoredText(error, 280)}</div>}
 
       <div className="observatory-context-strip" aria-live="polite">
-        <span>Looking in <strong>{presentStoredText(state.scope.project) || 'all projects'}</strong></span>
-        <span>Topic <strong>{presentStoredText(state.scope.topic_key) || 'any topic'}</strong></span>
-        <span>Current memory <strong>{presentStoredText(mapData?.nodes.find((node) => node.id === state.focusNodeId)?.label) || 'the whole constellation'}</strong></span>
-        <span>Memory sources <strong>{loading.context ? 'gathering' : context?.context_token ? 'ready' : 'using the visible map'}</strong></span>
+        <span>Looking in <strong>{presentStoredText(projectLabel)}</strong></span>
+        <span>Topic <strong>{presentStoredText(topicLabel)}</strong></span>
+        <span>Level <strong>{presentedState.level}</strong></span>
+        <span>Current memory <strong>{selectedMemoryLabel}</strong></span>
+        <span>Memory sources <strong>{loading.context ? 'gathering' : presentedContext?.context_token ? 'ready' : 'using the atlas'}</strong></span>
       </div>
 
       <div className="observatory-grid" data-dock-open={String(lensOpen)}>
         <MemoryMapSurface
-          data={mapData}
-          selection={selection}
-          frontier={frontier}
-          focusNodeId={state.focusNodeId}
+          data={diagnosticMode === 'raw' ? mapData : presentedMapData}
+          canvasData={mapData}
+          selection={presentedSelection}
+          canvasSelection={rendererSelection}
+          frontier={diagnosticMode === 'raw' ? frontier : presentedFrontier}
+          atlasLoad={diagnosticMode === 'raw' ? rawLoad : atlasLoad}
+          focusNodeId={presentedState.focusNodeId}
           loading={loading.map}
-          error={error}
-          onSelect={(nextSelection) => {
-            if (nextSelection?.kind === 'node') commitNodeFocus(nextSelection.id, { activeSurface: 'map', lens: 'open' });
-            else setEdgeSelection(nextSelection);
-          }}
-          onExpand={expandNode}
-          onRefresh={() => setReloadKey((key) => key + 1)}
+          error={atlasLoad.error ?? error}
+          onSelect={selectMap}
+          onExpand={activateNode}
+          onRefresh={diagnosticMode === 'raw' ? openRawDiagnostics : retryAtlas}
           command={graphCommand}
           onCommand={runGraphCommand}
           paused={paused}
           onPausedChange={setPaused}
+          level={diagnosticMode === 'raw' ? 'raw' : presentedState.level}
+          communityId={presentedState.communityId}
+          onNavigateUniverse={() => diagnosticMode === 'raw'
+            ? exitRawDiagnostics()
+            : commitLocation({ level: 'universe', communityId: null, focusNodeId: null })}
+          onNavigateCommunity={() => commitLocation({ level: 'community', communityId: presentedState.communityId, focusNodeId: null })}
+          rendererReady={semanticRendererReady}
+          onRendererCommit={handleRendererCommit}
+          onPrefetchNode={prefetchSemanticCommunity}
         />
         <AtlasDock
-          active={state.activeSurface}
+          active={presentedState.activeSurface}
           open={lensOpen}
           onOpen={() => setLensOpen(true)}
           onClose={() => setLensOpen(false)}
           onActiveChange={(activeSurface) => {
             setState((current) => ({ ...current, activeSurface }));
+            setPresentedState((current) => ({ ...current, activeSurface }));
             setLensOpen(true);
           }}
           overview={(
             <MemoryOverview
-              nodeId={state.focusNodeId}
-              node={mapData?.nodes.find((node) => node.id === state.focusNodeId) ?? null}
-              connectedNodes={state.focusNodeId && mapData
-                ? connectedNodeIds(state.focusNodeId, mapData.nodes, mapData.edges)
-                    .filter((id) => id !== state.focusNodeId)
-                    .map((id) => mapData.nodes.find((node) => node.id === id))
+              nodeId={selectedNodeId}
+              node={selectedNode}
+              connectedNodes={selectedNodeId && presentedMapData && mapMatchesCurrentLocation
+                ? connectedNodeIds(selectedNodeId, presentedMapData.nodes, presentedMapData.edges)
+                    .filter((id) => id !== selectedNodeId)
+                    .map((id) => presentedMapData.nodes.find((node) => node.id === id))
                     .filter((node): node is NonNullable<typeof node> => Boolean(node))
                 : []}
-              knownNodes={mapData?.nodes ?? []}
-              project={state.scope.project}
-              onExpand={expandNode}
-              onPivot={pivotWithNode}
-              onConnected={(nodeId) => pivotWithNode(nodeId, 'map')}
+              knownNodes={mapMatchesCurrentLocation ? presentedMapData?.nodes ?? [] : []}
+              onExpand={activateNode}
+              onPivot={(nodeId, target) => activateNode(nodeId, target)}
+              onConnected={(nodeId) => activateNode(nodeId)}
             />
           )}
           instrument={(
             <InstrumentDock
-              active={state.activeSurface}
+              active={presentedState.activeSurface}
               recall={recall}
               timeline={timeline}
               ledger={ledger}
               health={health}
-              context={context}
-              focusNodeId={state.focusNodeId}
-              query={state.scope.query ?? ''}
+              context={presentedContext}
+              focusNodeId={presentedState.focusNodeId}
+              query={presentedState.scope.query ?? ''}
               loading={loading}
-              error={instrumentErrors[state.activeSurface]}
+              error={instrumentErrors[presentedState.activeSurface]}
               onRetry={retryActiveInstrument}
-              onQuery={(query) => patchScope({ query })}
+              onQuery={(query) => patchScope({ query: query || undefined })}
               onRecallRefresh={() => state.contextToken && loadRecall(state.contextToken)}
               onLoadMore={() => state.contextToken && loadTimeline(state.contextToken, timeline?.continuation ?? null)}
               onPivotToken={pivotWithToken}
-              onPivotNode={pivotWithNode}
+              onPivotNode={(nodeId, target) => activateNode(nodeId, target)}
             />
           )}
         />

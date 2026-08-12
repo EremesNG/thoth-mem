@@ -1,6 +1,6 @@
 import { RefreshCw, SlidersHorizontal, X } from 'lucide-react';
 
-import type { ObservatoryScope, VizFiltersResponse } from '../../api/client.js';
+import type { AtlasFacetOption, ObservatoryScope, SemanticAtlasPageResponse } from '../../api/client.js';
 import GuidedSelect from '../GuidedSelect.js';
 import { buildHumanOptions, presentDensity, presentFilterKey, presentObservationType, presentRelation } from '../dashboard-presentation.js';
 import { presentStoredText } from '../safe-presentation.js';
@@ -15,7 +15,7 @@ const densityOptions = [
 interface ObservatoryScopeBarProps {
   scope: ObservatoryScope;
   density: ObservatoryState['density'];
-  filters: VizFiltersResponse | null;
+  filters: SemanticAtlasPageResponse['facets'] | null;
   loading: boolean;
   error: string | null;
   onScopeChange: (scope: ObservatoryScope) => void;
@@ -23,31 +23,42 @@ interface ObservatoryScopeBarProps {
   onRetry: () => void;
 }
 
-function hasFilterChoices(filters: VizFiltersResponse | null): boolean {
+function hasFilterChoices(filters: SemanticAtlasPageResponse['facets'] | null): boolean {
   return Boolean(filters && (
     filters.projects.length
     || filters.sessions.length
-    || filters.topic_keys.length
+    || filters.topics.length
     || filters.types.length
     || filters.relations.length
   ));
 }
 
-export function normalizeScopeForFilters(scope: ObservatoryScope, filters: VizFiltersResponse): ObservatoryScope {
+export function normalizeScopeForFilters(
+  scope: ObservatoryScope,
+  filters: SemanticAtlasPageResponse['facets'],
+): ObservatoryScope {
   const next = { ...scope };
-  if (next.project && !filters.projects.includes(next.project)) {
-    next.project = undefined;
-    next.session_id = undefined;
-    next.topic_key = undefined;
+  if (next.project_token && !filters.projects.some(({ token }) => token === next.project_token)) {
+    next.project_token = undefined;
+    next.session_token = undefined;
+    next.topic_token = undefined;
     next.type = undefined;
     next.relation = undefined;
     return next;
   }
-  if (next.session_id && !filters.sessions.includes(next.session_id)) next.session_id = undefined;
-  if (next.topic_key && !filters.topic_keys.includes(next.topic_key)) next.topic_key = undefined;
+  if (next.session_token && !filters.sessions.some(({ token }) => token === next.session_token)) next.session_token = undefined;
+  if (next.topic_token && !filters.topics.some(({ token }) => token === next.topic_token)) next.topic_token = undefined;
   if (next.type && !filters.types.includes(next.type)) next.type = undefined;
   if (next.relation && !filters.relations.includes(next.relation)) next.relation = undefined;
   return next;
+}
+
+function facetOptions(values: AtlasFacetOption[]) {
+  return values.map(({ token, label, count }) => ({
+    value: token,
+    label: `${presentStoredText(label)} · ${count}`,
+    searchText: presentStoredText(label),
+  }));
 }
 
 export default function ObservatoryScopeBar({
@@ -64,16 +75,16 @@ export default function ObservatoryScopeBar({
   const patch = (next: ObservatoryScope) => onScopeChange(next);
   const selectDisabled = loading && !filters;
   const options = {
-    projects: buildHumanOptions(filters?.projects ?? [], (value) => value),
-    sessions: buildHumanOptions(filters?.sessions ?? [], (value) => value),
-    topics: buildHumanOptions(filters?.topic_keys ?? [], (value) => value),
+    projects: facetOptions(filters?.projects ?? []),
+    sessions: facetOptions(filters?.sessions ?? []),
+    topics: facetOptions(filters?.topics ?? []),
     types: buildHumanOptions(filters?.types ?? [], presentObservationType),
     relations: buildHumanOptions(filters?.relations ?? [], presentRelation),
   };
   const applied: Array<[keyof ObservatoryScope, string]> = [];
-  if (scope.project) applied.push(['project', scope.project]);
-  if (scope.session_id) applied.push(['session_id', scope.session_id]);
-  if (scope.topic_key) applied.push(['topic_key', scope.topic_key]);
+  if (scope.project_token) applied.push(['project_token', scope.project_token]);
+  if (scope.session_token) applied.push(['session_token', scope.session_token]);
+  if (scope.topic_token) applied.push(['topic_token', scope.topic_token]);
   if (scope.type) applied.push(['type', scope.type]);
   if (scope.relation) applied.push(['relation', scope.relation]);
 
@@ -104,33 +115,33 @@ export default function ObservatoryScopeBar({
       <div className="guided-scope-fields">
         <GuidedSelect
           label="Project"
-          value={scope.project}
+          value={scope.project_token}
           options={options.projects}
           allLabel="All projects"
           emptyMessage="No projects found"
           loading={selectDisabled}
           disabled={selectDisabled}
-          onChange={(project) => patch({ project, session_id: undefined, topic_key: undefined, type: undefined, relation: undefined })}
+          onChange={(project_token) => patch({ project_token, session_token: undefined, topic_token: undefined, type: undefined, relation: undefined })}
         />
         <GuidedSelect
           label="Session"
-          value={scope.session_id}
+          value={scope.session_token}
           options={options.sessions}
           allLabel="Any session"
           emptyMessage="No sessions found"
           loading={selectDisabled}
           disabled={selectDisabled}
-          onChange={(session_id) => patch({ session_id })}
+          onChange={(session_token) => patch({ session_token })}
         />
         <GuidedSelect
           label="Topic"
-          value={scope.topic_key}
+          value={scope.topic_token}
           options={options.topics}
           allLabel="Any topic"
           emptyMessage="No topics found"
           loading={selectDisabled}
           disabled={selectDisabled}
-          onChange={(topic_key) => patch({ topic_key })}
+          onChange={(topic_token) => patch({ topic_token })}
         />
         <GuidedSelect
           label="Connection"
@@ -169,7 +180,12 @@ export default function ObservatoryScopeBar({
           {applied.map(([key, value]) => (
             <button key={key} type="button" onClick={() => patch({ [key]: undefined })} aria-label={`Clear ${presentFilterKey(key)}`}>
               <strong>{presentFilterKey(key)}</strong>
-              {key === 'type' ? presentObservationType(value) : key === 'relation' ? presentRelation(value) : presentStoredText(value)}
+              {key === 'type'
+                ? presentObservationType(value)
+                : key === 'relation'
+                  ? presentRelation(value)
+                  : options[key === 'project_token' ? 'projects' : key === 'session_token' ? 'sessions' : 'topics']
+                      .find((option) => option.value === value)?.label ?? 'Selected'}
               <X size={12} aria-hidden="true" />
             </button>
           ))}

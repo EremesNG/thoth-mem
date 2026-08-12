@@ -1,10 +1,18 @@
-import type { ObservatoryLane, ObservatoryScope } from '../../api/client.js';
+import type { AtlasLevel, AtlasTokenScope, ObservatoryLane, ObservatoryScope } from '../../api/client.js';
 
 export type ObservatorySurface = 'recall' | 'map' | 'timeline' | 'ledger' | 'health';
+
+export interface ObservatoryLocation {
+  level: AtlasLevel;
+  communityId: string | null;
+  focusNodeId: string | null;
+}
 
 export interface ObservatoryState {
   scope: ObservatoryScope;
   contextToken: string | null;
+  level: AtlasLevel;
+  communityId: string | null;
   focusNodeId: string | null;
   activeSurface: ObservatorySurface;
   visibleNodeIds: string[];
@@ -13,6 +21,8 @@ export interface ObservatoryState {
   density: 'focus' | 'balanced' | 'wide';
   focusTrail: string[];
   focusTrailIndex: number;
+  locationTrail: ObservatoryLocation[];
+  locationTrailIndex: number;
 }
 
 export const DEFAULT_OBSERVATORY_LANES: ObservatoryLane[] = ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'];
@@ -22,6 +32,8 @@ export function createInitialObservatoryState(): ObservatoryState {
   return {
     scope: {},
     contextToken: null,
+    level: 'universe',
+    communityId: null,
     focusNodeId: null,
     activeSurface: DEFAULT_OBSERVATORY_SURFACE,
     visibleNodeIds: [],
@@ -30,6 +42,8 @@ export function createInitialObservatoryState(): ObservatoryState {
     density: 'balanced',
     focusTrail: [],
     focusTrailIndex: -1,
+    locationTrail: [],
+    locationTrailIndex: -1,
   };
 }
 
@@ -41,14 +55,70 @@ export function applyObservatoryScope(state: ObservatoryState, scope: Observator
   };
 }
 
-export function applyObservatoryPivot(state: ObservatoryState, input: { contextToken: string; focusNodeId: string; scope?: ObservatoryScope }): ObservatoryState {
+export function applyObservatoryPivot(state: ObservatoryState, input: {
+  contextToken?: string | null;
+  level: AtlasLevel;
+  communityId: string | null;
+  focusNodeId: string | null;
+  scope?: ObservatoryScope;
+}): ObservatoryState {
+  const location: ObservatoryLocation = input.level === 'universe'
+    ? { level: 'universe', communityId: null, focusNodeId: null }
+    : input.level === 'community'
+      ? { level: 'community', communityId: input.communityId, focusNodeId: null }
+      : { level: 'neighborhood', communityId: input.communityId, focusNodeId: input.focusNodeId };
+  const currentLocation: ObservatoryLocation = {
+    level: state.level,
+    communityId: state.communityId,
+    focusNodeId: state.focusNodeId,
+  };
+  const priorLocations = state.locationTrail.length > 0
+    ? state.locationTrail.slice(0, state.locationTrailIndex + 1)
+    : [currentLocation];
+  const last = priorLocations[priorLocations.length - 1];
+  const appendLocation = !last
+    || last.level !== location.level
+    || last.communityId !== location.communityId
+    || last.focusNodeId !== location.focusNodeId;
+  const locationTrail = (appendLocation ? [...priorLocations, location] : priorLocations).slice(-24);
+  const nextFocusTrail = input.focusNodeId
+    ? [...state.focusTrail.slice(0, state.focusTrailIndex + 1), input.focusNodeId].slice(-24)
+    : state.focusTrail;
   return {
     ...state,
-    contextToken: input.contextToken,
-    focusNodeId: input.focusNodeId,
+    contextToken: input.contextToken ?? state.contextToken,
+    level: location.level,
+    communityId: location.communityId,
+    focusNodeId: location.focusNodeId,
     scope: { ...state.scope, ...(input.scope ?? {}) },
-    focusTrail: [...state.focusTrail.slice(0, state.focusTrailIndex + 1), input.focusNodeId].slice(-24),
-    focusTrailIndex: Math.min(23, state.focusTrailIndex + 1),
+    focusTrail: nextFocusTrail,
+    focusTrailIndex: input.focusNodeId ? nextFocusTrail.length - 1 : state.focusTrailIndex,
+    locationTrail,
+    locationTrailIndex: locationTrail.length - 1,
+  };
+}
+
+export function observatoryScopeFromTokenScope(scope: AtlasTokenScope): ObservatoryScope {
+  return {
+    project_token: scope.project?.token,
+    session_token: scope.session?.token,
+    topic_token: scope.topic?.token,
+    type: scope.type ?? undefined,
+    relation: scope.relation ?? undefined,
+    query: scope.query ?? undefined,
+    time_from: scope.time_from ?? undefined,
+    time_to: scope.time_to ?? undefined,
+  };
+}
+
+export function navigateObservatoryTrail(state: ObservatoryState, delta: -1 | 1): ObservatoryState {
+  const nextIndex = Math.max(0, Math.min(state.locationTrail.length - 1, state.locationTrailIndex + delta));
+  const location = state.locationTrail[nextIndex];
+  if (!location || nextIndex === state.locationTrailIndex) return state;
+  return {
+    ...state,
+    ...location,
+    locationTrailIndex: nextIndex,
   };
 }
 
@@ -63,16 +133,17 @@ export function mergeVisibleNodeIds(state: ObservatoryState, nodeIds: string[]):
   };
 }
 
-export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
+export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'level' | 'communityId' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
   const params = new URLSearchParams(search);
   const surface = parseObservatorySurface(params.get('surface'));
   const scope: ObservatoryScope = {};
+  const hasRawFacet = params.has('project') || params.has('session_id') || params.has('topic_key') || params.has('topic_key_exact');
 
   const query = params.get('q') ?? params.get('query');
   const entries: Array<[keyof ObservatoryScope, string | null | undefined]> = [
-    ['project', params.get('project')],
-    ['session_id', params.get('session_id')],
-    ['topic_key', params.get('topic_key') ?? params.get('topic_key_exact')],
+    ['project_token', params.get('project_token')],
+    ['session_token', params.get('session_token')],
+    ['topic_token', params.get('topic_token')],
     ['query', query],
     ['type', params.get('type') as ObservatoryScope['type'] | null],
     ['relation', params.get('relation')],
@@ -81,14 +152,27 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
   ];
 
   for (const [key, value] of entries) {
-    if (value) {
+    if (value && !hasRawFacet) {
       scope[key] = value as never;
     }
   }
 
+  const requestedLevel = params.get('level');
+  const requestedCommunity = params.get('community');
+  const requestedFocus = params.get('focus');
+  const validCommunity = typeof requestedCommunity === 'string' && requestedCommunity.startsWith('community:');
+  const validFocus = typeof requestedFocus === 'string' && /^obs:\d+$/.test(requestedFocus);
+  const level: AtlasLevel = !hasRawFacet && requestedLevel === 'community' && validCommunity
+    ? 'community'
+    : !hasRawFacet && requestedLevel === 'neighborhood' && validCommunity && validFocus
+      ? 'neighborhood'
+      : 'universe';
+
   return {
     scope,
-    focusNodeId: params.get('focus') || null,
+    level,
+    communityId: level === 'universe' ? null : requestedCommunity,
+    focusNodeId: level === 'neighborhood' ? requestedFocus : null,
     activeSurface: surface,
     continuation: params.get('continuation'),
     density: params.get('density') === 'focus' || params.get('density') === 'wide' ? params.get('density') as 'focus' | 'wide' : 'balanced',
@@ -98,10 +182,12 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
 export function serializeObservatoryState(state: ObservatoryState): string {
   const params = new URLSearchParams();
   if (state.activeSurface !== DEFAULT_OBSERVATORY_SURFACE) params.set('surface', state.activeSurface);
-  if (state.focusNodeId) params.set('focus', state.focusNodeId);
-  if (state.scope.project) params.set('project', state.scope.project);
-  if (state.scope.session_id) params.set('session_id', state.scope.session_id);
-  if (state.scope.topic_key) params.set('topic_key', state.scope.topic_key);
+  if (state.level !== 'universe') params.set('level', state.level);
+  if (state.communityId) params.set('community', state.communityId);
+  if (state.level === 'neighborhood' && state.focusNodeId) params.set('focus', state.focusNodeId);
+  if (state.scope.project_token) params.set('project_token', state.scope.project_token);
+  if (state.scope.session_token) params.set('session_token', state.scope.session_token);
+  if (state.scope.topic_token) params.set('topic_token', state.scope.topic_token);
   if (state.scope.query) params.set('q', state.scope.query);
   if (state.scope.type) params.set('type', state.scope.type);
   if (state.scope.relation) params.set('relation', state.scope.relation);
@@ -135,7 +221,17 @@ export function parseObservatorySurface(value: string | null): ObservatorySurfac
 
 export function recoverObservatoryFocus(state: ObservatoryState, visibleNodeIds: string[]): ObservatoryState {
   if (!state.focusNodeId || visibleNodeIds.includes(state.focusNodeId)) return { ...state, visibleNodeIds };
-  return { ...state, focusNodeId: null, visibleNodeIds, focusTrail: [], focusTrailIndex: -1 };
+  return {
+    ...state,
+    level: 'universe',
+    communityId: null,
+    focusNodeId: null,
+    visibleNodeIds,
+    focusTrail: [],
+    focusTrailIndex: -1,
+    locationTrail: [],
+    locationTrailIndex: -1,
+  };
 }
 
 export type InstrumentCache<T> = Record<Exclude<ObservatorySurface, 'map'>, T | null>;

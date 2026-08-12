@@ -1,6 +1,8 @@
 import { Check, ChevronDown, Search, X } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 
+import { placeGuidedSelect } from './guided-select-position.js';
 import { presentStoredText } from './safe-presentation.js';
 
 export interface GuidedSelectOption {
@@ -41,6 +43,8 @@ export default function GuidedSelect({
   const listboxId = `${inputId}-listbox`;
   const statusId = `${inputId}-status`;
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const controlRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -59,6 +63,33 @@ export default function GuidedSelect({
     return choices.filter((option) => normalizeSearch(`${option.label} ${option.searchText ?? ''} ${option.value}`).includes(needle));
   }, [choices, query]);
   const canClear = (clearable ?? Boolean(allLabel)) && Boolean(value);
+  const supportsNativePopover = typeof HTMLElement !== 'undefined'
+    && typeof HTMLElement.prototype.showPopover === 'function';
+
+  const positionPopover = useCallback(() => {
+    const control = controlRef.current;
+    const popover = popoverRef.current;
+    if (!control || !popover) return;
+    const trigger = control.getBoundingClientRect();
+    const visual = window.visualViewport;
+    const placement = placeGuidedSelect({
+      trigger,
+      viewport: visual
+        ? {
+            offsetLeft: visual.offsetLeft,
+            offsetTop: visual.offsetTop,
+            width: visual.width,
+            height: visual.height,
+          }
+        : { offsetLeft: 0, offsetTop: 0, width: window.innerWidth, height: window.innerHeight },
+      contentHeight: popover.scrollHeight + popover.offsetHeight - popover.clientHeight,
+    });
+    popover.style.left = `${placement.left}px`;
+    popover.style.top = `${placement.top}px`;
+    popover.style.width = `${placement.width}px`;
+    popover.style.setProperty('--guided-select-max-height', `${placement.maxHeight}px`);
+    popover.dataset.placement = placement.placement;
+  }, []);
 
   useEffect(() => {
     if (!open) setQuery(selected.label);
@@ -73,11 +104,69 @@ export default function GuidedSelect({
   useEffect(() => {
     if (!open) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
+    };
+    const closeOnKeyboardExit = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' && event.key !== 'Escape') return;
+      setOpen(false);
+      setQuery(selected.label);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [open]);
+    document.addEventListener('keydown', closeOnKeyboardExit, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnKeyboardExit, true);
+    };
+  }, [open, selected.label]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const popover = popoverRef.current;
+    const control = controlRef.current;
+    if (!popover || !control) return;
+    let frame: number | null = null;
+    const schedulePosition = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        positionPopover();
+      });
+    };
+
+    if (supportsNativePopover) {
+      try {
+        popover.showPopover();
+      } catch {
+        popover.removeAttribute('popover');
+      }
+    }
+    positionPopover();
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedulePosition);
+    resizeObserver?.observe(control);
+    resizeObserver?.observe(popover);
+    window.addEventListener('resize', schedulePosition);
+    window.addEventListener('scroll', schedulePosition, true);
+    window.visualViewport?.addEventListener('resize', schedulePosition);
+    window.visualViewport?.addEventListener('scroll', schedulePosition);
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', schedulePosition);
+      window.removeEventListener('scroll', schedulePosition, true);
+      window.visualViewport?.removeEventListener('resize', schedulePosition);
+      window.visualViewport?.removeEventListener('scroll', schedulePosition);
+      if (supportsNativePopover && popover.matches(':popover-open')) popover.hidePopover();
+    };
+  }, [open, positionPopover, supportsNativePopover]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(positionPopover);
+    return () => window.cancelAnimationFrame(frame);
+  }, [filteredChoices.length, loading, open, positionPopover]);
 
   const openChoices = () => {
     if (disabled) return;
@@ -91,7 +180,7 @@ export default function GuidedSelect({
     setOpen(false);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (disabled) return;
     if (event.key === 'Escape') {
       setOpen(false);
@@ -126,7 +215,7 @@ export default function GuidedSelect({
   return (
     <div ref={rootRef} className="guided-select" data-open={open || undefined}>
       <label htmlFor={inputId}>{label}</label>
-      <div className="guided-select-control">
+      <div ref={controlRef} className="guided-select-control">
         <Search size={14} aria-hidden="true" />
         <input
           id={inputId}
@@ -145,7 +234,8 @@ export default function GuidedSelect({
           onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
           onKeyDown={onKeyDown}
           onBlur={() => window.setTimeout(() => {
-            if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
+            const active = document.activeElement;
+            if (!rootRef.current?.contains(active) && !popoverRef.current?.contains(active)) setOpen(false);
           }, 0)}
         />
         {canClear
@@ -153,8 +243,13 @@ export default function GuidedSelect({
           : <ChevronDown size={15} aria-hidden="true" />}
       </div>
 
-      {open && (
-        <div className="guided-select-popover">
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          className="guided-select-popover"
+          data-guided-select-layer="true"
+          popover={supportsNativePopover ? 'manual' : undefined}
+        >
           <div id={listboxId} role="listbox" aria-label={`${label} choices`}>
             {loading && <div className="guided-select-message">Loading choices…</div>}
             {!loading && filteredChoices.length === 0 && <div className="guided-select-message">{emptyMessage}</div>}
@@ -175,7 +270,8 @@ export default function GuidedSelect({
               </button>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       <span id={statusId} className="visually-hidden" aria-live="polite">{status}</span>
     </div>

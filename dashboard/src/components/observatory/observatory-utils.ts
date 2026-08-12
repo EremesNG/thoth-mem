@@ -8,17 +8,17 @@ export function nodeIdToObservationId(nodeId: string | null): number | null {
 }
 
 export function scopeToMapParams(scope: ObservatoryScope): {
-  project?: string;
-  session_id?: string;
-  topic_key?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
   type?: ObservatoryScope['type'];
   relation?: string;
   query?: string;
 } {
   return {
-    project: scope.project,
-    session_id: scope.session_id,
-    topic_key: scope.topic_key,
+    project_token: scope.project_token,
+    session_token: scope.session_token,
+    topic_token: scope.topic_token,
     type: scope.type ?? scope.observation_type,
     relation: scope.relation,
     query: scope.query,

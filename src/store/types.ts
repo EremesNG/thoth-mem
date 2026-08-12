@@ -670,6 +670,38 @@ export interface VizSliceRequest {
   cursor?: string;
 }
 
+export interface VizGraphPageRequest {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  page_size?: number;
+  cursor?: string;
+}
+
+export type VizGraphPageErrorCode =
+  | 'VIZ_GRAPH_CURSOR_INVALID'
+  | 'VIZ_GRAPH_GENERATION_STALE';
+
+export interface VizGraphPageErrorBody {
+  error: string;
+  code: VizGraphPageErrorCode;
+  retryable: boolean;
+}
+
+export class VizGraphPageError extends Error {
+  readonly retryable: boolean;
+
+  constructor(readonly code: VizGraphPageErrorCode, message: string) {
+    super(message);
+    this.name = 'VizGraphPageError';
+    this.retryable = code === 'VIZ_GRAPH_GENERATION_STALE';
+  }
+}
+
 export interface VizExpandRequest {
   node_id: string;
   project?: string;
@@ -766,6 +798,216 @@ export interface VizSliceResponse {
   continuation: string | null;
   truncated: boolean;
   health: VizHealthResponse;
+}
+
+export type VizGraphPageResponse = VizSliceResponse;
+
+export type AtlasLevel = 'universe' | 'community' | 'neighborhood';
+export type AtlasCoverageState = 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+export type AtlasFacetKind = 'project' | 'session' | 'topic';
+
+export interface AtlasFacetRef {
+  kind: AtlasFacetKind;
+  token: string;
+  label: string;
+}
+
+export interface AtlasFacetOption extends AtlasFacetRef {
+  count: number;
+}
+
+export interface AtlasTokenScope {
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  relation: string | null;
+  query: string | null;
+  time_from: string | null;
+  time_to: string | null;
+}
+
+export interface SemanticObservatoryContextRequest {
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  query?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  time_from?: string;
+  time_to?: string;
+}
+
+export interface SemanticObservatoryContextResponse {
+  scope: AtlasTokenScope;
+  context_token: string;
+  health: VizHealthResponse;
+  capabilities: {
+    viz_fallback_available: boolean;
+    observatory_routes_available: boolean;
+  };
+}
+
+export interface TokenSafeObservatoryRecallHit {
+  observation_id: number;
+  title: string;
+  preview: string;
+  type: ObservationType;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  community_id: string;
+  created_at: string;
+  lane: ObservatoryLane;
+  pivot_token: string;
+}
+
+export interface TokenSafeObservatoryRecallResponse {
+  context_token: string;
+  lanes: Record<ObservatoryLane, TokenSafeObservatoryRecallHit[]>;
+  lane_states?: Partial<Record<ObservatoryLane, {
+    status: ObservatoryLaneStateStatus;
+    reason: ObservatoryLaneStateReason;
+  }>>;
+}
+
+export interface AtlasPivotLocation {
+  context_token: string;
+  scope: AtlasTokenScope;
+  focus_node_id: `obs:${number}`;
+  community_id: string;
+  target: ObservatoryPivotTarget;
+}
+
+export interface SemanticAtlasPageRequest {
+  level?: AtlasLevel;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  community_id?: string;
+  focus_node_id?: string;
+  depth?: 1 | 2;
+  page_size?: number;
+  cursor?: string;
+}
+
+export type SemanticAtlasNodeKind =
+  | 'community'
+  | 'observation'
+  | 'fact'
+  | 'session'
+  | 'project'
+  | 'topic';
+
+export interface SemanticAtlasNode {
+  id: string;
+  kind: SemanticAtlasNodeKind;
+  label: string;
+  snippet: string;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  community_id: string | null;
+  member_count: number | null;
+  project_count: number | null;
+  unclustered: boolean;
+  seed_x: number;
+  seed_y: number;
+}
+
+export interface SemanticAtlasEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  kind: 'aggregate' | 'semantic' | 'fact' | 'metadata';
+  relation: string;
+  label: string;
+  summary: string;
+  weight: number;
+  evidence_count: number;
+}
+
+export interface SemanticAtlasCounts {
+  memory_count: number;
+  project_count: number;
+  community_count: number;
+  assigned_memory_count: number;
+  unclustered_memory_count: number;
+  supporting_entity_count: number;
+  relationship_count: number;
+  raw_entity_count: number;
+  raw_relationship_count: number;
+}
+
+export interface SemanticAtlasPageResponse {
+  level: AtlasLevel;
+  generation: string;
+  nodes: SemanticAtlasNode[];
+  edges: SemanticAtlasEdge[];
+  counts: SemanticAtlasCounts;
+  coverage: {
+    state: AtlasCoverageState;
+    projection_source: 'deterministic-kg' | 'deterministic-unclustered';
+    summary_state: AtlasCoverageState;
+    observations_with_kg: number;
+    observations_without_kg: number;
+    degraded_reasons: string[];
+  };
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: ObservationType[];
+    relations: string[];
+  };
+  navigation: {
+    community_id: string | null;
+    focus_node_id: string | null;
+    depth: 1 | 2 | null;
+    omitted_nodes: number;
+    omitted_edges: number;
+    raw_rich_render_safe: boolean;
+    raw_rich_render_limit: number;
+    scope: {
+      project: AtlasFacetRef | null;
+      session: AtlasFacetRef | null;
+      topic: AtlasFacetRef | null;
+      type: ObservationType | null;
+      relation: string | null;
+    };
+  };
+  continuation: string | null;
+  truncated: boolean;
+  health: VizHealthResponse;
+}
+
+export type SemanticAtlasErrorCode =
+  | 'VIZ_ATLAS_CURSOR_INVALID'
+  | 'VIZ_ATLAS_GENERATION_STALE'
+  | 'VIZ_ATLAS_LEVEL_INVALID'
+  | 'VIZ_ATLAS_FACET_INVALID'
+  | 'VIZ_ATLAS_COMMUNITY_GONE'
+  | 'VIZ_ATLAS_FOCUS_INVALID';
+
+export class SemanticAtlasError extends Error {
+  readonly retryable: boolean;
+  readonly recover_to_level?: AtlasLevel;
+
+  constructor(code: SemanticAtlasErrorCode, message: string, recoverToLevel?: AtlasLevel) {
+    super(message);
+    this.name = 'SemanticAtlasError';
+    this.code = code;
+    this.retryable = code === 'VIZ_ATLAS_GENERATION_STALE';
+    this.recover_to_level = recoverToLevel;
+  }
+
+  readonly code: SemanticAtlasErrorCode;
 }
 
 export interface VizInspectNodeResponse {

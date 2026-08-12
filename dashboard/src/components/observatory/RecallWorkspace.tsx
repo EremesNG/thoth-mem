@@ -54,7 +54,7 @@ export default function RecallWorkspace({ recall, lanes, query, loading, onQuery
                       <strong>{presentStoredText(hit.title)}</strong>
                       <p>{presentMemorySummary(hit.preview) || 'No public preview available.'}</p>
                       <span className="observatory-provenance">
-                        {presentStoredText(hit.project) || 'Any project'} / {presentStoredText(hit.topic_key) || 'no topic'} / {new Date(hit.created_at).toLocaleDateString()}
+                        {presentStoredText(hit.project?.label) || 'Any project'} / {presentStoredText(hit.topic?.label) || 'no topic'} / {new Date(hit.created_at).toLocaleDateString()}
                       </span>
                     </div>
                     <div className="observatory-pivot-actions" aria-label={`Pivot actions for ${presentStoredText(hit.title)}`}>

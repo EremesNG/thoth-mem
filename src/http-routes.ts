@@ -15,7 +15,7 @@ import type {
   VizExpandRequest,
   ObservatoryLane,
 } from './store/types.js';
-import { OBSERVATION_TYPES } from './store/types.js';
+import { OBSERVATION_TYPES, SemanticAtlasError, VizGraphPageError } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { metadataFromResolution, resolveSaveIdentity } from './store/identity.js';
@@ -1020,6 +1020,111 @@ export async function handleVizSlice(store: Store, request: HttpRouteRequest): P
   };
 }
 
+export async function handleVizGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const pageSize = parseOptionalInteger(request.query.get('page_size'), 'page_size', 1);
+  if (pageSize !== undefined && pageSize > 250) {
+    throw new HttpRouteError(400, 'Invalid integer field: page_size');
+  }
+  try {
+    return {
+      status: 200,
+      body: store.getVisualizationGraphPage({
+        project: request.query.get('project') ?? undefined,
+        session_id: request.query.get('session_id') ?? undefined,
+        topic_key: request.query.get('topic_key') ?? undefined,
+        type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
+        observation_type: parseObservationType(
+          request.query.get('observation_type') ?? undefined,
+          'observation_type',
+        ),
+        relation: request.query.get('relation') ?? undefined,
+        query: request.query.get('query') ?? undefined,
+        page_size: pageSize,
+        cursor: request.query.get('cursor') ?? undefined,
+      }),
+    };
+  } catch (error) {
+    if (!(error instanceof VizGraphPageError)) throw error;
+    throw new HttpRouteError(
+      error.code === 'VIZ_GRAPH_GENERATION_STALE' ? 409 : 400,
+      error.message,
+      {
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+      },
+    );
+  }
+}
+
+function toSemanticAtlasHttpError(error: SemanticAtlasError): HttpRouteError {
+  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE' || error.code === 'VIZ_ATLAS_COMMUNITY_GONE'
+    ? 409
+    : error.code === 'VIZ_ATLAS_FOCUS_INVALID'
+      ? 404
+      : 400;
+  return new HttpRouteError(status, error.message, {
+    error: error.message,
+    code: error.code,
+    retryable: error.retryable,
+    ...(error.recover_to_level ? { recover_to_level: error.recover_to_level } : {}),
+  });
+}
+
+export async function handleVizAtlas(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  if (request.query.has('project') || request.query.has('session_id') || request.query.has('topic_key')) {
+    throw new HttpRouteError(400, 'Raw facet values are not accepted by the semantic atlas.', {
+      error: 'Raw facet values are not accepted by the semantic atlas.',
+      code: 'VIZ_ATLAS_FACET_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  const level = request.query.get('level') ?? 'universe';
+  if (!['universe', 'community', 'neighborhood'].includes(level)) {
+    throw new HttpRouteError(400, 'Invalid field: level', {
+      error: 'Invalid field: level',
+      code: 'VIZ_ATLAS_LEVEL_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  const pageSize = parseOptionalInteger(request.query.get('page_size'), 'page_size', 1);
+  if (pageSize !== undefined && pageSize > 250) {
+    throw new HttpRouteError(400, 'Invalid integer field: page_size');
+  }
+  const parsedDepth = parseOptionalInteger(request.query.get('depth'), 'depth', 1);
+  if (parsedDepth !== undefined && parsedDepth !== 1 && parsedDepth !== 2) {
+    throw new HttpRouteError(400, 'Invalid integer field: depth');
+  }
+  try {
+    return {
+      status: 200,
+      body: store.getSemanticAtlasPage({
+        level: level as 'universe' | 'community' | 'neighborhood',
+        project_token: request.query.get('project_token') ?? undefined,
+        session_token: request.query.get('session_token') ?? undefined,
+        topic_token: request.query.get('topic_token') ?? undefined,
+        type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
+        observation_type: parseObservationType(
+          request.query.get('observation_type') ?? undefined,
+          'observation_type',
+        ),
+        relation: request.query.get('relation') ?? undefined,
+        query: request.query.get('query') ?? undefined,
+        community_id: request.query.get('community_id') ?? undefined,
+        focus_node_id: request.query.get('focus_node_id') ?? undefined,
+        depth: parsedDepth as 1 | 2 | undefined,
+        page_size: pageSize,
+        cursor: request.query.get('cursor') ?? undefined,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
+    throw error;
+  }
+}
+
 export async function handleVizExpand(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const type = parseObservationType(body?.type, 'type');
@@ -1068,12 +1173,21 @@ export async function handleVizHealth(store: Store, request: HttpRouteRequest): 
 }
 
 export async function handleObservatoryContext(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  if (request.query.has('project') || request.query.has('session_id') || request.query.has('topic_key')) {
+    throw new HttpRouteError(400, 'Raw facet values are not accepted by the semantic Observatory.', {
+      error: 'Raw facet values are not accepted by the semantic Observatory.',
+      code: 'VIZ_ATLAS_FACET_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  try {
   return {
     status: 200,
-    body: store.getObservatoryContext({
-      project: request.query.get('project') ?? undefined,
-      session_id: request.query.get('session_id') ?? undefined,
-      topic_key: request.query.get('topic_key') ?? undefined,
+    body: store.getSemanticObservatoryContext({
+      project_token: request.query.get('project_token') ?? undefined,
+      session_token: request.query.get('session_token') ?? undefined,
+      topic_token: request.query.get('topic_token') ?? undefined,
       query: request.query.get('query') ?? undefined,
       relation: request.query.get('relation') ?? undefined,
       type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
@@ -1082,6 +1196,10 @@ export async function handleObservatoryContext(store: Store, request: HttpRouteR
       time_to: request.query.get('time_to') ?? undefined,
     }),
   };
+  } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
+    throw error;
+  }
 }
 
 export async function handleObservatoryRecall(store: Store, request: HttpRouteRequest, context: HttpRouteContext): Promise<HttpRouteResponse> {
@@ -1090,7 +1208,7 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
   try {
     return {
       status: 200,
-      body: await store.getObservatoryRecall({
+      body: await store.getSemanticObservatoryRecall({
         context_token: contextToken,
         lanes: parseObservatoryLanes(request.query.get('lanes')),
         limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
@@ -1099,6 +1217,7 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
       }),
     };
   } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
     if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
       throw new HttpRouteError(400, error.message);
     }
@@ -1115,12 +1234,13 @@ export async function handleObservatoryPivot(store: Store, request: HttpRouteReq
   try {
     return {
       status: 200,
-      body: store.resolveObservatoryPivot({
+      body: store.resolveSemanticObservatoryPivot({
         pivot_token: requireString(body?.pivot_token, 'pivot_token'),
         target: target as 'map' | 'timeline' | 'ledger' | 'recall',
       }),
     };
   } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
     if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
       throw new HttpRouteError(400, error.message);
     }

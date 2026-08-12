@@ -301,17 +301,130 @@ export interface VizHealthResponse {
     recent_errors: Array<{ id: number; job_key: string; kind: string; state: string; attempt_count: number; last_error: string | null }>;
   };
 }
-export interface VizNode { id: string; kind: 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; }
-export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'semantic' | 'metadata' | 'fact'; label: string; summary: string; }
+export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
+export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'aggregate' | 'semantic' | 'metadata' | 'fact'; label: string; summary: string; weight?: number; evidence_count?: number; }
 export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }
+export interface VizGraphPageRequest {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  page_size?: number;
+  cursor?: string;
+}
+export type VizGraphPageResponse = VizSliceResponse;
+export type AtlasLevel = 'universe' | 'community' | 'neighborhood';
+export type AtlasFacetKind = 'project' | 'session' | 'topic';
+export interface AtlasFacetRef { kind: AtlasFacetKind; token: string; label: string; }
+export interface AtlasFacetOption extends AtlasFacetRef { count: number; }
+export interface AtlasTokenScope {
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  relation: string | null;
+  query: string | null;
+  time_from: string | null;
+  time_to: string | null;
+}
+export interface SemanticAtlasPageRequest {
+  level?: AtlasLevel;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  community_id?: string;
+  focus_node_id?: string;
+  depth?: 1 | 2;
+  page_size?: number;
+  cursor?: string;
+}
+export interface SemanticAtlasNode {
+  id: string;
+  kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic';
+  label: string;
+  snippet: string;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  community_id: string | null;
+  member_count: number | null;
+  project_count: number | null;
+  unclustered: boolean;
+  seed_x: number;
+  seed_y: number;
+}
+export interface SemanticAtlasEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  kind: 'aggregate' | 'semantic' | 'fact' | 'metadata';
+  relation: string;
+  label: string;
+  summary: string;
+  weight: number;
+  evidence_count: number;
+}
+export interface SemanticAtlasPageResponse {
+  level: AtlasLevel;
+  generation: string;
+  nodes: SemanticAtlasNode[];
+  edges: SemanticAtlasEdge[];
+  counts: {
+    memory_count: number;
+    project_count: number;
+    community_count: number;
+    assigned_memory_count: number;
+    unclustered_memory_count: number;
+    supporting_entity_count: number;
+    relationship_count: number;
+    raw_entity_count: number;
+    raw_relationship_count: number;
+  };
+  coverage: {
+    state: 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+    projection_source: 'deterministic-kg' | 'deterministic-unclustered';
+    summary_state: 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+    observations_with_kg: number;
+    observations_without_kg: number;
+    degraded_reasons: string[];
+  };
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: ObservationType[];
+    relations: string[];
+  };
+  navigation: {
+    community_id: string | null;
+    focus_node_id: string | null;
+    depth: 1 | 2 | null;
+    omitted_nodes: number;
+    omitted_edges: number;
+    raw_rich_render_safe: boolean;
+    raw_rich_render_limit: number;
+    scope: { project: AtlasFacetRef | null; session: AtlasFacetRef | null; topic: AtlasFacetRef | null; type: ObservationType | null; relation: string | null };
+  };
+  continuation: string | null;
+  truncated: boolean;
+  health: VizHealthResponse;
+}
 export interface VizInspectNodeResponse { id: string; kind: VizNode['kind']; label: string; snippet: string; metadata: Record<string, unknown>; links: string[]; }
 export interface VizInspectEdgeResponse { id: string; source_id: string; target_id: string; relation: string; label: string; summary: string; }
 export interface VizFiltersResponse { projects: string[]; sessions: string[]; topic_keys: string[]; types: ObservationType[]; relations: string[]; }
 export type ObservatoryLane = 'lexical' | 'sentence-vector' | 'chunk-vector' | 'fact-kg';
 export interface ObservatoryScope {
-  project?: string;
-  session_id?: string;
-  topic_key?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
   query?: string;
   type?: ObservationType;
   observation_type?: ObservationType;
@@ -320,7 +433,7 @@ export interface ObservatoryScope {
   time_to?: string;
 }
 export interface ObservatoryContextResponse {
-  scope: ObservatoryScope;
+  scope: AtlasTokenScope;
   context_token: string;
   health: VizHealthResponse;
   capabilities: { viz_fallback_available: boolean; observatory_routes_available: boolean };
@@ -330,9 +443,10 @@ export interface ObservatoryRecallHit {
   title: string;
   preview: string;
   type: ObservationType;
-  project: string | null;
-  session_id: string;
-  topic_key: string | null;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  community_id: string;
   created_at: string;
   lane: ObservatoryLane;
   pivot_token: string;
@@ -343,8 +457,9 @@ export interface ObservatoryRecallResponse {
 }
 export interface ObservatoryPivotResponse {
   context_token: string;
-  scope: ObservatoryScope;
+  scope: AtlasTokenScope;
   focus_node_id: string;
+  community_id: string;
   target: 'map' | 'timeline' | 'ledger' | 'recall';
 }
 export interface ObservatoryFrontierState {
@@ -688,6 +803,46 @@ export const api = {
     ).then(normalizeProjectGraphResponse);
   },
 
+  getVizGraphPage: (
+    params: VizGraphPageRequest = {},
+    signal?: AbortSignal,
+  ): Promise<VizGraphPageResponse> => {
+    const query = new URLSearchParams();
+    if (params.project) query.append('project', params.project);
+    if (params.session_id) query.append('session_id', params.session_id);
+    if (params.topic_key) query.append('topic_key', params.topic_key);
+    if (params.type) query.append('type', params.type);
+    if (params.observation_type) query.append('observation_type', params.observation_type);
+    if (params.relation) query.append('relation', params.relation);
+    if (params.query) query.append('query', params.query);
+    if (params.page_size !== undefined) query.append('page_size', String(params.page_size));
+    if (params.cursor) query.append('cursor', params.cursor);
+    const queryString = query.toString();
+    return apiFetch<VizGraphPageResponse>(`/viz/graph${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getSemanticAtlasPage: (
+    params: SemanticAtlasPageRequest = {},
+    signal?: AbortSignal,
+  ): Promise<SemanticAtlasPageResponse> => {
+    const query = new URLSearchParams();
+    if (params.level) query.append('level', params.level);
+    if (params.project_token) query.append('project_token', params.project_token);
+    if (params.session_token) query.append('session_token', params.session_token);
+    if (params.topic_token) query.append('topic_token', params.topic_token);
+    if (params.type) query.append('type', params.type);
+    if (params.observation_type) query.append('observation_type', params.observation_type);
+    if (params.relation) query.append('relation', params.relation);
+    if (params.query) query.append('query', params.query);
+    if (params.community_id) query.append('community_id', params.community_id);
+    if (params.focus_node_id) query.append('focus_node_id', params.focus_node_id);
+    if (params.depth !== undefined) query.append('depth', String(params.depth));
+    if (params.page_size !== undefined) query.append('page_size', String(params.page_size));
+    if (params.cursor) query.append('cursor', params.cursor);
+    const queryString = query.toString();
+    return apiFetch<SemanticAtlasPageResponse>(`/viz/atlas${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
   getVizSlice: (
     params?: { project?: string; session_id?: string; topic_key?: string; type?: ObservationType; observation_type?: ObservationType; relation?: string; query?: string; depth?: number; max_nodes?: number; max_edges?: number; cursor?: string },
     signal?: AbortSignal
@@ -751,9 +906,9 @@ export const api = {
 
   getObservatoryContext: (params?: ObservatoryScope, signal?: AbortSignal): Promise<ObservatoryContextResponse> => {
     const query = new URLSearchParams();
-    if (params?.project) query.append('project', params.project);
-    if (params?.session_id) query.append('session_id', params.session_id);
-    if (params?.topic_key) query.append('topic_key', params.topic_key);
+    if (params?.project_token) query.append('project_token', params.project_token);
+    if (params?.session_token) query.append('session_token', params.session_token);
+    if (params?.topic_token) query.append('topic_token', params.topic_token);
     if (params?.query) query.append('query', params.query);
     if (params?.type) query.append('type', params.type);
     if (params?.observation_type) query.append('observation_type', params.observation_type);

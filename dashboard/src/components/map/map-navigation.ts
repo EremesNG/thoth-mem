@@ -31,6 +31,17 @@ export function connectedNodeIds(focusId: string | null, nodes: VizNode[], edges
   return [focusId, ...(buildAdjacency(nodes, edges).get(focusId) ?? [])];
 }
 
+export function connectedObservationIds(focusId: string | null, nodes: VizNode[], edges: VizEdge[]): string[] {
+  const memories = nodes.filter((node) => node.kind === 'observation');
+  const memoryIds = new Set(memories.map((node) => node.id));
+  const memoryFocusId = focusId && memoryIds.has(focusId) ? focusId : null;
+  return connectedNodeIds(
+    memoryFocusId,
+    memories,
+    edges.filter((edge) => memoryIds.has(edge.source_id) && memoryIds.has(edge.target_id)),
+  );
+}
+
 export type NodeEmphasis = 'focused' | 'neighbor' | 'unrelated' | 'default' | 'degraded';
 
 export function nodeEmphasis(nodeId: string, focusId: string | null, edges: VizEdge[], health: VizSemanticState): NodeEmphasis {
