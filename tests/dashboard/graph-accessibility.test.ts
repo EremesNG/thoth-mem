@@ -53,7 +53,7 @@ describe('graph accessibility facilities', () => {
           community_id: communityId,
           focus_node_id: row.dataset.nodeId,
           depth: '2',
-          page_size: '250',
+          page_size: '180',
         });
         const response = await fetch('/viz/atlas?' + query.toString()).then((value) => value.json());
         const node = response.nodes?.find((candidate) => candidate.id === row.dataset.nodeId);
@@ -258,9 +258,11 @@ describe('graph accessibility facilities', () => {
       if ((pointerPosition as { hit?: string }).hit !== 'canvas') throw new Error(`Pointer target obscured: ${JSON.stringify(pointerPosition)}`);
       await browser.mouseMove(pointerPosition.clientX, pointerPosition.clientY);
       await browser.waitFor(`Boolean(document.querySelector('.cosmos-point-tooltip')?.textContent)`);
+      const clickedPointId = await browser.attribute('[data-testid="map-canvas"]', 'data-pointer-probe-id');
+      expect(clickedPointId).toBeTruthy();
       await browser.mouseClick(pointerPosition.clientX, pointerPosition.clientY);
-      await browser.waitFor(`new URLSearchParams(location.search).has('focus')`);
-      const pointerFocus = await browser.evaluate<string>(`new URLSearchParams(location.search).get('focus') ?? ''`);
+      await browser.waitFor(`new URLSearchParams(location.search).get('focus') === ${JSON.stringify(clickedPointId)} && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === ${JSON.stringify(clickedPointId)} && document.querySelector('.graph-navigator li[data-node-id=${JSON.stringify(clickedPointId)}]') && document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true'`);
+      const pointerFocus = clickedPointId!;
       await browser.click('button[title="Pause or resume (P)"]');
 
       await browser.click('button[title="Expand selected memory (E)"]');
@@ -305,8 +307,9 @@ describe('graph accessibility facilities', () => {
       await browser.waitFor(`[...document.querySelectorAll('.graph-navigator li > button:first-child')].some((button)=>button.textContent?.includes('Learned fact:'))`);
       await browser.clickText('.graph-navigator li > button:first-child','Learned fact:'); await browser.waitFor(`document.querySelector('.memory-overview .node-kind')?.getAttribute('data-node-kind') === 'fact'`);
       expect(await browser.text('.memory-overview')).toContain('Learned fact'); expect(browser.requests.filter((request)=>request.url.includes('/viz/inspect/node/fact:'))).toHaveLength(0);
-      await browser.goto('/'); await enterNeighborhood(browser); await browser.click('button[title="Clear focus (Escape)"]'); expect(await focusText()).toContain('whole universe');
+      await browser.goto('/'); await enterNeighborhood(browser); await browser.click('button[title="Clear focus (Escape)"]');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelectorAll('.graph-navigator li').length > 1`, 30_000);
+      expect(await focusText()).toContain('whole universe');
       await browser.clickText('.graph-navigator li > button:first-child','Browser memory 1');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'neighborhood' && document.querySelector('.observatory-context-strip span:nth-child(4)')?.textContent?.includes('Browser memory 1')`, 30_000);
       for (const key of ['0','+','-','r','p','h','j','k','l']) await browser.key(key);

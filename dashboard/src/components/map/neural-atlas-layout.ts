@@ -5,7 +5,6 @@ const MIN_CLUSTER_DISTANCE = 420;
 const WORLD_CENTER = 2_048;
 const UNIVERSE_WIDTH = 1_120;
 const UNIVERSE_HEIGHT = 700;
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 export type NeuralAtlasLayoutLevel = 'universe' | 'community' | 'neighborhood' | 'raw';
 
@@ -59,6 +58,7 @@ export function buildNeuralAtlasLayout(
   nodes: NeuralAtlasLayoutNode[],
   links: Array<readonly [number, number]>,
   level: NeuralAtlasLayoutLevel = 'raw',
+  focusIndex?: number,
 ): NeuralAtlasLayout {
   if (nodes.length === 0) {
     return {
@@ -94,13 +94,22 @@ export function buildNeuralAtlasLayout(
   const naturalAspect = seedHeight > 0 ? seedWidth / seedHeight : seedWidth > 0 ? 4 : 1;
   const rawLayout = level === 'universe'
     ? layoutUniverseNetwork(nodes, links)
+    : level === 'neighborhood'
+    ? layoutNeighborhoodSupport(nodes, links, focusIndex)
     : communityIndices.length > 1
-    ? layoutCommunityConstellations(nodes, communityIndices, naturalAspect)
+    ? layoutCommunityConstellations(nodes, links, communityIndices, naturalAspect)
     : layoutNaturalSeeds(nodes, seeds, seedWidth, seedHeight, seedLongAxis, seedMinX, seedMaxX, seedMinY, seedMaxY);
   const rawExtent = worldExtent(rawLayout.positions, nodes.length, communityIndices.length);
   // Cosmos simulates inside a positive world; centering here prevents negative coordinates clamping to its axes.
-  const offsetX = WORLD_CENTER - (rawExtent.minX + rawExtent.maxX) / 2;
-  const offsetY = WORLD_CENTER - (rawExtent.minY + rawExtent.maxY) / 2;
+  const centeredNode = level === 'neighborhood' && focusIndex !== undefined && nodes[focusIndex]
+    ? focusIndex
+    : null;
+  const offsetX = WORLD_CENTER - (centeredNode === null
+    ? (rawExtent.minX + rawExtent.maxX) / 2
+    : rawLayout.positions[centeredNode * 2]!);
+  const offsetY = WORLD_CENTER - (centeredNode === null
+    ? (rawExtent.minY + rawExtent.maxY) / 2
+    : rawLayout.positions[centeredNode * 2 + 1]!);
   const positions = rawLayout.positions.map((value, index) => value + (index % 2 === 0 ? offsetX : offsetY));
   const centerByCommunity = new Map(
     [...rawLayout.centers].map(([community, center]): [number, [number, number]] => [
@@ -124,6 +133,7 @@ export function buildNeuralAtlasLayout(
   }
   const clusterStrengths = nodes.map((node, index) => {
     if (level === 'universe') return 0;
+    if (level === 'neighborhood') return 0.42;
     const degree = Math.max(node.degree, linkedDegrees[index]);
     return 0.035 + Math.min(0.075, Math.sqrt(Math.max(0, degree)) * 0.018);
   });
@@ -136,6 +146,75 @@ export function buildNeuralAtlasLayout(
   };
 }
 
+function layoutNeighborhoodSupport(
+  nodes: NeuralAtlasLayoutNode[],
+  links: Array<readonly [number, number]>,
+  focusIndex?: number,
+): { positions: number[]; centers: Map<number, [number, number]> } {
+  const neighbors = nodes.map(() => new Set<number>());
+  for (const [source, target] of links) {
+    if (!nodes[source] || !nodes[target] || source === target) continue;
+    neighbors[source]!.add(target);
+    neighbors[target]!.add(source);
+  }
+  const hub = focusIndex !== undefined && nodes[focusIndex]
+    ? focusIndex
+    : nodes.map((_node, index) => index).sort((left, right) =>
+    neighbors[right]!.size - neighbors[left]!.size
+    || nodes[right]!.degree - nodes[left]!.degree
+    || nodes[left]!.id.localeCompare(nodes[right]!.id))[0] ?? 0;
+  const depth = Array.from({ length: nodes.length }, () => Number.POSITIVE_INFINITY);
+  const parent = Array.from({ length: nodes.length }, () => -1);
+  depth[hub] = 0;
+  const queue = [hub];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const current = queue[cursor]!;
+    for (const next of [...neighbors[current]!].sort((left, right) => nodes[left]!.id.localeCompare(nodes[right]!.id))) {
+      if (Number.isFinite(depth[next])) continue;
+      depth[next] = depth[current]! + 1;
+      parent[next] = current;
+      queue.push(next);
+    }
+  }
+  const maximumConnectedDepth = Math.max(0, ...depth.filter(Number.isFinite));
+  const rings = new Map<number, number[]>();
+  nodes.forEach((_node, index) => {
+    const ring = Number.isFinite(depth[index]) ? depth[index]! : maximumConnectedDepth + 1;
+    const members = rings.get(ring) ?? [];
+    members.push(index);
+    rings.set(ring, members);
+  });
+  const positions = Array.from({ length: nodes.length * 2 }, () => 0);
+  const angleByNode = Array.from({ length: nodes.length }, () => 0);
+  const firstHop = [...(neighbors[hub] ?? [])].sort((left, right) => (
+    neighbors[right]!.size - neighbors[left]!.size || nodes[left]!.id.localeCompare(nodes[right]!.id)
+  ));
+  const firstHopAngle = new Map(firstHop.map((nodeIndex, rank) => [
+    nodeIndex,
+    rank / Math.max(1, firstHop.length) * Math.PI * 2 + stableUnit(nodes[nodeIndex]!.id, 'focus-branch') * 0.08,
+  ]));
+  for (const [ring, members] of [...rings].sort(([left], [right]) => left - right)) {
+    members.sort((left, right) => nodes[right]!.degree - nodes[left]!.degree || nodes[left]!.id.localeCompare(nodes[right]!.id));
+    if (ring === 0) continue;
+    const radius = ring === 1 ? 78 + Math.sqrt(members.length) * 4
+      : ring === 2 ? 146 + Math.sqrt(members.length) * 3
+      : 176 + Math.min(34, (ring - 3) * 5);
+    members.forEach((nodeIndex, rank) => {
+      const parentAngle = parent[nodeIndex] >= 0 ? angleByNode[parent[nodeIndex]!] : rank / members.length * Math.PI * 2;
+      const angle = ring === 1
+        ? firstHopAngle.get(nodeIndex) ?? parentAngle
+        : parentAngle + (stableUnit(nodes[nodeIndex]!.id, `support-branch:${ring}`) - 0.5) * (ring === 2 ? 0.34 : 0.2);
+      angleByNode[nodeIndex] = angle;
+      positions[nodeIndex * 2] = Math.cos(angle) * radius;
+      positions[nodeIndex * 2 + 1] = Math.sin(angle) * radius;
+    });
+  }
+  return {
+    positions,
+    centers: new Map([...new Set(nodes.map((node) => node.community))].map((community) => [community, [0, 0]])),
+  };
+}
+
 function layoutUniverseNetwork(
   nodes: NeuralAtlasLayoutNode[],
   links: Array<readonly [number, number]>,
@@ -144,11 +223,13 @@ function layoutUniverseNetwork(
     .map((_node, index) => index)
     .sort((left, right) => nodes[left].id.localeCompare(nodes[right].id));
   const positions = Array.from({ length: nodes.length * 2 }, () => 0);
-  orderedIndices.forEach((nodeIndex, rank) => {
-    const normalizedRadius = Math.sqrt((rank + 0.7) / Math.max(1, nodes.length));
-    const phase = GOLDEN_ANGLE * rank + stableUnit(nodes[nodeIndex].id, 'universe-phase') * 0.34;
-    positions[nodeIndex * 2] = Math.cos(phase) * normalizedRadius * UNIVERSE_WIDTH * 0.46;
-    positions[nodeIndex * 2 + 1] = Math.sin(phase) * normalizedRadius * UNIVERSE_HEIGHT * 0.46;
+  orderedIndices.forEach((nodeIndex) => {
+    const id = nodes[nodeIndex].id;
+    const x = stableUnit(id, 'universe-field-x') * 2 - 1;
+    const y = stableUnit(id, 'universe-field-y') * 2 - 1;
+    const warp = stableUnit(id, 'universe-field-warp') * Math.PI * 2;
+    positions[nodeIndex * 2] = (x * 0.82 + Math.sin(warp + y * 2.4) * 0.18) * UNIVERSE_WIDTH * 0.44;
+    positions[nodeIndex * 2 + 1] = (y * 0.78 + Math.cos(warp + x * 2.1) * 0.22) * UNIVERSE_HEIGHT * 0.44;
   });
 
   const orderedLinks = links
@@ -175,7 +256,7 @@ function layoutUniverseNetwork(
           dy = Math.sin(phase) * 0.01;
         }
         const distance = Math.max(1, Math.hypot(dx, dy));
-        const force = (idealDistance * idealDistance) / distance;
+        const force = (idealDistance * idealDistance) / distance * 0.12;
         const forceX = dx / distance * force;
         const forceY = dy / distance * force;
         displacement[left * 2] += forceX;
@@ -188,7 +269,7 @@ function layoutUniverseNetwork(
       const dx = positions[source * 2] - positions[target * 2];
       const dy = positions[source * 2 + 1] - positions[target * 2 + 1];
       const distance = Math.max(1, Math.hypot(dx, dy));
-      const force = distance * distance / idealDistance * 0.18;
+      const force = distance * distance / idealDistance * 0.22;
       const forceX = dx / distance * force;
       const forceY = dy / distance * force;
       displacement[source * 2] -= forceX;
@@ -198,8 +279,8 @@ function layoutUniverseNetwork(
     }
     const temperature = 38 * (1 - iteration / 120) + 2;
     for (const nodeIndex of orderedIndices) {
-      displacement[nodeIndex * 2] -= positions[nodeIndex * 2] * 0.018;
-      displacement[nodeIndex * 2 + 1] -= positions[nodeIndex * 2 + 1] * 0.018;
+      displacement[nodeIndex * 2] -= positions[nodeIndex * 2] * 0.012;
+      displacement[nodeIndex * 2 + 1] -= positions[nodeIndex * 2 + 1] * 0.012;
       const dx = displacement[nodeIndex * 2];
       const dy = displacement[nodeIndex * 2 + 1];
       const distance = Math.max(1, Math.hypot(dx, dy));
@@ -282,6 +363,7 @@ function layoutNaturalSeeds(
 
 function layoutCommunityConstellations(
   nodes: NeuralAtlasLayoutNode[],
+  links: Array<readonly [number, number]>,
   communityIndices: number[],
   naturalAspect: number,
 ): { positions: number[]; centers: Map<number, [number, number]> } {
@@ -308,28 +390,77 @@ function layoutCommunityConstellations(
     centers.set(first, horizontal ? [-separation / 2, -separation * 0.18] : [-separation * 0.18, -separation / 2]);
     centers.set(second, horizontal ? [separation / 2, separation * 0.18] : [separation * 0.18, separation / 2]);
   } else {
-    centers.set(rankedCommunities[0], [0, 0]);
-    const orbiting = rankedCommunities.slice(1);
-    orbiting.forEach((community, index) => {
-      const angle = -Math.PI / 2 + (index / orbiting.length) * Math.PI * 2;
-      centers.set(community, [Math.cos(angle) * radiusX, Math.sin(angle) * radiusY]);
+    rankedCommunities.forEach((community, index) => {
+      const angle = index * 2.399963229728653 + stableUnit(`community:${community}`, 'field-angle') * 0.42;
+      const distance = Math.sqrt((index + 0.45) / rankedCommunities.length);
+      const driftX = (stableUnit(`community:${community}`, 'field-x') - 0.5) * radiusX * 0.16;
+      const driftY = (stableUnit(`community:${community}`, 'field-y') - 0.5) * radiusY * 0.16;
+      centers.set(community, [
+        Math.cos(angle) * radiusX * distance + driftX,
+        Math.sin(angle) * radiusY * distance + driftY,
+      ]);
     });
+  }
+
+  const bridgeWeights = new Map<string, number>();
+  for (const [source, target] of links) {
+    const sourceCommunity = nodes[source]?.community;
+    const targetCommunity = nodes[target]?.community;
+    if (sourceCommunity === undefined || targetCommunity === undefined || sourceCommunity === targetCommunity) continue;
+    const [left, right] = sourceCommunity < targetCommunity
+      ? [sourceCommunity, targetCommunity]
+      : [targetCommunity, sourceCommunity];
+    const key = `${left}:${right}`;
+    bridgeWeights.set(key, (bridgeWeights.get(key) ?? 0) + 1);
+  }
+  for (let iteration = 0; iteration < 90; iteration += 1) {
+    const movement = new Map(communityIndices.map((community) => [community, [0, 0] as [number, number]]));
+    for (let leftIndex = 0; leftIndex < rankedCommunities.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < rankedCommunities.length; rightIndex += 1) {
+        const left = rankedCommunities[leftIndex]!;
+        const right = rankedCommunities[rightIndex]!;
+        const leftCenter = centers.get(left)!;
+        const rightCenter = centers.get(right)!;
+        let dx = leftCenter[0] - rightCenter[0];
+        let dy = leftCenter[1] - rightCenter[1];
+        if (dx === 0 && dy === 0) dx = 0.01;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const minimum = 96 + (Math.sqrt(members.get(left)!.length) + Math.sqrt(members.get(right)!.length)) * 13;
+        const repulsion = distance < minimum * 1.8 ? (minimum * minimum) / distance * 0.026 : 0;
+        const bridge = bridgeWeights.get(`${Math.min(left, right)}:${Math.max(left, right)}`) ?? 0;
+        const attraction = bridge > 0 ? Math.max(0, distance - minimum * 1.12) * Math.min(0.055, 0.018 + Math.log2(bridge + 1) * 0.008) : 0;
+        const force = repulsion - attraction;
+        movement.get(left)![0] += dx / distance * force;
+        movement.get(left)![1] += dy / distance * force;
+        movement.get(right)![0] -= dx / distance * force;
+        movement.get(right)![1] -= dy / distance * force;
+      }
+    }
+    const temperature = 10 * (1 - iteration / 90) + 0.6;
+    for (const community of rankedCommunities) {
+      const center = centers.get(community)!;
+      const drift = movement.get(community)!;
+      drift[0] -= center[0] * 0.0025;
+      drift[1] -= center[1] * 0.0025;
+      const distance = Math.max(1, Math.hypot(drift[0], drift[1]));
+      center[0] += drift[0] / distance * Math.min(distance, temperature);
+      center[1] += drift[1] / distance * Math.min(distance, temperature);
+    }
   }
 
   const positions = Array.from({ length: nodes.length * 2 }, () => 0);
   for (const community of communityIndices) {
     const center = centers.get(community)!;
     const indices = members.get(community)!;
-    const phase = stableUnit(`community:${community}`, 'phase') * Math.PI * 2;
     indices.forEach((nodeIndex, rank) => {
       const node = nodes[nodeIndex];
-      const ring = rank === 0 ? 0 : Math.floor((rank - 1) / 7) + 1;
-      const slot = rank === 0 ? 0 : (rank - 1) % 7;
-      const angle = phase + slot * (Math.PI * 2 / 7) + ring * 0.31;
-      const localRadius = rank === 0 ? 0 : 54 + ring * 46 + stableUnit(node.id, 'radius') * 18;
+      const density = Math.sqrt(rank + 0.4);
+      const angle = rank * 2.399963229728653 + stableUnit(node.id, 'cloud-angle') * 0.55;
+      const localRadius = rank === 0 ? 0 : 19 * density + stableUnit(node.id, 'radius') * 11;
       const degreePull = 1 - Math.min(0.24, Math.log2(Math.max(0, node.degree) + 1) * 0.045);
-      positions[nodeIndex * 2] = center[0] + Math.cos(angle) * localRadius * 1.12 * degreePull;
-      positions[nodeIndex * 2 + 1] = center[1] + Math.sin(angle) * localRadius * degreePull;
+      const wobble = (stableUnit(node.id, 'cloud-wobble') - 0.5) * 18;
+      positions[nodeIndex * 2] = center[0] + Math.cos(angle) * localRadius * 1.12 * degreePull + wobble * 0.4;
+      positions[nodeIndex * 2 + 1] = center[1] + Math.sin(angle) * localRadius * 0.88 * degreePull - wobble * 0.18;
     });
   }
   return { positions, centers };

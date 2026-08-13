@@ -3,6 +3,20 @@ import { applyObservatoryPivot, buildObservatoryUrl, createInitialObservatorySta
 import { withDashboardBrowser } from './dashboard-browser-harness.js';
 
 describe('observatory deep-link state', () => {
+  it('round-trips region focus only at Community', () => {
+    const community = {
+      ...createInitialObservatoryState(), level: 'community' as const,
+      communityId: 'community:42', regionId: 'region:opaque',
+    };
+    expect(parseObservatorySearch(serializeObservatoryState(community))).toMatchObject({
+      level: 'community', communityId: 'community:42', regionId: 'region:opaque',
+    });
+    expect(parseObservatorySearch('?level=universe&region=region%3Aopaque')).toMatchObject({ regionId: null });
+    expect(applyObservatoryPivot(createInitialObservatoryState(), {
+      level: 'community', communityId: 'community:42', regionId: 'region:opaque', focusNodeId: null,
+    })).toMatchObject({ level: 'community', communityId: 'community:42', regionId: 'region:opaque' });
+  });
+
   it('round-trips scope, density, cue, instrument and focus identifiers', () => {
     const state = { ...createInitialObservatoryState(), level:'neighborhood' as const, communityId:'community:42', scope: { project_token:'facet:project:opaque', session_token:'facet:session:opaque', topic_token:'facet:topic:opaque', type:'decision' as const, relation:'SUPPORTS', query:'why' }, density:'wide' as const, focusNodeId:'obs:42', activeSurface:'timeline' as const };
     const parsed = parseObservatorySearch(serializeObservatoryState(state));

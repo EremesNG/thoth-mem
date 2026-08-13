@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nodeIdToObservationId } from '../../dashboard/src/components/observatory/observatory-utils.js';
+import { buildRegionOverviewModel } from '../../dashboard/src/components/observatory/region-overview-model.js';
 import { withDashboardBrowser } from './dashboard-browser-harness.js';
 
 describe('bounded contextual instruments', () => {
@@ -7,6 +8,19 @@ describe('bounded contextual instruments', () => {
     expect(nodeIdToObservationId('obs:42')).toBe(42);
     expect(nodeIdToObservationId('project:42')).toBeNull();
     expect(nodeIdToObservationId(null)).toBeNull();
+  });
+  it('builds a bounded private-safe semantic region dock model', () => {
+    const model = buildRegionOverviewModel({
+      id: 'region:safe', community_id: 'community:safe', label: 'Safe <private>hidden</private>', summary: 'Public summary',
+      member_count: 42, project_count: 2, time_from: '2026-01-01T00:00:00.000Z', time_to: '2026-02-01T00:00:00.000Z',
+      concepts: [{ label: 'Architecture', count: 8 }], facets: { projects: [], sessions: [], topics: [], types: [{ value: 'decision', count: 4 }] },
+      representatives: Array.from({ length: 14 }, (_, index) => ({ node_id: `obs:${index + 1}`, reason: `Reason ${index + 1}`, signals: ['centrality'] as const, rank: index + 1 })),
+      seed_x: 0.2, seed_y: 0.3, unclustered: false,
+    }, [], Array.from({ length: 14 }, (_, index) => ({ id: `obs:${index + 1}`, kind: 'observation' as const, label: `Memory ${index + 1}`, snippet: 'Public', project: null, session_id: null, topic_key: null, type: 'decision' as const, created_at: null, updated_at: null, community_id: 'community:safe', region_id: 'region:safe', semantic_level: 'community' as const, degree: 1, seed_x: 0, seed_y: 0 })));
+    expect(model.label).toBe('Safe');
+    expect(model.facets).toEqual([{ label: 'decision', count: 4 }]);
+    expect(model.representatives).toHaveLength(12);
+    expect(JSON.stringify(model)).not.toMatch(/hidden|<private>|canonical facet|private marker/i);
   });
   it('keeps instrument navigation beside its content while the atlas remains stable', async () => {
     await withDashboardBrowser(async (browser) => {

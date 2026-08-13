@@ -101,6 +101,53 @@ describe('Neural Atlas world layout', () => {
     expect(layout.extent.width / layout.extent.height).toBeGreaterThan(1.35);
   });
 
+  it('anchors multiple Community regions irregularly and preserves unchanged representatives', () => {
+    const nodes = [
+      node('region-a:1', -4, -2, 0, 5), node('region-b:1', 0, 5, 1, 4), node('region-c:1', 7, -1, 2, 3),
+      node('region-a:2', -2, 0, 0, 2), node('region-b:2', 2, 7, 1, 2), node('region-c:2', 9, 2, 2, 1),
+      node('region-isolate', 14, -7, 3, 0),
+    ];
+    const links = [[0, 3], [1, 4], [2, 5], [0, 1], [1, 2]] as Array<[number, number]>;
+    const layout = buildNeuralAtlasLayout(nodes, links, 'community');
+    expect(layout.extent.communityCount).toBe(4);
+    expect(layout.positions.every(Number.isFinite)).toBe(true);
+    expect(new Set(layout.clusterCenters.map((value) => Math.round(value))).size).toBeGreaterThan(4);
+    const replaced = buildNeuralAtlasLayout([...nodes, node('region-a:3', -1, 1, 0, 1)], [...links, [3, 7]], 'community');
+    expect(preserveNeuralAtlasPositions(
+      nodes.map((entry) => entry.id), layout.positions,
+      [...nodes, node('region-a:3', -1, 1, 0, 1)].map((entry) => entry.id), replaced.positions,
+    ).slice(0, layout.positions.length)).toEqual(layout.positions);
+  });
+
+  it('packs a Neighborhood into topology-local support rings', () => {
+    const nodes = Array.from({ length: 28 }, (_entry, index) => node(`memory:${index}`, index * 91, index % 2 ? 400 : -400, 0, index === 0 ? 12 : 2));
+    const links = Array.from({ length: 20 }, (_entry, index) => [index === 0 ? 0 : index, index + 1] as const);
+    const layout = buildNeuralAtlasLayout(nodes, links, 'neighborhood');
+    const linkLengths = links.map(([source, target]) => Math.hypot(
+      layout.positions[source * 2]! - layout.positions[target * 2]!,
+      layout.positions[source * 2 + 1]! - layout.positions[target * 2 + 1]!,
+    ));
+    expect(layout.extent.width / layout.extent.height).toBeLessThan(1.5);
+    expect(Math.max(...linkLengths)).toBeLessThan(Math.hypot(layout.extent.width, layout.extent.height) * 0.72);
+  });
+
+  it('centers Neighborhood on the requested focus with compact hop branches', () => {
+    const nodes = Array.from({ length: 18 }, (_entry, index) => node(`memory:${index}`, index * 400, index * -230, 0, index === 2 ? 8 : 2));
+    const links = [
+      [11, 2], [11, 4], [11, 6], [11, 8],
+      [2, 0], [2, 1], [4, 3], [4, 5], [6, 7], [8, 9], [8, 10],
+    ] as Array<[number, number]>;
+    const layout = buildNeuralAtlasLayout(nodes, links, 'neighborhood', 11);
+    const focus = [layout.positions[22]!, layout.positions[23]!];
+    expect(focus[0]).toBeCloseTo(2_048, 6);
+    expect(focus[1]).toBeCloseTo(2_048, 6);
+    const linkLengths = links.map(([source, target]) => Math.hypot(
+      layout.positions[source * 2]! - layout.positions[target * 2]!,
+      layout.positions[source * 2 + 1]! - layout.positions[target * 2 + 1]!,
+    ));
+    expect(Math.max(...linkLengths)).toBeLessThan(190);
+  });
+
   it('places disconnected universe regions in an organic halo instead of a rectangular frame', () => {
     const nodes = Array.from({ length: 96 }, (_entry, index) => node(
       `region:${index.toString().padStart(3, '0')}`,
@@ -141,6 +188,35 @@ describe('Neural Atlas world layout', () => {
 
     expect(perimeterIndices.length).toBeLessThan(nodes.length * 0.2);
     expect(Math.max(...exactSideCounts)).toBeLessThanOrEqual(2);
+  });
+
+  it('keeps Universe occupancy and normalized positions stable across input permutations', () => {
+    const fixture = Array.from({ length: 48 }, (_entry, index) => node(
+      `universe:${String(index).padStart(2, '0')}`,
+      Math.cos(index * 0.73) * (40 + index),
+      Math.sin(index * 0.73) * (20 + index / 2),
+      index,
+      index % 7,
+    ));
+    const links = Array.from({ length: 23 }, (_entry, index) => [index, index + 1] as const);
+    const forward = buildNeuralAtlasLayout(fixture, links, 'universe');
+    const reversedFixture = [...fixture].reverse();
+    const reversedIndex = new Map(reversedFixture.map((entry, index) => [entry.id, index]));
+    const reversedLinks = links.map(([source, target]) => [
+      reversedIndex.get(fixture[source]!.id)!, reversedIndex.get(fixture[target]!.id)!,
+    ] as const);
+    const reversed = buildNeuralAtlasLayout(reversedFixture, reversedLinks, 'universe');
+    const byId = new Map(reversedFixture.map((entry, index) => [entry.id, [reversed.positions[index * 2], reversed.positions[index * 2 + 1]] as const]));
+    fixture.forEach((entry, index) => expect([
+      forward.positions[index * 2], forward.positions[index * 2 + 1],
+    ]).toEqual(byId.get(entry.id)));
+    const xs = forward.positions.filter((_value, index) => index % 2 === 0);
+    const ys = forward.positions.filter((_value, index) => index % 2 === 1);
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const quadrants = new Set(xs.map((x, index) => `${Number(x >= centerX)}${Number(ys[index]! >= centerY)}`));
+    expect(quadrants.size).toBe(4);
+    expect(forward.extent.width / forward.extent.height).not.toBeCloseTo(1, 1);
   });
 
   it('preserves existing world positions through incremental pages and repeated progression', () => {

@@ -18,7 +18,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const railRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const wasOpenRef = useRef(false);
-  useEffect(() => { const query = window.matchMedia('(max-width: 720px)'); const update = () => setMobile(query.matches); query.addEventListener('change', update); return () => query.removeEventListener('change', update); }, []);
+  useEffect(() => { const query = window.matchMedia('(max-width: 720px)'); const update = () => { setMobile(query.matches); setOpen(false); }; query.addEventListener('change', update); return () => query.removeEventListener('change', update); }, []);
   useEffect(() => { setOpen(false); }, [location.pathname]);
   useEffect(() => {
     if (!open) return;

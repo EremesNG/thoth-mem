@@ -25,7 +25,16 @@
   .mobile-nav-trigger { display: flex; position: fixed; inset: 0 0 auto 0; z-index: 18; height: 52px; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--line); background: rgba(7,10,13,.97); padding: 0 16px; }
   .mobile-nav-trigger svg { width: 18px; }
   .command-rail { position: fixed; inset: 0 auto 0 0; width: min(320px, 86vw); transform: translateX(-102%); transition: transform 180ms cubic-bezier(.2,0,0,1); }
-  .command-rail.open { transform: translateX(0); }
+  .command-rail:not(.open) { visibility: hidden; pointer-events: none; }
+  .command-rail.open { visibility: visible; transform: translateX(0); }
   .rail-close { display: grid; margin-left: auto; place-items: center; border: 0; background: transparent; }
   .drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 19; border: 0; background: rgba(0,0,0,.64); }
+}
+
+body:has(.neural-atlas-workspace[data-visual-scale='2']) .app-shell { display: block; padding: 0; }
+body:has(.neural-atlas-workspace[data-visual-scale='2']) .command-rail,
+body:has(.neural-atlas-workspace[data-visual-scale='2']) .mobile-nav-trigger { display: none; }
+body:has(.neural-atlas-workspace[data-visual-scale='2']) .app-main.atlas-route { height: calc(100dvh - 52px); }
+@media (min-width: 721px) {
+  body:has(.neural-atlas-workspace[data-visual-scale='2']) .app-main.atlas-route { height: 100dvh; }
 }

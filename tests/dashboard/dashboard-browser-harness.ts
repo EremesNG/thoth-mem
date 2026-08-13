@@ -142,7 +142,7 @@ export interface BrowserRoute {
 
 type HarnessPhase='bridge'|'vite'|'browser'|'target'|'cdp'|'init'|'work';
 interface HarnessFaultInjection {phase?:HarnessPhase;deadlineMs?:number;cleanupFault?:'cdp'|'browser'|'vite'|'bridge'|'store'|'profile';collision?:'bridge'|'vite';onResource?:(kind:'profile'|'pid'|'port',value:string|number)=>void;}
-interface DashboardBrowserOptions {observations?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
+interface DashboardBrowserOptions {observations?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
 
 export class DashboardBrowser {
   readonly requests: Array<{ url: string; method: string }> = [];
@@ -215,6 +215,10 @@ export class DashboardBrowser {
     await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
   }
 
+  async mouseWheel(x: number, y: number, deltaY: number): Promise<void> {
+    await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY });
+  }
+
   async fill(selector: string, value: string): Promise<void> {
     await this.evaluate(`(() => { const item=document.querySelector(${JSON.stringify(selector)}); if(!(item instanceof HTMLInputElement || item instanceof HTMLTextAreaElement)) throw new Error('Missing field ${selector}'); const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(item),'value')?.set; setter?.call(item,${JSON.stringify(value)}); item.dispatchEvent(new Event('input',{bubbles:true})); item.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`);
   }
@@ -239,7 +243,7 @@ export class DashboardBrowser {
   async captureScreenshot(): Promise<string> { const response=await this.cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});return String(response.data??''); }
 }
 
-function seedDashboardStore(store: Store, observationCount: number, ownerToken: string): number {
+function seedDashboardStore(store: Store, observationCount: number, ownerToken: string, semanticZoomCommunitySize = 0): number {
   const db = store.getDb();
   const topicKey = (index: number) => index === 1
     ? 'browser/alpha'
@@ -274,7 +278,22 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
       `observation:${observationId}`,
       `browser:${observationId}:USES:${region}`,
     );
-    if (index > 1 && (index - 1) % 50 === 0) {
+    if (observationCount === 1_000) {
+      const overlap = Math.floor((index - 1) / 25);
+      for (const window of [overlap, overlap + 1]) {
+        const overlapId = entityId(`overlap:${window}`, `Browser overlap ${window + 1}`);
+        insertTriple.run(
+          subjectId,
+          'IMPLEMENTS',
+          overlapId,
+          observationId,
+          topicKey(index),
+          `observation:${observationId}`,
+          `browser:${observationId}:IMPLEMENTS:${window}`,
+        );
+      }
+    }
+    if (semanticZoomCommunitySize === 0 && index > 1 && (index - 1) % 50 === 0) {
       const bridgeId = entityId(`bridge:${region - 1}:${region}`, `Region ${region} to ${region + 1}`);
       const previousObservationId = observationId - 1;
       const previousSubjectId = entityId(`memory:${index - 1}`, `Browser memory ${index - 1}`);
@@ -335,7 +354,38 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
         topicKey(index),
         `browser-hash-${index}`,
       );
-      addStructuralEvidence(index, index);
+      if (index > semanticZoomCommunitySize) addStructuralEvidence(index, index);
+    }
+    if (semanticZoomCommunitySize > 0) {
+      const prime = 37;
+      const slopes = Array.from({ length: prime }, (_, slope) => slope);
+      for (const slope of [...slopes, prime]) {
+        const blocks = new Map<number, number[]>();
+        for (let offset = 0; offset < semanticZoomCommunitySize; offset += 1) {
+          const x = Math.floor(offset / prime);
+          const y = offset % prime;
+          const block = slope === prime ? x : ((y - slope * x) % prime + prime) % prime;
+          const members = blocks.get(block) ?? [];
+          members.push(offset + 1);
+          blocks.set(block, members);
+        }
+        for (const [block, members] of blocks) {
+          if (members.length < 2) continue;
+          const object = entityId(`semantic-line:${slope}:${block}`, `Semantic current ${slope + 1}`);
+          for (const observationId of members) {
+            const subject = entityId(`memory:${observationId}`, `Browser memory ${observationId}`);
+            insertTriple.run(
+              subject,
+              'USES',
+              object,
+              observationId,
+              topicKey(observationId),
+              `observation:${observationId}`,
+              `browser:${observationId}:semantic-line:${slope}:${block}`,
+            );
+          }
+        }
+      }
     }
     return observationCount;
   })();
@@ -346,7 +396,7 @@ export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Pr
   const ownerToken=randomBytes(12).toString('hex');
   let store:Store|null=null;let bridge:ReturnType<typeof createHttpBridge>|null=null;let vite:ViteDevServer|null=null;let chrome:ChildProcess|null=null;let cdp:CdpConnection|null=null;let profile='';let result:T|undefined;let failure:Error|null=null;
   try{
-    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken);
+    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken,options.semanticZoomCommunitySize??0);
     const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
     const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
     const chromePath=['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe','C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(existsSync);if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');

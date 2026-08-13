@@ -52,6 +52,8 @@ export interface CosmosGraphData {
   linkArrows: boolean[];
   quality: CosmosDenseQuality;
   focus: CosmosFocusNeighborhood | null;
+  preserveReplacementPositions: boolean;
+  layoutIdentity: string;
 }
 
 export interface CosmosDenseQuality {
@@ -96,6 +98,14 @@ export function buildCosmosGraphData(
   const pointCommunityKeys = semanticLevel
     ? nodes.map((node) => semanticCommunityKey(node, semanticLevel, semanticCommunityFallback))
     : detectCommunities(nodes, visibleEdges, pointIndexById, pointDegrees);
+  const presentedNodes = nodes.map((node) => ({
+    ...node,
+    label: presentStoredText(node.label),
+    snippet: presentStoredText(node.snippet),
+    project: node.project ? presentStoredText(node.project) : null,
+    session_id: node.session_id ? presentStoredText(node.session_id) : node.session_id,
+    topic_key: node.topic_key ? presentStoredText(node.topic_key) : null,
+  }));
   const communityKeys = [...new Set(pointCommunityKeys)].sort((left, right) => left.localeCompare(right));
   const communityIndexByKey = new Map(communityKeys.map((key, index) => [key, index]));
   const paletteIndexByKey = assignPaletteSlots(communityKeys);
@@ -134,6 +144,7 @@ export function buildCosmosGraphData(
       pointIndexById.get(edge.target_id)!,
     ]),
     semanticLevel ?? 'raw',
+    focusId ? pointIndexById.get(focusId) : undefined,
   );
   const { ids: extentAnchorIds, indices: extentAnchorIndices } = selectExtentAnchors(
     nodes,
@@ -141,7 +152,7 @@ export function buildCosmosGraphData(
   );
 
   return focusCosmosGraphData({
-    nodes,
+    nodes: presentedNodes,
     edges: visibleEdges,
     pointIds: nodes.map((node) => node.id),
     pointLabels: nodes.map((node) => presentStoredText(node.label)),
@@ -168,6 +179,8 @@ export function buildCosmosGraphData(
     linkArrows: visibleEdges.map(() => quality.renderArrows),
     quality,
     focus: null,
+    preserveReplacementPositions: semanticLevel !== 'neighborhood',
+    layoutIdentity: semanticLevel ?? 'raw',
   }, focusId);
 }
 
@@ -191,13 +204,86 @@ export function focusCosmosGraphData(data: CosmosGraphData, focusId: string | nu
     linkIndices.push(linkIndex);
   });
 
+  const neighborhoodIdentity = `neighborhood:focus:${focusId}`;
+  const base = data.nodes.some((node) => node.semantic_level === 'neighborhood')
+    && data.layoutIdentity !== neighborhoodIdentity
+    ? (() => {
+        const layout = buildNeuralAtlasLayout(
+          data.nodes.map((node, index) => ({
+            id: node.id,
+            seedX: node.seed_x,
+            seedY: node.seed_y,
+            community: data.pointCommunities[index]!,
+            degree: data.pointDegrees[index]!,
+          })),
+          Array.from({ length: data.links.length / 2 }, (_entry, index) => [
+            data.links[index * 2]!,
+            data.links[index * 2 + 1]!,
+          ] as const),
+          'neighborhood',
+          pointIndex,
+        );
+        return {
+          ...data,
+          pointPositions: layout.positions,
+          clusterCenters: layout.clusterCenters,
+          clusterStrengths: layout.clusterStrengths,
+          worldExtent: layout.extent,
+          preserveReplacementPositions: false,
+          layoutIdentity: neighborhoodIdentity,
+        };
+      })()
+    : data;
   return {
-    ...data,
+    ...base,
     focus: {
       pointIndex,
       neighborPointIndices: [...neighborPointIndices].sort((left, right) => left - right),
       linkIndices,
     },
+  };
+}
+
+export function focusRegionCosmosGraphData(data: CosmosGraphData, regionId: string | null): CosmosGraphData {
+  if (!regionId) return data;
+  const focusedIndices = data.nodes.flatMap((node, index) => node.region_id === regionId ? [index] : []);
+  if (focusedIndices.length === 0) return data;
+  const original = data.pointPositions;
+  const centerOf = (indices: number[]): [number, number] => indices.reduce((center, index) => [
+    center[0] + original[index * 2]! / indices.length,
+    center[1] + original[index * 2 + 1]! / indices.length,
+  ], [0, 0]);
+  const focusedCenter = centerOf(focusedIndices);
+  const positions = [...original];
+  const contextRegions = [...new Set(data.nodes
+    .map((node) => node.region_id)
+    .filter((candidate): candidate is string => Boolean(candidate && candidate !== regionId)))]
+    .sort((left, right) => left.localeCompare(right));
+  const contextIndex = new Map(contextRegions.map((id, index) => [id, index]));
+  const contextCenters = new Map(contextRegions.map((id) => [
+    id,
+    centerOf(data.nodes.flatMap((node, index) => node.region_id === id ? [index] : [])),
+  ]));
+
+  data.nodes.forEach((node, index) => {
+    if (node.region_id === regionId) {
+      positions[index * 2] = (original[index * 2]! - focusedCenter[0]) * 1.45;
+      positions[index * 2 + 1] = (original[index * 2 + 1]! - focusedCenter[1]) * 1.45;
+      return;
+    }
+    const id = node.region_id;
+    if (!id || !contextIndex.has(id)) return;
+    const angle = contextIndex.get(id)! * 2.399963229728653;
+    const center = contextCenters.get(id)!;
+    positions[index * 2] = Math.cos(angle) * 365 + (original[index * 2]! - center[0]) * 0.42;
+    positions[index * 2 + 1] = Math.sin(angle) * 255 + (original[index * 2 + 1]! - center[1]) * 0.42;
+  });
+  return {
+    ...data,
+    pointPositions: positions,
+    pointSizes: data.pointSizes.map((size, index) => size * (data.nodes[index]?.region_id === regionId ? 1.18 : 0.58)),
+    preserveReplacementPositions: false,
+    layoutIdentity: `${data.layoutIdentity}:region:${regionId}`,
   };
 }
 
@@ -286,6 +372,7 @@ function semanticCommunityKey(
   fallback: string,
 ): string {
   if (level === 'universe') return node.community_id ?? node.id;
+  if (level === 'community') return node.region_id ?? node.community_id ?? fallback;
   return node.community_id ?? fallback;
 }
 

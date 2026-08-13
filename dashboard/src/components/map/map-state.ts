@@ -107,6 +107,9 @@ export function mergeSemanticAtlasPages(
 export function semanticAtlasPageToVizSlice(
   page: SemanticAtlasPageResponse,
 ): VizSliceResponse & { atlas: Omit<SemanticAtlasPageResponse, 'nodes' | 'edges' | 'health'> } {
+  const explanationByNode = new Map((page.regions ?? []).flatMap((region) => (
+    region.representatives.map((explanation) => [explanation.node_id, explanation] as const)
+  )));
   const nodes: VizNode[] = page.nodes.map((node) => ({
     id: node.id,
     kind: node.kind,
@@ -120,6 +123,10 @@ export function semanticAtlasPageToVizSlice(
     seed_y: node.seed_y,
     semantic_level: page.level,
     community_id: node.community_id,
+    region_id: node.region_id ?? null,
+    representative_reason: explanationByNode.get(node.id)?.reason,
+    representative_signals: explanationByNode.get(node.id)?.signals,
+    representative_rank: explanationByNode.get(node.id)?.rank,
     member_count: node.member_count,
     project_count: node.project_count,
     unclustered: node.unclustered,
@@ -137,6 +144,11 @@ export function semanticAtlasPageToVizSlice(
       summary: sanitizeMapText(edge.summary),
       weight: edge.weight,
       evidence_count: edge.evidence_count,
+      tier: edge.tier,
+      relationship_class: edge.relationship_class,
+      direction: edge.direction,
+      confidence: edge.confidence,
+      provenance: edge.provenance,
     }));
   return {
     nodes,
@@ -148,6 +160,10 @@ export function semanticAtlasPageToVizSlice(
     atlas: {
       level: page.level,
       generation: page.generation,
+      presentation_key: page.presentation_key,
+      presentation: page.presentation,
+      regions: page.regions,
+      region_bridges: page.region_bridges,
       counts: page.counts,
       coverage: page.coverage,
       facets: page.facets,

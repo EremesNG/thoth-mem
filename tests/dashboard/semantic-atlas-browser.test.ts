@@ -1,8 +1,256 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { withDashboardBrowser } from './dashboard-browser-harness.js';
 
 describe('semantic atlas production navigation', () => {
+  it('mounts SC-019 atlas shapes and recovery controls through the production bridge', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
+      const baseline = await browser.evaluate<Record<string, unknown>>(`fetch('/viz/atlas?level=universe&page_size=250').then((response)=>response.json())`);
+      const baselineNodes = baseline.nodes as Array<Record<string, unknown>>;
+      const present = async (name: string, nodes: Array<Record<string, unknown>>, state: 'empty' | 'sparse' | 'dense', degraded = false) => {
+        const generation = `sc019-${name}`;
+        await browser.setRoutes([{ includes: '/viz/atlas', status: 200, body: {
+          ...baseline, generation, nodes, edges: [], state, continuation: null, truncated: name === 'oversized-region',
+          regions: name === 'all-unclustered' ? [] : baseline.regions,
+          health: { semantic_state: degraded ? 'degraded' : 'ready', pending_jobs: degraded ? 3 : 0 },
+        } }]);
+        await browser.fill('input[aria-label="Explore memories"]', name);
+        await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-atlas-generation') === ${JSON.stringify(generation)}`);
+        expect(await browser.attribute('[data-testid="memory-map-surface"]', 'data-node-count')).toBe(String(nodes.length));
+        expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-density')).toBe(state);
+      };
+
+      await present('empty', [], 'empty');
+      await present('tiny', baselineNodes.slice(0, 1), 'sparse');
+      await present('sparse', baselineNodes.slice(0, 4), 'sparse');
+      await present('dense', baselineNodes, 'dense');
+      await present('all-unclustered', baselineNodes.slice(0, 6).map((node) => ({ ...node, unclustered: true, community_id: null, region_id: null })), 'sparse');
+      await present('degraded', baselineNodes.slice(0, 4), 'sparse', true);
+      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-semantic-state')).toBe('degraded');
+
+      await browser.setRoutes([{ includes: '/viz/atlas', status: 410, body: { error: 'Atlas generation is gone', code: 'VIZ_ATLAS_GENERATION_STALE', retryable: true } }]);
+      await browser.fill('input[aria-label="Explore memories"]', 'stale-gone');
+      await browser.waitFor(`document.querySelector('button[aria-label="Retry universe atlas"]')`);
+      expect(await browser.text('[data-resource-notice="partial-error"]')).toMatch(/could not finish|retry/i);
+
+      await browser.setRoutes([{ includes: '/viz/atlas', status: 503, delayMs: 500, body: { error: 'Inspection unavailable', code: 'VIZ_INSPECTION_FAILED', retryable: true } }]);
+      await browser.fill('input[aria-label="Explore memories"]', 'aborted-request');
+      await browser.evaluate(`new Promise((resolve)=>setTimeout(resolve,80))`);
+      await browser.fill('input[aria-label="Explore memories"]', 'replacement-request');
+      await browser.waitFor(`document.querySelector('button[aria-label="Retry universe atlas"]')`);
+      expect(await browser.text('body')).not.toContain('Atlas loading was aborted');
+
+      await browser.setRoutes([{ includes: '/viz/atlas', status: 200, body: { ...baseline, generation: 'sc019-retry', continuation: null } }]);
+      const beforeRetry = browser.requests.filter(({ url }) => url.includes('/viz/atlas')).length;
+      await browser.click('button[aria-label="Retry universe atlas"]');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-atlas-generation') === 'sc019-retry'`);
+      expect(browser.requests.filter(({ url }) => url.includes('/viz/atlas')).length).toBeGreaterThan(beforeRetry);
+      await browser.clearRoutes();
+    }, { observations: 180, faultInjection: { deadlineMs: 55_000 } });
+  }, 65_000);
+
+  it('captures an oversized 1,000-memory Community semantic-zoom visual matrix', async () => {
+    const evidenceRoot = resolve('openspec/changes/dashboard-semantic-zoom-navigation/evidence');
+    mkdirSync(evidenceRoot, { recursive: true });
+    await withDashboardBrowser(async (browser) => {
+      const observedStates: string[] = [];
+      const capture = async (name: string) => {
+        observedStates.push(name);
+        const screenshot = await browser.captureScreenshot();
+        writeFileSync(resolve(evidenceRoot, `${name}.png`), Buffer.from(screenshot, 'base64'));
+        return screenshot;
+      };
+      const separableBackgroundRatio = async (screenshot: string) => browser.evaluate<number>(`(async()=>{
+        const image=new Image();
+        image.src=${JSON.stringify('data:image/png;base64,') }+${JSON.stringify(screenshot)};
+        await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject});
+        const host=document.querySelector('.cosmos-graph-host')?.getBoundingClientRect();
+        if(!host)return 0;
+        const scale=image.width/innerWidth;
+        const canvas=document.createElement('canvas');
+        canvas.width=Math.max(1,Math.floor(host.width*scale));canvas.height=Math.max(1,Math.floor(host.height*scale));
+        const context=canvas.getContext('2d',{willReadFrequently:true});
+        if(!context)return 0;
+        context.drawImage(image,host.left*scale,host.top*scale,host.width*scale,host.height*scale,0,0,canvas.width,canvas.height);
+        const pixels=context.getImageData(0,0,canvas.width,canvas.height).data;
+        let background=0;
+        for(let index=0;index<pixels.length;index+=4){
+          const maximum=Math.max(pixels[index],pixels[index+1],pixels[index+2]);
+          if(maximum<54)background+=1;
+        }
+        return background/(pixels.length/4);
+      })()`);
+      const geometry = async () => browser.evaluate<{ labels: number; labelOverlaps: number; labelsOutside: number; contoursOutside: number }>(`(() => {
+        const host=document.querySelector('.cosmos-graph-host')?.getBoundingClientRect();
+        const labels=[...document.querySelectorAll('.semantic-region-layer text')].map((item)=>item.getBoundingClientRect()).filter((rect)=>rect.width>0&&rect.height>0);
+        const contours=[...document.querySelectorAll('.semantic-region-layer g > path')].map((item)=>item.getBoundingClientRect()).filter((rect)=>rect.width>0&&rect.height>0);
+        if(!host)return {labels:0,labelOverlaps:0,labelsOutside:0,contoursOutside:0};
+        let labelOverlaps=0;
+        for(let index=0;index<labels.length;index+=1)for(const peer of labels.slice(index+1)){const current=labels[index];if(current.left<peer.right&&current.right>peer.left&&current.top<peer.bottom&&current.bottom>peer.top)labelOverlaps+=1;}
+        const outside=(rect)=>rect.left<host.left-1||rect.top<host.top-1||rect.right>host.right+1||rect.bottom>host.bottom+1;
+        return {labels:labels.length,labelOverlaps,labelsOutside:labels.filter(outside).length,contoursOutside:contours.filter(outside).length};
+      })()`);
+      await browser.viewport(1440, 900);
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`, 60_000);
+      expect(await browser.text('.map-health-strip')).toMatch(/4,000 memories/i);
+      await capture('01-universe-1440x900');
+      const largestCommunity = await browser.evaluate<{ id: string; memberCount: number }>(`fetch('/viz/atlas?level=universe&page_size=250').then((response)=>response.json()).then((page)=>{const node=page.nodes.sort((left,right)=>(right.member_count??0)-(left.member_count??0))[0];return {id:node.id,memberCount:node.member_count??0}})`);
+      expect(largestCommunity.memberCount).toBe(1_000);
+      const largestCommunityId = largestCommunity.id;
+      const semanticCommunityRequests = () => browser.requests.filter(({ url }) => {
+        const request = new URL(url);
+        return request.pathname === '/viz/atlas'
+          && request.searchParams.get('level') === 'community'
+          && request.searchParams.get('presentation') === 'semantic-zoom'
+          && request.searchParams.get('fixture_probe') !== '1';
+      });
+      const workingSet = await browser.evaluate<Record<string, unknown>>(`fetch('/viz/atlas?level=community&community_id=${encodeURIComponent(largestCommunityId)}&presentation=semantic-zoom&page_size=250&fixture_probe=1',{cache:'no-store'}).then((response)=>response.json())`);
+      const workingNodes = workingSet.nodes as Array<{ id: string }>;
+      const workingEdges = workingSet.edges as Array<{ id: string; tier: string }>;
+      const workingRegions = workingSet.regions as Array<{ member_count: number; representatives: Array<{ node_id: string }> }>;
+      const workingBridges = workingSet.region_bridges as Array<{ id: string }>;
+      const navigation = workingSet.navigation as Record<string, number>;
+      expect(navigation.source_memory_count).toBe(1_000);
+      expect(navigation.visible_memory_count).toBe(workingNodes.length);
+      expect(navigation.omitted_nodes).toBe(1_000 - workingNodes.length);
+      expect(navigation.visible_relationship_count).toBe(workingEdges.length + workingBridges.length);
+      expect(navigation.omitted_edges).toBe(navigation.source_relationship_count - navigation.represented_source_relationship_count);
+      expect(workingSet.continuation).toBeNull();
+      expect(workingRegions.reduce((sum, region) => sum + region.member_count, 0)).toBe(1_000);
+      expect(new Set(workingNodes.map((node) => node.id)).size).toBe(workingNodes.length);
+      expect(new Set(workingRegions.flatMap((region) => region.representatives.map((representative) => representative.node_id))).size).toBe(workingNodes.length);
+      expect(workingRegions).toHaveLength(12);
+      expect(workingNodes.length).toBeGreaterThanOrEqual(80);
+      expect(workingNodes.length).toBeLessThanOrEqual(180);
+      expect(workingEdges.length + workingBridges.length).toBeLessThanOrEqual(450);
+      await browser.click(`.graph-navigator li[data-node-id="${largestCommunityId}"] > button:first-child`);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`, 45_000);
+      expect(semanticCommunityRequests(), JSON.stringify(semanticCommunityRequests())).toHaveLength(1);
+      const budget = await browser.evaluate<{ regions: number; memories: number; relationships: number; regionBridges: number }>(`({ regions: document.querySelectorAll('.semantic-region-layer g').length, memories: Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-point-count') ?? 0), relationships: Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-link-count') ?? 0), regionBridges: Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-bridge-count') ?? 0) })`);
+      expect(budget.regions, JSON.stringify(budget)).toBeGreaterThanOrEqual(6); expect(budget.regions).toBeLessThanOrEqual(12);
+      expect(budget.memories).toBeGreaterThanOrEqual(80); expect(budget.memories).toBeLessThanOrEqual(180);
+      expect(budget.relationships + budget.regionBridges).toBeLessThanOrEqual(450);
+      expect(budget.regionBridges).toBe(workingBridges.length);
+      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-rendered-internal-link-count')).toBe('0');
+      expect(await browser.count('.semantic-region-bridge')).toBeLessThanOrEqual(18);
+      const desktopGeometry = await geometry();
+      expect(desktopGeometry.labels, JSON.stringify(desktopGeometry)).toBeGreaterThanOrEqual(6);
+      expect(desktopGeometry.labels).toBeLessThanOrEqual(12);
+      expect(desktopGeometry).toMatchObject({ labelOverlaps: 0, labelsOutside: 0, contoursOutside: 0 });
+      const overviewScreenshot = await capture('02-community-overview');
+      expect(await browser.count('.relationship-legend button')).toBe(3);
+      const rendererVersionBeforeFilter = await browser.attribute('[data-testid="map-canvas-shell"]', 'data-dataset-version');
+      await browser.click('.relationship-legend button.semantic');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas"]')?.getAttribute('data-painted-relationship-count') === '0'`);
+      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-dataset-version')).toBe(rendererVersionBeforeFilter);
+      await browser.click('.relationship-legend button.semantic');
+      await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas"]')?.getAttribute('data-painted-relationship-count') ?? 0) > 0`);
+      const backgroundRatio = await separableBackgroundRatio(overviewScreenshot);
+      expect(backgroundRatio).toBeGreaterThanOrEqual(0.7);
+      const overviewIdentities = await browser.evaluate<string[]>(`[...document.querySelectorAll('.graph-navigator li[data-node-id^="obs:"]')].map((item)=>item.getAttribute('data-node-id')).filter(Boolean).sort()`);
+      const requestsBeforeZoom = browser.requests.length;
+      for (let index = 0; index < 16 && Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom')) < 1.55; index += 1) {
+        await browser.click('button[aria-label="Zoom in"]');
+        await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 700))`);
+      }
+      expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom'))).toBeGreaterThanOrEqual(1.55);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-zoom-band') === 'exploration'`);
+      expect(browser.requests.length).toBe(requestsBeforeZoom);
+      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-rendered-internal-link-count')).toBe(String(workingEdges.length));
+      expect(await browser.evaluate<string[]>(`[...document.querySelectorAll('.graph-navigator li[data-node-id^="obs:"]')].map((item)=>item.getAttribute('data-node-id')).filter(Boolean).sort()`)).toEqual(overviewIdentities);
+      await capture('03-community-exploration');
+      for (let index = 0; index < 16 && Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom')) >= 1.35; index += 1) {
+        await browser.click('button[aria-label="Zoom out"]');
+        await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 700))`);
+      }
+      expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom'))).toBeLessThan(1.35);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-zoom-band') === 'overview'`);
+      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-rendered-internal-link-count')).toBe('0');
+      await browser.viewport(1024, 768); await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-host-width') ?? 9999) <= 900 && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`); const tabletGeometry = await geometry(); expect(tabletGeometry.labels).toBeGreaterThanOrEqual(6); expect(tabletGeometry.labels).toBeLessThanOrEqual(9); expect(tabletGeometry).toMatchObject({ labelOverlaps: 0, labelsOutside: 0, contoursOutside: 0 }); await capture('04-tablet-1024x768');
+      await browser.viewport(360, 800); await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-host-width') ?? 9999) <= 480 && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true' && document.querySelector('.mobile-nav-trigger')?.getAttribute('aria-expanded') === 'false' && !document.querySelector('.drawer-backdrop') && getComputedStyle(document.querySelector('.command-rail')).visibility === 'hidden'`); await browser.click('button[aria-label="Fit all memories"]'); await browser.evaluate(`new Promise((resolve)=>setTimeout(resolve,500))`); const mobileGeometry = await geometry(); expect(mobileGeometry.labels).toBeGreaterThanOrEqual(4); expect(mobileGeometry.labels).toBeLessThanOrEqual(6); expect(mobileGeometry).toMatchObject({ labelOverlaps: 0, labelsOutside: 0, contoursOutside: 0 }); await capture('05-mobile-360x800');
+      await browser.viewport(1440, 900); await browser.pageScale(2); await browser.click('button[aria-label="Fit all memories"]'); await browser.evaluate(`new Promise((resolve)=>setTimeout(resolve,500))`); const scaledGeometry = await geometry(); expect(scaledGeometry.labels).toBeGreaterThanOrEqual(6); expect(scaledGeometry).toMatchObject({ labelOverlaps: 0, labelsOutside: 0, contoursOutside: 0 }); await capture('06-zoom-200-percent'); await browser.pageScale(1);
+      await browser.reducedMotion(); await capture('07-reduced-motion');
+      const regionId = await browser.attribute('.graph-region-groups button', 'data-region-id');
+      expect(regionId).toBeTruthy();
+      const semanticRequestsBeforeFocus = semanticCommunityRequests().length;
+      await browser.evaluate(`(() => {
+        performance.clearResourceTimings();
+        globalThis.__THOTH_DENSE_LONG_TASKS__=[];
+        globalThis.__THOTH_DENSE_LONG_OBSERVER__=new PerformanceObserver((list)=>globalThis.__THOTH_DENSE_LONG_TASKS__.push(...list.getEntries().map((entry)=>entry.duration)));
+        try{globalThis.__THOTH_DENSE_LONG_OBSERVER__.observe({type:'longtask',buffered:false})}catch{}
+        globalThis.__THOTH_DENSE_ATLAS_RESPONSES__=[];
+        globalThis.__THOTH_DENSE_RESOURCE_OBSERVER__=new PerformanceObserver((list)=>globalThis.__THOTH_DENSE_ATLAS_RESPONSES__.push(...list.getEntries().filter((entry)=>entry.name.includes('/viz/atlas')).map((entry)=>({name:entry.name,responseEnd:entry.responseEnd}))));
+        try{globalThis.__THOTH_DENSE_RESOURCE_OBSERVER__.observe({type:'resource',buffered:false})}catch{}
+        globalThis.__THOTH_DENSE_NEIGHBORHOOD_STARTED__=performance.now();
+      })()`);
+      await browser.evaluate(`document.querySelector('.graph-region-groups button')?.focus()`);
+      await browser.key('Enter');
+      await browser.waitFor(`new URLSearchParams(location.search).get('region') === ${JSON.stringify(regionId)}`, 30_000);
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
+      await browser.waitFor(`document.querySelector('.atlas-dock')?.getAttribute('data-open') === 'true'`, 30_000);
+      expect(semanticCommunityRequests().length - semanticRequestsBeforeFocus).toBe(1);
+      const focusedRelationshipCount = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-link-count'));
+      expect(await browser.attribute('[data-testid="memory-map-surface"]', 'data-region-id')).toBe(regionId);
+      expect(await browser.attribute('.semantic-region-layer g[data-focused="true"]', 'data-region-id')).toBe(regionId);
+      expect(await browser.attribute('.graph-region-groups button[aria-pressed="true"]', 'data-region-id')).toBe(regionId);
+      expect(await browser.attribute('[data-testid="map-canvas"]', 'data-replacement-fit-suppressed')).toBe('false');
+      const regionCommitEvidence = await browser.evaluate<{ latency: number; exactKey: boolean; history: unknown[] }>(`(() => {
+        const history=JSON.parse(document.documentElement.dataset.atlasResponseHistory??'[]');
+        const response=[...history].reverse().find((entry)=>entry.level==='community'&&entry.regionId);
+        const commits=JSON.parse(document.documentElement.dataset.atlasRenderCommitHistory??'[]');
+        const commit=commits.find((entry)=>response&&entry.presentationKey===response.presentationKey&&entry.commitAt>=response.completeAt);
+        globalThis.__THOTH_DENSE_REGION_COMMIT_LATENCY__=response&&commit?commit.commitAt-response.completeAt:-1;
+        return {latency:globalThis.__THOTH_DENSE_REGION_COMMIT_LATENCY__,exactKey:response?.presentationKey===commit?.presentationKey,history,commits};
+      })()`);
+      expect(regionCommitEvidence.exactKey, JSON.stringify(regionCommitEvidence)).toBe(true);
+      expect(regionCommitEvidence.latency, JSON.stringify(regionCommitEvidence)).toBeGreaterThanOrEqual(0);
+      expect(regionCommitEvidence.latency, JSON.stringify(regionCommitEvidence)).toBeLessThan(250);
+      await browser.evaluate(`(() => {
+        const pending=globalThis.__THOTH_DENSE_LONG_OBSERVER__?.takeRecords().map((entry)=>entry.duration)??[];
+        globalThis.__THOTH_DENSE_LONG_OBSERVER__?.disconnect();
+        globalThis.__THOTH_DENSE_REGION_LONG_TASK__=Math.max(0,...(globalThis.__THOTH_DENSE_LONG_TASKS__??[]),...pending);
+      })()`);
+      await capture('08-region-navigation');
+      await browser.evaluate(`(() => {
+        globalThis.__THOTH_DENSE_LONG_TASKS__=[];
+        globalThis.__THOTH_DENSE_LONG_OBSERVER__=new PerformanceObserver((list)=>globalThis.__THOTH_DENSE_LONG_TASKS__.push(...list.getEntries().map((entry)=>entry.duration)));
+        try{globalThis.__THOTH_DENSE_LONG_OBSERVER__.observe({type:'longtask',buffered:false})}catch{}
+      })()`);
+      await browser.evaluate(`document.querySelector('.graph-navigator li[data-node-id^="obs:"] > button:first-child')?.click()`);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'neighborhood' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') === 'ready'`); const neighborhoodRelationshipCount = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-link-count')); expect(neighborhoodRelationshipCount).not.toBe(focusedRelationshipCount);
+      const denseTransitionMetrics = await browser.evaluate<{ regionCommitMs: number; neighborhoodCommitMs: number; exactKey: boolean; regionLongTaskMs: number; neighborhoodLongTaskMs: number; maximumLongTaskMs: number }>(`(() => {
+        const response=[...JSON.parse(document.documentElement.dataset.atlasResponseHistory??'[]')].reverse().find((entry)=>entry.level==='neighborhood');
+        const commit=JSON.parse(document.documentElement.dataset.atlasRenderCommitHistory??'[]').find((entry)=>response&&entry.presentationKey===response.presentationKey&&entry.commitAt>=response.completeAt);
+        const pending=globalThis.__THOTH_DENSE_LONG_OBSERVER__?.takeRecords().map((entry)=>entry.duration)??[];
+        globalThis.__THOTH_DENSE_LONG_OBSERVER__?.disconnect();
+        globalThis.__THOTH_DENSE_RESOURCE_OBSERVER__?.disconnect();
+        const neighborhoodLongTaskMs=Math.max(0,...(globalThis.__THOTH_DENSE_LONG_TASKS__??[]),...pending);
+        const regionLongTaskMs=globalThis.__THOTH_DENSE_REGION_LONG_TASK__??0;
+        return {regionCommitMs:globalThis.__THOTH_DENSE_REGION_COMMIT_LATENCY__??-1,neighborhoodCommitMs:response&&commit?commit.commitAt-response.completeAt:-1,exactKey:response?.presentationKey===commit?.presentationKey,regionLongTaskMs,neighborhoodLongTaskMs,maximumLongTaskMs:Math.max(regionLongTaskMs,neighborhoodLongTaskMs)};
+      })()`);
+      expect(denseTransitionMetrics.exactKey, JSON.stringify(denseTransitionMetrics)).toBe(true);
+      expect(denseTransitionMetrics.regionCommitMs, JSON.stringify(denseTransitionMetrics)).toBeGreaterThanOrEqual(0);
+      expect(denseTransitionMetrics.regionCommitMs, JSON.stringify(denseTransitionMetrics)).toBeLessThan(250);
+      expect(denseTransitionMetrics.neighborhoodCommitMs, JSON.stringify(denseTransitionMetrics)).toBeGreaterThanOrEqual(0);
+      expect(denseTransitionMetrics.neighborhoodCommitMs, JSON.stringify(denseTransitionMetrics)).toBeLessThan(250);
+      expect(denseTransitionMetrics.maximumLongTaskMs, JSON.stringify(denseTransitionMetrics)).toBeLessThan(200);
+      writeFileSync(resolve(evidenceRoot, 'transition-metrics.json'), `${JSON.stringify(denseTransitionMetrics, null, 2)}\n`);
+      await capture('09-neighborhood');
+      await browser.back(); await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community'`); await capture('10-history-restored');
+      await browser.click('button[aria-label="Open Raw graph diagnostics"]'); await capture('11-raw-diagnostic-guard');
+      expect(observedStates).toEqual([
+        '01-universe-1440x900', '02-community-overview', '03-community-exploration',
+        '04-tablet-1024x768', '05-mobile-360x800', '06-zoom-200-percent',
+        '07-reduced-motion', '08-region-navigation', '09-neighborhood',
+        '10-history-restored', '11-raw-diagnostic-guard',
+      ]);
+    }, { observations: 4_000, semanticZoomCommunitySize: 1_000, faultInjection: { deadlineMs: 110_000 } });
+  }, 120_000);
   it('drills Universe to Community to Neighborhood and restores the semantic trail', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.viewport(1440, 900);

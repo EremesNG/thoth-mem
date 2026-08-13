@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, CircleX, Eye, GitBranch, Layers, Loader2, Map as MapIcon, Maximize2, Minus, Pause, Play, Plus, RefreshCw, RotateCcw } from 'lucide-react';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import type { AtlasLevel, ObservatoryFrontierState } from '../../api/client.js';
 import MapCanvas from '../map/MapCanvas.js';
@@ -8,6 +8,7 @@ import type { MapData, MapSelection } from '../map/map-types.js';
 import { sanitizeMapText } from '../map/map-state.js';
 import GraphNavigator from '../map/GraphNavigator.js';
 import type { GraphCommand, GraphViewportCommand } from '../map/map-navigation.js';
+import type { SemanticRelationshipClassFilter } from '../map/cosmos-graph-runtime.js';
 import { deriveGraphPhase } from './resource-state.js';
 import { FullAtlasStateNotice, SemanticAtlasStateNotice } from './ResourceStateNotice.js';
 import type { FullAtlasSnapshot } from './full-atlas-loader.js';
@@ -37,6 +38,8 @@ interface MemoryMapSurfaceProps {
   rendererReady: boolean;
   onRendererCommit: (commit: MapCanvasRenderCommit) => void;
   onPrefetchNode: (nodeId: string) => void;
+  regionId: string | null;
+  onActivateRegion: (regionId: string) => void;
 }
 
 export default function MemoryMapSurface({
@@ -63,7 +66,15 @@ export default function MemoryMapSurface({
   rendererReady,
   onRendererCommit,
   onPrefetchNode,
+  regionId,
+  onActivateRegion,
 }: MemoryMapSurfaceProps) {
+  const [relationshipClasses, setRelationshipClasses] = useState<SemanticRelationshipClassFilter[]>(['semantic', 'fact', 'metadata']);
+  const toggleRelationshipClass = (relationshipClass: SemanticRelationshipClassFilter) => {
+    setRelationshipClasses((current) => current.includes(relationshipClass)
+      ? current.filter((candidate) => candidate !== relationshipClass)
+      : [...current, relationshipClass]);
+  };
   const selectedNodeId = selection?.kind === 'node' ? selection.id : focusNodeId;
   const phase = deriveGraphPhase({ loading, hasData:Boolean(data), nodeCount:data?.nodes.length??0, dense:data?.state==='dense', truncated:Boolean(data?.truncated), exhausted:Boolean(frontier?.exhausted), degraded:data?.health.semantic_state==='degraded', error:Boolean(error) });
   const presentedAtlasPhase = level !== 'raw' && atlasLoad.phase === 'complete' && !rendererReady
@@ -81,7 +92,9 @@ export default function MemoryMapSurface({
   const countSummary = level === 'raw'
     ? `${data?.nodes.length.toLocaleString() ?? 0} graph entities · ${data?.edges.length.toLocaleString() ?? 0} relationships`
     : counts
-    ? `${counts.memory_count.toLocaleString()} memories · ${counts.project_count.toLocaleString()} projects · ${counts.community_count.toLocaleString()} constellations`
+    ? level === 'community' && data?.atlas
+      ? `${(data.atlas.navigation.source_memory_count ?? counts.memory_count).toLocaleString()} source memories · ${(data.atlas.regions?.length ?? 0).toLocaleString()} regions · ${(data.atlas.navigation.visible_memory_count ?? data.nodes.length).toLocaleString()} visible`
+      : `${counts.memory_count.toLocaleString()} memories · ${counts.project_count.toLocaleString()} projects · ${counts.community_count.toLocaleString()} constellations`
     : 'Mapping memories';
   const focusFromNavigator = useCallback((nodeId: string) => {
     onSelect({ kind: 'node', id: nodeId });
@@ -98,6 +111,7 @@ export default function MemoryMapSurface({
       data-edge-count={data?.edges.length ?? 0}
       data-atlas-level={level}
       data-community-id={communityId ?? ''}
+      data-region-id={regionId ?? ''}
     >
       <div className="observatory-panel-header">
         <div>
@@ -129,7 +143,7 @@ export default function MemoryMapSurface({
           : level === 'universe'
           ? `${data?.nodes.length ?? 0} constellations summarize the complete scope`
           : level === 'community'
-            ? `${data?.nodes.length ?? 0} assigned memories in this constellation`
+            ? `${data?.atlas?.navigation.omitted_nodes ?? 0} memories omitted from this bounded working set · ${data?.atlas?.navigation.visible_relationship_count ?? data?.edges.length ?? 0} prepared relationships`
             : `${data?.nodes.length ?? 0} local memories and supporting identities`}</span>
       </div>
       {level === 'raw'
@@ -147,7 +161,30 @@ export default function MemoryMapSurface({
               </button>
             </div>
           )}
-          {canvasData && <MapCanvas nodes={canvasData.nodes} edges={canvasData.edges} state={canvasData.state} selection={canvasSelection} onSelect={onSelect} command={command} paused={paused} onPausedChange={onPausedChange} semanticState={canvasData.health.semantic_state} truncated={canvasData.truncated} complete={atlasLoad.phase === 'complete'} atlasLevel={canvasData.atlas?.level ?? 'raw'} atlasGeneration={canvasData.atlas?.generation ?? 'raw'} onRenderCommit={onRendererCommit} presentationReady={rendererReady} presentedLevel={level} presentedGeneration={data?.atlas?.generation ?? 'pending'} presentedFocusId={selectedNodeId ?? null} presentedPointCount={data?.nodes.length ?? 0} presentedLinkCount={data?.edges.length ?? 0} onIntent={onPrefetchNode} />}
+          {canvasData && <MapCanvas nodes={canvasData.nodes} edges={canvasData.edges} state={canvasData.state} selection={canvasSelection} onSelect={onSelect} command={command} paused={paused} onPausedChange={onPausedChange} semanticState={canvasData.health.semantic_state} truncated={canvasData.truncated} complete={atlasLoad.phase === 'complete'} atlasLevel={canvasData.atlas?.level ?? 'raw'} atlasGeneration={canvasData.atlas?.generation ?? 'raw'} presentationKey={canvasData.atlas?.presentation_key ?? 'raw'} onRenderCommit={onRendererCommit} presentationReady={rendererReady} presentedLevel={level} presentedGeneration={data?.atlas?.generation ?? 'pending'} presentedFocusId={selectedNodeId ?? null} presentedPointCount={data?.nodes.length ?? 0} presentedLinkCount={data?.edges.length ?? 0} onIntent={onPrefetchNode} regions={canvasData.atlas?.regions ?? []} regionBridges={canvasData.atlas?.region_bridges ?? []} regionId={regionId} onRegionSelect={onActivateRegion} relationshipClasses={relationshipClasses} />}
+          {(data?.atlas?.region_bridges?.length ?? 0) > 0 && (
+            <ul className="visually-hidden" aria-label="Aggregate region relationships">
+              {data!.atlas!.region_bridges!.map((bridge) => {
+                const source = data!.atlas!.regions?.find((region) => region.id === bridge.source_region_id)?.label ?? 'Region';
+                const target = data!.atlas!.regions?.find((region) => region.id === bridge.target_region_id)?.label ?? 'Region';
+                const provenance = bridge.provenance.map((item) => `${item.source_kind} ${item.relation}`).join(', ');
+                return (
+                  <li key={bridge.id}>
+                    {source} to {target}: {bridge.direction}, {bridge.confidence} confidence, weight {bridge.weight.toFixed(2)}, {bridge.evidence_count} evidence items, provenance {provenance || 'unknown'}.
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {(level === 'community' || level === 'neighborhood') && (
+            <div className="relationship-legend" role="group" aria-label={`${level} relationship legend and filters`}>
+              <span className="relationship-legend-title">Relations</span>
+              <button type="button" className="semantic" aria-pressed={relationshipClasses.includes('semantic')} onClick={() => toggleRelationshipClass('semantic')} title="Solid cyan or mint; semantic evidence, dashed when lower confidence">Semantic</button>
+              <button type="button" className="fact" aria-pressed={relationshipClasses.includes('fact')} onClick={() => toggleRelationshipClass('fact')} title="Amber; directed supporting fact and provenance">Support</button>
+              <button type="button" className="metadata" aria-pressed={relationshipClasses.includes('metadata')} onClick={() => toggleRelationshipClass('metadata')} title="Violet dotted; metadata context">Context</button>
+              <span className="relationship-legend-help">width = weight · opacity/dash = confidence · arrow = direction · details include provenance</span>
+            </div>
+          )}
           <div className="atlas-control-cluster" aria-label="Neural Atlas controls">
             <div className="graph-command-bar" role="toolbar" aria-label="Memory map view controls">
               <button type="button" onClick={() => onCommand('fit')} title="Fit visible nodes (0)" aria-label="Fit all memories"><Maximize2 /></button>
@@ -172,7 +209,7 @@ export default function MemoryMapSurface({
           </div>
         </main>
       </div>
-      {data && <GraphNavigator nodes={data.nodes} edges={data.edges} focusNodeId={selectedNodeId ?? null} onFocus={focusFromNavigator} onExpand={onExpand} onIntent={onPrefetchNode} level={level} />}
+      {data && <GraphNavigator nodes={data.nodes} edges={data.edges} focusNodeId={selectedNodeId ?? null} onFocus={focusFromNavigator} onExpand={onExpand} onIntent={onPrefetchNode} level={level} regions={data.atlas?.regions ?? []} regionId={regionId} onRegionFocus={onActivateRegion} />}
     </section>
   );
 }

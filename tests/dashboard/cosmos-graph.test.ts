@@ -10,6 +10,8 @@ import {
   prepareCosmosGraphWorkerResponse,
   responseMatchesWorkerIdentity,
 } from '../../dashboard/src/components/map/cosmos-graph-worker.js';
+import { semanticZoomBand, visibleSemanticRelationshipIndices } from '../../dashboard/src/components/map/cosmos-graph-runtime.js';
+import { buildGraphNavigationIndex } from '../../dashboard/src/components/map/GraphNavigator.js';
 
 const nodes: VizNode[] = [
   {
@@ -46,6 +48,52 @@ const nodes: VizNode[] = [
     seed_y: 0.65,
   },
 ];
+
+describe('semantic zoom bands', () => {
+  it('keeps relationship class, direction, confidence, evidence, and provenance in accessible navigation', () => {
+    const edge: VizEdge = {
+      id: 'edge:semantic', source_id: 'obs:7', target_id: 'topic:dashboard/ux', relation: 'USES',
+      kind: 'semantic', label: 'Uses', summary: 'Evidence', weight: 1, evidence_count: 3,
+      tier: 'representative-semantic', relationship_class: 'semantic', direction: 'directed',
+      confidence: 'high', provenance: [{ source_kind: 'kg-triple', source_id: 'evidence:uses', relation: 'USES', evidence_count: 3, confidence: 'high' }],
+    };
+    expect(buildGraphNavigationIndex(nodes, [edge]).relationByNodeId.get('obs:7')).toContain(
+      'semantic relationship, directed direction, high confidence, 3 evidence items, provenance kg-triple',
+    );
+  });
+  it('progressively discloses a bounded relevance-ranked relationship subset', () => {
+    const denseEdges = Array.from({ length: 384 }, (_, index): VizEdge => ({
+      id: `edge:${index}`, source_id: 'obs:7', target_id: 'topic:dashboard/ux', relation: 'USES',
+      kind: 'semantic', label: 'Related', summary: 'Evidence', weight: 384 - index,
+      evidence_count: 1 + (index % 5), tier: index < 20 ? 'representative-backbone' : 'representative-semantic',
+      relationship_class: 'semantic', direction: 'undirected', confidence: index % 4 === 0 ? 'high' : 'medium', provenance: [],
+    }));
+    const overview = visibleSemanticRelationshipIndices({ edges: denseEdges }, 'community', 'overview');
+    const exploration = visibleSemanticRelationshipIndices({ edges: denseEdges }, 'community', 'exploration');
+    const neighborhood = visibleSemanticRelationshipIndices({ edges: denseEdges }, 'neighborhood', 'exploration');
+    expect(overview).toHaveLength(10);
+    expect(exploration.length).toBeGreaterThan(overview.length);
+    expect(exploration.length).toBeLessThan(384);
+    expect(exploration).toHaveLength(14);
+    expect(neighborhood).toHaveLength(5);
+  });
+  it('keeps inter-region evidence in the model while painting only short local community currents', () => {
+    const semanticNodes = [
+      { ...nodes[0]!, region_id: 'region:a' },
+      { ...nodes[1]!, region_id: 'region:a' },
+      { ...nodes[2]!, region_id: 'region:b' },
+    ];
+    const local = { ...edges[0]!, id: 'local', source_id: semanticNodes[0]!.id, target_id: semanticNodes[1]!.id, tier: 'representative-backbone' as const };
+    const crossing = { ...edges[0]!, id: 'crossing', source_id: semanticNodes[0]!.id, target_id: semanticNodes[2]!.id, tier: 'representative-backbone' as const };
+    expect(visibleSemanticRelationshipIndices({ nodes: semanticNodes, edges: [local, crossing] }, 'community', 'exploration')).toEqual([0]);
+  });
+  it('uses 1.55 enter and 1.35 exit hysteresis without flicker', () => {
+    expect(semanticZoomBand('overview', 1.54)).toBe('overview');
+    expect(semanticZoomBand('overview', 1.55)).toBe('exploration');
+    expect(semanticZoomBand('exploration', 1.4)).toBe('exploration');
+    expect(semanticZoomBand('exploration', 1.34)).toBe('overview');
+  });
+});
 
 const edges: VizEdge[] = [
   {
@@ -363,6 +411,23 @@ describe('Cosmos graph data boundary', () => {
       ...request,
       level: 'community',
     })).toBe(false);
+  });
+
+  it('carries Community region anchors and relationship tiers through the worker boundary', () => {
+    const response = prepareCosmosGraphWorkerResponse({
+      requestId: 13, level: 'community', generation: 'semantic-region-generation',
+      nodes: [
+        { ...nodes[0], id: 'obs:1', semantic_level: 'community', community_id: 'community:one', region_id: 'region:a' },
+        { ...nodes[0], id: 'obs:2', semantic_level: 'community', community_id: 'community:one', region_id: 'region:b' },
+      ],
+      edges: [{ id: 'edge:region', source_id: 'obs:1', target_id: 'obs:2', relation: 'USES', kind: 'semantic', label: 'Related', summary: 'Safe', tier: 'representative-semantic', relationship_class: 'semantic', direction: 'undirected', confidence: 'high', evidence_count: 2, provenance: [] }],
+      previousCommunityAnchorIds: [],
+    });
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    expect(response.graphData.pointCommunityKeys).toEqual(['region:a', 'region:b']);
+    expect(response.graphData.edges[0]).toMatchObject({ tier: 'representative-semantic', confidence: 'high' });
+    expect(JSON.stringify(response)).not.toMatch(/private|canonical facet/i);
   });
 
   it('removes activation timing when reduced motion is requested', () => {

@@ -24,6 +24,7 @@ export interface CosmosRuntimeSnapshot {
   focusId: string | null;
   paused: boolean;
   reducedMotion: boolean;
+  zoomBand: SemanticZoomBand;
   ambientStarts: number;
   simulationStarts: number;
   simulationEnds: number;
@@ -41,6 +42,110 @@ export interface CosmosRuntimeSnapshot {
   screenFieldHeight: number;
   screenFieldAspect: number;
   cameraZoom: number;
+}
+
+export type SemanticZoomBand = 'overview' | 'exploration';
+export type SemanticRelationshipClassFilter = 'semantic' | 'fact' | 'metadata';
+export function semanticZoomBand(previous: SemanticZoomBand, zoom: number): SemanticZoomBand {
+  if (previous === 'overview' && zoom >= 1.55) return 'exploration';
+  if (previous === 'exploration' && zoom < 1.35) return 'overview';
+  return previous;
+}
+
+export function visibleSemanticRelationshipIndices(
+  data: Pick<CosmosGraphData, 'edges'> & Partial<Pick<CosmosGraphData, 'nodes' | 'focus' | 'pointIds'>>,
+  level: 'community' | 'neighborhood',
+  band: SemanticZoomBand,
+): number[] {
+  const ranked = data.edges.map((edge, index) => ({ edge, index }))
+    .sort((left, right) => (
+      Number(right.edge.tier === 'representative-backbone') - Number(left.edge.tier === 'representative-backbone')
+      || Number(right.edge.confidence === 'high') - Number(left.edge.confidence === 'high')
+      || (right.edge.evidence_count ?? 0) - (left.edge.evidence_count ?? 0)
+      || (right.edge.weight ?? 0) - (left.edge.weight ?? 0)
+      || left.edge.id.localeCompare(right.edge.id)
+    ));
+  if (level === 'community') {
+    const regionByNode = new Map(data.nodes?.map((node) => [node.id, node.region_id ?? node.community_id ?? 'context']) ?? []);
+    const local = ranked.filter(({ edge }) => regionByNode.get(edge.source_id) === regionByNode.get(edge.target_id));
+    const backbone = local.filter(({ edge }) => edge.tier === 'representative-backbone');
+    if (band === 'overview') return topologyLocalIndices(backbone, data.nodes, 10);
+    return topologyLocalIndices(local, data.nodes, 14);
+  }
+  // Neighborhood responses retain their complete edge semantics in the model and
+  // inspection surface; the canvas paints a small topology-local bundle so the
+  // supporting evidence reads as currents instead of a criss-crossing wall.
+  const focusId = data.focus && data.pointIds ? data.pointIds[data.focus.pointIndex] : undefined;
+  return neighborhoodLocalIndices(ranked, data.nodes, 5, focusId);
+}
+
+function neighborhoodLocalIndices(
+  ranked: Array<{ edge: CosmosGraphData['edges'][number]; index: number }>,
+  nodes: CosmosGraphData['nodes'] | undefined,
+  cap: number,
+  focusId?: string,
+): number[] {
+  if (!nodes) return ranked.slice(0, cap).map(({ index }) => index).sort((a, b) => a - b);
+  const incidence = new Map<string, number>();
+  for (const { edge } of ranked) {
+    incidence.set(edge.source_id, (incidence.get(edge.source_id) ?? 0) + 1);
+    incidence.set(edge.target_id, (incidence.get(edge.target_id) ?? 0) + 1);
+  }
+  const root = focusId ?? [...incidence].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0];
+  if (!root) return [];
+  const frontier = new Set([root]);
+  const selected: typeof ranked = [];
+  const remaining = [...ranked];
+  while (selected.length < cap) {
+    let candidateIndex = remaining.findIndex(({ edge }) => frontier.has(edge.source_id) !== frontier.has(edge.target_id));
+    if (candidateIndex < 0) candidateIndex = remaining.findIndex(({ edge }) => frontier.has(edge.source_id) && frontier.has(edge.target_id));
+    if (candidateIndex < 0) break;
+    const [candidate] = remaining.splice(candidateIndex, 1);
+    selected.push(candidate!);
+    frontier.add(candidate!.edge.source_id);
+    frontier.add(candidate!.edge.target_id);
+  }
+  return selected.map(({ index }) => index).sort((left, right) => left - right);
+}
+
+function topologyLocalIndices(
+  ranked: Array<{ edge: CosmosGraphData['edges'][number]; index: number }>,
+  nodes: CosmosGraphData['nodes'] | undefined,
+  cap: number,
+): number[] {
+  if (!nodes) return ranked.slice(0, cap).map(({ index }) => index).sort((a, b) => a - b);
+  const regionByNode = new Map(nodes.map((node) => [node.id, node.region_id ?? node.community_id ?? 'context']));
+  const localBuckets = new Map<string, typeof ranked>();
+  const bridgeBuckets = new Map<string, typeof ranked>();
+  for (const candidate of ranked) {
+    const source = regionByNode.get(candidate.edge.source_id) ?? 'context';
+    const target = regionByNode.get(candidate.edge.target_id) ?? 'context';
+    const key = [source, target].sort().join('\0');
+    const buckets = source === target ? localBuckets : bridgeBuckets;
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(candidate);
+    buckets.set(key, bucket);
+  }
+  const ordered = [...localBuckets.entries()].sort(([left], [right]) => left.localeCompare(right));
+  const selected: number[] = [];
+  for (let depth = 0; selected.length < cap; depth += 1) {
+    let progressed = false;
+    for (const [, bucket] of ordered) {
+      const candidate = bucket[depth];
+      if (!candidate) continue;
+      selected.push(candidate.index);
+      progressed = true;
+      if (selected.length === cap) break;
+    }
+    if (!progressed) break;
+  }
+  const bridgeAllowance = Math.min(3, cap - selected.length);
+  selected.push(...[...bridgeBuckets.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([, bucket]) => bucket.slice(0, 1))
+    .slice(0, bridgeAllowance)
+    .map(({ index }) => index));
+  return selected.sort((left, right) => left - right);
 }
 
 export interface CosmosNodeOverlay {
@@ -374,6 +479,11 @@ export interface CosmosGraphRuntimeCallbacks {
   onSelect: (selection: MapSelection) => void;
   onHover: (hover: { id: string; label: string; x: number; y: number } | null) => void;
   onNodeOverlays: (overlays: CosmosNodeOverlay[]) => void;
+  onRegionPoints: (layout: {
+    width: number;
+    height: number;
+    regions: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
+  }) => void;
   onMotionProbe: (probe: CosmosMotionProbe | null) => void;
   onSnapshot: (snapshot: CosmosRuntimeSnapshot) => void;
 }
@@ -396,6 +506,7 @@ const INITIAL_SNAPSHOT: CosmosRuntimeSnapshot = {
   focusId: null,
   paused: false,
   reducedMotion: false,
+  zoomBand: 'overview',
   ambientStarts: 0,
   simulationStarts: 0,
   simulationEnds: 0,
@@ -418,6 +529,8 @@ const INITIAL_SNAPSHOT: CosmosRuntimeSnapshot = {
 export class CosmosGraphRuntime {
   private snapshot: CosmosRuntimeSnapshot;
   private data: CosmosGraphData | null = null;
+  private zoomBand: SemanticZoomBand = 'overview';
+  private relationshipClasses = new Set<SemanticRelationshipClassFilter>(['semantic', 'fact', 'metadata']);
   private previousPointIds = new Set<string>();
   private previousLinkIds = new Set<string>();
   private activationGeneration = 0;
@@ -585,6 +698,7 @@ export class CosmosGraphRuntime {
     const linkIds = new Set(data.linkIds);
     const unchanged =
       this.data !== null &&
+      data.layoutIdentity === this.data.layoutIdentity &&
       data.pointIds.length === this.data.pointIds.length &&
       data.linkIds.length === this.data.linkIds.length &&
       data.pointIds.every((id, index) => this.data?.pointIds[index] === id) &&
@@ -613,7 +727,8 @@ export class CosmosGraphRuntime {
       : semantic
         ? Math.min(SEMANTIC_DATA_TRANSITION_MS, this.motion.transitionDuration)
         : this.motion.transitionDuration;
-    const pointPositions = isExpansion && previousData
+    const preserveReplacementPositions = data.preserveReplacementPositions;
+    const pointPositions = preserveReplacementPositions && (isExpansion || (semantic && !isInitial)) && previousData
       ? preserveNeuralAtlasPositions(
           previousData.pointIds,
           previousPositions,
@@ -621,6 +736,20 @@ export class CosmosGraphRuntime {
           data.pointPositions,
         )
       : data.pointPositions;
+    if (semantic && previousData && !isInitial) {
+      const previousIndex = new Map(previousData.pointIds.map((id, index) => [id, index]));
+      let maximumContinuityDelta = 0;
+      data.pointIds.forEach((id, index) => {
+        const oldIndex = previousIndex.get(id);
+        if (oldIndex === undefined) return;
+        maximumContinuityDelta = Math.max(maximumContinuityDelta, Math.hypot(
+          pointPositions[index * 2]! - previousPositions[oldIndex * 2]!,
+          pointPositions[index * 2 + 1]! - previousPositions[oldIndex * 2 + 1]!,
+        ));
+      });
+      this.host.dataset.maximumReplacementPositionDelta = maximumContinuityDelta.toFixed(3);
+      this.host.dataset.replacementFitSuppressed = String(preserveReplacementPositions);
+    }
 
     this.data = data;
     this.previousPointIds = pointIds;
@@ -686,11 +815,15 @@ export class CosmosGraphRuntime {
     this.graph.setPointShapes(new Float32Array(data.pointShapes));
     this.recordDataStage('points', stageStartedAt);
     stageStartedAt = performance.now();
-    this.graph.setLinks(new Float32Array(data.links));
-    this.graph.setLinkColors(colorsToFloat32(data.linkColors));
-    this.graph.setLinkWidths(new Float32Array(data.linkWidths));
-    this.graph.setLinkStyles(new Float32Array(data.edges.map((edge) => edge.kind === 'metadata' ? 1 : 0)));
-    this.graph.setLinkArrows(data.linkArrows);
+    const communityOverview = data.nodes.some((node) => node.semantic_level === 'community');
+    const neighborhood = data.nodes.some((node) => node.semantic_level === 'neighborhood');
+    if (communityOverview) this.zoomBand = 'overview';
+    const visibleLinkIndices = communityOverview
+      ? visibleSemanticRelationshipIndices(data, 'community', 'overview')
+      : neighborhood
+        ? visibleSemanticRelationshipIndices(data, 'neighborhood', 'exploration')
+        : data.edges.map((_edge, index) => index);
+    this.publishVisibleLinks(data, visibleLinkIndices);
     this.recordDataStage('links', stageStartedAt);
     stageStartedAt = performance.now();
     if (!semantic && !this.snapshot.paused && !this.snapshot.reducedMotion) this.graph.unpause();
@@ -706,11 +839,11 @@ export class CosmosGraphRuntime {
     }
     this.recordDataStage('simulationStart', stageStartedAt);
     stageStartedAt = performance.now();
-    if (isInitial) {
+    if (isInitial || !preserveReplacementPositions) {
       this.graph.fitViewByPointPositions(
         pointPositions,
         duration,
-        0.08,
+        preserveReplacementPositions ? 0.08 : 0.28,
         !this.snapshot.paused && !this.snapshot.reducedMotion,
       );
     }
@@ -741,10 +874,10 @@ export class CosmosGraphRuntime {
 
     const settleDelay = isInitial ? this.motion.initialSettleMs : duration;
     if (settleDelay === 0) {
-      this.finishMotion(completesInitialSettle, !this.snapshot.userCameraInteracted);
+      this.finishMotion(completesInitialSettle, isInitial && !this.snapshot.userCameraInteracted);
     } else {
       this.scheduleSettle(
-        () => this.finishMotion(completesInitialSettle, !this.snapshot.userCameraInteracted),
+        () => this.finishMotion(completesInitialSettle, isInitial && !this.snapshot.userCameraInteracted),
         settleDelay,
       );
     }
@@ -847,6 +980,21 @@ export class CosmosGraphRuntime {
     }, duration + this.motion.activationStepMs);
   }
 
+  setRelationshipClasses(classes: readonly SemanticRelationshipClassFilter[]): void {
+    if (this.destroyed || !this.data) return;
+    this.relationshipClasses = new Set(classes);
+    const level = this.data.nodes.some((node) => node.semantic_level === 'community')
+      ? 'community'
+      : this.data.nodes.some((node) => node.semantic_level === 'neighborhood')
+        ? 'neighborhood'
+        : null;
+    if (!level) return;
+    const indices = visibleSemanticRelationshipIndices(this.data, level, this.zoomBand)
+      .filter((index) => this.relationshipClasses.has(this.relationshipClass(this.data!.edges[index]!)));
+    this.publishVisibleLinks(this.data, indices);
+    this.graph.render(undefined, this.snapshot.reducedMotion ? 0 : 120);
+  }
+
   prepareDataTransition(): void {
     if (this.destroyed || !this.data) return;
     this.cancelSemanticAmbientFrame();
@@ -865,8 +1013,16 @@ export class CosmosGraphRuntime {
     const duration = this.snapshot.reducedMotion || this.snapshot.paused ? 0 : this.motion.transitionDuration;
     const simulation = false;
     if (command === 'fit') this.fitAll(duration);
-    if (command === 'zoom-in') this.graph.setZoomLevel(Math.min(8, this.graph.getZoomLevel() * 1.25), duration, simulation);
-    if (command === 'zoom-out') this.graph.setZoomLevel(Math.max(0.15, this.graph.getZoomLevel() * 0.8), duration, simulation);
+    if (command === 'zoom-in') {
+      const zoom = Math.min(8, this.graph.getZoomLevel() * 1.25);
+      this.graph.setZoomLevel(zoom, duration, simulation);
+      this.updateSemanticZoomBand(zoom);
+    }
+    if (command === 'zoom-out') {
+      const zoom = Math.max(0.15, this.graph.getZoomLevel() * 0.8);
+      this.graph.setZoomLevel(zoom, duration, simulation);
+      this.updateSemanticZoomBand(zoom);
+    }
     if (command === 'reset') this.fitAll(duration);
     if (command.startsWith('pan-')) {
       const shift = command === 'pan-left' ? [120, 0] : command === 'pan-right' ? [-120, 0] : command === 'pan-up' ? [0, 120] : [0, -120];
@@ -1052,11 +1208,14 @@ export class CosmosGraphRuntime {
       positions[probeOffset + 1],
     ]);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (x < -32 || y < -32 || x > this.host.clientWidth + 32 || y > this.host.clientHeight + 32) {
+      this.lastProbePosition = null;
+      return;
+    }
     if (this.lastProbePosition) {
-      this.maximumStepPx = Math.max(
-        this.maximumStepPx,
-        Math.hypot(x - this.lastProbePosition[0], y - this.lastProbePosition[1]),
-      );
+      const step = Math.hypot(x - this.lastProbePosition[0], y - this.lastProbePosition[1]);
+      // A camera fit changes every screen coordinate at once; it is not ambient node drift.
+      if (step <= 8) this.maximumStepPx = Math.max(this.maximumStepPx, step);
     }
     this.lastProbePosition = [x, y];
     this.callbacks.onMotionProbe({ x, y, tick: this.simulationTick });
@@ -1082,8 +1241,10 @@ export class CosmosGraphRuntime {
 
   private handleZoom(userDriven: boolean): void {
     if (this.destroyed) return;
+    const extent = this.data ? this.measureLiveExtent(this.graph.getPointPositions()) : {};
+    if (userDriven) this.updateSemanticZoomBand(extent.cameraZoom ?? this.snapshot.cameraZoom);
     this.requestOverlayLayout();
-    if (this.data) this.emit(this.measureLiveExtent(this.graph.getPointPositions()));
+    if (this.data) this.emit(extent);
     if (userDriven) {
       if (this.finalFitTimer !== null) {
         this.cancelFinalFit();
@@ -1091,6 +1252,38 @@ export class CosmosGraphRuntime {
       }
       if (!this.snapshot.userCameraInteracted) this.emit({ userCameraInteracted: true });
     }
+  }
+
+  private updateSemanticZoomBand(zoom: number): void {
+    const nextBand = semanticZoomBand(this.zoomBand, zoom);
+    if (nextBand !== this.zoomBand && this.data?.nodes.some((node) => node.semantic_level === 'community')) {
+      this.zoomBand = nextBand;
+      this.publishVisibleLinks(this.data, visibleSemanticRelationshipIndices(this.data, 'community', nextBand));
+      this.graph.render(undefined, this.snapshot.reducedMotion ? 0 : 120);
+      this.emit({ zoomBand: nextBand });
+    }
+  }
+
+  private publishVisibleLinks(data: CosmosGraphData, indices: number[]): void {
+    indices = indices.filter((index) => this.relationshipClasses.has(this.relationshipClass(data.edges[index]!)));
+    const links = indices.flatMap((index) => [data.links[index * 2]!, data.links[index * 2 + 1]!]);
+    this.graph.setLinks(new Float32Array(links));
+    const neighborhood = data.nodes.some((node) => node.semantic_level === 'neighborhood');
+    const communityExploration = !neighborhood && this.zoomBand === 'exploration';
+    const opacity = neighborhood ? 0.42 : communityExploration ? 0.24 : 1;
+    const widthScale = neighborhood ? 0.58 : communityExploration ? 0.42 : 1;
+    this.graph.setLinkColors(colorsToFloat32(indices.map((index) => data.linkColors[index]!), opacity));
+    this.graph.setLinkWidths(new Float32Array(indices.map((index) => data.linkWidths[index]! * widthScale)));
+    this.graph.setLinkStyles(new Float32Array(indices.map((index) => data.edges[index]!.confidence === 'low' ? 1 : 0)));
+    this.graph.setLinkArrows(indices.map((index) => data.linkArrows[index]! && data.edges[index]!.direction === 'directed'));
+    this.host.dataset.paintedRelationshipCount = String(indices.length);
+    this.host.dataset.sourcePreparedRelationshipCount = String(data.edges.length);
+  }
+
+  private relationshipClass(edge: CosmosGraphData['edges'][number]): SemanticRelationshipClassFilter {
+    if (edge.relationship_class === 'fact' || edge.kind === 'fact') return 'fact';
+    if (edge.relationship_class === 'metadata' || edge.kind === 'metadata') return 'metadata';
+    return 'semantic';
   }
 
   private handleResize(): void {
@@ -1124,9 +1317,15 @@ export class CosmosGraphRuntime {
   private publishOverlayLayout(): void {
     if (!this.data) {
       this.callbacks.onNodeOverlays([]);
+      this.callbacks.onRegionPoints({ width: this.host.clientWidth, height: this.host.clientHeight, regions: [] });
       return;
     }
     const positions = this.graph.getPointPositions();
+    this.callbacks.onRegionPoints({
+      width: this.host.clientWidth,
+      height: this.host.clientHeight,
+      regions: this.communityRegionPoints(positions),
+    });
     if (!this.overlayFocus) {
       this.callbacks.onNodeOverlays(placeCosmosNodeLabels(
         this.universeRegionOverlays(positions),
@@ -1165,6 +1364,24 @@ export class CosmosGraphRuntime {
       })
       .filter((overlay): overlay is UnplacedCosmosNodeOverlay => overlay !== null);
     this.callbacks.onNodeOverlays(placeCosmosNodeLabels(overlays, this.host.clientWidth, this.host.clientHeight));
+  }
+
+  private communityRegionPoints(positions: ArrayLike<number>): Array<{ id: string; points: Array<{ x: number; y: number }> }> {
+    if (!this.data || this.data.nodes[0]?.semantic_level !== 'community') return [];
+    const pointsByRegion = new Map<string, Array<{ x: number; y: number }>>();
+    for (const [pointIndex, id] of this.data.pointCommunityKeys.entries()) {
+      const [x, y] = this.graph.spaceToScreenPosition([
+        positions[pointIndex * 2],
+        positions[pointIndex * 2 + 1],
+      ]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const points = pointsByRegion.get(id) ?? [];
+      points.push({ x, y });
+      pointsByRegion.set(id, points);
+    }
+    return [...pointsByRegion.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, points]) => ({ id, points }));
   }
 
   private universeRegionOverlays(positions: ArrayLike<number>): UnplacedCosmosNodeOverlay[] {
@@ -1229,6 +1446,7 @@ export class CosmosGraphRuntime {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     this.host.dataset.pointerProbeX = String(x);
     this.host.dataset.pointerProbeY = String(y);
+    this.host.dataset.pointerProbeId = this.data?.pointIds[pointIndex] ?? '';
   }
 
   private schedulePointerProbe(): void {
@@ -1246,6 +1464,7 @@ export class CosmosGraphRuntime {
     }
     delete this.host.dataset.pointerProbeX;
     delete this.host.dataset.pointerProbeY;
+    delete this.host.dataset.pointerProbeId;
   }
 
   private finishMotion(initial: boolean, fitInitial = true): void {
@@ -1502,8 +1721,12 @@ function selectExtentAnchorIndices(positions: readonly number[]): number[] {
   return indices;
 }
 
-function colorsToFloat32(colors: string[]): Float32Array {
-  return new Float32Array(colors.flatMap((color) => hexToRgba(color)));
+function colorsToFloat32(colors: string[], opacity = 1): Float32Array {
+  return new Float32Array(colors.flatMap((color) => {
+    const rgba = hexToRgba(color);
+    rgba[3] = opacity;
+    return rgba;
+  }));
 }
 
 function hexToRgba(color: string): [number, number, number, number] {

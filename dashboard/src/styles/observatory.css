@@ -434,6 +434,41 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
   gap: 7px;
   max-width: calc(100% - 32px);
 }
+
+.neural-atlas-workspace .relationship-legend {
+  position: absolute;
+  z-index: 8;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: max(82px, calc(env(safe-area-inset-bottom) + 82px));
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(620px, calc(100% - 28px));
+  padding: 6px 8px;
+  border: 1px solid rgba(126, 211, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(4, 15, 29, 0.82);
+  box-shadow: 0 10px 30px rgba(0, 4, 12, 0.42);
+  backdrop-filter: blur(12px);
+  color: #b9cada;
+  font-size: 0.68rem;
+}
+.relationship-legend-title { padding-inline: 4px; color: #f2f8ff; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.relationship-legend button { min-height: 30px; padding: 4px 10px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: #8ca0b2; }
+.relationship-legend button[aria-pressed='true'].semantic { color: #58dddb; background: rgba(40, 185, 190, 0.16); }
+.relationship-legend button[aria-pressed='true'].fact { color: #f2b85c; background: rgba(242, 184, 92, 0.14); }
+.relationship-legend button[aria-pressed='true'].metadata { color: #b292ff; background: rgba(178, 146, 255, 0.14); }
+.relationship-legend button[aria-pressed='false'] { opacity: 0.45; text-decoration: line-through; }
+.relationship-legend-help { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px), (min-resolution: 1.8dppx) {
+  .neural-atlas-workspace .relationship-legend {
+    bottom: max(138px, calc(env(safe-area-inset-bottom) + 138px));
+    max-width: calc(100% - 20px);
+    left: max(10px, env(safe-area-inset-left));
+    overflow-x: auto;
+  }
+  .relationship-legend-help { display: none; }
+}
 .neural-atlas-workspace .atlas-control-cluster .graph-command-bar,
 .neural-atlas-workspace .atlas-control-cluster .graph-pan-pad,
 .neural-atlas-workspace .atlas-control-cluster .graph-trail-bar {
@@ -695,3 +730,149 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
     overflow: hidden;
   }
 }
+.semantic-region-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.semantic-region-layer path {
+  fill: color-mix(in srgb, var(--region-color, #67e8f9) 10%, transparent);
+  stroke: none;
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--region-color, #67e8f9) 10%, transparent));
+  stroke-dasharray: none;
+  vector-effect: non-scaling-stroke;
+  pointer-events: visiblePainted;
+  cursor: pointer;
+  transition: fill 180ms ease, opacity 180ms ease, stroke-width 180ms ease;
+}
+
+.semantic-region-layer .semantic-region-bridge {
+  fill: none;
+  stroke: #70d8ff;
+  stroke-width: var(--bridge-width, 1.2px);
+  opacity: var(--bridge-opacity, .42);
+  stroke-dasharray: none;
+  pointer-events: none;
+  filter: none;
+}
+
+.semantic-region-layer .semantic-region-bridge[data-confidence="low"],
+.semantic-region-layer .semantic-region-bridge[data-confidence="unknown"] {
+  stroke-dasharray: 4 7;
+}
+
+.semantic-region-layer marker path {
+  fill: #70d8ff;
+  stroke: none;
+}
+
+.semantic-region-layer g[data-focused="true"] path {
+  fill: color-mix(in srgb, var(--region-color, #67e8f9) 18%, transparent);
+  filter: drop-shadow(0 0 24px color-mix(in srgb, var(--region-color, #67e8f9) 18%, transparent));
+}
+
+.semantic-region-layer text {
+  fill: #d9f7ff;
+  font: 600 13px/1.2 "IBM Plex Mono", monospace;
+  paint-order: stroke;
+  stroke: #020711;
+  stroke-width: 4px;
+  pointer-events: none;
+}
+
+.graph-region-groups {
+  display: grid;
+  gap: .35rem;
+  margin-block: .5rem .75rem;
+}
+
+.graph-region-groups button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  border: 1px solid color-mix(in srgb, var(--atlas-cyan, #67e8f9) 24%, transparent);
+  border-radius: .55rem;
+  background: color-mix(in srgb, #071523 88%, transparent);
+  color: #dff9ff;
+  padding: .55rem .65rem;
+  text-align: left;
+}
+
+.graph-region-groups button[aria-pressed="true"] {
+  border-color: var(--atlas-cyan, #67e8f9);
+  box-shadow: inset 3px 0 0 var(--atlas-cyan, #67e8f9);
+}
+
+.graph-region-groups span { color: #81a6b5; font-size: .75rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .semantic-region-layer path { transition: none; }
+}
+
+.neural-atlas-workspace[data-visual-scale='2'] > .observatory-header {
+  top: 6px;
+  left: 8px;
+  right: 8px;
+  min-height: 44px;
+  padding: 6px 8px;
+}
+.neural-atlas-workspace[data-visual-scale='2'] {
+  overflow: hidden;
+}
+@media (min-width: 721px) {
+  .neural-atlas-workspace[data-visual-scale='2'] {
+    position: fixed;
+    left: var(--atlas-visual-left);
+    top: var(--atlas-visual-top);
+    width: var(--atlas-visual-width);
+    height: var(--atlas-visual-height);
+  }
+}
+.neural-atlas-workspace[data-visual-scale='2'] > .observatory-header h1 { display: none; }
+.neural-atlas-workspace[data-visual-scale='2'] .observatory-search { min-width: 180px; }
+.neural-atlas-workspace[data-visual-scale='2'] > .focus-trail {
+  top: 58px;
+  left: 8px;
+  translate: 0 0;
+  max-width: calc(var(--atlas-visual-width) - 16px);
+}
+.neural-atlas-workspace[data-visual-scale='2'] > .focus-trail button { min-height: 32px; padding: 0 7px; }
+.neural-atlas-workspace[data-visual-scale='2'] .semantic-region-layer g:nth-of-type(n+7) text { display: none; }
+.neural-atlas-workspace[data-visual-scale='2'] .observatory-map-surface > .observatory-panel-header,
+.neural-atlas-workspace[data-visual-scale='2'] .resource-state-notice { display: none; }
+.neural-atlas-workspace[data-visual-scale='2'] .relationship-legend {
+  max-width: calc(var(--atlas-visual-width) - 76px);
+}
+.map-canvas-shell[data-zoom-band='exploration'] .semantic-region-layer path {
+  opacity: .22;
+}
+
+.region-overview { display: grid; gap: 14px; color: #cfe1ec; }
+.region-overview > header { display: grid; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid rgba(117, 184, 211, .14); }
+.region-overview h2,.region-overview h3,.region-overview p { margin: 0; }
+.region-overview h2 { color: #f4fbff; font-size: 1.08rem; text-wrap: balance; }
+.region-overview h3 { color: #aeeaf3; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+.region-overview-kicker { color: #71dced; font: 700 .62rem var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+.region-overview-counts { display: flex; gap: 6px; color: #829ba9; font-size: .72rem; }
+.region-overview-counts strong { color: #e7f7ff; font-variant-numeric: tabular-nums; }
+.region-overview-summary { color: #b9cbd5; font-size: .82rem; line-height: 1.5; text-wrap: pretty; }
+.region-overview-time { display: flex; justify-content: space-between; gap: 12px; color: #7892a1; font-size: .7rem; }
+.region-overview-time strong { color: #a8c2cf; }
+.region-concepts,.region-facets { display: flex; flex-wrap: wrap; gap: 5px; }
+.region-concepts span,.region-facets span { padding: 5px 7px; border: 1px solid rgba(108, 205, 222, .16); border-radius: 999px; background: rgba(22, 62, 74, .26); color: #a9dce3; font-size: .66rem; }
+.region-facets span { border-color: rgba(164, 132, 236, .16); background: rgba(63, 43, 94, .24); color: #cab9ed; }
+.region-representatives { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.region-representatives li { display: grid; gap: 3px; padding: 8px; border-radius: 8px; background: rgba(12, 27, 40, .72); }
+.region-representatives button { width: fit-content; min-height: 28px; padding: 0; border: 0; background: transparent; color: #e9f8ff; font-weight: 700; text-align: left; }
+.region-representatives span { color: #8199a7; font-size: .68rem; line-height: 1.4; }
+.region-overview-more { color: #748b98; font-size: .68rem; }
+.region-bridge-summary { display: grid; gap: 6px; }
+.region-bridge-summary p { display: flex; justify-content: space-between; gap: 10px; padding: 7px 8px; border-left: 2px solid rgba(94, 209, 225, .5); background: rgba(11, 31, 43, .62); font-size: .68rem; }
+.region-bridge-summary p span { color: #7893a0; }
+.region-clear-button { min-height: 40px; border: 1px solid rgba(103, 232, 249, .28); border-radius: 8px; background: rgba(28, 89, 104, .28); color: #dffaff; }
