@@ -72,6 +72,169 @@ function seedFreshAtlasSummary(store: Store, input: {
 }
 
 describe('Store semantic atlas', () => {
+  it('preserves KG subject-to-object roles when observation IDs sort in the opposite direction', () => {
+    const store = new Store(':memory:');
+    try {
+      const objectObservation = store.saveObservation({
+        title: 'Lower opaque identity',
+        content: 'Public object-side evidence <private>OBJECT_SECRET</private>',
+        project: 'direction-project',
+      }).observation;
+      const subjectObservation = store.saveObservation({
+        title: 'Higher opaque identity',
+        content: 'Public subject-side evidence <private>SUBJECT_SECRET</private>',
+        project: 'direction-project',
+      }).observation;
+      insertKgTriple(store, {
+        observationId: objectObservation.id,
+        subject: 'Object-side source',
+        relation: 'USES',
+        object: 'Shared directional concept',
+        project: 'direction-project',
+      });
+      insertKgTriple(store, {
+        observationId: subjectObservation.id,
+        subject: 'Shared directional concept',
+        relation: 'USES',
+        object: 'Subject-side target',
+        project: 'direction-project',
+      });
+
+      const universe = store.getSemanticAtlasPage({ level: 'universe' });
+      const community = store.getSemanticAtlasPage({
+        level: 'community',
+        community_id: universe.nodes[0]!.id,
+      });
+      const relationship = community.edges.find((edge) => (
+        new Set([edge.source_id, edge.target_id]).size === 2
+        && [edge.source_id, edge.target_id].includes(`obs:${objectObservation.id}`)
+        && [edge.source_id, edge.target_id].includes(`obs:${subjectObservation.id}`)
+      ));
+
+      expect(relationship).toMatchObject({
+        source_id: `obs:${subjectObservation.id}`,
+        target_id: `obs:${objectObservation.id}`,
+        direction: 'directed',
+      });
+      expect(JSON.stringify(community)).not.toMatch(/OBJECT_SECRET|SUBJECT_SECRET|<private>/i);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('reports mixed direction when structural evidence supports both observation orientations', () => {
+    const store = new Store(':memory:');
+    try {
+      const left = store.saveObservation({ title: 'Left memory', content: 'Left', project: 'mixed-direction' }).observation;
+      const right = store.saveObservation({ title: 'Right memory', content: 'Right', project: 'mixed-direction' }).observation;
+      for (const [observationId, subject, object] of [
+        [left.id, 'Shared mixed concept', 'Left target'],
+        [left.id, 'Left source', 'Shared mixed concept'],
+        [right.id, 'Shared mixed concept', 'Right target'],
+        [right.id, 'Right source', 'Shared mixed concept'],
+      ] as const) {
+        insertKgTriple(store, { observationId, subject, relation: 'AFFECTS', object, project: 'mixed-direction' });
+      }
+
+      const universe = store.getSemanticAtlasPage({ level: 'universe' });
+      const community = store.getSemanticAtlasPage({ level: 'community', community_id: universe.nodes[0]!.id });
+      const relationship = community.edges.find((edge) => (
+        [edge.source_id, edge.target_id].includes(`obs:${left.id}`)
+        && [edge.source_id, edge.target_id].includes(`obs:${right.id}`)
+      ));
+      expect(relationship?.direction).toBe('mixed');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('replaces an oversized Community overview with a region-biased working set', () => {
+    const store = new Store(':memory:');
+    try {
+      for (let index = 0; index < 240; index += 1) {
+        const region = Math.floor(index / 30);
+        const saved = store.saveObservation({
+          title: `Focused atlas memory ${index + 1}`,
+          content: `Public evidence ${index + 1} for semantic region ${region + 1}`,
+          project: `focus-project-${index % 4}`,
+          session_id: `focus-session-${index % 16}`,
+          topic_key: `focus/topic-${index + 1}`,
+          type: index % 2 === 0 ? 'decision' : 'discovery',
+        });
+        insertKgTriple(store, {
+          observationId: saved.observation.id,
+          subject: `Focused atlas memory ${index + 1}`,
+          relation: 'USES',
+          object: `atlas-chain-${index}`,
+          project: `focus-project-${index % 4}`,
+          topicKey: `focus/topic-${region + 1}`,
+        });
+        insertKgTriple(store, {
+          observationId: saved.observation.id,
+          subject: `Focused atlas memory ${index + 1}`,
+          relation: 'AFFECTS',
+          object: `atlas-chain-${index + 1}`,
+          project: `focus-project-${index % 4}`,
+          topicKey: `focus/topic-${region + 1}`,
+        });
+      }
+      for (let index = 0; index < 725; index += 1) {
+        const group = Math.floor(index / 25);
+        const saved = store.saveObservation({
+          title: `Atlas context memory ${index + 1}`,
+          content: `Distinct unclustered context evidence ${index + 1}`,
+          project: `context-project-${index % 12}`,
+          session_id: `context-session-${index}`,
+          topic_key: `context/topic-${index}`,
+          type: 'discovery',
+        });
+        insertKgTriple(store, {
+          observationId: saved.observation.id,
+          subject: `Atlas context memory ${index + 1}`,
+          relation: 'USES',
+          object: `context-constellation-${group + 1}`,
+          project: `context-project-${index % 12}`,
+          topicKey: `context/topic-${index}`,
+        });
+      }
+
+      const universe = store.getSemanticAtlasPage({ level: 'universe' });
+      const communityId = [...universe.nodes]
+        .sort((left, right) => (right.member_count ?? 0) - (left.member_count ?? 0))[0]!.id;
+      const overview = store.getSemanticAtlasPage({
+        level: 'community', community_id: communityId, presentation: 'semantic-zoom',
+      });
+      expect(overview.navigation.source_memory_count).toBeGreaterThan(180);
+      expect(overview.regions.length).toBeGreaterThanOrEqual(6);
+
+      const focusedRegion = [...overview.regions]
+        .sort((left, right) => right.member_count - left.member_count)[0]!;
+      const focused = store.getSemanticAtlasPage({
+        level: 'community', community_id: communityId,
+        presentation: 'semantic-zoom', region_id: focusedRegion.id,
+      });
+      const overviewIds = new Set(overview.nodes.map((node) => node.id));
+      const focusedIds = new Set(focused.nodes.map((node) => node.id));
+      const sharedIds = focused.nodes.filter((node) => overviewIds.has(node.id));
+      const overviewFocusedCount = overview.nodes.filter((node) => node.region_id === focusedRegion.id).length;
+      const focusedFocusedCount = focused.nodes.filter((node) => node.region_id === focusedRegion.id).length;
+
+      expect([...focusedIds].sort()).not.toEqual([...overviewIds].sort());
+      expect(sharedIds.length).toBeGreaterThan(0);
+      expect(focusedFocusedCount).toBeGreaterThan(overviewFocusedCount);
+      expect(focused.regions).toHaveLength(overview.regions.length);
+      expect(focused.navigation).toMatchObject({
+        source_memory_count: overview.navigation.source_memory_count,
+        source_relationship_count: overview.navigation.source_relationship_count,
+      });
+      expect(focused.generation).toBe(overview.generation);
+      expect(focused.nodes.length).toBeLessThanOrEqual(180);
+      expect(focused.edges.length + focused.region_bridges.length).toBeLessThanOrEqual(450);
+    } finally {
+      store.close();
+    }
+  });
+
   it('navigates complete token-scoped Universe, Community, and Neighborhood projections', async () => {
     const store = new Store(':memory:');
     try {
@@ -159,6 +322,24 @@ describe('Store semantic atlas', () => {
       expect(JSON.stringify(summarizedUniverse)).not.toMatch(/SUMMARY_(?:ALPHA|BETA)_SECRET/);
 
       const communityIds = universe.nodes.map((node) => node.id);
+      const semanticCommunity = store.getSemanticAtlasPage({
+        level: 'community',
+        community_id: communityIds[0],
+        presentation: 'semantic-zoom',
+      });
+      expect(semanticCommunity.presentation).toBe('semantic-zoom');
+      expect(semanticCommunity.continuation).toBeNull();
+      expect(semanticCommunity.regions.reduce((sum, region) => sum + region.member_count, 0))
+        .toBe(semanticCommunity.navigation.source_memory_count);
+      expect(semanticCommunity.navigation.visible_memory_count).toBe(semanticCommunity.nodes.length);
+      expect(semanticCommunity.navigation.visible_relationship_count)
+        .toBe(semanticCommunity.edges.length + semanticCommunity.region_bridges.length);
+      expect(semanticCommunity.edges.length + semanticCommunity.region_bridges.length).toBeLessThanOrEqual(450);
+      expect(semanticCommunity.regions.flatMap((region) => region.representatives)).toHaveLength(semanticCommunity.nodes.length);
+      expect(semanticCommunity.edges.every((edge) => (
+        edge.tier && edge.relationship_class && edge.direction && edge.confidence && edge.provenance
+      ))).toBe(true);
+
       const accumulatedMemberIds = new Set<string>();
       for (const communityId of communityIds) {
         let cursor: string | undefined;
@@ -170,6 +351,8 @@ describe('Store semantic atlas', () => {
             cursor,
           });
           expect(page.nodes.every((node) => node.kind === 'observation')).toBe(true);
+          expect(page.presentation).toBe('complete');
+          expect(page.regions).toEqual([]);
           page.nodes.forEach((node) => accumulatedMemberIds.add(node.id));
           expect(page.edges.every((edge) => (
             accumulatedMemberIds.has(edge.source_id) && accumulatedMemberIds.has(edge.target_id)

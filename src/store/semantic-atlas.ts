@@ -12,6 +12,8 @@ import type {
   ObservationFact,
   SemanticAtlasEdge,
   SemanticAtlasNode,
+  SemanticAtlasRelationshipDirection,
+  SemanticAtlasRelationshipProvenance,
 } from './types.js';
 import {
   deriveVisualizationEdgeId,
@@ -49,6 +51,8 @@ export interface AtlasEvidenceLink {
   weight: number;
   evidence_count: number;
   relations: string[];
+  direction: SemanticAtlasRelationshipDirection;
+  provenance: SemanticAtlasRelationshipProvenance[];
 }
 
 export interface AtlasStructuralEvidence {
@@ -58,6 +62,27 @@ export interface AtlasStructuralEvidence {
   relation: string;
   confidence: number;
   provenance_id: string;
+  direction: SemanticAtlasRelationshipDirection;
+  endpoint_role: 'subject' | 'object' | 'undirected' | 'unknown';
+  source_kind: SemanticAtlasRelationshipProvenance['source_kind'];
+}
+
+type EvidenceOrientation = 'forward' | 'reverse' | 'undirected' | 'unknown' | 'mixed';
+
+function relationshipDirection(orientations: Set<EvidenceOrientation>): {
+  direction: SemanticAtlasRelationshipDirection;
+  reverse: boolean;
+} {
+  const hasForward = orientations.has('forward');
+  const hasReverse = orientations.has('reverse');
+  const nonDirectional = orientations.has('undirected');
+  const mixed = orientations.has('mixed')
+    || (hasForward && hasReverse)
+    || ((hasForward || hasReverse) && nonDirectional);
+  return {
+    direction: mixed ? 'mixed' : hasForward || hasReverse ? 'directed' : nonDirectional ? 'undirected' : 'unknown',
+    reverse: hasReverse && !hasForward && !nonDirectional && !mixed,
+  };
 }
 
 export interface AtlasCommunityProjection {
@@ -71,9 +96,12 @@ export interface SemanticAtlasProjection {
   observations: Observation[];
   observationNodes: Map<string, SemanticAtlasNode>;
   evidenceLinks: AtlasEvidenceLink[];
+  presentationEvidence: Array<{ observation_id: number; label: string }>;
   semanticEdges: SemanticAtlasEdge[];
+  semanticEdgesByNodeId: Map<string, SemanticAtlasEdge[]>;
   supportingNodes: Map<string, SemanticAtlasNode>;
   supportingEdges: SemanticAtlasEdge[];
+  supportingEdgesByObservationId: Map<string, SemanticAtlasEdge[]>;
   supportingNodeIdsByObservationId: Map<string, string[]>;
   communities: AtlasCommunityProjection[];
   communityByObservationId: Map<string, string>;
@@ -280,24 +308,34 @@ function buildEvidenceLinks(
     && (!relationFilter || item.relation === relationFilter)
   ));
   const observationsWithKg = new Set(eligibleEvidence.map((item) => item.observation_id));
-  const byEntity = new Map<string, Map<number, { confidence: number; relations: Set<string>; label: string }>>();
+  const byEntity = new Map<string, Map<number, { confidence: number; relations: Set<string>; roles: Set<AtlasStructuralEvidence['endpoint_role']>; provenance: Map<string, SemanticAtlasRelationshipProvenance>; label: string }>>();
   const supportingEntities = new Set<string>();
   for (const item of eligibleEvidence) {
     const members = byEntity.get(item.entity_key) ?? new Map();
     const current = members.get(item.observation_id) ?? {
       confidence: 0,
       relations: new Set<string>(),
+      roles: new Set<AtlasStructuralEvidence['endpoint_role']>(),
+      provenance: new Map<string, SemanticAtlasRelationshipProvenance>(),
       label: safeText(item.label),
     };
     current.confidence = Math.max(current.confidence, Math.min(Math.max(item.confidence, 0), 1));
     current.relations.add(item.relation);
+    current.roles.add(item.endpoint_role);
+    current.provenance.set(item.provenance_id, {
+      source_kind: item.source_kind,
+      source_id: createHash('sha256').update(`evidence\0${item.provenance_id}`).digest('hex').slice(0, 20),
+      relation: item.relation,
+      evidence_count: 1,
+      confidence: item.confidence >= 0.8 ? 'high' : item.confidence >= 0.5 ? 'medium' : item.confidence > 0 ? 'low' : 'unknown',
+    });
     if (!current.label) current.label = safeText(item.label);
     members.set(item.observation_id, current);
     byEntity.set(item.entity_key, members);
   }
 
   const frequencyCutoff = Math.max(64, Math.ceil(observations.length * 0.01));
-  const pairEvidence = new Map<string, { weight: number; evidenceCount: number; relations: Set<string> }>();
+  const pairEvidence = new Map<string, { weight: number; evidenceCount: number; relations: Set<string>; orientations: Set<EvidenceOrientation>; provenance: Map<string, SemanticAtlasRelationshipProvenance> }>();
   const presentationEvidence: Array<{ observation_id: number; label: string }> = [];
   for (const [entityKey, memberMap] of [...byEntity.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const members = [...memberMap.entries()].sort(([left], [right]) => left - right);
@@ -313,26 +351,39 @@ function buildEvidenceLinks(
         const sourceId = `obs:${sourceObservationId}`;
         const targetId = `obs:${targetObservationId}`;
         const pairKey = `${sourceId}\0${targetId}`;
-        const aggregate = pairEvidence.get(pairKey) ?? { weight: 0, evidenceCount: 0, relations: new Set<string>() };
+        const aggregate = pairEvidence.get(pairKey) ?? { weight: 0, evidenceCount: 0, relations: new Set<string>(), orientations: new Set<EvidenceOrientation>(), provenance: new Map<string, SemanticAtlasRelationshipProvenance>() };
         const confidence = (sourceEvidence.confidence + targetEvidence.confidence) / 2;
         aggregate.weight += confidence / Math.max(members.length - 1, 1);
         aggregate.evidenceCount += 1;
         sourceEvidence.relations.forEach((relation) => aggregate.relations.add(relation));
         targetEvidence.relations.forEach((relation) => aggregate.relations.add(relation));
+        for (const sourceRole of sourceEvidence.roles) {
+          for (const targetRole of targetEvidence.roles) {
+            if (sourceRole === 'subject' && targetRole === 'object') aggregate.orientations.add('forward');
+            else if (sourceRole === 'object' && targetRole === 'subject') aggregate.orientations.add('reverse');
+            else if (sourceRole === 'undirected' || targetRole === 'undirected') aggregate.orientations.add('undirected');
+            else aggregate.orientations.add('unknown');
+          }
+        }
+        sourceEvidence.provenance.forEach((item, id) => aggregate.provenance.set(id, item));
+        targetEvidence.provenance.forEach((item, id) => aggregate.provenance.set(id, item));
         pairEvidence.set(pairKey, aggregate);
       }
     }
   }
 
   return {
-    links: [...pairEvidence.entries()].map(([pairKey, aggregate]) => {
+    links: [...pairEvidence.entries()].map(([pairKey, aggregate]): AtlasEvidenceLink => {
       const [sourceId, targetId] = pairKey.split('\0');
+      const { direction, reverse } = relationshipDirection(aggregate.orientations);
       return {
-        source_id: sourceId!,
-        target_id: targetId!,
+        source_id: reverse ? targetId! : sourceId!,
+        target_id: reverse ? sourceId! : targetId!,
         weight: Number(aggregate.weight.toFixed(6)),
         evidence_count: aggregate.evidenceCount,
         relations: [...aggregate.relations].sort(),
+        direction,
+        provenance: [...aggregate.provenance.values()].sort((left, right) => left.source_id.localeCompare(right.source_id)).slice(0, 5),
       };
     }).sort((left, right) => (
       left.source_id.localeCompare(right.source_id) || left.target_id.localeCompare(right.target_id)
@@ -652,6 +703,11 @@ export function buildSemanticAtlasProjection(input: {
       summary: 'Supporting evidence for this memory',
       weight: 1,
       evidence_count: 1,
+      tier: 'fact-support',
+      relationship_class: 'fact',
+      direction: 'directed',
+      confidence: 'unknown',
+      provenance: [{ source_kind: 'legacy-fact', source_id: createHash('sha256').update(`legacy\0${fact.observation_id}\0${fact.relation}\0${fact.object}`).digest('hex').slice(0, 20), relation: fact.relation, evidence_count: 1, confidence: 'unknown' }],
     });
   }
   for (const nodeIds of supportingNodeIdsByObservationId.values()) nodeIds.sort();
@@ -667,34 +723,65 @@ export function buildSemanticAtlasProjection(input: {
     summary: `${link.evidence_count} shared evidence ${link.evidence_count === 1 ? 'item' : 'items'}`,
     weight: link.weight,
     evidence_count: link.evidence_count,
+    tier: 'representative-semantic' as const,
+    relationship_class: 'semantic' as const,
+    direction: link.direction,
+    confidence: link.evidence_count >= 4 ? 'high' as const : link.evidence_count >= 2 ? 'medium' as const : 'low' as const,
+    provenance: link.provenance,
   }));
+  const semanticEdgesByNodeId = new Map<string, SemanticAtlasEdge[]>();
+  for (const edge of semanticEdges) {
+    for (const nodeId of [edge.source_id, edge.target_id]) {
+      const nodeEdges = semanticEdgesByNodeId.get(nodeId) ?? [];
+      nodeEdges.push(edge);
+      semanticEdgesByNodeId.set(nodeId, nodeEdges);
+    }
+  }
+  const supportingEdgesByObservationId = new Map<string, SemanticAtlasEdge[]>();
+  for (const edge of supportingEdges) {
+    const nodeEdges = supportingEdgesByObservationId.get(edge.source_id) ?? [];
+    nodeEdges.push(edge);
+    supportingEdgesByObservationId.set(edge.source_id, nodeEdges);
+  }
 
-  const aggregateByPair = new Map<string, { weight: number; evidenceCount: number; relations: Set<string> }>();
+  const aggregateByPair = new Map<string, { weight: number; evidenceCount: number; relations: Set<string>; orientations: Set<EvidenceOrientation>; provenance: Map<string, SemanticAtlasRelationshipProvenance> }>();
   for (const link of evidence.links) {
     const sourceCommunity = communityByObservationId.get(link.source_id)!;
     const targetCommunity = communityByObservationId.get(link.target_id)!;
     if (sourceCommunity === targetCommunity) continue;
     const [sourceId, targetId] = [sourceCommunity, targetCommunity].sort();
     const key = `${sourceId}\0${targetId}`;
-    const aggregate = aggregateByPair.get(key) ?? { weight: 0, evidenceCount: 0, relations: new Set<string>() };
+    const aggregate = aggregateByPair.get(key) ?? { weight: 0, evidenceCount: 0, relations: new Set<string>(), orientations: new Set<EvidenceOrientation>(), provenance: new Map<string, SemanticAtlasRelationshipProvenance>() };
     aggregate.weight += link.weight;
     aggregate.evidenceCount += link.evidence_count;
     link.relations.forEach((relation) => aggregate.relations.add(relation));
+    aggregate.orientations.add(link.direction === 'directed'
+      ? sourceCommunity === sourceId ? 'forward' : 'reverse'
+      : link.direction);
+    link.provenance.forEach((item) => aggregate.provenance.set(item.source_id, item));
     aggregateByPair.set(key, aggregate);
   }
   const aggregateEdges = [...aggregateByPair.entries()].map(([pair, aggregate]) => {
     const [sourceId, targetId] = pair.split('\0');
     const relations = [...aggregate.relations].sort();
+    const { direction, reverse } = relationshipDirection(aggregate.orientations);
+    const orientedSourceId = reverse ? targetId! : sourceId!;
+    const orientedTargetId = reverse ? sourceId! : targetId!;
     return {
-      id: deriveVisualizationEdgeId(sourceId!, relations.join('+'), targetId!, 'atlas-aggregate'),
-      source_id: sourceId!,
-      target_id: targetId!,
+      id: deriveVisualizationEdgeId(orientedSourceId, relations.join('+'), orientedTargetId, 'atlas-aggregate'),
+      source_id: orientedSourceId,
+      target_id: orientedTargetId,
       kind: 'aggregate' as const,
       relation: 'COMMUNITY_RELATED',
       label: 'Shared memory evidence',
       summary: `${aggregate.evidenceCount} relationships`,
       weight: Number(aggregate.weight.toFixed(6)),
       evidence_count: aggregate.evidenceCount,
+      tier: 'representative-semantic' as const,
+      relationship_class: 'aggregate' as const,
+      direction,
+      confidence: aggregate.evidenceCount >= 4 ? 'high' as const : aggregate.evidenceCount >= 2 ? 'medium' as const : 'low' as const,
+      provenance: [...aggregate.provenance.values()].sort((left, right) => left.source_id.localeCompare(right.source_id)).slice(0, 5),
     };
   }).sort((left, right) => left.id.localeCompare(right.id));
 
@@ -722,9 +809,12 @@ export function buildSemanticAtlasProjection(input: {
     observations,
     observationNodes,
     evidenceLinks: evidence.links,
+    presentationEvidence: evidence.presentationEvidence,
     semanticEdges,
+    semanticEdgesByNodeId,
     supportingNodes,
     supportingEdges,
+    supportingEdgesByObservationId,
     supportingNodeIdsByObservationId,
     communities,
     communityByObservationId,

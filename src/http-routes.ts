@@ -1118,7 +1118,7 @@ export async function handleVizGraph(store: Store, request: HttpRouteRequest): P
 }
 
 function toSemanticAtlasHttpError(error: SemanticAtlasError): HttpRouteError {
-  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE' || error.code === 'VIZ_ATLAS_COMMUNITY_GONE'
+  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE' || error.code === 'VIZ_ATLAS_COMMUNITY_GONE' || error.code === 'VIZ_ATLAS_REGION_GONE'
     ? 409
     : error.code === 'VIZ_ATLAS_FOCUS_INVALID'
       ? 404
@@ -1157,6 +1157,12 @@ export async function handleVizAtlas(store: Store, request: HttpRouteRequest): P
   if (parsedDepth !== undefined && parsedDepth !== 1 && parsedDepth !== 2) {
     throw new HttpRouteError(400, 'Invalid integer field: depth');
   }
+  const presentation = request.query.get('presentation') ?? undefined;
+  if (presentation !== undefined && presentation !== 'complete' && presentation !== 'semantic-zoom') {
+    throw new HttpRouteError(400, 'Invalid field: presentation', {
+      error: 'Invalid field: presentation', code: 'VIZ_ATLAS_PRESENTATION_INVALID', retryable: false,
+    });
+  }
   try {
     return {
       status: 200,
@@ -1177,6 +1183,8 @@ export async function handleVizAtlas(store: Store, request: HttpRouteRequest): P
         depth: parsedDepth as 1 | 2 | undefined,
         page_size: pageSize,
         cursor: request.query.get('cursor') ?? undefined,
+        presentation,
+        region_id: request.query.get('region_id') ?? undefined,
       }),
     };
   } catch (error) {

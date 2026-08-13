@@ -301,8 +301,8 @@ export interface VizHealthResponse {
     recent_errors: Array<{ id: number; job_key: string; kind: string; state: string; attempt_count: number; last_error: string | null }>;
   };
 }
-export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
-export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'aggregate' | 'semantic' | 'metadata' | 'fact'; label: string; summary: string; weight?: number; evidence_count?: number; }
+export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; region_id?: string | null; representative_reason?: string; representative_signals?: SemanticAtlasRepresentativeSignal[]; representative_rank?: number; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
+export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'aggregate' | 'semantic' | 'metadata' | 'fact'; label: string; summary: string; weight?: number; evidence_count?: number; tier?: 'representative-backbone' | 'representative-semantic' | 'fact-support' | 'metadata'; relationship_class?: 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown'; direction?: 'directed' | 'undirected' | 'mixed' | 'unknown'; confidence?: 'high' | 'medium' | 'low' | 'unknown'; provenance?: SemanticAtlasRelationshipProvenance[]; }
 export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }
 export interface VizGraphPageRequest {
   project?: string;
@@ -344,6 +344,8 @@ export interface SemanticAtlasPageRequest {
   depth?: 1 | 2;
   page_size?: number;
   cursor?: string;
+  presentation?: 'complete' | 'semantic-zoom';
+  region_id?: string;
 }
 export interface SemanticAtlasNode {
   id: string;
@@ -355,6 +357,7 @@ export interface SemanticAtlasNode {
   topic: AtlasFacetRef | null;
   type: ObservationType | null;
   community_id: string | null;
+  region_id?: string | null;
   member_count: number | null;
   project_count: number | null;
   unclustered: boolean;
@@ -371,12 +374,43 @@ export interface SemanticAtlasEdge {
   summary: string;
   weight: number;
   evidence_count: number;
+  tier: 'representative-backbone' | 'representative-semantic' | 'fact-support' | 'metadata';
+  relationship_class: 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown';
+  direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+export type SemanticAtlasRepresentativeSignal = 'structural' | 'bridge' | 'recency' | 'confidence' | 'diversity';
+export interface SemanticAtlasRelationshipProvenance {
+  source_kind: 'kg-triple' | 'legacy-fact' | 'community-aggregate' | 'unknown';
+  source_id: string;
+  relation: string;
+  evidence_count: number;
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+}
+export interface SemanticAtlasRegion {
+  id: string; community_id: string; label: string; summary: string; member_count: number;
+  project_count: number; time_from: string | null; time_to: string | null;
+  concepts: Array<{ label: string; count: number }>;
+  facets: { projects: AtlasFacetOption[]; sessions: AtlasFacetOption[]; topics: AtlasFacetOption[]; types: Array<{ value: ObservationType; count: number }> };
+  representatives: Array<{ node_id: string; reason: string; signals: SemanticAtlasRepresentativeSignal[]; rank: number }>;
+  seed_x: number; seed_y: number; unclustered: boolean;
+}
+export interface SemanticAtlasRegionBridge {
+  id: string; source_region_id: string; target_region_id: string; tier: 'region-aggregate';
+  relationship_class: 'aggregate'; direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  weight: number; evidence_count: number; relations: string[]; confidence: 'high' | 'medium' | 'low' | 'unknown';
+  representative_edge_ids: string[]; provenance: SemanticAtlasRelationshipProvenance[];
 }
 export interface SemanticAtlasPageResponse {
   level: AtlasLevel;
   generation: string;
+  presentation_key?: string;
+  presentation: 'complete' | 'semantic-zoom';
   nodes: SemanticAtlasNode[];
   edges: SemanticAtlasEdge[];
+  regions: SemanticAtlasRegion[];
+  region_bridges: SemanticAtlasRegionBridge[];
   counts: {
     memory_count: number;
     project_count: number;
@@ -407,6 +441,12 @@ export interface SemanticAtlasPageResponse {
     community_id: string | null;
     focus_node_id: string | null;
     depth: 1 | 2 | null;
+    region_id: string | null;
+    source_memory_count: number;
+    visible_memory_count: number;
+    source_relationship_count: number;
+    visible_relationship_count: number;
+    represented_source_relationship_count: number;
     omitted_nodes: number;
     omitted_edges: number;
     raw_rich_render_safe: boolean;
@@ -839,8 +879,28 @@ export const api = {
     if (params.depth !== undefined) query.append('depth', String(params.depth));
     if (params.page_size !== undefined) query.append('page_size', String(params.page_size));
     if (params.cursor) query.append('cursor', params.cursor);
+    if (params.presentation) query.append('presentation', params.presentation);
+    if (params.region_id) query.append('region_id', params.region_id);
     const queryString = query.toString();
-    return apiFetch<SemanticAtlasPageResponse>(`/viz/atlas${queryString ? `?${queryString}` : ''}`, { signal });
+    const requestUrl = `/viz/atlas${queryString ? `?${queryString}` : ''}`;
+    return apiFetch<SemanticAtlasPageResponse>(requestUrl, { signal }).then((page) => {
+      const presentationKey = JSON.stringify({ level: page.level, generation: page.generation, region: page.navigation.region_id, focus: page.navigation.focus_node_id, request: requestUrl });
+      page.presentation_key = presentationKey;
+      if (typeof document !== 'undefined') {
+        const response = {
+          level: page.level,
+          generation: page.generation,
+          regionId: page.navigation.region_id,
+          focusNodeId: page.navigation.focus_node_id,
+          requestUrl,
+          presentationKey,
+          completeAt: performance.now(),
+        };
+        const history = JSON.parse(document.documentElement.dataset.atlasResponseHistory ?? '[]') as typeof response[];
+        document.documentElement.dataset.atlasResponseHistory = JSON.stringify([...history.slice(-63), response]);
+      }
+      return page;
+    });
   },
 
   getVizSlice: (

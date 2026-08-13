@@ -5,6 +5,7 @@ export type ObservatorySurface = 'recall' | 'map' | 'timeline' | 'ledger' | 'hea
 export interface ObservatoryLocation {
   level: AtlasLevel;
   communityId: string | null;
+  regionId: string | null;
   focusNodeId: string | null;
 }
 
@@ -13,6 +14,7 @@ export interface ObservatoryState {
   contextToken: string | null;
   level: AtlasLevel;
   communityId: string | null;
+  regionId: string | null;
   focusNodeId: string | null;
   activeSurface: ObservatorySurface;
   visibleNodeIds: string[];
@@ -34,6 +36,7 @@ export function createInitialObservatoryState(): ObservatoryState {
     contextToken: null,
     level: 'universe',
     communityId: null,
+    regionId: null,
     focusNodeId: null,
     activeSurface: DEFAULT_OBSERVATORY_SURFACE,
     visibleNodeIds: [],
@@ -60,16 +63,18 @@ export function applyObservatoryPivot(state: ObservatoryState, input: {
   level: AtlasLevel;
   communityId: string | null;
   focusNodeId: string | null;
+  regionId?: string | null;
   scope?: ObservatoryScope;
 }): ObservatoryState {
   const location: ObservatoryLocation = input.level === 'universe'
-    ? { level: 'universe', communityId: null, focusNodeId: null }
+    ? { level: 'universe', communityId: null, regionId: null, focusNodeId: null }
     : input.level === 'community'
-      ? { level: 'community', communityId: input.communityId, focusNodeId: null }
-      : { level: 'neighborhood', communityId: input.communityId, focusNodeId: input.focusNodeId };
+      ? { level: 'community', communityId: input.communityId, regionId: input.regionId ?? null, focusNodeId: null }
+      : { level: 'neighborhood', communityId: input.communityId, regionId: null, focusNodeId: input.focusNodeId };
   const currentLocation: ObservatoryLocation = {
     level: state.level,
     communityId: state.communityId,
+    regionId: state.regionId,
     focusNodeId: state.focusNodeId,
   };
   const priorLocations = state.locationTrail.length > 0
@@ -79,6 +84,7 @@ export function applyObservatoryPivot(state: ObservatoryState, input: {
   const appendLocation = !last
     || last.level !== location.level
     || last.communityId !== location.communityId
+    || last.regionId !== location.regionId
     || last.focusNodeId !== location.focusNodeId;
   const locationTrail = (appendLocation ? [...priorLocations, location] : priorLocations).slice(-24);
   const nextFocusTrail = input.focusNodeId
@@ -89,6 +95,7 @@ export function applyObservatoryPivot(state: ObservatoryState, input: {
     contextToken: input.contextToken ?? state.contextToken,
     level: location.level,
     communityId: location.communityId,
+    regionId: location.regionId,
     focusNodeId: location.focusNodeId,
     scope: { ...state.scope, ...(input.scope ?? {}) },
     focusTrail: nextFocusTrail,
@@ -133,7 +140,7 @@ export function mergeVisibleNodeIds(state: ObservatoryState, nodeIds: string[]):
   };
 }
 
-export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'level' | 'communityId' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
+export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'level' | 'communityId' | 'regionId' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
   const params = new URLSearchParams(search);
   const surface = parseObservatorySurface(params.get('surface'));
   const scope: ObservatoryScope = {};
@@ -160,8 +167,10 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
   const requestedLevel = params.get('level');
   const requestedCommunity = params.get('community');
   const requestedFocus = params.get('focus');
+  const requestedRegion = params.get('region');
   const validCommunity = typeof requestedCommunity === 'string' && requestedCommunity.startsWith('community:');
   const validFocus = typeof requestedFocus === 'string' && /^obs:\d+$/.test(requestedFocus);
+  const validRegion = typeof requestedRegion === 'string' && requestedRegion.startsWith('region:');
   const level: AtlasLevel = !hasRawFacet && requestedLevel === 'community' && validCommunity
     ? 'community'
     : !hasRawFacet && requestedLevel === 'neighborhood' && validCommunity && validFocus
@@ -172,6 +181,7 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
     scope,
     level,
     communityId: level === 'universe' ? null : requestedCommunity,
+    regionId: level === 'community' && validRegion ? requestedRegion : null,
     focusNodeId: level === 'neighborhood' ? requestedFocus : null,
     activeSurface: surface,
     continuation: params.get('continuation'),
@@ -184,6 +194,7 @@ export function serializeObservatoryState(state: ObservatoryState): string {
   if (state.activeSurface !== DEFAULT_OBSERVATORY_SURFACE) params.set('surface', state.activeSurface);
   if (state.level !== 'universe') params.set('level', state.level);
   if (state.communityId) params.set('community', state.communityId);
+  if (state.level === 'community' && state.regionId) params.set('region', state.regionId);
   if (state.level === 'neighborhood' && state.focusNodeId) params.set('focus', state.focusNodeId);
   if (state.scope.project_token) params.set('project_token', state.scope.project_token);
   if (state.scope.session_token) params.set('session_token', state.scope.session_token);
@@ -225,6 +236,7 @@ export function recoverObservatoryFocus(state: ObservatoryState, visibleNodeIds:
     ...state,
     level: 'universe',
     communityId: null,
+    regionId: null,
     focusNodeId: null,
     visibleNodeIds,
     focusTrail: [],

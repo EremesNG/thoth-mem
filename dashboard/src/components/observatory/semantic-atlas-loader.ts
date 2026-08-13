@@ -160,8 +160,10 @@ export async function loadSemanticAtlas(options: LoadSemanticAtlasOptions): Prom
           if (continuation) seenCursors.add(continuation);
 
           const neighborhoodCapReached = accumulator.level === 'neighborhood'
-            && accumulator.nodes.length >= 300;
-          if (!continuation || neighborhoodCapReached) {
+            && accumulator.nodes.length >= 180;
+          const semanticCommunityReady = response.level === 'community'
+            && response.presentation === 'semantic-zoom';
+          if (!continuation || neighborhoodCapReached || semanticCommunityReady) {
             const complete = makeSnapshot('complete', accumulator, continuation, pagesLoaded, restartCount);
             publisher.flush(complete);
             return complete;

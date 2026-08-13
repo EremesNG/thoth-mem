@@ -188,7 +188,18 @@ describe('viz routes', () => {
     );
     expect(communityResponse.status).toBe(200);
     const community = await communityResponse.json();
+    expect(community.presentation).toBe('complete');
     expect(community.nodes.every((node: { kind: string }) => node.kind === 'observation')).toBe(true);
+    const semanticResponse = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?level=community&community_id=${encodeURIComponent(communityId)}&presentation=semantic-zoom`,
+    );
+    expect(semanticResponse.status).toBe(200);
+    const semantic = await semanticResponse.json();
+    expect(semantic).toMatchObject({ presentation: 'semantic-zoom', continuation: null });
+    expect(semantic.navigation.visible_relationship_count).toBe(semantic.edges.length + semantic.region_bridges.length);
+    expect(semantic.regions.reduce((sum: number, region: { member_count: number }) => sum + region.member_count, 0))
+      .toBe(semantic.navigation.source_memory_count);
+    expect(JSON.stringify(semantic)).not.toMatch(/ALPHA_HTTP_SECRET|BETA_HTTP_SECRET|<private>|\[private\]/i);
     const focusNodeId = community.nodes[0].id as string;
     const neighborhoodResponse = await fetch(
       `http://127.0.0.1:${port}/viz/atlas?level=neighborhood&focus_node_id=${encodeURIComponent(focusNodeId)}&depth=2`,
@@ -240,6 +251,31 @@ describe('viz routes', () => {
     const openApi = await (await fetch(`http://127.0.0.1:${port}/openapi.json`)).json();
     expect(openApi.paths['/viz/atlas'].get.responses).toHaveProperty('409');
     expect(openApi.components.schemas.SemanticAtlasPageResponse).toBeDefined();
+    expect(openApi.components.schemas.SemanticAtlasEdge.required).toEqual(expect.arrayContaining([
+      'tier', 'relationship_class', 'direction', 'confidence', 'evidence_count', 'provenance',
+    ]));
+    expect(openApi.components.schemas.SemanticAtlasPageResponse.properties).toMatchObject({
+      presentation: { $ref: '#/components/schemas/SemanticAtlasPresentation' },
+      regions: { items: { $ref: '#/components/schemas/SemanticAtlasRegion' } },
+      region_bridges: { items: { $ref: '#/components/schemas/SemanticAtlasRegionBridge' } },
+      navigation: { $ref: '#/components/schemas/SemanticAtlasNavigation' },
+    });
+    expect(openApi.components.schemas.SemanticAtlasRegion.required).toEqual([
+      'id', 'community_id', 'label', 'summary', 'member_count', 'project_count', 'time_from', 'time_to',
+      'concepts', 'facets', 'representatives', 'seed_x', 'seed_y', 'unclustered',
+    ]);
+    expect(openApi.components.schemas.SemanticAtlasRegionFacets.required).toEqual([
+      'projects', 'sessions', 'topics', 'types',
+    ]);
+    expect(openApi.components.schemas.SemanticAtlasRegionBridge.required).toEqual([
+      'id', 'source_region_id', 'target_region_id', 'tier', 'relationship_class', 'direction', 'weight',
+      'evidence_count', 'relations', 'confidence', 'representative_edge_ids', 'provenance',
+    ]);
+    expect(openApi.components.schemas.SemanticAtlasNavigation.required).toEqual([
+      'community_id', 'focus_node_id', 'depth', 'region_id', 'source_memory_count', 'visible_memory_count',
+      'source_relationship_count', 'visible_relationship_count', 'represented_source_relationship_count',
+      'omitted_nodes', 'omitted_edges', 'raw_rich_render_safe', 'raw_rich_render_limit', 'scope',
+    ]);
   });
 
   it('serves complete scoped graph pages and rejects invalidated generations through the real bridge', async () => {

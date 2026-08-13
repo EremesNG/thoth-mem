@@ -1024,6 +1024,8 @@ export interface SemanticAtlasPageRequest {
   depth?: 1 | 2;
   page_size?: number;
   cursor?: string;
+  presentation?: 'complete' | 'semantic-zoom';
+  region_id?: string;
 }
 
 export type SemanticAtlasNodeKind =
@@ -1044,6 +1046,7 @@ export interface SemanticAtlasNode {
   topic: AtlasFacetRef | null;
   type: ObservationType | null;
   community_id: string | null;
+  region_id?: string | null;
   member_count: number | null;
   project_count: number | null;
   unclustered: boolean;
@@ -1061,6 +1064,74 @@ export interface SemanticAtlasEdge {
   summary: string;
   weight: number;
   evidence_count: number;
+  tier: Exclude<SemanticAtlasRelationshipTier, 'region-aggregate'>;
+  relationship_class: SemanticAtlasRelationshipClass;
+  direction: SemanticAtlasRelationshipDirection;
+  confidence: SemanticAtlasRelationshipConfidence;
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+
+export type SemanticAtlasRelationshipTier =
+  | 'region-aggregate'
+  | 'representative-backbone'
+  | 'representative-semantic'
+  | 'fact-support'
+  | 'metadata';
+export type SemanticAtlasRelationshipClass = 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown';
+export type SemanticAtlasRelationshipDirection = 'directed' | 'undirected' | 'mixed' | 'unknown';
+export type SemanticAtlasRelationshipConfidence = 'high' | 'medium' | 'low' | 'unknown';
+export type SemanticAtlasRepresentativeSignal = 'structural' | 'bridge' | 'recency' | 'confidence' | 'diversity';
+
+export interface SemanticAtlasRelationshipProvenance {
+  source_kind: 'kg-triple' | 'legacy-fact' | 'community-aggregate' | 'unknown';
+  source_id: string;
+  relation: string;
+  evidence_count: number;
+  confidence: SemanticAtlasRelationshipConfidence;
+}
+
+export interface SemanticAtlasRepresentativeExplanation {
+  node_id: string;
+  reason: string;
+  signals: SemanticAtlasRepresentativeSignal[];
+  rank: number;
+}
+
+export interface SemanticAtlasRegion {
+  id: string;
+  community_id: string;
+  label: string;
+  summary: string;
+  member_count: number;
+  project_count: number;
+  time_from: string | null;
+  time_to: string | null;
+  concepts: Array<{ label: string; count: number }>;
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: Array<{ value: ObservationType; count: number }>;
+  };
+  representatives: SemanticAtlasRepresentativeExplanation[];
+  seed_x: number;
+  seed_y: number;
+  unclustered: boolean;
+}
+
+export interface SemanticAtlasRegionBridge {
+  id: string;
+  source_region_id: string;
+  target_region_id: string;
+  tier: 'region-aggregate';
+  relationship_class: 'aggregate';
+  direction: SemanticAtlasRelationshipDirection;
+  weight: number;
+  evidence_count: number;
+  relations: string[];
+  confidence: SemanticAtlasRelationshipConfidence;
+  representative_edge_ids: string[];
+  provenance: SemanticAtlasRelationshipProvenance[];
 }
 
 export interface SemanticAtlasCounts {
@@ -1078,8 +1149,11 @@ export interface SemanticAtlasCounts {
 export interface SemanticAtlasPageResponse {
   level: AtlasLevel;
   generation: string;
+  presentation: 'complete' | 'semantic-zoom';
   nodes: SemanticAtlasNode[];
   edges: SemanticAtlasEdge[];
+  regions: SemanticAtlasRegion[];
+  region_bridges: SemanticAtlasRegionBridge[];
   counts: SemanticAtlasCounts;
   coverage: {
     state: AtlasCoverageState;
@@ -1100,6 +1174,12 @@ export interface SemanticAtlasPageResponse {
     community_id: string | null;
     focus_node_id: string | null;
     depth: 1 | 2 | null;
+    region_id: string | null;
+    source_memory_count: number;
+    visible_memory_count: number;
+    source_relationship_count: number;
+    visible_relationship_count: number;
+    represented_source_relationship_count: number;
     omitted_nodes: number;
     omitted_edges: number;
     raw_rich_render_safe: boolean;
@@ -1123,7 +1203,9 @@ export type SemanticAtlasErrorCode =
   | 'VIZ_ATLAS_LEVEL_INVALID'
   | 'VIZ_ATLAS_FACET_INVALID'
   | 'VIZ_ATLAS_COMMUNITY_GONE'
-  | 'VIZ_ATLAS_FOCUS_INVALID';
+  | 'VIZ_ATLAS_FOCUS_INVALID'
+  | 'VIZ_ATLAS_PRESENTATION_INVALID'
+  | 'VIZ_ATLAS_REGION_GONE';
 
 export class SemanticAtlasError extends Error {
   readonly retryable: boolean;

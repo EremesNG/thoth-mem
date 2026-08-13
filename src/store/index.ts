@@ -11,6 +11,7 @@ import {
   type AtlasStructuralEvidence,
   type SemanticAtlasProjection,
 } from './semantic-atlas.js';
+import { buildSemanticAtlasCommunityView } from './semantic-atlas-regions.js';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
 import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, DEFAULT_OPERATION_TRACE_RETENTION_CONFIG, type ThothConfig } from '../config.js';
@@ -59,6 +60,7 @@ import type {
   SearchResult,
   SemanticAtlasPageRequest,
   SemanticAtlasPageResponse,
+  SemanticAtlasEdge,
   SemanticObservatoryContextRequest,
   SemanticObservatoryContextResponse,
   CommunityRetrievalInput,
@@ -699,6 +701,7 @@ export class Store {
     summaryState: AtlasCoverageState;
     health: VizHealthResponse;
     lastUsed: number;
+    semanticViews: Map<string, ReturnType<typeof buildSemanticAtlasCommunityView>>;
   }>();
   private semanticAtlasSourceCache: {
     revision: string;
@@ -5761,17 +5764,21 @@ export class Store {
           relation: row.relation,
           confidence: row.confidence,
           provenance_id: `kg:${row.id}`,
+          direction: 'directed' as const,
+          source_kind: 'kg-triple' as const,
         };
         records.push({
           ...shared,
           entity_key: `kg-entity:${row.subject_id}`,
           label: row.subject_label,
+          endpoint_role: 'subject',
         });
         if (row.object_id !== row.subject_id) {
           records.push({
             ...shared,
             entity_key: `kg-entity:${row.object_id}`,
             label: row.object_label,
+            endpoint_role: 'object',
           });
         }
       }
@@ -5815,6 +5822,18 @@ export class Store {
   getSemanticAtlasPage(input: SemanticAtlasPageRequest = {}): SemanticAtlasPageResponse {
     const readPage = this.db.transaction(() => {
       const level = input.level ?? 'universe';
+      const presentation = input.presentation ?? 'complete';
+      if (
+        (presentation === 'semantic-zoom' && level !== 'community')
+        || (input.region_id && (level !== 'community' || presentation !== 'semantic-zoom'))
+        || (input.presentation !== undefined && input.presentation !== 'complete' && input.presentation !== 'semantic-zoom')
+      ) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_PRESENTATION_INVALID',
+          'Semantic zoom presentation and region focus are available only for Community navigation.',
+          level,
+        );
+      }
       if (level === 'community' && !input.community_id) {
         throw new SemanticAtlasError(
           'VIZ_ATLAS_LEVEL_INVALID',
@@ -5953,6 +5972,7 @@ export class Store {
             evidence.relation,
             evidence.confidence,
             evidence.provenance_id,
+            evidence.endpoint_role,
           ]));
         }
         for (const summaryResult of summaryResults) {
@@ -5982,6 +6002,7 @@ export class Store {
           summaryState,
           health: this.getVisualizationHealth({ project }),
           lastUsed: Date.now(),
+          semanticViews: new Map(),
         };
         this.semanticAtlasProjectionCache.set(projectionCacheKey, cachedProjection);
         if (this.semanticAtlasProjectionCache.size > 4) {
@@ -6011,6 +6032,8 @@ export class Store {
         community_id: input.community_id ?? null,
         focus_node_id: input.focus_node_id ?? null,
         depth: level === 'neighborhood' ? depth : null,
+        presentation,
+        region_id: input.region_id ?? null,
       })).digest('hex');
       let cursor: SemanticAtlasCursor | null = null;
       if (input.cursor) {
@@ -6057,6 +6080,12 @@ export class Store {
       let focusNodeId: string | null = null;
       let omittedNodes = 0;
       let omittedEdges = 0;
+      let regions: SemanticAtlasPageResponse['regions'] = [];
+      let regionBridges: SemanticAtlasPageResponse['region_bridges'] = [];
+      let regionId: string | null = null;
+      let representedSourceRelationshipCount = sourceEdges.length;
+      let sourceMemoryCount = sourceNodes.length;
+      let sourceRelationshipCount = sourceEdges.length;
 
       if (level === 'community') {
         const community = projection.communities.find((candidate) => candidate.id === input.community_id);
@@ -6073,6 +6102,42 @@ export class Store {
         sourceEdges = projection.semanticEdges.filter((edge) => (
           memberIds.has(edge.source_id) && memberIds.has(edge.target_id)
         ));
+        sourceMemoryCount = sourceNodes.length;
+        sourceRelationshipCount = sourceEdges.length;
+        if (presentation === 'semantic-zoom') {
+          const semanticViewKey = `${community.id}\0${input.region_id ?? ''}`;
+          let workingSet = cachedProjection.semanticViews.get(semanticViewKey);
+          if (!workingSet) {
+            workingSet = buildSemanticAtlasCommunityView({
+              community,
+              observations: projection.observations,
+              observationNodes: projection.observationNodes,
+              evidenceLinks: projection.evidenceLinks,
+              presentationEvidence: projection.presentationEvidence,
+              regionId: input.region_id,
+            });
+            cachedProjection.semanticViews.set(semanticViewKey, workingSet);
+            if (cachedProjection.semanticViews.size > 16) {
+              const oldestKey = cachedProjection.semanticViews.keys().next().value;
+              if (oldestKey) cachedProjection.semanticViews.delete(oldestKey);
+            }
+          }
+          if (input.region_id && !workingSet.regions.some((region) => region.id === input.region_id)) {
+            throw new SemanticAtlasError(
+              'VIZ_ATLAS_REGION_GONE',
+              'This semantic region is no longer current in its constellation.',
+              'community',
+            );
+          }
+          sourceNodes = workingSet.nodes;
+          sourceEdges = workingSet.edges;
+          regions = workingSet.regions;
+          regionBridges = workingSet.region_bridges;
+          regionId = workingSet.region_id;
+          omittedNodes = workingSet.omitted_memory_count;
+          omittedEdges = workingSet.omitted_relationship_count;
+          representedSourceRelationshipCount = workingSet.represented_source_relationship_count;
+        }
       } else if (level === 'neighborhood') {
         focusNodeId = input.focus_node_id!;
         if (!projection.observationNodes.has(focusNodeId)) {
@@ -6122,18 +6187,20 @@ export class Store {
             || ((scores.get(right) ?? 0) - (scores.get(left) ?? 0))
             || left.localeCompare(right);
         });
+        const candidateSet = new Set(candidateIds);
         const allSupportingIds = [...new Set(candidateIds.flatMap(
           (id) => projection.supportingNodeIdsByObservationId.get(id) ?? [],
         ))];
-        const desiredSupportingCount = Math.min(80, allSupportingIds.length);
-        const boundedIds = candidateIds.slice(0, Math.max(1, 300 - desiredSupportingCount));
+        const neighborhoodNodeLimit = 180;
+        const desiredSupportingCount = Math.min(48, allSupportingIds.length);
+        const boundedIds = candidateIds.slice(0, Math.max(1, neighborhoodNodeLimit - desiredSupportingCount));
         const supportingIds = [...new Set(boundedIds.flatMap(
           (id) => projection.supportingNodeIdsByObservationId.get(id) ?? [],
-        ))].slice(0, 300 - boundedIds.length);
-        if (boundedIds.length + supportingIds.length < 300) {
+        ))].slice(0, neighborhoodNodeLimit - boundedIds.length);
+        if (boundedIds.length + supportingIds.length < neighborhoodNodeLimit) {
           boundedIds.push(...candidateIds.slice(
             boundedIds.length,
-            boundedIds.length + (300 - boundedIds.length - supportingIds.length),
+            boundedIds.length + (neighborhoodNodeLimit - boundedIds.length - supportingIds.length),
           ));
         }
         omittedNodes = Math.max(0, candidateIds.length - boundedIds.length)
@@ -6144,22 +6211,37 @@ export class Store {
           ...boundedIds.map((id) => projection.observationNodes.get(id)!),
           ...supportingIds.map((id) => projection.supportingNodes.get(id)!),
         ];
-        const semanticNeighborhoodEdges = projection.semanticEdges.filter((edge) => (
-          boundedSet.has(edge.source_id) && boundedSet.has(edge.target_id)
-        ));
-        const supportingNeighborhoodEdges = projection.supportingEdges.filter((edge) => (
-          boundedSet.has(edge.source_id) && supportingSet.has(edge.target_id)
-        ));
-        sourceEdges = [...semanticNeighborhoodEdges, ...supportingNeighborhoodEdges];
-        omittedEdges = Math.max(0, projection.semanticEdges.filter((edge) => (
-          candidateIds.includes(edge.source_id) && candidateIds.includes(edge.target_id)
-        )).length - semanticNeighborhoodEdges.length)
-          + Math.max(0, projection.supportingEdges.filter((edge) => (
-            candidateIds.includes(edge.source_id)
-          )).length - supportingNeighborhoodEdges.length);
+        const edgesFor = (ids: Set<string>): SemanticAtlasEdge[] => {
+          const unique = new Map<string, SemanticAtlasEdge>();
+          for (const id of ids) {
+            for (const edge of projection.semanticEdgesByNodeId.get(id) ?? []) {
+              if (ids.has(edge.source_id) && ids.has(edge.target_id)) unique.set(edge.id, edge);
+            }
+          }
+          return [...unique.values()];
+        };
+        const semanticNeighborhoodEdges = edgesFor(boundedSet);
+        const supportingNeighborhoodEdges = boundedIds.flatMap((id) => projection.supportingEdgesByObservationId.get(id) ?? [])
+          .filter((edge) => supportingSet.has(edge.target_id));
+        const candidateSemanticEdges = edgesFor(candidateSet);
+        const candidateSupportingEdges = candidateIds.flatMap((id) => projection.supportingEdgesByObservationId.get(id) ?? []);
+        sourceMemoryCount = candidateIds.length + allSupportingIds.length;
+        sourceRelationshipCount = candidateSemanticEdges.length + candidateSupportingEdges.length;
+        sourceEdges = [...semanticNeighborhoodEdges, ...supportingNeighborhoodEdges]
+          .sort((left, right) => (
+            Number(right.confidence === 'high') - Number(left.confidence === 'high')
+            || right.evidence_count - left.evidence_count
+            || right.weight - left.weight
+            || left.id.localeCompare(right.id)
+          ))
+          .slice(0, 450);
+        representedSourceRelationshipCount = sourceEdges.length;
+        omittedEdges = Math.max(0, sourceRelationshipCount - representedSourceRelationshipCount);
       }
 
-      const pageSize = Math.min(Math.max(Math.trunc(input.page_size ?? 250), 1), 250);
+      const pageSize = presentation === 'semantic-zoom'
+        ? sourceNodes.length
+        : Math.min(Math.max(Math.trunc(input.page_size ?? 250), 1), 250);
       const start = cursor?.offset ?? 0;
       if (start > sourceNodes.length) {
         throw new SemanticAtlasError(
@@ -6188,6 +6270,7 @@ export class Store {
             offset: end,
           } satisfies SemanticAtlasCursor)).toString('base64url')
         : null;
+      if (presentation !== 'semantic-zoom') representedSourceRelationshipCount = sourceEdges.length;
       const unclusteredMemoryCount = projection.communities
         .filter((community) => community.unclustered)
         .reduce((sum, community) => sum + community.member_ids.length, 0);
@@ -6201,8 +6284,11 @@ export class Store {
       return {
         level,
         generation,
+        presentation,
         nodes,
         edges,
+        regions,
+        region_bridges: regionBridges,
         counts: {
           memory_count: observations.length,
           project_count: projection.facets.projects.length,
@@ -6210,7 +6296,7 @@ export class Store {
           assigned_memory_count: observations.length,
           unclustered_memory_count: unclusteredMemoryCount,
           supporting_entity_count: sourceNodes.filter((node) => node.kind === 'fact').length,
-          relationship_count: sourceEdges.length,
+          relationship_count: sourceRelationshipCount,
           raw_entity_count: projection.rawEntityCount,
           raw_relationship_count: projection.rawRelationshipCount,
         },
@@ -6234,6 +6320,12 @@ export class Store {
           community_id: communityId,
           focus_node_id: focusNodeId,
           depth: level === 'neighborhood' ? depth : null,
+          region_id: regionId,
+          source_memory_count: sourceMemoryCount,
+          visible_memory_count: nodes.length,
+          source_relationship_count: sourceRelationshipCount,
+          visible_relationship_count: edges.length + regionBridges.length,
+          represented_source_relationship_count: representedSourceRelationshipCount,
           omitted_nodes: omittedNodes,
           omitted_edges: omittedEdges,
           raw_rich_render_safe: projection.rawEntityCount <= 5_000,
@@ -6247,7 +6339,7 @@ export class Store {
           },
         },
         continuation,
-        truncated: continuation !== null,
+        truncated: continuation !== null || omittedNodes > 0 || omittedEdges > 0,
         health,
       } satisfies SemanticAtlasPageResponse;
     });
