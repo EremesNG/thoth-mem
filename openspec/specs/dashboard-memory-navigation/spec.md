@@ -254,31 +254,31 @@ If rich graph rendering is unavailable, the dashboard MUST keep scope controls a
 
 ### Requirement: World-first graph geometry
 
-The graph MUST compute and retain spatial positions in a world coordinate space that is not constrained to the canvas rectangle, and fitting MUST adapt the camera/canvas to the resulting extent rather than reshape the constellation to a square.
+Universe MUST lay out aggregate constellations from their weighted semantic topology in unconstrained world coordinates, MUST deterministically place weak and isolated groups without perimeter rings, and MUST preserve natural aspect during fit and resize.
 
-#### Scenario: US1 - See the whole living memory field 1
+#### Scenario: US1 - Recognize the memory universe 1
 
-- **GIVEN** a populated memory store
-- **WHEN** the default dashboard opens
-- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+- **GIVEN** a large active scope
+- **WHEN** Universe settles
+- **THEN** every current observation is accounted for through 30–150 named constellations and weighted aggregate bridges
 
-#### Scenario: US1 - See the whole living memory field 2
+#### Scenario: US1 - Recognize the memory universe 2
 
-- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
-- **WHEN** it is laid out and fitted
-- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+- **GIVEN** weakly connected or isolated constellations
+- **WHEN** the Universe layout is constructed
+- **THEN** they occupy deterministic organic positions and explicit unclustered regions instead of the four sides of the canvas
 
-#### Scenario: US1 - See the whole living memory field 3
+#### Scenario: US1 - Recognize the memory universe 3
 
-- **GIVEN** a dense graph
-- **WHEN** it settles at the whole-graph view
-- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+- **GIVEN** a wide application viewport
+- **WHEN** Universe fits
+- **THEN** the world keeps its natural aspect and uses the available field without being normalized to a square
 
-#### Scenario: US1 - See the whole living memory field 4
+#### Scenario: US1 - Recognize the memory universe 4
 
-- **GIVEN** relationships of different classes
-- **WHEN** the graph is at rest
-- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+- **GIVEN** a constellation label
+- **WHEN** it is rendered on canvas or in the semantic navigator
+- **THEN** it is private-safe, human-readable, collision-managed, and stable for unchanged membership
 
 ### Requirement: Aspect-preserving fit and resize
 
@@ -740,136 +740,164 @@ Progressive loading and continuous simulation MUST retain a stable world aspect 
 
 ### Requirement: Semantic completeness replaces raw completeness
 
-The default atlas MUST represent the complete current scoped observation set through community membership and aggregate counts, but MUST NOT automatically fetch or render every raw session, project, topic, fact, and helper identity as peer nodes.
+Universe MUST account for every current scoped observation through bounded deterministic constellations and aggregate bridges while keeping observation, metadata, fact, and helper identities out of the default Universe working set; Community MUST retain complete source accounting while preparing a bounded visual working set.
 
-#### Scenario: US2 - Survey the complete memory universe 1
+#### Scenario: US1 - Recognize the memory universe 1
 
-- **GIVEN** a sufficiently large active scope
-- **WHEN** Universe loads
-- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+- **GIVEN** a large active scope
+- **WHEN** Universe settles
+- **THEN** every current observation is accounted for through 30–150 named constellations and weighted aggregate bridges
 
-#### Scenario: US2 - Survey the complete memory universe 2
+#### Scenario: US1 - Recognize the memory universe 2
 
-- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
-- **WHEN** communities and layout forces are constructed
-- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+- **GIVEN** weakly connected or isolated constellations
+- **WHEN** the Universe layout is constructed
+- **THEN** they occupy deterministic organic positions and explicit unclustered regions instead of the four sides of the canvas
 
-#### Scenario: US2 - Survey the complete memory universe 3
+#### Scenario: US1 - Recognize the memory universe 3
 
-- **GIVEN** a natural community larger than the Community navigation budget
-- **WHEN** the Universe projection is committed
-- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+- **GIVEN** a wide application viewport
+- **WHEN** Universe fits
+- **THEN** the world keeps its natural aspect and uses the available field without being normalized to a square
 
-#### Scenario: US2 - Survey the complete memory universe 4
+#### Scenario: US1 - Recognize the memory universe 4
 
-- **GIVEN** relationships between memories in different communities
-- **WHEN** Universe renders
-- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
-
-#### Scenario: US2 - Survey the complete memory universe 5
-
-- **GIVEN** observations without eligible semantic relationships
-- **WHEN** Universe renders
-- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+- **GIVEN** a constellation label
+- **WHEN** it is rendered on canvas or in the semantic navigator
+- **THEN** it is private-safe, human-readable, collision-managed, and stable for unchanged membership
 
 ### Requirement: Restorable semantic drilldown
 
-URL and navigation state MUST encode semantic level, stable community identity when applicable, active scope using opaque facet tokens rather than private-bearing canonical values, and focused observation when applicable. Observatory Context MUST accept token scope and mint one opaque context token; Recall hits and Pivot outcomes MUST return private-safe facet references plus the current owning community without raw canonical values. Search pivots, canvas/semantic activation, in-app trail controls, browser history, invalid-state recovery, Lens, and camera MUST remain synchronized.
+URL and navigation state MUST encode semantic level, stable Community, optional stable region focus, opaque scope facets, and focused observation; Back/Forward, direct links, search pivots, semantic activation, Lens, and camera MUST restore atomically without duplicate trail entries.
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 1
+#### Scenario: US3 - Reveal detail through spatial intent 1
 
-- **GIVEN** a Universe galaxy
+- **GIVEN** Community overview
+- **WHEN** the user zooms into the exploration band
+- **THEN** relevant representative observation links and additional local labels appear without changing Community source membership or downloading every source relationship
+
+#### Scenario: US3 - Reveal detail through spatial intent 2
+
+- **GIVEN** a semantic region
 - **WHEN** the user activates it
-- **THEN** Community displays only its assigned observation memories, bounded to 1,000 or fewer, with project/session/topic/type available as facets rather than peer stars
+- **THEN** the atlas focuses that region, keeps surrounding regions as subdued context, restores the focus through URL/history, and retains a bounded working set
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 2
+#### Scenario: US3 - Reveal detail through spatial intent 3
 
-- **GIVEN** a Community memory
-- **WHEN** the user focuses it
-- **THEN** Neighborhood displays that memory plus the most relevant one- or two-hop observations and supporting facts within a 300-node cap
+- **GIVEN** a representative memory
+- **WHEN** the user activates it
+- **THEN** Neighborhood displays the focused memory and its most relevant one- or two-hop support within the existing 300-node cap
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 3
+#### Scenario: US3 - Reveal detail through spatial intent 4
 
-- **GIVEN** a level transition
-- **WHEN** the user uses in-app Back/Forward or browser history
-- **THEN** level, community, scope, focused observation, semantic navigator, Lens, and usable camera restore coherently without appending duplicate trail entries
+- **GIVEN** Back, Forward, deep-link, search pivot, or filter restoration
+- **WHEN** the level becomes usable
+- **THEN** URL, breadcrumb, region, focus, semantic navigator, Lens, camera, and painted renderer publish one coherent state
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 4
+#### Scenario: US3 - Reveal detail through spatial intent 5
 
-- **GIVEN** a search result outside the currently open Community
-- **WHEN** the user pivots to it through the token-safe Observatory Context/Recall/Pivot flow
-- **THEN** its owning community and bounded Neighborhood become visible with the same opaque-token scope and without loading the raw global graph or serializing canonical facet values
-
-#### Scenario: US3 - Move from galaxy to memory and its synapses 5
-
-- **GIVEN** different zoom levels or focus states
-- **WHEN** links render
-- **THEN** Universe shows aggregate links, Community shows relevant observation relationships, and Neighborhood shows complete local supporting relationships without changing the underlying membership of that level
+- **GIVEN** a region or memory that is no longer current
+- **WHEN** a stored URL is restored
+- **THEN** the server returns a typed stale/gone outcome and the client recovers to the current owning Community without mixing generations
 
 ### Requirement: Explicit Raw diagnostic mode
 
-Corrected heterogeneous Raw graph MUST be opt-in through bounded technical disclosure, MUST be absent from normal semantic loading, MUST identify itself as diagnostic rather than a memory count, and MUST warn or refuse rich rendering beyond a documented safe density while preserving query/export access.
+Raw graph MUST remain opt-in, clearly diagnostic, excluded from semantic loading, bounded above the safe interactive threshold, and available for query/export without becoming the default fallback for a dense Community.
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 1
 
 - **GIVEN** the normal observatory route
-- **WHEN** it loads
-- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+- **WHEN** a large Community opens
+- **THEN** the client does not call `/viz/graph` and does not automatically follow Community continuation until every source member is rendered
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 2
 
-- **GIVEN** the user explicitly opens bounded technical diagnostics
-- **WHEN** Raw graph mode is confirmed
-- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+- **GIVEN** explicit Raw diagnostic confirmation
+- **WHEN** the source exceeds the safe renderer threshold
+- **THEN** the UI reports exact diagnostic totals and offers bounded inspection/export without silently turning Raw into the primary atlas
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 3
 
-- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
-- **WHEN** a semantic level is requested
-- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+- **GIVEN** WebGL initialization or live-context failure
+- **WHEN** fallback activates
+- **THEN** region names, representative memories, counts, focus, navigation, and one Retry remain operable in the synchronized DOM surface
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 4
 
-- **GIVEN** WebGL failure or reduced motion
-- **WHEN** the active semantic level changes
-- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+- **GIVEN** reduced motion or Pause
+- **WHEN** level, zoom band, or focus changes
+- **THEN** semantic results remain visible and stable without nonessential simulation or camera animation
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 5
 
-- **GIVEN** private-marked source values or superseded requests
-- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
-- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
+- **GIVEN** private-marked data or superseded asynchronous work
+- **WHEN** labels, errors, cursors, overlays, diagnostics, or callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, logs, or external network traffic
 
 ### Requirement: Accessible private-safe level parity
 
-Every semantic level, facet, count, transition, empty/degraded state, Raw diagnostic entry, and renderer recovery MUST retain keyboard and DOM-backed semantic equivalents, reduced-motion behavior, private-marker removal, opaque facet tokens in URLs and request metadata, same-origin networking, responsive reachability, and bounded cleanup of requests, workers, timers, frames, observers, simulations, browser processes, and temporary profiles.
+Regions, representative memories, zoom-band disclosures, counts, legend filters, dock actions, empty/degraded states, and renderer recovery MUST have keyboard-operable DOM equivalents synchronized with the painted view.
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 1
 
 - **GIVEN** the normal observatory route
-- **WHEN** it loads
-- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+- **WHEN** a large Community opens
+- **THEN** the client does not call `/viz/graph` and does not automatically follow Community continuation until every source member is rendered
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 2
 
-- **GIVEN** the user explicitly opens bounded technical diagnostics
-- **WHEN** Raw graph mode is confirmed
-- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+- **GIVEN** explicit Raw diagnostic confirmation
+- **WHEN** the source exceeds the safe renderer threshold
+- **THEN** the UI reports exact diagnostic totals and offers bounded inspection/export without silently turning Raw into the primary atlas
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 3
 
-- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
-- **WHEN** a semantic level is requested
-- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+- **GIVEN** WebGL initialization or live-context failure
+- **WHEN** fallback activates
+- **THEN** region names, representative memories, counts, focus, navigation, and one Retry remain operable in the synchronized DOM surface
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 4
 
-- **GIVEN** WebGL failure or reduced motion
-- **WHEN** the active semantic level changes
-- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+- **GIVEN** reduced motion or Pause
+- **WHEN** level, zoom band, or focus changes
+- **THEN** semantic results remain visible and stable without nonessential simulation or camera animation
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 5
 
-- **GIVEN** private-marked source values or superseded requests
-- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
-- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
+- **GIVEN** private-marked data or superseded asynchronous work
+- **WHEN** labels, errors, cursors, overlays, diagnostics, or callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, logs, or external network traffic
+
+### Requirement: Region-first Community geometry
+
+Community MUST arrange representative memories around deterministic region anchors, render bounded organic region contours and collision-managed region labels, preserve an irregular non-square world extent, and prevent isolated representatives from becoming unexplained perimeter points.
+
+#### Scenario: US3 - Reveal detail through spatial intent 1
+
+- **GIVEN** Community overview
+- **WHEN** the user zooms into the exploration band
+- **THEN** relevant representative observation links and additional local labels appear without changing Community source membership or downloading every source relationship
+
+#### Scenario: US3 - Reveal detail through spatial intent 2
+
+- **GIVEN** a semantic region
+- **WHEN** the user activates it
+- **THEN** the atlas focuses that region, keeps surrounding regions as subdued context, restores the focus through URL/history, and retains a bounded working set
+
+#### Scenario: US3 - Reveal detail through spatial intent 3
+
+- **GIVEN** a representative memory
+- **WHEN** the user activates it
+- **THEN** Neighborhood displays the focused memory and its most relevant one- or two-hop support within the existing 300-node cap
+
+#### Scenario: US3 - Reveal detail through spatial intent 4
+
+- **GIVEN** Back, Forward, deep-link, search pivot, or filter restoration
+- **WHEN** the level becomes usable
+- **THEN** URL, breadcrumb, region, focus, semantic navigator, Lens, camera, and painted renderer publish one coherent state
+
+#### Scenario: US3 - Reveal detail through spatial intent 5
+
+- **GIVEN** a region or memory that is no longer current
+- **WHEN** a stored URL is restored
+- **THEN** the server returns a typed stale/gone outcome and the client recovers to the current owning Community without mixing generations

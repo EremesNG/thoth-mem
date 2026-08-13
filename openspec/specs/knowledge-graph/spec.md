@@ -1035,37 +1035,37 @@ Deterministic community partitioning MUST exclude configured metadata classes an
 
 ### Requirement: Bounded deterministic communities
 
-For sufficiently large scopes, partitioning MUST yield 30–150 stable navigable communities; any community above 1,000 observations or the configured maximum scope fraction MUST be recursively and deterministically subdivided, while small scopes MAY yield fewer communities and every observation MUST retain one primary assignment.
+A sufficiently large Community MUST be subdivided into 6–12 deterministic semantic regions derived only from the eligible weighted observation-to-observation projection; every source member MUST belong to exactly one region, metadata/superhubs MUST remain excluded, and any region above 35% of parent membership or 250 observations MUST be recursively split when the parent size permits.
 
-#### Scenario: US2 - Survey the complete memory universe 1
+#### Scenario: US2 - Explore one constellation without a hairball 1
 
-- **GIVEN** a sufficiently large active scope
-- **WHEN** Universe loads
-- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
 
-#### Scenario: US2 - Survey the complete memory universe 2
+#### Scenario: US2 - Explore one constellation without a hairball 2
 
-- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
-- **WHEN** communities and layout forces are constructed
-- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
 
-#### Scenario: US2 - Survey the complete memory universe 3
+#### Scenario: US2 - Explore one constellation without a hairball 3
 
-- **GIVEN** a natural community larger than the Community navigation budget
-- **WHEN** the Universe projection is committed
-- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
 
-#### Scenario: US2 - Survey the complete memory universe 4
+#### Scenario: US2 - Explore one constellation without a hairball 4
 
-- **GIVEN** relationships between memories in different communities
-- **WHEN** Universe renders
-- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
 
-#### Scenario: US2 - Survey the complete memory universe 5
+#### Scenario: US2 - Explore one constellation without a hairball 5
 
-- **GIVEN** observations without eligible semantic relationships
-- **WHEN** Universe renders
-- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
 
 ### Requirement: Freshness and deterministic fallback
 
@@ -1100,3 +1100,37 @@ Semantic atlas reads MUST distinguish fresh, stale, missing, rebuilding, failed,
 - **GIVEN** private-marked source values or superseded requests
 - **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
 - **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
+
+### Requirement: Stable region identity and naming
+
+Region IDs MUST derive from the complete sorted member identity set and algorithm version using a collision-resistant representation. Region names MUST use distinguishing private-safe semantic evidence, MUST exclude configured global/high-frequency evidence, MUST disambiguate duplicate labels deterministically, and MUST fall back to stable human names such as `Memory region 01` rather than internal identifiers.
+
+#### Scenario: US2 - Explore one constellation without a hairball 1
+
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+
+#### Scenario: US2 - Explore one constellation without a hairball 2
+
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+
+#### Scenario: US2 - Explore one constellation without a hairball 3
+
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+
+#### Scenario: US2 - Explore one constellation without a hairball 4
+
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+
+#### Scenario: US2 - Explore one constellation without a hairball 5
+
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy

@@ -17,6 +17,7 @@ Owns process startup/shutdown, MCP registration and schemas, CLI parsing/output/
 - The compact MCP surface is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; internal/admin capabilities stay in CLI/HTTP unless the task explicitly changes this contract.
 - Tool modules remain thin, validate inputs locally, and delegate durable behavior.
 - Preserve CLI stdout/stderr and exit semantics, HTTP status/error bodies, request validation, and OpenAPI agreement when public behavior changes.
+- `/viz/atlas` Community preserves unqualified and `presentation=complete` pagination. `presentation=semantic-zoom` is additive and returns one bounded representative projection with exact accounting, deterministic regions, aggregate region bridges, and typed relationship explanations. `region_id` is valid only for semantic-zoom Community; invalid combinations return `VIZ_ATLAS_PRESENTATION_INVALID`, while obsolete or wrong-parent regions return `VIZ_ATLAS_REGION_GONE` with Community recovery.
 - Close Store/process resources on normal and signal shutdown paths.
 - Trace request/response data must remain sanitized and bounded.
 

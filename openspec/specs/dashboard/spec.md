@@ -302,25 +302,31 @@ The default dashboard MUST present the Neural Atlas as a single dominant workspa
 
 ### Requirement: Co-located instrument dock
 
-Related, Story, Changes, and Health navigation MUST live inside the same bounded dock/sheet as its active content, with its navigation remaining reachable while that content scrolls.
+Selecting a semantic region MUST open the existing in-place dock with a private-safe summary, complete member count, representative concepts, bounded facet distribution, time span, representative memories, strongest bridges, and actions to focus the region or return to Community overview.
 
-#### Scenario: US4 - Use instruments where their controls live 1
+#### Scenario: US4 - Understand why regions and relationships exist 1
 
-- **GIVEN** an atlas with no instrument open
-- **WHEN** the user opens Related, Story, Changes, or Health
-- **THEN** the instrument tabs appear immediately adjacent to the active content in the inspector dock or mobile sheet
+- **GIVEN** one semantic region
+- **WHEN** it is focused
+- **THEN** the dock explains its memory count, distinguishing concepts, projects, time span, representative memories, and strongest bridges without presenting metadata as peer stars
 
-#### Scenario: US4 - Use instruments where their controls live 2
+#### Scenario: US4 - Understand why regions and relationships exist 2
 
-- **GIVEN** an instrument with long content
-- **WHEN** the user scrolls it and switches tabs
-- **THEN** the tab strip stays reachable inside that bounded surface without document-level scrolling
+- **GIVEN** different relationship classes
+- **WHEN** they are visible
+- **THEN** color/style, confidence, direction, and provenance remain distinguishable through a compact level-local legend and accessible text
 
-#### Scenario: US4 - Use instruments where their controls live 3
+#### Scenario: US4 - Understand why regions and relationships exist 3
 
-- **GIVEN** a focused memory and camera position
-- **WHEN** the user switches or closes instruments
-- **THEN** graph focus, camera, scope, and URL remain usable
+- **GIVEN** an individual memory focus
+- **WHEN** its local relationships appear
+- **THEN** the selected memory and neighbors become vivid while unrelated context remains present but subdued
+
+#### Scenario: US4 - Understand why regions and relationships exist 4
+
+- **GIVEN** an open dock at desktop, tablet, mobile, or 200% scale
+- **WHEN** graph controls or level tabs are used
+- **THEN** every required target remains visible and hit-testable without document-level scrolling or selection-induced scroll jumps
 
 ### Requirement: Shared graph and instrument context
 
@@ -402,37 +408,37 @@ Complete graph pages, loading progress, selector portals, semantic fallback, and
 
 ### Requirement: Truthful graph accounting
 
-User-facing atlas counts MUST distinguish current observation memories, projects, semantic communities, supporting entities, and relationships; aggregate or helper nodes MUST NOT be labeled or counted as memories.
+Community responses and UI MUST distinguish `source memories`, `visible memories`, `semantic regions`, `aggregate bridges`, `visible relationships`, and `omitted memories/relationships`; region member counts MUST sum exactly to source membership and visual identities MUST NOT be presented as completeness of the raw graph.
 
-#### Scenario: US1 - Trust what the atlas counts and connects 1
+#### Scenario: US2 - Explore one constellation without a hairball 1
 
-- **GIVEN** distinct canonical values with identical long prefixes
-- **WHEN** visualization identities are derived repeatedly
-- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
 
-#### Scenario: US1 - Trust what the atlas counts and connects 2
+#### Scenario: US2 - Explore one constellation without a hairball 2
 
-- **GIVEN** an observation with project, session, type, topic, and content facts
-- **WHEN** raw diagnostic topology is assembled
-- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
 
-#### Scenario: US1 - Trust what the atlas counts and connects 3
+#### Scenario: US2 - Explore one constellation without a hairball 3
 
-- **GIVEN** a mixed visualization payload
-- **WHEN** counts are presented
-- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
 
-#### Scenario: US1 - Trust what the atlas counts and connects 4
+#### Scenario: US2 - Explore one constellation without a hairball 4
 
-- **GIVEN** legacy observations with incomplete KG or semantic coverage
-- **WHEN** the semantic projection is built
-- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
 
-#### Scenario: US1 - Trust what the atlas counts and connects 5
+#### Scenario: US2 - Explore one constellation without a hairball 5
 
-- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
-- **WHEN** facet choices and scoped reads are produced
-- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
 
 ### Requirement: Facets instead of metadata stars
 

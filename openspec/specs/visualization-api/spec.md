@@ -306,34 +306,164 @@ Neighborhood reads MUST accept one focused observation, preserve active scope, e
 
 ### Requirement: Generation-consistent semantic reads
 
-Universe, Community, and Neighborhood pagination or expansion MUST be bound to normalized scope and one validated source/community generation; stale mutations MUST reject mixed continuations, and clients MUST discard invalid accumulators, restart within a bounded budget, and prevent superseded callbacks from mutating the active level.
+Scope, level, region, focus, and generation MUST own independent abort/generation guards; superseded projection, region-detail, renderer, overlay, simulation, timer, worker, observer, and animation work MUST stop without publishing stale state.
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 1
 
 - **GIVEN** the normal observatory route
-- **WHEN** it loads
-- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+- **WHEN** a large Community opens
+- **THEN** the client does not call `/viz/graph` and does not automatically follow Community continuation until every source member is rendered
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 2
 
-- **GIVEN** the user explicitly opens bounded technical diagnostics
-- **WHEN** Raw graph mode is confirmed
-- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+- **GIVEN** explicit Raw diagnostic confirmation
+- **WHEN** the source exceeds the safe renderer threshold
+- **THEN** the UI reports exact diagnostic totals and offers bounded inspection/export without silently turning Raw into the primary atlas
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 3
 
-- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
-- **WHEN** a semantic level is requested
-- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+- **GIVEN** WebGL initialization or live-context failure
+- **WHEN** fallback activates
+- **THEN** region names, representative memories, counts, focus, navigation, and one Retry remain operable in the synchronized DOM surface
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 4
 
-- **GIVEN** WebGL failure or reduced motion
-- **WHEN** the active semantic level changes
-- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+- **GIVEN** reduced motion or Pause
+- **WHEN** level, zoom band, or focus changes
+- **THEN** semantic results remain visible and stable without nonessential simulation or camera animation
 
-#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 5
 
-- **GIVEN** private-marked source values or superseded requests
-- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
-- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
+- **GIVEN** private-marked data or superseded asynchronous work
+- **WHEN** labels, errors, cursors, overlays, diagnostics, or callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, logs, or external network traffic
+
+### Requirement: Semantic zoom Community projection
+
+A Community read that explicitly requests semantic-zoom presentation MUST report complete source membership and relationship totals but return a bounded visual working set: all observations when source membership is at most 180, otherwise 80–180 deterministic representative observations, plus no more than 450 prepared visual relationship identities in total across observation-endpoint edges and region-anchor bridges. The existing unqualified complete Community pagination remains available to public consumers but is not used by the default dashboard.
+
+#### Scenario: US2 - Explore one constellation without a hairball 1
+
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+
+#### Scenario: US2 - Explore one constellation without a hairball 2
+
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+
+#### Scenario: US2 - Explore one constellation without a hairball 3
+
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+
+#### Scenario: US2 - Explore one constellation without a hairball 4
+
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+
+#### Scenario: US2 - Explore one constellation without a hairball 5
+
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
+
+### Requirement: Representative sampling
+
+Community representatives MUST be selected deterministically using bounded structural importance, cross-region bridge contribution, evidence strength, recency, and diversity across regions and facets; the response MUST expose why an item represents its region without exposing private source values.
+
+#### Scenario: US2 - Explore one constellation without a hairball 1
+
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+
+#### Scenario: US2 - Explore one constellation without a hairball 2
+
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+
+#### Scenario: US2 - Explore one constellation without a hairball 3
+
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+
+#### Scenario: US2 - Explore one constellation without a hairball 4
+
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+
+#### Scenario: US2 - Explore one constellation without a hairball 5
+
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
+
+### Requirement: Stable focused-region replacement
+
+Focused-region detail MUST be generation-, scope-, Community-, and region-bound, MUST preserve unchanged representative identities and camera anchors, MUST remain within the Community visual budget, and MUST reject stale, wrong-region, or mixed-generation responses before mutating visible state.
+
+#### Scenario: US3 - Reveal detail through spatial intent 1
+
+- **GIVEN** Community overview
+- **WHEN** the user zooms into the exploration band
+- **THEN** relevant representative observation links and additional local labels appear without changing Community source membership or downloading every source relationship
+
+#### Scenario: US3 - Reveal detail through spatial intent 2
+
+- **GIVEN** a semantic region
+- **WHEN** the user activates it
+- **THEN** the atlas focuses that region, keeps surrounding regions as subdued context, restores the focus through URL/history, and retains a bounded working set
+
+#### Scenario: US3 - Reveal detail through spatial intent 3
+
+- **GIVEN** a representative memory
+- **WHEN** the user activates it
+- **THEN** Neighborhood displays the focused memory and its most relevant one- or two-hop support within the existing 300-node cap
+
+#### Scenario: US3 - Reveal detail through spatial intent 4
+
+- **GIVEN** Back, Forward, deep-link, search pivot, or filter restoration
+- **WHEN** the level becomes usable
+- **THEN** URL, breadcrumb, region, focus, semantic navigator, Lens, camera, and painted renderer publish one coherent state
+
+#### Scenario: US3 - Reveal detail through spatial intent 5
+
+- **GIVEN** a region or memory that is no longer current
+- **WHEN** a stored URL is restored
+- **THEN** the server returns a typed stale/gone outcome and the client recovers to the current owning Community without mixing generations
+
+### Requirement: Relationship explanation
+
+Aggregate and representative relationships MUST carry stable class, direction, confidence band, evidence count, and bounded provenance suitable for both visual encoding and accessible explanation; unknown evidence MUST be explicit rather than inferred in presentation.
+
+#### Scenario: US4 - Understand why regions and relationships exist 1
+
+- **GIVEN** one semantic region
+- **WHEN** it is focused
+- **THEN** the dock explains its memory count, distinguishing concepts, projects, time span, representative memories, and strongest bridges without presenting metadata as peer stars
+
+#### Scenario: US4 - Understand why regions and relationships exist 2
+
+- **GIVEN** different relationship classes
+- **WHEN** they are visible
+- **THEN** color/style, confidence, direction, and provenance remain distinguishable through a compact level-local legend and accessible text
+
+#### Scenario: US4 - Understand why regions and relationships exist 3
+
+- **GIVEN** an individual memory focus
+- **WHEN** its local relationships appear
+- **THEN** the selected memory and neighbors become vivid while unrelated context remains present but subdued
+
+#### Scenario: US4 - Understand why regions and relationships exist 4
+
+- **GIVEN** an open dock at desktop, tablet, mobile, or 200% scale
+- **WHEN** graph controls or level tabs are used
+- **THEN** every required target remains visible and hit-testable without document-level scrolling or selection-induced scroll jumps
