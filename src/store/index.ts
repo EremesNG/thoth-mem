@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { SemanticAtlasError, VizGraphPageError } from './types.js';
+import { SemanticAtlasError, StaleAdminPreviewError, VizGraphPageError } from './types.js';
 import { buildRawVisualizationProjection } from './visualization-projection.js';
 import {
   buildAtlasFacetCatalog,
@@ -13,7 +13,7 @@ import {
 } from './semantic-atlas.js';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
+import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, DEFAULT_OPERATION_TRACE_RETENTION_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
   AtlasCoverageState,
@@ -102,6 +102,11 @@ import type {
   VizSliceRequest,
   VizSliceResponse,
   ListOperationTracesInput,
+  AdminStorageScope,
+  ApplyOperationTraceRetentionInput,
+  ApplySyncJournalRepairInput,
+  OperationTraceRetentionResult,
+  SyncJournalRepairResult,
 } from './types.js';
 import { metadataFromResolution, normalizeExplicitString, resolveSaveIdentity, mergeIdentityMetadata } from './identity.js';
 import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
@@ -141,6 +146,9 @@ type ObservationRow = Observation;
 type OperationTraceRow = Omit<OperationTrace, 'request_truncated' | 'response_truncated'> & {
   request_truncated: number;
   response_truncated: number;
+};
+type OperationTraceRetentionEvaluation = OperationTraceRetentionResult & {
+  selected_ids: number[];
 };
 
 type SearchRow = ObservationRow & { rank: number };
@@ -211,6 +219,8 @@ interface PruneCandidateRow {
 }
 
 const PRUNE_ID_BATCH_SIZE = 500;
+const ADMIN_PREVIEW_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const CANONICAL_UTC_MILLISECOND_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 type SemanticLaneReadiness = Record<SemanticLaneName, {
   pending: boolean;
   degraded: boolean;
@@ -389,6 +399,7 @@ const DEFAULT_CONFIG: ThothConfig = {
   knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
   communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
   maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
+  operationTraceRetention: { ...DEFAULT_OPERATION_TRACE_RETENTION_CONFIG },
 };
 
 const RETRIEVAL_QUERY_STOPWORDS = new Set([
@@ -754,6 +765,10 @@ export class Store {
           ...DEFAULT_MAINTENANCE_CONFIG.decay,
           ...(maintenanceConfig?.decay ?? {}),
         },
+      },
+      operationTraceRetention: {
+        ...DEFAULT_OPERATION_TRACE_RETENTION_CONFIG,
+        ...(config?.operationTraceRetention ?? {}),
       },
     };
     this.db = this.openMode === 'read-only'
@@ -1357,18 +1372,21 @@ export class Store {
     operation: SyncOperation,
     entityType: SyncEntityType,
     entityId: number,
-    syncId: string | null,
+    syncId: string,
     project: string | null = null
   ): void {
-    try {
-      this.db.prepare(
-        'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id, project) VALUES (?, ?, ?, ?, ?)'
-      ).run(operation, entityType, entityId, syncId, project);
-    } catch (error) {
-      process.stderr.write(
-        `[store] Failed to record sync mutation (${operation} ${entityType}#${entityId}): ${error instanceof Error ? error.message : String(error)}\n`
-      );
+    if (syncId.trim().length === 0) {
+      throw new Error(`Cannot record sync mutation for ${entityType}#${entityId}: stable identity is missing`);
     }
+    this.db.prepare(
+      'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id, project) VALUES (?, ?, ?, ?, ?)'
+    ).run(operation, entityType, entityId, syncId, project);
+  }
+
+  private requireStableIdentity(value: string | null, context: string): string {
+    const identity = value?.trim();
+    if (!identity) throw new Error(`${context}: stable identity is missing`);
+    return identity;
   }
 
   private mapOperationTraceRow(row: OperationTraceRow | undefined): OperationTrace | null {
@@ -1494,6 +1512,223 @@ export class Store {
       ? this.db.prepare('SELECT * FROM operation_traces WHERE id = ?').get(traceIdOrId) as OperationTraceRow | undefined
       : this.db.prepare('SELECT * FROM operation_traces WHERE trace_id = ?').get(traceIdOrId) as OperationTraceRow | undefined;
     return this.mapOperationTraceRow(row);
+  }
+
+  private normalizeAdminScope(scope: AdminStorageScope): AdminStorageScope {
+    if ('project' in scope && typeof scope.project === 'string' && scope.project.trim().length > 0 && !('all' in scope)) {
+      return { project: scope.project.trim() };
+    }
+    if ('all' in scope && scope.all === true && !('project' in scope)) return { all: true };
+    throw new Error('Exactly one non-blank project or all: true scope is required');
+  }
+
+  private evaluateSyncJournalRepair(scopeInput: AdminStorageScope): SyncJournalRepairResult & {
+    selected_rows: Array<SyncJournalRepairResult['samples'][number] & { project: string | null }>;
+  } {
+    const scope = this.normalizeAdminScope(scopeInput);
+    type CurrentRow = { entity_type: SyncEntityType; entity_id: number; sync_id: string | null; deleted: number; project: string | null };
+    type RepairCandidate = SyncJournalRepairResult['samples'][number] & { project: string | null };
+    const scoped = (column: string): { sql: string; params: string[] } => 'project' in scope
+      ? { sql: ` WHERE ${column} = ?`, params: [scope.project] }
+      : { sql: '', params: [] };
+    const observationScope = scoped('project');
+    const promptScope = scoped('project');
+    const sessionScope = scoped('project');
+    const rows: CurrentRow[] = [
+      ...(this.db.prepare(`SELECT 'observation' AS entity_type, id AS entity_id, sync_id, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END AS deleted, project FROM observations${observationScope.sql}`)
+        .all(...observationScope.params) as CurrentRow[]),
+      ...(this.db.prepare(`SELECT 'prompt' AS entity_type, id AS entity_id, sync_id, 0 AS deleted, project FROM user_prompts${promptScope.sql}`)
+        .all(...promptScope.params) as CurrentRow[]),
+      ...(this.db.prepare(`SELECT 'session' AS entity_type, 0 AS entity_id, id AS sync_id, 0 AS deleted, project FROM sessions${sessionScope.sql}`)
+        .all(...sessionScope.params) as CurrentRow[]),
+    ];
+    const candidates: RepairCandidate[] = [];
+    let skipped = 0;
+    let ineligibleIdentity = 0;
+    const latestMutations = new Map<string, SyncOperation>();
+    const mutationRows = this.db.prepare(
+      `SELECT entity_type, sync_id, operation FROM sync_mutations
+       WHERE sync_id IS NOT NULL AND trim(sync_id) != '' ORDER BY id DESC`
+    ).all() as Array<{ entity_type: SyncEntityType; sync_id: string; operation: SyncOperation }>;
+    for (const mutation of mutationRows) {
+      const key = `${mutation.entity_type}\u0000${mutation.sync_id}`;
+      if (!latestMutations.has(key)) latestMutations.set(key, mutation.operation);
+    }
+    for (const row of rows) {
+      const syncId = row.sync_id?.trim();
+      if (!syncId) {
+        ineligibleIdentity += 1;
+        continue;
+      }
+      const latestOperation = latestMutations.get(`${row.entity_type}\u0000${syncId}`);
+      const covered = row.deleted === 1
+        ? latestOperation === 'delete'
+        : latestOperation === 'create' || latestOperation === 'update';
+      if (covered) {
+        skipped += 1;
+        continue;
+      }
+      candidates.push({
+        entity_type: row.entity_type,
+        entity_id: row.entity_id,
+        sync_id: syncId,
+        operation: row.deleted === 1 ? 'delete' : latestOperation ? 'update' : 'create',
+        project: row.project,
+      });
+    }
+    const rank: Record<SyncEntityType, number> = { observation: 0, prompt: 1, session: 2 };
+    candidates.sort((a, b) => rank[a.entity_type] - rank[b.entity_type]
+      || a.entity_id - b.entity_id || a.sync_id.localeCompare(b.sync_id));
+    const selected = candidates.slice(0, 10_000);
+    const selectionFingerprint = `sha256:${createHash('sha256').update(JSON.stringify({
+      scope,
+      max_rows_per_run: 10_000,
+      candidates: selected.map((row) => [row.entity_type, row.entity_id, row.sync_id, row.operation]),
+    })).digest('hex')}`;
+    const byEntity: Record<SyncEntityType, number> = { observation: 0, prompt: 0, session: 0 };
+    const byOperation: Record<SyncOperation, number> = { create: 0, update: 0, delete: 0 };
+    for (const candidate of candidates) {
+      byEntity[candidate.entity_type] += 1;
+      byOperation[candidate.operation] += 1;
+    }
+    const result: SyncJournalRepairResult = {
+      dry_run: true,
+      scope,
+      max_rows_per_run: 10_000,
+      selection_fingerprint: selectionFingerprint,
+      counts: {
+        scanned: rows.length,
+        candidates: candidates.length,
+        selected: selected.length,
+        repaired: 0,
+        remaining: candidates.length - selected.length,
+        skipped,
+        ineligible_identity: ineligibleIdentity,
+        by_entity: byEntity,
+        by_operation: byOperation,
+      },
+      has_more: candidates.length > selected.length,
+      samples: selected.slice(0, 50).map(({ project: _project, ...sample }) => sample),
+    };
+    Object.defineProperty(result, 'selected_rows', { value: selected, enumerable: false });
+    return result as SyncJournalRepairResult & {
+      selected_rows: Array<SyncJournalRepairResult['samples'][number] & { project: string | null }>;
+    };
+  }
+
+  previewSyncJournalRepair(scope: AdminStorageScope): SyncJournalRepairResult {
+    return this.evaluateSyncJournalRepair(scope);
+  }
+
+  applySyncJournalRepair(input: ApplySyncJournalRepairInput): SyncJournalRepairResult {
+    const expected = input.expected_selection_fingerprint;
+    if (!ADMIN_PREVIEW_FINGERPRINT_PATTERN.test(expected ?? '')) throw new StaleAdminPreviewError();
+    const apply = this.db.transaction(() => {
+      const preview = this.evaluateSyncJournalRepair(input.scope);
+      if (preview.selection_fingerprint !== expected) throw new StaleAdminPreviewError();
+      for (const candidate of preview.selected_rows) {
+        this.recordMutation(candidate.operation, candidate.entity_type, candidate.entity_id, candidate.sync_id, candidate.project);
+      }
+      return {
+        ...preview,
+        dry_run: false,
+        counts: { ...preview.counts, repaired: preview.counts.selected },
+      };
+    });
+    return apply.immediate();
+  }
+
+  private evaluateOperationTraceRetention(
+    scopeInput: AdminStorageScope,
+    effectiveNowInput?: string,
+  ): OperationTraceRetentionEvaluation {
+    const scope = this.normalizeAdminScope(scopeInput);
+    const effectiveNow = effectiveNowInput ?? new Date().toISOString();
+    if (!CANONICAL_UTC_MILLISECOND_PATTERN.test(effectiveNow)
+      || new Date(effectiveNow).toISOString() !== effectiveNow) throw new StaleAdminPreviewError('effective_now must be canonical UTC ISO-8601');
+    const retention = this.config.operationTraceRetention;
+    const successCutoff = new Date(Date.parse(effectiveNow) - retention.successRetentionDays * 86_400_000).toISOString();
+    const errorCutoff = new Date(Date.parse(effectiveNow) - retention.errorRetentionDays * 86_400_000).toISOString();
+    const where = 'project' in scope ? ' WHERE project = ?' : '';
+    const params = 'project' in scope ? [scope.project] : [];
+    const rows = this.db.prepare(`SELECT id, trace_id, status, started_at FROM operation_traces${where}`)
+      .all(...params) as Array<{ id: number; trace_id: string; status: string; started_at: string }>;
+    let skippedInvalid = 0;
+    let skippedStatus = 0;
+    const eligible = rows.filter((row) => {
+      if (!CANONICAL_UTC_MILLISECOND_PATTERN.test(row.started_at) || new Date(row.started_at).toISOString() !== row.started_at) {
+        skippedInvalid += 1;
+        return false;
+      }
+      if (row.status !== 'ok' && row.status !== 'error') {
+        skippedStatus += 1;
+        return false;
+      }
+      return row.started_at < (row.status === 'ok' ? successCutoff : errorCutoff);
+    }).sort((a, b) => a.started_at.localeCompare(b.started_at) || a.id - b.id);
+    const selected = eligible.slice(0, retention.maxRowsPerRun);
+    const policy = {
+      success_retention_days: retention.successRetentionDays,
+      error_retention_days: retention.errorRetentionDays,
+      max_rows_per_run: retention.maxRowsPerRun,
+      success_cutoff: successCutoff,
+      error_cutoff: errorCutoff,
+    };
+    const fingerprint = `sha256:${createHash('sha256').update(JSON.stringify({
+      scope, effective_now: effectiveNow, policy,
+      selected: selected.map((row) => [row.id, row.trace_id, row.status, row.started_at]),
+    })).digest('hex')}`;
+    const result: OperationTraceRetentionResult = {
+      dry_run: true,
+      scope,
+      effective_now: effectiveNow,
+      policy,
+      selection_fingerprint: fingerprint,
+      counts: {
+        before_in_scope: rows.length,
+        eligible: eligible.length,
+        selected: selected.length,
+        deleted: 0,
+        remaining_eligible: eligible.length - selected.length,
+        skipped_invalid_timestamp: skippedInvalid,
+        skipped_unsupported_status: skippedStatus,
+        after_in_scope_at_commit: rows.length,
+      },
+      has_more: eligible.length > selected.length,
+      sample_trace_ids: selected.slice(0, 50).map((row) => row.trace_id),
+    };
+    Object.defineProperty(result, 'selected_ids', {
+      value: selected.map((row) => row.id),
+      enumerable: false,
+    });
+    return result as OperationTraceRetentionEvaluation;
+  }
+
+  previewOperationTraceRetention(scope: AdminStorageScope, effectiveNow?: string): OperationTraceRetentionResult {
+    return this.evaluateOperationTraceRetention(scope, effectiveNow);
+  }
+
+  applyOperationTraceRetention(input: ApplyOperationTraceRetentionInput): OperationTraceRetentionResult {
+    if (!ADMIN_PREVIEW_FINGERPRINT_PATTERN.test(input.expected_selection_fingerprint ?? '')) throw new StaleAdminPreviewError();
+    const apply = this.db.transaction(() => {
+      const preview = this.evaluateOperationTraceRetention(input.scope, input.effective_now);
+      if (preview.selection_fingerprint !== input.expected_selection_fingerprint) throw new StaleAdminPreviewError();
+      let deleted = 0;
+      for (let offset = 0; offset < preview.selected_ids.length; offset += 500) {
+        const chunk = preview.selected_ids.slice(offset, offset + 500);
+        deleted += this.db.prepare(`DELETE FROM operation_traces WHERE id IN (${chunk.map(() => '?').join(',')})`).run(...chunk).changes;
+      }
+      return {
+        ...preview,
+        dry_run: false,
+        counts: {
+          ...preview.counts,
+          deleted,
+          after_in_scope_at_commit: preview.counts.before_in_scope - deleted,
+        },
+      };
+    });
+    return apply.immediate();
   }
 
   getOperationTraceTelemetry(input: { project?: string; since?: string; now?: string } = {}): OperationTraceTelemetry {
@@ -1640,61 +1875,52 @@ export class Store {
    * Ensure a session exists. Idempotent — creates if new, enriches missing fields if existing.
    * Replaces empty/unknown project and null/empty directory with provided values.
    */
-  ensureSession(sessionId: string, project: string, directory?: string): void {
-    // Check if session already exists
-    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId);
-    const isNew = !existing;
-
+  private persistSession(
+    sessionId: string,
+    project: string,
+    directory: string | undefined,
+    origin: 'local' | 'inbound',
+  ): Session {
+    const existing = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
     this.db
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
+           project   = CASE WHEN (sessions.project = '' OR sessions.project = 'unknown')
+                             AND substr(sessions.id, 1, 12) <> 'manual-save-'
+                            THEN excluded.project ELSE sessions.project END,
            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(sessionId, project, directory ?? null);
-
-    // Record mutation only for new sessions
-    if (isNew) {
-      this.recordMutation('create', 'session', 0, sessionId, project);
+    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session;
+    if (origin === 'local') {
+      if (!existing) {
+        this.recordMutation('create', 'session', 0, sessionId, session.project);
+      } else if (existing.project !== session.project || existing.directory !== session.directory) {
+        this.recordMutation('update', 'session', 0, sessionId, session.project);
+      }
     }
+    return session;
+  }
+
+  ensureSession(sessionId: string, project: string, directory?: string): void {
+    this.db.transaction(() => this.persistSession(sessionId, project, directory, 'local'))();
   }
 
   startSession(id: string, project: string, directory?: string): Session {
-    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
-    const isNew = !existing;
-
-    const result = this.db
-      .prepare(
-        `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
-      )
-      .run(id, project, directory ?? null);
-
-    // Record mutation only for newly created sessions.
-    if (isNew && result.changes > 0) {
-      this.recordMutation('create', 'session', 0, id, project);
-    }
-
-    return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+    return this.db.transaction(() => this.persistSession(id, project, directory, 'local'))();
   }
 
   endSession(id: string, summary?: string): Session | null {
-    const result = this.db
-      .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ? AND ended_at IS NULL")
-      .run(summary ?? null, id);
-
-    if (result.changes === 0) {
-      return null;
-    }
-
-    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
-
-    // Record mutation for session update
-    this.recordMutation('update', 'session', 0, id, session.project);
-
-    return session;
+    return this.db.transaction(() => {
+      const result = this.db
+        .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ? AND ended_at IS NULL")
+        .run(summary ?? null, id);
+      if (result.changes === 0) return null;
+      const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+      this.recordMutation('update', 'session', 0, id, session.project);
+      return session;
+    })();
   }
 
   private extractStructuredFacts(content: string): Array<{ relation: string; object: string }> {
@@ -1993,19 +2219,21 @@ export class Store {
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
-    const result = this.db
-      .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?")
-      .run(summary ?? null, id);
+    return this.db.transaction(() => {
+      const result = this.db
+        .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?")
+        .run(summary ?? null, id);
 
-    if (result.changes === 0) {
-      return null;
-    }
+      if (result.changes === 0) {
+        return null;
+      }
 
-    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+      const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 
-    this.recordMutation('update', 'session', 0, id, session.project);
+      this.recordMutation('update', 'session', 0, id, session.project);
 
-    return session;
+      return session;
+    })();
   }
 
   getSession(id: string): Session | null {
@@ -2216,6 +2444,10 @@ export class Store {
   }
 
   savePrompt(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
+    return this.db.transaction(() => this.savePromptInTransaction(sessionId, content, project))();
+  }
+
+  private savePromptInTransaction(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
     const identity = resolveSaveIdentity({
       session_id: sessionId,
       project,
@@ -2244,23 +2476,21 @@ export class Store {
       };
     }
 
-    const syncId = randomUUID();
-    const result = this.db.prepare(
-      'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
-    ).run(identity.session_id, content, recordProject, syncId);
-
-    const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
-
-    if (!prompt) {
-      throw new Error('Failed to load created prompt');
-    }
-
-    this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
-
-    return {
-      ...prompt,
-      ...(identityMetadata ? { identity: identityMetadata } : {}),
-    };
+    return this.db.transaction(() => {
+      const syncId = randomUUID();
+      const result = this.db.prepare(
+        'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
+      ).run(identity.session_id, content, recordProject, syncId);
+      const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
+      if (!prompt || !prompt.sync_id?.trim()) {
+        throw new Error('Failed to load created prompt with stable identity');
+      }
+      this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
+      return {
+        ...prompt,
+        ...(identityMetadata ? { identity: identityMetadata } : {}),
+      };
+    })();
   }
 
   recentPrompts(limit: number = 10, project?: string, sessionId?: string): UserPrompt[] {
@@ -3149,14 +3379,14 @@ export class Store {
              revision_count = revision_count + 1, updated_at = datetime('now')
          WHERE id = ?`
       ).run(reflection.title, reflection.content, project, normalizedHash, existingByScope.id);
-      this.recordMutation('update', 'observation', existingByScope.id, null, project);
-
       const observation = this.getObservation(existingByScope.id);
-      if (observation) {
-        this.refreshGraphFacts(observation);
-        this.markCommunitySummariesStale(observation.project, 'saveObservation');
-        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      if (!observation?.sync_id?.trim()) {
+        throw new Error(`Cannot update maintenance reflection ${existingByScope.id}: stable identity is missing`);
       }
+      this.recordMutation('update', 'observation', observation.id, observation.sync_id, project);
+      this.refreshGraphFacts(observation);
+      this.markCommunitySummariesStale(observation.project, 'saveObservation');
+      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
       return { observationId: existingByScope.id, topicKey: existingByScope.topic_key };
     }
@@ -3667,6 +3897,10 @@ export class Store {
   }
 
   saveObservation(input: SaveObservationInput): SaveResult {
+    return this.db.transaction(() => this.saveObservationInTransaction(input))();
+  }
+
+  private saveObservationInTransaction(input: SaveObservationInput): SaveResult {
     const strippedTitle = stripPrivateTags(input.title);
     const strippedContent = stripPrivateTags(input.content);
     const validation = validateContentLength(strippedContent, this.config.maxContentLength);
@@ -3702,16 +3936,13 @@ export class Store {
     );
 
     if (duplicate.isDuplicate && duplicate.existingId !== undefined) {
-      incrementDuplicate(this.db, duplicate.existingId);
-      const observation = this.getObservation(duplicate.existingId);
-
-      if (!observation) {
-        throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
-      }
-
-      this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-
-      return { observation, action: 'deduplicated', ...(identityMetadata ? { identity: identityMetadata } : {}) };
+      return this.db.transaction(() => {
+        incrementDuplicate(this.db, duplicate.existingId!);
+        const observation = this.getObservation(duplicate.existingId!);
+        if (!observation) throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
+        this.recordMutation('update', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
+        return { observation, action: 'deduplicated' as const, ...(identityMetadata ? { identity: identityMetadata } : {}) };
+      })();
     }
 
     if (input.topic_key) {
@@ -3744,7 +3975,7 @@ export class Store {
             throw new Error(`Failed to load upserted observation ${existing.id}`);
           }
 
-          this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
+          this.recordMutation('update', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
           this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
           return { observation, action: 'upserted', ...(identityMetadata ? { identity: identityMetadata } : {}) };
@@ -3775,7 +4006,7 @@ export class Store {
         throw new Error('Failed to load created observation');
       }
 
-      this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
+      this.recordMutation('create', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
       this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
       return { observation, action: 'created', ...(identityMetadata ? { identity: identityMetadata } : {}) };
@@ -3814,16 +4045,23 @@ export class Store {
         return false;
       }
 
+      if (!existing.sync_id?.trim()) {
+        throw new Error(`Cannot delete observation ${id}: stable identity is missing`);
+      }
+
       const result = this.db.transaction(() => {
         this.deleteSemanticArtifactsForObservation(id);
         this.deleteKnowledgeArtifactsForObservation(id);
         this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
-        return this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+        const deleted = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+        if (deleted.changes > 0) {
+          this.recordMutation('delete', 'observation', id, existing.sync_id!, existing.project);
+        }
+        return deleted;
       })();
 
       if (result.changes > 0) {
-        this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
-        this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
+        this.markCommunitySummariesStale(existing.project, 'deleteObservation');
       }
 
       return result.changes > 0;
@@ -3833,12 +4071,15 @@ export class Store {
       'SELECT sync_id, project FROM observations WHERE id = ? AND deleted_at IS NULL'
     ).get(id) as { sync_id: string | null; project: string | null } | undefined;
 
-    const result = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
+    if (!existing) return false;
+    if (!existing.sync_id?.trim()) throw new Error(`Cannot delete observation ${id}: stable identity is missing`);
+    const result = this.db.transaction(() => {
+      const updated = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
+      if (updated.changes > 0) this.recordMutation('delete', 'observation', id, existing.sync_id!, existing.project);
+      return updated;
+    })();
 
-    if (result.changes > 0) {
-      this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
-      this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
-    }
+    if (result.changes > 0) this.markCommunitySummariesStale(existing.project, 'deleteObservation');
 
     return result.changes > 0;
   }
@@ -3897,7 +4138,7 @@ export class Store {
       const updated = this.getObservation(input.id);
 
       if (updated) {
-        this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
+        this.recordMutation('update', 'observation', updated.id, this.requireStableIdentity(updated.sync_id, `Observation ${updated.id}`), updated.project);
         this.refreshDerivedStateForObservation(updated, 'updateObservation', current.project);
       }
 
@@ -6918,6 +7159,20 @@ export class Store {
 
   migrateProject(oldProject: string, newProject: string): MigrateProjectResult {
     const migrate = this.db.transaction(() => {
+      const sessionRows = this.db.prepare('SELECT id FROM sessions WHERE project = ? ORDER BY id')
+        .all(oldProject) as Array<{ id: string }>;
+      const observationRows = this.db.prepare(
+        'SELECT id, sync_id, deleted_at FROM observations WHERE project = ? ORDER BY id'
+      ).all(oldProject) as Array<{ id: number; sync_id: string | null; deleted_at: string | null }>;
+      const promptRows = this.db.prepare('SELECT id, sync_id FROM user_prompts WHERE project = ? ORDER BY id')
+        .all(oldProject) as Array<{ id: number; sync_id: string | null }>;
+      const missingObservation = observationRows.find((row) => !row.sync_id?.trim());
+      const missingPrompt = promptRows.find((row) => !row.sync_id?.trim());
+      if (missingObservation || missingPrompt) {
+        const entity = missingObservation ? `observation ${missingObservation.id}` : `prompt ${missingPrompt!.id}`;
+        throw new Error(`Cannot migrate project: ${entity} has no stable identity`);
+      }
+
       const sessions = this.db.prepare(
         'UPDATE sessions SET project = ? WHERE project = ?'
       ).run(newProject, oldProject);
@@ -6933,6 +7188,22 @@ export class Store {
       this.db.prepare(
         "UPDATE kg_triples SET project = ?, updated_at = datetime('now') WHERE project = ?"
       ).run(newProject, oldProject);
+
+      for (const session of sessionRows) {
+        this.recordMutation('update', 'session', 0, session.id, newProject);
+      }
+      for (const observation of observationRows) {
+        this.recordMutation(
+          observation.deleted_at === null ? 'update' : 'delete',
+          'observation',
+          observation.id,
+          observation.sync_id!,
+          newProject,
+        );
+      }
+      for (const prompt of promptRows) {
+        this.recordMutation('update', 'prompt', prompt.id, prompt.sync_id!, newProject);
+      }
 
       return {
         old_project: oldProject,
@@ -6994,9 +7265,12 @@ export class Store {
       const observations = this.db.prepare(
         'SELECT id, sync_id FROM observations WHERE project = ? ORDER BY id'
       ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+
       const prompts = this.db.prepare(
         'SELECT id, sync_id FROM user_prompts WHERE project = ? ORDER BY id'
       ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+      for (const observation of observations) this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`);
+      for (const prompt of prompts) this.requireStableIdentity(prompt.sync_id, `Prompt ${prompt.id}`);
 
       const observationVersionsDeleted = (this.db.prepare(
         `SELECT COUNT(*) as count
@@ -7006,11 +7280,11 @@ export class Store {
       ).get(targetProject) as { count: number }).count;
 
       for (const observation of observations) {
-        this.recordMutation('delete', 'observation', observation.id, observation.sync_id, targetProject);
+        this.recordMutation('delete', 'observation', observation.id, observation.sync_id!, targetProject);
       }
 
       for (const prompt of prompts) {
-        this.recordMutation('delete', 'prompt', prompt.id, prompt.sync_id, targetProject);
+        this.recordMutation('delete', 'prompt', prompt.id, prompt.sync_id!, targetProject);
       }
 
       for (const session of sessions) {
@@ -7140,7 +7414,7 @@ export class Store {
         }
         const recordProject = normalizeExplicitString(obs.project) ?? null;
 
-        this.ensureSession(identity.session_id!, identity.session_project);
+        this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
 
         const result = this.db.prepare(
           `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
@@ -7186,7 +7460,7 @@ export class Store {
         }
         const recordProject = normalizeExplicitString(prompt.project) ?? null;
 
-        this.ensureSession(identity.session_id!, identity.session_project);
+        this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
 
         this.db.prepare(
           `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
@@ -7303,11 +7577,30 @@ export class Store {
         if (mutation.operation === 'create') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id FROM observations WHERE sync_id = ? LIMIT 1'
-            ).get(syncId) as { id: number } | undefined;
+              'SELECT id, project, deleted_at FROM observations WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null; deleted_at: string | null } | undefined;
 
             if (existingObservation) {
-              skipped++;
+              if (existingObservation.deleted_at !== null && asNullableString(data.deleted_at) === null) {
+                const title = asNullableString(data.title);
+                const content = asNullableString(data.content);
+                const typeValue = data.type;
+                if (!title || !content || !isObservationType(typeValue)) { skipped++; continue; }
+                const project = asNullableString(data.project);
+                const identity = resolveSaveIdentity({ session_id: asNullableString(data.session_id), project, requireSessionProject: true, config: this.config, source: 'legacy' });
+                this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
+                this.db.prepare(
+                  `UPDATE observations SET session_id = ?, type = ?, title = ?, content = ?, tool_name = ?, project = ?, scope = ?,
+                   topic_key = ?, normalized_hash = ?, revision_count = ?, duplicate_count = ?, last_seen_at = ?,
+                   updated_at = COALESCE(?, datetime('now')), deleted_at = NULL WHERE id = ?`
+                ).run(identity.session_id, typeValue, title, content, asNullableString(data.tool_name), project,
+                  isObservationScope(data.scope) ? data.scope : 'project', asNullableString(data.topic_key),
+                  asNullableString(data.normalized_hash) ?? computeHash(content), asPositiveInteger(data.revision_count, 1),
+                  asPositiveInteger(data.duplicate_count, 1), asNullableString(data.last_seen_at), asNullableString(data.updated_at), existingObservation.id);
+                const restored = this.getObservation(existingObservation.id);
+                if (restored) this.refreshDerivedStateForObservation(restored, 'applyV2Chunk', existingObservation.project);
+                applied++;
+              } else skipped++;
               continue;
             }
 
@@ -7338,7 +7631,7 @@ export class Store {
             const scope = isObservationScope(scopeValue) ? scopeValue : 'project';
             const normalizedHash = asNullableString(data.normalized_hash) ?? computeHash(content);
 
-            this.ensureSession(resolvedSessionId, identity.session_project);
+            this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
             const result = this.db.prepare(
               `INSERT INTO observations (
@@ -7419,7 +7712,7 @@ export class Store {
               identityReports.push(identityMetadata);
             }
             const resolvedSessionId = identity.session_id!;
-            this.ensureSession(resolvedSessionId, identity.session_project);
+            this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
             this.db.prepare(
               `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
@@ -7482,8 +7775,8 @@ export class Store {
         if (mutation.operation === 'update') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
-            ).get(syncId) as { id: number; project: string | null } | undefined;
+              'SELECT id, project, deleted_at FROM observations WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null; deleted_at: string | null } | undefined;
 
             if (!existingObservation) {
               skipped++;
@@ -7509,7 +7802,7 @@ export class Store {
                 identityReports.push(identityMetadata);
               }
               const resolvedSessionId = identity.session_id!;
-              this.ensureSession(resolvedSessionId, identity.session_project);
+              this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
               setClauses.push('session_id = ?');
               params.push(resolvedSessionId);
@@ -7617,6 +7910,10 @@ export class Store {
               setClauses.push("updated_at = datetime('now')");
             }
 
+            if (has('deleted_at') && asNullableString(data.deleted_at) === null) {
+              setClauses.push('deleted_at = NULL');
+            }
+
             if (setClauses.length === 0) {
               skipped++;
               continue;
@@ -7624,7 +7921,7 @@ export class Store {
 
             params.push(existingObservation.id);
             const result = this.db.prepare(
-              `UPDATE observations SET ${setClauses.join(', ')} WHERE id = ? AND deleted_at IS NULL`
+              `UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`
             ).run(...params);
 
             if (result.changes > 0) {
@@ -7671,7 +7968,7 @@ export class Store {
                 identityReports.push(identityMetadata);
               }
               const resolvedSessionId = identity.session_id!;
-              this.ensureSession(resolvedSessionId, identity.session_project);
+              this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
               setClauses.push('session_id = ?');
               params.push(resolvedSessionId);

@@ -23,6 +23,13 @@ const PUBLIC_TOOL_NAMES = [
   'mem_session',
 ] as const;
 
+it('keeps storage administration out of the six-tool MCP registry', () => {
+  expect(ALL_TOOLS.map((tool) => tool.name)).toEqual(PUBLIC_TOOL_NAMES);
+  expect(ALL_TOOLS.map((tool) => tool.name)).not.toContain('repair-sync-journal');
+  expect(ALL_TOOLS.map((tool) => tool.name)).not.toContain('prune-operation-traces');
+  expect(ALL_TOOLS.map((tool) => tool.name)).not.toContain('compact-database');
+});
+
 const PUBLIC_INPUT_SHAPES: Record<string, { properties: string[]; required: string[] }> = {
   mem_save: {
     properties: ['kind', 'title', 'content', 'type', 'session_id', 'project', 'scope', 'topic_key'],

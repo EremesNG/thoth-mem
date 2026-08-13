@@ -335,6 +335,10 @@ pnpm run eval:retrieval
 - Run `thoth-mem help` for the complete CLI command and option list.
 - Open the local dashboard at `http://localhost:7438/` and OpenAPI documentation at `http://localhost:7438/docs`.
 - Use `thoth-mem sync --dir=.thoth-sync` and `thoth-mem sync-import --dir=.thoth-sync` for Git-friendly portability.
+- `repair-sync-journal (--project <name> | --all) --apply` previews and binds its repair batch internally. The optional `--expected-fingerprint` remains available when an external workflow already has a preview binding.
+- `prune-operation-traces (--project <name> | --all) --apply` likewise binds one retention batch internally. Add `--until-complete` to process the initially bounded backlog with one fixed effective instant and fresh later fingerprints. An externally supplied binding must include both `--expected-fingerprint` and `--effective-now`.
+- `compact-database [--data-dir <path>]` performs a read-only preview. Add `--apply` only after reviewing its reclaimable-space and capacity estimates. Apply can require twice the greater of the physical and logical database sizes, can be blocked by other SQLite clients, and reports success only after integrity, foreign-key, schema, durable-count, and WAL checks. It uses SQLite-managed checkpoint and `VACUUM`; it does not promise rollback after a committed compaction.
+- Compaction is never automatic. Running it against live data requires separate operator authorization; repository tests use disposable databases only.
 - Review [`config.schema.json`](config.schema.json) for persisted configuration and environment-backed settings.
 - Data lives in `~/.thoth/thoth.db` by default; override the data directory with `THOTH_DATA_DIR` or `--data-dir`.
 

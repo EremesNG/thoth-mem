@@ -16,6 +16,28 @@ const GRAPH_RELATION_SCHEMA = {
   enum: ['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED'],
 };
 
+function adminStorageOperation(summary: string, apply: boolean, retention: boolean): Record<string, unknown> {
+  const requestSchema = apply
+    ? { $ref: retention
+      ? '#/components/schemas/OperationTraceRetentionApplyRequest'
+      : '#/components/schemas/SyncJournalRepairApplyRequest' }
+    : { $ref: '#/components/schemas/AdminStorageScope' };
+  const resultSchema = { $ref: retention
+    ? '#/components/schemas/OperationTraceRetentionResult'
+    : '#/components/schemas/SyncJournalRepairResult' };
+  return {
+    post: {
+      summary,
+      requestBody: { required: true, content: { 'application/json': { schema: requestSchema } } },
+      responses: {
+        '200': { description: 'Administrative storage result', content: { 'application/json': { schema: resultSchema } } },
+        '400': { $ref: '#/components/responses/Error' },
+        ...(apply ? { '409': { $ref: '#/components/responses/StaleAdminPreview' } } : {}),
+      },
+    },
+  };
+}
+
 export function getOpenApiSpec(port: number): Record<string, unknown> {
   return {
     openapi: '3.0.0',
@@ -375,6 +397,10 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/sync/journal/repair/preview': adminStorageOperation('Preview sync journal repair', false, false),
+      '/sync/journal/repair/apply': adminStorageOperation('Apply sync journal repair', true, false),
+      '/operation-traces/retention/preview': adminStorageOperation('Preview operation trace retention', false, true),
+      '/operation-traces/retention/apply': adminStorageOperation('Apply operation trace retention', true, true),
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -1264,6 +1290,14 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
         },
+        StaleAdminPreview: {
+          description: 'Preview binding is missing, malformed, stale, or no longer matches current state',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/StaleAdminPreviewError' },
+            },
+          },
+        },
         DeleteProjectConflict: {
           description: 'Project deletion conflict response',
           content: {
@@ -1290,6 +1324,128 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
         },
       },
       schemas: {
+        AdminStorageScope: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+          },
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        SyncJournalRepairApplyRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+            expected_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+          },
+          required: ['expected_fingerprint'],
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        OperationTraceRetentionApplyRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+            expected_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            effective_now: { type: 'string', format: 'date-time', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$' },
+          },
+          required: ['expected_fingerprint', 'effective_now'],
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        SyncJournalRepairResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean' },
+            scope: { $ref: '#/components/schemas/AdminStorageScope' },
+            max_rows_per_run: { type: 'integer', enum: [10_000] },
+            selection_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            counts: {
+              type: 'object',
+              properties: {
+                scanned: { type: 'integer', minimum: 0 }, candidates: { type: 'integer', minimum: 0 },
+                selected: { type: 'integer', minimum: 0 }, repaired: { type: 'integer', minimum: 0 },
+                remaining: { type: 'integer', minimum: 0 }, skipped: { type: 'integer', minimum: 0 },
+                ineligible_identity: { type: 'integer', minimum: 0 },
+                by_entity: {
+                  type: 'object',
+                  properties: { observation: { type: 'integer' }, prompt: { type: 'integer' }, session: { type: 'integer' } },
+                  required: ['observation', 'prompt', 'session'],
+                },
+                by_operation: {
+                  type: 'object',
+                  properties: { create: { type: 'integer' }, update: { type: 'integer' }, delete: { type: 'integer' } },
+                  required: ['create', 'update', 'delete'],
+                },
+              },
+              required: ['scanned', 'candidates', 'selected', 'repaired', 'remaining', 'skipped', 'ineligible_identity', 'by_entity', 'by_operation'],
+            },
+            has_more: { type: 'boolean' },
+            samples: {
+              type: 'array', maxItems: 50,
+              items: {
+                type: 'object',
+                properties: {
+                  entity_type: { type: 'string', enum: ['observation', 'prompt', 'session'] },
+                  entity_id: { type: 'integer' }, sync_id: { type: 'string', minLength: 1 },
+                  operation: { type: 'string', enum: ['create', 'update', 'delete'] },
+                },
+                required: ['entity_type', 'entity_id', 'sync_id', 'operation'],
+              },
+            },
+          },
+          required: ['dry_run', 'scope', 'max_rows_per_run', 'selection_fingerprint', 'counts', 'has_more', 'samples'],
+        },
+        OperationTraceRetentionPolicy: {
+          type: 'object',
+          properties: {
+            success_retention_days: { type: 'integer', minimum: 1 },
+            error_retention_days: { type: 'integer', minimum: 1 },
+            max_rows_per_run: { type: 'integer', minimum: 1 },
+            success_cutoff: { type: 'string', format: 'date-time' },
+            error_cutoff: { type: 'string', format: 'date-time' },
+          },
+          required: ['success_retention_days', 'error_retention_days', 'max_rows_per_run', 'success_cutoff', 'error_cutoff'],
+        },
+        OperationTraceRetentionResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean' }, scope: { $ref: '#/components/schemas/AdminStorageScope' },
+            effective_now: { type: 'string', format: 'date-time' },
+            policy: { $ref: '#/components/schemas/OperationTraceRetentionPolicy' },
+            selection_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            counts: {
+              type: 'object',
+              properties: {
+                before_in_scope: { type: 'integer', minimum: 0 }, eligible: { type: 'integer', minimum: 0 },
+                selected: { type: 'integer', minimum: 0 }, deleted: { type: 'integer', minimum: 0 },
+                remaining_eligible: { type: 'integer', minimum: 0 }, skipped_invalid_timestamp: { type: 'integer', minimum: 0 },
+                skipped_unsupported_status: { type: 'integer', minimum: 0 }, after_in_scope_at_commit: { type: 'integer', minimum: 0 },
+              },
+              required: ['before_in_scope', 'eligible', 'selected', 'deleted', 'remaining_eligible', 'skipped_invalid_timestamp', 'skipped_unsupported_status', 'after_in_scope_at_commit'],
+            },
+            has_more: { type: 'boolean' },
+            sample_trace_ids: { type: 'array', maxItems: 50, items: { type: 'string' } },
+          },
+          required: ['dry_run', 'scope', 'effective_now', 'policy', 'selection_fingerprint', 'counts', 'has_more', 'sample_trace_ids'],
+        },
+        StaleAdminPreviewError: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            code: { type: 'string', enum: ['stale_admin_preview'] },
+          },
+          required: ['error', 'code'],
+        },
         Error: {
           type: 'object',
           properties: {

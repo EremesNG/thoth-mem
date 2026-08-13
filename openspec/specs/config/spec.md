@@ -928,3 +928,37 @@ The public configuration documentation MUST describe the accepted values, CPU de
 - **GIVEN** `auto`
 - **WHEN** the local executor loads
 - **THEN** Transformers.js owns platform-specific provider ordering and fallback behavior
+
+### Requirement: Conservative Trace Retention Defaults
+
+Configuration MUST default successful trace retention to seven days, error trace retention to thirty days, and a finite positive per-run deletion maximum; explicit environment and persisted configuration overrides MUST follow existing precedence and validation behavior.
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 1
+
+- **GIVEN** default configuration
+- **WHEN** retention is previewed at a fixed instant
+- **THEN** successful traces older than seven days and error traces older than thirty days are eligible while newer rows are protected
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 2
+
+- **GIVEN** more eligible rows than one run may delete
+- **WHEN** apply is invoked
+- **THEN** only the deterministic bounded batch is deleted and the result reports that eligible rows remain
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 3
+
+- **GIVEN** an unchanged preview whose eligible set fits within one run
+- **WHEN** apply supplies the preview fingerprint and exact effective instant so the same cutoffs are derived
+- **THEN** it deletes exactly the previewed rows transactionally and no other table is changed
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 4
+
+- **GIVEN** no explicit apply selection
+- **WHEN** the CLI or HTTP retention operation runs
+- **THEN** it returns a preview and performs no deletion
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 5
+
+- **GIVEN** retention has removed all eligible rows
+- **WHEN** it runs again at the same instant
+- **THEN** zero rows are deleted and recent success and error traces remain queryable

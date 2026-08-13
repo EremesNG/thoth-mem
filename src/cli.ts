@@ -1,10 +1,13 @@
+import './store/sqlite-uri-runtime.js';
+
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ThothConfig } from './config.js';
-import { getConfig, resolveDataDir } from './config.js';
+import { getConfig, resolveDataDir, resolveStoragePaths } from './config.js';
+import { applyDatabaseCompaction, previewDatabaseCompaction } from './store/compaction.js';
 import { Store } from './store/index.js';
 import { OBSERVATION_TYPES } from './store/types.js';
-import type { DeleteProjectResult, ExportData, MaintenanceRunPreview, MaintenanceRunResult, MaintenanceScope, Observation, ObservationScope, ObservationType } from './store/types.js';
+import type { AdminStorageScope, DeleteProjectResult, ExportData, MaintenanceRunPreview, MaintenanceRunResult, MaintenanceScope, Observation, ObservationScope, ObservationType, OperationTraceRetentionResult, SyncJournalRepairResult } from './store/types.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { formatIdentityWarning } from './store/identity.js';
 import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
@@ -48,6 +51,9 @@ Commands:
    rebuild-index          Queue/process semantic index rebuild jobs
    rebuild-index --status Show semantic index progress without queueing work
    maintain-memory        Preview/apply memory maintenance metadata
+   repair-sync-journal    Preview/apply bounded sync-journal repair
+   prune-operation-traces Preview/apply bounded operation-trace retention
+   compact-database       Preview/apply guarded SQLite compaction
    setup <opencode|codex|claude> Plan or manage a native harness integration
    version                Show version
    help                   Show this help
@@ -56,6 +62,9 @@ Global Options:
   --data-dir=<path>      Data directory (default: ~/.thoth)
   -p, --project <name>   Filter by project
   --help                 Show help
+
+Operation Trace Retention Options:
+  --until-complete       Continue preview-bound retention batches after the first apply
 
 Setup Options:
   --scope <global|project>  Setup scope (default: global)
@@ -1229,6 +1238,220 @@ async function handleVersion(positionals: string[]): Promise<void> {
   printStdout(VERSION);
 }
 
+function parseAdminOptions(positionals: string[], globals: GlobalOptions, retention: boolean): {
+  scope: AdminStorageScope;
+  apply: boolean;
+  untilComplete: boolean;
+  expectedFingerprint?: string;
+  effectiveNow?: string;
+  expectedFingerprintSupplied: boolean;
+  effectiveNowSupplied: boolean;
+} {
+  let all = false;
+  let apply = false;
+  let untilComplete = false;
+  let expectedFingerprint: string | undefined;
+  let effectiveNow: string | undefined;
+  let expectedFingerprintSupplied = false;
+  let effectiveNowSupplied = false;
+  for (let index = 0; index < positionals.length; index += 1) {
+    const arg = positionals[index];
+    if (arg === '--all') all = true;
+    else if (arg === '--apply') apply = true;
+    else if (arg === '--until-complete') untilComplete = true;
+    else if (arg === '--expected-fingerprint') {
+      expectedFingerprintSupplied = true;
+      expectedFingerprint = requireValue(positionals, index++, arg);
+    } else if (arg.startsWith('--expected-fingerprint=')) {
+      expectedFingerprintSupplied = true;
+      expectedFingerprint = arg.slice(arg.indexOf('=') + 1);
+      if (!expectedFingerprint) fail('Missing value for --expected-fingerprint');
+    } else if (arg === '--effective-now') {
+      effectiveNowSupplied = true;
+      effectiveNow = requireValue(positionals, index++, arg);
+    } else if (arg.startsWith('--effective-now=')) {
+      effectiveNowSupplied = true;
+      effectiveNow = arg.slice(arg.indexOf('=') + 1);
+      if (!effectiveNow) fail('Missing value for --effective-now');
+    }
+    else fail(`Unknown option: ${arg}`);
+  }
+  if ((globals.project ? 1 : 0) + (all ? 1 : 0) !== 1) fail('Exactly one --project <name> or --all is required');
+  if (untilComplete && !retention) fail('--until-complete is only supported by prune-operation-traces');
+  if (untilComplete && !apply) fail('--until-complete requires --apply');
+  if (apply && retention && expectedFingerprintSupplied !== effectiveNowSupplied) {
+    fail('Retention apply preconditions must be supplied as a complete --expected-fingerprint/--effective-now pair');
+  }
+  if (!retention && effectiveNowSupplied) fail('--effective-now is only supported by prune-operation-traces');
+  if (!apply && (expectedFingerprintSupplied || effectiveNowSupplied)) fail('Preview mode does not accept apply preconditions');
+  return {
+    scope: globals.project ? { project: globals.project } : { all: true },
+    apply,
+    untilComplete,
+    expectedFingerprintSupplied,
+    effectiveNowSupplied,
+    ...(expectedFingerprint ? { expectedFingerprint } : {}),
+    ...(effectiveNow ? { effectiveNow } : {}),
+  };
+}
+
+function formatAdminScope(scope: AdminStorageScope): string {
+  return 'project' in scope ? scope.project : 'all';
+}
+
+function formatAdminResult(title: string, result: SyncJournalRepairResult | OperationTraceRetentionResult): string {
+  return [`## ${title}`, `- **Mode:** ${result.dry_run ? 'preview' : 'apply'}`,
+    `- **Scope:** ${formatAdminScope(result.scope)}`,
+    `- **Selection fingerprint:** ${result.selection_fingerprint}`,
+    ...('effective_now' in result ? [`- **Effective now:** ${result.effective_now}`] : []),
+    '```json', JSON.stringify(result, null, 2), '```'].join('\n');
+}
+
+function formatRetentionBatchProgress(
+  batch: number,
+  totalBatches: number,
+  result: OperationTraceRetentionResult,
+): string {
+  return `Batch ${batch}/${totalBatches}: deleted ${result.counts.deleted}, remaining ${result.counts.remaining_eligible}`;
+}
+
+function formatCompletedRetention(
+  scope: AdminStorageScope,
+  effectiveNow: string,
+  batchesCompleted: number,
+  totalDeleted: number,
+  result: OperationTraceRetentionResult,
+): string {
+  const summary = {
+    mode: 'apply-until-complete',
+    scope,
+    effective_now: effectiveNow,
+    batches_completed: batchesCompleted,
+    total_deleted: totalDeleted,
+    remaining_eligible: result.counts.remaining_eligible,
+    has_more: result.has_more,
+  };
+  return [
+    '## Operation Trace Retention',
+    '- **Mode:** apply-until-complete',
+    `- **Scope:** ${formatAdminScope(scope)}`,
+    `- **Effective now:** ${effectiveNow}`,
+    `- **Batches completed:** ${batchesCompleted}`,
+    `- **Total deleted:** ${totalDeleted}`,
+    `- **Remaining eligible:** ${result.counts.remaining_eligible}`,
+    '```json', JSON.stringify(summary, null, 2), '```',
+  ].join('\n');
+}
+
+async function handleRepairSyncJournal(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const options = parseAdminOptions(positionals, globals, false);
+  await withStore(globals.dataDir, ({ store }) => {
+    if (!options.apply) {
+      printStdout(formatAdminResult('Sync Journal Repair', store.previewSyncJournalRepair(options.scope)));
+      return;
+    }
+    const expectedFingerprint = options.expectedFingerprintSupplied
+      ? options.expectedFingerprint!
+      : store.previewSyncJournalRepair(options.scope).selection_fingerprint;
+    const result = store.applySyncJournalRepair({
+      scope: options.scope,
+      expected_selection_fingerprint: expectedFingerprint,
+    });
+    printStdout(formatAdminResult('Sync Journal Repair', result));
+  });
+}
+
+async function handlePruneOperationTraces(positionals: string[], globals: GlobalOptions): Promise<void> {
+  const options = parseAdminOptions(positionals, globals, true);
+  await withStore(globals.dataDir, ({ store }) => {
+    if (!options.apply) {
+      printStdout(formatAdminResult('Operation Trace Retention', store.previewOperationTraceRetention(options.scope)));
+      return;
+    }
+
+    const initialPreview = options.expectedFingerprintSupplied && options.effectiveNowSupplied
+      ? null
+      : store.previewOperationTraceRetention(options.scope);
+    const effectiveNow = options.effectiveNowSupplied ? options.effectiveNow! : initialPreview!.effective_now;
+    let result = store.applyOperationTraceRetention({
+      scope: options.scope,
+      expected_selection_fingerprint: options.expectedFingerprintSupplied
+        ? options.expectedFingerprint!
+        : initialPreview!.selection_fingerprint,
+      effective_now: effectiveNow,
+    });
+    if (!options.untilComplete) {
+      printStdout(formatAdminResult('Operation Trace Retention', result));
+      return;
+    }
+
+    const maxBatches = Math.max(1, Math.ceil(result.counts.eligible / result.policy.max_rows_per_run));
+    let batchesCompleted = 1;
+    let totalDeleted = result.counts.deleted;
+    printStdout(formatRetentionBatchProgress(batchesCompleted, maxBatches, result));
+    while (result.has_more) {
+      if (batchesCompleted >= maxBatches) {
+        fail('Operation-trace retention backlog changed during --until-complete; run a fresh preview');
+      }
+      const preview = store.previewOperationTraceRetention(options.scope, effectiveNow);
+      if (preview.counts.selected < 1) {
+        fail('Operation-trace retention made no progress during --until-complete');
+      }
+      result = store.applyOperationTraceRetention({
+        scope: options.scope,
+        expected_selection_fingerprint: preview.selection_fingerprint,
+        effective_now: preview.effective_now,
+      });
+      if (result.counts.deleted < 1) {
+        fail('Operation-trace retention made no progress during --until-complete');
+      }
+      batchesCompleted += 1;
+      totalDeleted += result.counts.deleted;
+      printStdout(formatRetentionBatchProgress(batchesCompleted, maxBatches, result));
+    }
+
+    printStdout(formatCompletedRetention(
+      options.scope,
+      effectiveNow,
+      batchesCompleted,
+      totalDeleted,
+      result,
+    ));
+  });
+}
+
+function formatCompactionResult(
+  result: ReturnType<typeof previewDatabaseCompaction> | ReturnType<typeof applyDatabaseCompaction>,
+): string {
+  const metrics = result.dry_run ? result.metrics : result.after;
+  const mode = result.dry_run ? 'preview' : result.skipped ? 'apply-no-op' : 'apply';
+  return [
+    '## Database Compaction',
+    `- **Mode:** ${mode}`,
+    `- **Database:** ${metrics.database_path}`,
+    `- **Database bytes:** ${metrics.database_bytes}`,
+    `- **Logical database bytes:** ${metrics.logical_database_bytes}`,
+    `- **Reclaimable bytes:** ${metrics.reclaimable_bytes}`,
+    `- **Filesystem free bytes:** ${metrics.filesystem_free_bytes}`,
+    `- **Required free bytes:** ${metrics.required_free_bytes}`,
+    `- **Journal mode:** ${metrics.journal_mode}`,
+    `- **Sidecars:** ${metrics.sidecar_state}`,
+    '```json', JSON.stringify(result, null, 2), '```',
+  ].join('\n');
+}
+
+async function handleCompactDatabase(positionals: string[], globals: GlobalOptions): Promise<void> {
+  let apply = false;
+  for (const arg of positionals) {
+    if (arg === '--apply' && !apply) apply = true;
+    else fail(`compact-database accepts only --apply and --data-dir; unknown option: ${arg}`);
+  }
+  if (globals.project) fail('compact-database accepts only --apply and --data-dir');
+  const { dbPath } = resolveStoragePaths({ dataDir: globals.dataDir });
+  const result = apply ? applyDatabaseCompaction(dbPath) : previewDatabaseCompaction(dbPath);
+  printStdout(formatCompactionResult(result));
+}
+
 async function handleIntegrationEvent(
   positionals: string[],
   globals: GlobalOptions,
@@ -1310,6 +1533,15 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
          return 0;
        case 'maintain-memory':
          await handleMaintainMemory(parsed.positionals, parsed.globals);
+         return 0;
+       case 'repair-sync-journal':
+         await handleRepairSyncJournal(parsed.positionals, parsed.globals);
+         return 0;
+       case 'prune-operation-traces':
+         await handlePruneOperationTraces(parsed.positionals, parsed.globals);
+         return 0;
+       case 'compact-database':
+         await handleCompactDatabase(parsed.positionals, parsed.globals);
          return 0;
        case 'setup':
          return await handleSetup(parsed.positionals, parsed.globals, options);

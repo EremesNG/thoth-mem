@@ -14,6 +14,13 @@ export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
 export type OperationTraceStatus = 'ok' | 'error';
+
+export class StaleAdminPreviewError extends Error {
+  constructor(message = 'Administrative preview is missing, malformed, or stale') {
+    super(message);
+    this.name = 'StaleAdminPreviewError';
+  }
+}
 export type IdentityField = 'session_id' | 'project';
 export type IdentitySource = 'explicit' | 'config' | 'cwd' | 'git' | 'package' | 'fallback' | 'import' | 'legacy';
 export type IdentityReason =
@@ -668,6 +675,129 @@ export interface VizSliceRequest {
   max_nodes?: number;
   max_edges?: number;
   cursor?: string;
+}
+
+export type AdminStorageScope = { project: string } | { all: true };
+export type SyncJournalRepairScope = AdminStorageScope;
+
+export interface SyncJournalRepairSample {
+  entity_type: SyncEntityType;
+  entity_id: number;
+  sync_id: string;
+  operation: SyncOperation;
+}
+
+export interface SyncJournalRepairResult {
+  dry_run: boolean;
+  scope: SyncJournalRepairScope;
+  max_rows_per_run: 10_000;
+  selection_fingerprint: string;
+  counts: {
+    scanned: number;
+    candidates: number;
+    selected: number;
+    repaired: number;
+    remaining: number;
+    skipped: number;
+    ineligible_identity: number;
+    by_entity: Record<SyncEntityType, number>;
+    by_operation: Record<SyncOperation, number>;
+  };
+  has_more: boolean;
+  samples: SyncJournalRepairSample[];
+}
+
+export interface ApplySyncJournalRepairInput {
+  scope: SyncJournalRepairScope;
+  expected_selection_fingerprint: string;
+}
+
+export interface OperationTraceRetentionResult {
+  dry_run: boolean;
+  scope: AdminStorageScope;
+  effective_now: string;
+  policy: {
+    success_retention_days: number;
+    error_retention_days: number;
+    max_rows_per_run: number;
+    success_cutoff: string;
+    error_cutoff: string;
+  };
+  selection_fingerprint: string;
+  counts: {
+    before_in_scope: number;
+    eligible: number;
+    selected: number;
+    deleted: number;
+    remaining_eligible: number;
+    skipped_invalid_timestamp: number;
+    skipped_unsupported_status: number;
+    after_in_scope_at_commit: number;
+  };
+  has_more: boolean;
+  sample_trace_ids: string[];
+}
+
+export interface ApplyOperationTraceRetentionInput {
+  scope: AdminStorageScope;
+  expected_selection_fingerprint: string;
+  effective_now: string;
+}
+
+export type DatabaseSidecarState = 'none' | 'wal-and-shm';
+
+export interface DatabaseCompactionMetrics {
+  database_path: string;
+  database_bytes: number;
+  logical_database_bytes: number;
+  wal_bytes: number;
+  shm_bytes: number;
+  page_size: number;
+  page_count: number;
+  freelist_count: number;
+  reclaimable_bytes: number;
+  estimated_compacted_bytes: number;
+  filesystem_free_bytes: number;
+  required_free_bytes: number;
+  journal_mode: string;
+  wal_present: boolean;
+  shm_present: boolean;
+  sidecar_state: DatabaseSidecarState;
+}
+
+export interface DatabaseCompactionPreview {
+  dry_run: true;
+  can_compact: boolean;
+  no_op_reason: 'no-reclaimable-pages' | null;
+  metrics: DatabaseCompactionMetrics;
+}
+
+export interface DatabaseCheckpointResult {
+  busy: number;
+  log: number;
+  checkpointed: number;
+}
+
+export interface DatabaseCompactionChecks {
+  pre_integrity_ok: boolean;
+  post_integrity_ok: boolean;
+  pre_foreign_key_violations: number;
+  post_foreign_key_violations: number;
+  schema_identity_preserved: boolean;
+  durable_counts_preserved: boolean;
+  final_journal_mode: string;
+}
+
+export interface DatabaseCompactionResult {
+  dry_run: false;
+  skipped: boolean;
+  skip_reason: 'no-reclaimable-pages' | null;
+  before: DatabaseCompactionMetrics;
+  after: DatabaseCompactionMetrics;
+  reclaimed_bytes: number;
+  duration_ms: number;
+  checkpoint: DatabaseCheckpointResult;
+  checks: DatabaseCompactionChecks;
 }
 
 export interface VizGraphPageRequest {

@@ -15,7 +15,8 @@ import type {
   VizExpandRequest,
   ObservatoryLane,
 } from './store/types.js';
-import { OBSERVATION_TYPES, SemanticAtlasError, VizGraphPageError } from './store/types.js';
+import { OBSERVATION_TYPES, SemanticAtlasError, StaleAdminPreviewError, VizGraphPageError } from './store/types.js';
+import type { AdminStorageScope } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { metadataFromResolution, resolveSaveIdentity } from './store/identity.js';
@@ -69,6 +70,10 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'community-drop', origin: 'http', label: 'Drop communities', kind: 'admin', method: 'DELETE', path: '/communities', description: 'Drop derived KG community summary artifacts for one project or all projects.' },
   { id: 'maintenance-preview', origin: 'http', label: 'Maintenance preview', kind: 'admin', method: 'POST', path: '/maintenance/preview', description: 'Preview scoped consolidation, reflection, and decay maintenance without writes.' },
   { id: 'maintenance-apply', origin: 'http', label: 'Maintenance apply', kind: 'admin', method: 'POST', path: '/maintenance/apply', description: 'Apply scoped consolidation, reflection, and decay maintenance transactionally.' },
+  { id: 'sync-journal-repair-preview', origin: 'http', label: 'Sync journal repair preview', kind: 'admin', method: 'POST', path: '/sync/journal/repair/preview', description: 'Preview missing current-state sync journal coverage.' },
+  { id: 'sync-journal-repair-apply', origin: 'http', label: 'Sync journal repair apply', kind: 'admin', method: 'POST', path: '/sync/journal/repair/apply', description: 'Apply a fingerprint-bound sync journal repair batch.' },
+  { id: 'trace-retention-preview', origin: 'http', label: 'Trace retention preview', kind: 'admin', method: 'POST', path: '/operation-traces/retention/preview', description: 'Preview status-aware operation trace retention.' },
+  { id: 'trace-retention-apply', origin: 'http', label: 'Trace retention apply', kind: 'admin', method: 'POST', path: '/operation-traces/retention/apply', description: 'Apply a fingerprint-bound trace retention batch.' },
   { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
   { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
   { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
@@ -1018,6 +1023,61 @@ export async function handleVizSlice(store: Store, request: HttpRouteRequest): P
       cursor: request.query.get('cursor') ?? undefined,
     }),
   };
+}
+
+function parseAdminScope(body: Record<string, unknown> | undefined): AdminStorageScope {
+  const isBodyRecord = body !== undefined && body !== null && typeof body === 'object';
+  const hasProject = isBodyRecord && Object.prototype.hasOwnProperty.call(body, 'project');
+  const hasAll = isBodyRecord && Object.prototype.hasOwnProperty.call(body, 'all');
+  if (!isBodyRecord || hasProject === hasAll) {
+    throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+  }
+  if (hasProject) {
+    if (typeof body.project !== 'string' || body.project.trim().length === 0) {
+      throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+    }
+    return { project: body.project.trim() };
+  }
+  if (body.all !== true) {
+    throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+  }
+  return { all: true };
+}
+
+function mapStaleAdmin(error: unknown): never {
+  if (error instanceof StaleAdminPreviewError) {
+    throw new HttpRouteError(409, error.message, { error: error.message, code: 'stale_admin_preview' });
+  }
+  throw error;
+}
+
+export async function handleSyncJournalRepairPreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.previewSyncJournalRepair(parseAdminScope(request.body as Record<string, unknown> | undefined)) };
+}
+
+export async function handleSyncJournalRepairApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  try {
+    return { status: 200, body: store.applySyncJournalRepair({
+      scope: parseAdminScope(body),
+      expected_selection_fingerprint: typeof body?.expected_fingerprint === 'string' ? body.expected_fingerprint : '',
+    }) };
+  } catch (error) { return mapStaleAdmin(error); }
+}
+
+export async function handleOperationTraceRetentionPreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.previewOperationTraceRetention(parseAdminScope(request.body as Record<string, unknown> | undefined)) };
+}
+
+export async function handleOperationTraceRetentionApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  try {
+    return { status: 200, body: store.applyOperationTraceRetention({
+      scope: parseAdminScope(body),
+      expected_selection_fingerprint: typeof body?.expected_fingerprint === 'string' ? body.expected_fingerprint : '',
+      effective_now: typeof body?.effective_now === 'string' ? body.effective_now : '',
+    }) };
+  } catch (error) { return mapStaleAdmin(error); }
 }
 
 export async function handleVizGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {

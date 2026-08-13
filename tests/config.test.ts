@@ -7,10 +7,12 @@ import {
   DEFAULT_KG_RELATION_ALLOW_LIST,
   DEFAULT_KNOWLEDGE_GRAPH_CONFIG,
   DEFAULT_MAINTENANCE_CONFIG,
+  DEFAULT_OPERATION_TRACE_RETENTION_CONFIG,
   getConfig,
   resolveCommunitySummariesConfig,
   resolveMaintenanceConfig,
   resolveKnowledgeGraphConfig,
+  resolveStoragePaths,
   resolveDataDir,
 } from '../src/config.js';
 import { getVersion } from '../src/version.js';
@@ -38,6 +40,7 @@ describe('getConfig', () => {
     expect(config.maxContentLength).toBe(100_000);
     expect(config.maxContextChars).toBe(8000);
     expect(config.maxContextResults).toBe(20);
+    expect(config.operationTraceRetention).toEqual(DEFAULT_OPERATION_TRACE_RETENTION_CONFIG);
     expect(config.maxSearchResults).toBe(20);
     expect(config.dedupeWindowMinutes).toBe(15);
     expect(config.previewLength).toBe(300);
@@ -575,6 +578,30 @@ describe('resolveDataDir', () => {
   });
 });
 
+describe('resolveStoragePaths', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('purely resolves absolute data and database paths without creating the target', () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), 'thoth-storage-paths-'));
+    const dataDir = join(tmpBase, 'missing', '..', 'resolved');
+
+    try {
+      const paths = resolveStoragePaths({ dataDir });
+
+      expect(paths.dataDir).toBe(join(tmpBase, 'resolved'));
+      expect(paths.dbPath).toBe(join(tmpBase, 'resolved', 'thoth.db'));
+      expect(existsSync(join(tmpBase, 'resolved'))).toBe(false);
+      expect(existsSync(join(tmpBase, 'resolved', 'config.json'))).toBe(false);
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('embedding config (hybrid retrieval baseline)', () => {
   const originalEnv = { ...process.env };
   let tmpDataDir: string | null = null;
@@ -632,6 +659,16 @@ describe('embedding config (hybrid retrieval baseline)', () => {
     expect(config.embedding.profile).toBe('auto');
     expect(config.embedding.resolvedProfile).toMatchObject({ id: 'embeddinggemma', version: 1 });
     expect(config.embedding.normalize).toBe(true);
+  });
+
+  it('resolves operation trace retention with env precedence and invalid fallback', () => {
+    writeFileSync(join(tmpDataDir!, 'config.json'), JSON.stringify({ operationTraceRetention: {
+      successRetentionDays: 9, errorRetentionDays: 40, maxRowsPerRun: 123,
+    } }));
+    process.env.THOTH_OPERATION_TRACE_SUCCESS_RETENTION_DAYS = '11';
+    process.env.THOTH_OPERATION_TRACE_ERROR_RETENTION_DAYS = 'invalid';
+    const config = getConfig();
+    expect(config.operationTraceRetention).toEqual({ successRetentionDays: 11, errorRetentionDays: 40, maxRowsPerRun: 123 });
   });
 
   it('embedding: resolves Qwen native dimensions and profile metadata', () => {

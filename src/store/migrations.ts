@@ -38,6 +38,7 @@ const LEGACY_COLUMN_MIGRATIONS = [
   { tableName: 'kg_triples', columnName: 'superseded_at', columnDef: 'TEXT' },
   { tableName: 'operation_traces', columnName: 'correlation_id', columnDef: 'TEXT' },
   { tableName: 'operation_traces', columnName: 'metrics_json', columnDef: 'TEXT' },
+  { tableName: 'sync_mutations', columnName: 'project', columnDef: 'TEXT' },
 ] as const;
 
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { getVersion } from './version.js';
 import { KG_RELATION_TYPES } from './indexing/kg-extractor.js';
@@ -133,6 +133,12 @@ export interface EmbeddingConfig {
   configHash: string;
 }
 
+export interface OperationTraceRetentionConfig {
+  successRetentionDays: number;
+  errorRetentionDays: number;
+  maxRowsPerRun: number;
+}
+
 export interface ThothConfig {
   dataDir: string;
   dbPath: string; // resolved: {dataDir}/thoth.db
@@ -157,6 +163,7 @@ export interface ThothConfig {
   knowledgeGraph?: KnowledgeGraphConfig;
   communitySummaries: CommunitySummariesConfig;
   maintenance: MaintenanceConfig;
+  operationTraceRetention: OperationTraceRetentionConfig;
 }
 
 interface PersistedEmbeddingConfig extends Partial<EmbeddingConfig> {
@@ -211,6 +218,7 @@ interface PersistedConfig {
   knowledgeGraph?: Partial<KnowledgeGraphConfig>;
   communitySummaries?: PersistedCommunitySummariesConfig;
   maintenance?: PersistedMaintenanceConfig;
+  operationTraceRetention?: Partial<OperationTraceRetentionConfig>;
   graphFactsSource?: GraphFactsSource;
   retrievalDefaults?: Partial<RetrievalDefaults>;
 }
@@ -284,6 +292,12 @@ export const DEFAULT_KNOWLEDGE_GRAPH_CONFIG: KnowledgeGraphConfig = {
   kgPruneEnabled: true,
   kgSupersededKeepN: 10,
   kgPruneOrphanEntities: true,
+};
+
+export const DEFAULT_OPERATION_TRACE_RETENTION_CONFIG: OperationTraceRetentionConfig = {
+  successRetentionDays: 7,
+  errorRetentionDays: 30,
+  maxRowsPerRun: 50_000,
 };
 
 export const DEFAULT_MAINTENANCE_CONFIG: MaintenanceConfig = {
@@ -604,6 +618,7 @@ function defaultPersistedConfig(): PersistedConfig {
     knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
     communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
     maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
+    operationTraceRetention: { ...DEFAULT_OPERATION_TRACE_RETENTION_CONFIG },
     graphFactsSource: 'kg',
   };
 }
@@ -699,6 +714,10 @@ function mergePersistedConfig(existing: PersistedConfig): PersistedConfig {
         ...defaults.maintenance?.decay,
         ...(existing.maintenance?.decay ?? {}),
       },
+    },
+    operationTraceRetention: {
+      ...defaults.operationTraceRetention,
+      ...(existing.operationTraceRetention ?? {}),
     },
   };
 }
@@ -1174,21 +1193,58 @@ function resolveEmbeddingConfig(persisted: PersistedConfig): EmbeddingConfig {
   };
 }
 
+export function resolveOperationTraceRetentionConfig(
+  persisted: PersistedConfig = {},
+): OperationTraceRetentionConfig {
+  const configured = persisted.operationTraceRetention ?? {};
+  return {
+    successRetentionDays: integerAtLeast(
+      parseNumber(process.env.THOTH_OPERATION_TRACE_SUCCESS_RETENTION_DAYS)
+        ?? configured.successRetentionDays,
+      1,
+      DEFAULT_OPERATION_TRACE_RETENTION_CONFIG.successRetentionDays,
+    ),
+    errorRetentionDays: integerAtLeast(
+      parseNumber(process.env.THOTH_OPERATION_TRACE_ERROR_RETENTION_DAYS)
+        ?? configured.errorRetentionDays,
+      1,
+      DEFAULT_OPERATION_TRACE_RETENTION_CONFIG.errorRetentionDays,
+    ),
+    maxRowsPerRun: integerAtLeast(
+      parseNumber(process.env.THOTH_OPERATION_TRACE_MAX_ROWS_PER_RUN)
+        ?? configured.maxRowsPerRun,
+      1,
+      DEFAULT_OPERATION_TRACE_RETENTION_CONFIG.maxRowsPerRun,
+    ),
+  };
+}
+
+export interface StoragePaths {
+  dataDir: string;
+  dbPath: string;
+}
+
+export function resolveStoragePaths(options: { dataDir?: string } = {}): StoragePaths {
+  const configuredDataDir = options.dataDir || process.env.THOTH_DATA_DIR || join(resolveHome(), '.thoth');
+  const dataDir = resolve(configuredDataDir);
+  return { dataDir, dbPath: join(dataDir, 'thoth.db') };
+}
+
 export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
-  const home = resolveHome();
-  const dataDir = options.dataDir || process.env.THOTH_DATA_DIR || join(home, '.thoth');
+  const { dataDir, dbPath } = resolveStoragePaths(options);
   const persisted = loadPersistedConfig(dataDir);
   const hyde = resolveHydeConfig(persisted);
   const kgLlm = resolveKgLlmConfig(persisted);
   const knowledgeGraph = resolveKnowledgeGraphConfig(persisted);
   const communitySummaries = resolveCommunitySummariesConfig(persisted);
   const maintenance = resolveMaintenanceConfig(persisted);
+  const operationTraceRetention = resolveOperationTraceRetentionConfig(persisted);
   const httpPortFromPersisted = persisted.http?.port;
   const httpDisabledFromPersisted = persisted.http?.disabled;
 
   return {
     dataDir,
-    dbPath: join(dataDir, 'thoth.db'),
+    dbPath,
     project: {
       default: normalizeExplicitString(process.env.THOTH_PROJECT) ?? normalizeExplicitString(persisted.project?.default) ?? null,
     },
@@ -1211,6 +1267,7 @@ export function getConfig(options: { dataDir?: string } = {}): ThothConfig {
     knowledgeGraph,
     communitySummaries,
     maintenance,
+    operationTraceRetention,
   };
 }
 
