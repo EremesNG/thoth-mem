@@ -31,7 +31,7 @@ From the repository root:
 | Ad hoc root type-only | `pnpm exec tsc --noEmit` | Not a packaged script |
 | Dashboard typecheck | `pnpm run dashboard:typecheck` | Packaged root forwarding script |
 | Integration package verification | `pnpm run integration:verify` | Read-only package/inventory verifier; use for delivery changes |
-| Release gate | `pnpm run prepublishOnly` | Build plus full tests |
+| Release package gate | `pnpm run prepublishOnly` | Build plus the non-browser aggregate; the tag workflow adds browser smoke and retrieval evaluation before publishing |
 
 There is no root lint script. Do not invent one. The dashboard manifest has build, dev, preview, and typecheck scripts but no dashboard test script; dashboard-focused tests use the root browser Vitest configurations.
 

@@ -12,20 +12,21 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22.13
           registry-url: https://registry.npmjs.org/
@@ -37,14 +38,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck dashboard
-        run: pnpm run dashboard:typecheck
+      - name: Verify release package
+        run: pnpm run prepublishOnly
 
-      - name: Build
-        run: pnpm run build
+      - name: Run browser smoke tests
+        run: pnpm run test:browser
 
-      - name: Test
-        run: pnpm test
+      - name: Upload browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-browser-diagnostics
+          path: test-results/browser/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run retrieval eval
         run: pnpm run eval:retrieval
@@ -55,7 +62,7 @@ jobs:
         run: pnpm tsx scripts/generate-release-notes.ts release-notes.md
 
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --ignore-scripts
 
       - name: Create GitHub release
         env:
