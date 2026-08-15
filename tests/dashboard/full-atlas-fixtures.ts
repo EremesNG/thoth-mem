@@ -115,7 +115,8 @@ function scopedUniversePage(
   };
 }
 
-describe('complete Neural Atlas', () => {
+export function registerFullAtlasPerformanceTests(): void {
+  describe('complete Neural Atlas performance', () => {
   it('automatically renders every graph identity and keeps presentation controls responsive', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.setRoutes(completeAtlasRoutes());
@@ -276,7 +277,11 @@ describe('complete Neural Atlas', () => {
       await browser.clearRoutes();
     }, { observations: 12, faultInjection: { deadlineMs: 55_000 } });
   }, 65_000);
+  });
+}
 
+export function registerFullAtlasSmokeTests(): void {
+  describe('complete Neural Atlas', () => {
   it('completes dense navigation when animation frames stop after streaming begins', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.setRoutes(completeAtlasRoutes());
@@ -407,4 +412,5 @@ describe('complete Neural Atlas', () => {
       await browser.clearRoutes();
     }, { observations: 4, faultInjection: { deadlineMs: 35_000 } });
   }, 45_000);
-});
+  });
+}

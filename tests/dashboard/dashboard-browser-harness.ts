@@ -1,15 +1,27 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createConnection, createServer as createNetServer, type Socket } from 'node:net';
+import { join, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 
-import { createServer as createViteServer, type ViteDevServer } from '../../dashboard/node_modules/vite/dist/node/index.js';
+import { inject } from 'vitest';
+
 import { getConfig } from '../../src/config.js';
 import { createHttpBridge } from '../../src/http-server.js';
 import { Store } from '../../src/store/index.js';
+import type { SharedDashboardBrowser } from './dashboard-browser-global-setup.js';
+import {
+  browserHasExited,
+  browserLaunchArguments,
+  browserProcessHasExited,
+  isOwnedBrowserProfilePath,
+  pathExists,
+  processExists,
+  resolveBrowserExecutable,
+  startOwnedBrowser,
+  stopOwnedBrowser,
+  type OwnedBrowser,
+} from './dashboard-browser-process.js';
 
 type JsonObject = Record<string, unknown>;
 type EventHandler = (params: JsonObject) => void | Promise<void>;
@@ -17,9 +29,9 @@ const WEBSOCKET_GUID='258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_HANDSHAKE_BYTES=16*1024;
 const MAX_FRAME_BYTES=8*1024*1024;
 const DEFAULT_CDP_TIMEOUT_MS=15_000;
-const BROWSER_STARTUP_ATTEMPTS=2;
-const BROWSER_STARTUP_TIMEOUT_MS=12_000;
-const BROWSER_STDERR_LIMIT=4_096;
+const MAX_DIAGNOSTIC_SCREENSHOT_BYTES = 2 * 1024 * 1024;
+const MAX_DIAGNOSTIC_DOM_BYTES = 512 * 1024;
+const MAX_DIAGNOSTIC_METADATA_BYTES = 32 * 1024;
 
 class NodeWebSocket {
   private buffer = Buffer.alloc(0);
@@ -143,33 +155,16 @@ export interface BrowserRoute {
   delayMs?: number;
 }
 
-type HarnessPhase='bridge'|'vite'|'browser'|'target'|'cdp'|'init'|'work';
-interface HarnessFaultInjection {phase?:HarnessPhase;deadlineMs?:number;cleanupFault?:'cdp'|'browser'|'vite'|'bridge'|'store'|'profile';collision?:'bridge'|'vite';browserStartupFailures?:number;onResource?:(kind:'profile'|'pid'|'port',value:string|number)=>void;}
-interface DashboardBrowserOptions {observations?:number;projectCount?:number;unassignedCount?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
-interface BrowserExecutableResolutionOptions {
-  environment?: NodeJS.ProcessEnv;
-  pathExists?: (path: string) => boolean;
-  platform?: NodeJS.Platform;
-}
+type HarnessPhase='bridge'|'browser'|'target'|'cdp'|'init'|'work';
+interface HarnessFaultInjection {phase?:HarnessPhase;deadlineMs?:number;cleanupFault?:'cdp'|'context'|'browser'|'bridge'|'store'|'profile';collision?:'bridge';browserStartupFailures?:number;onResource?:(kind:'profile'|'pid'|'port',value:string|number)=>void;}
+interface DashboardBrowserOptions {observations?:number;projectCount?:number;unassignedCount?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;diagnostics?:{directory?:string;enabled?:boolean};}
 
-const BROWSER_PATHS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
-  win32: [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  ],
-  darwin: [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-  ],
-  linux: [
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/microsoft-edge',
-    '/usr/bin/microsoft-edge-stable',
-  ],
-};
+export interface BrowserLifecycleIdentity {
+  browserProcessId: number;
+  browserContextId: string;
+  targetId: string;
+  sharedProcess: boolean;
+}
 
 export class DashboardBrowser {
   readonly requests: Array<{ url: string; method: string }> = [];
@@ -178,7 +173,11 @@ export class DashboardBrowser {
   private routes: BrowserRoute[] = [];
   private requestUrls = new Map<string, string>();
 
-  constructor(private readonly cdp: CdpConnection, readonly origin: string) {}
+  constructor(
+    private readonly cdp: CdpConnection,
+    readonly origin: string,
+    readonly lifecycle: BrowserLifecycleIdentity,
+  ) {}
 
   async initialize(): Promise<void> {
     await this.cdp.send('Page.enable'); await this.cdp.send('Runtime.enable'); await this.cdp.send('Network.enable');
@@ -268,6 +267,21 @@ export class DashboardBrowser {
   async coarsePointer(): Promise<void> { await this.cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }); }
   async reducedMotion(): Promise<void> { await this.cdp.send('Emulation.setEmulatedMedia', { features: [{ name:'prefers-reduced-motion', value:'reduce' }] }); }
   async captureScreenshot(): Promise<string> { const response=await this.cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});return String(response.data??''); }
+  async captureFailureEvidence(): Promise<{ screenshot: Buffer; dom: string }> {
+    const [screenshotResponse, dom] = await Promise.all([
+      this.cdp.send('Page.captureScreenshot', {
+        format: 'jpeg',
+        quality: 60,
+        fromSurface: true,
+        captureBeyondViewport: false,
+      }),
+      this.evaluate<string>('document.documentElement?.outerHTML ?? ""'),
+    ]);
+    return {
+      screenshot: Buffer.from(String(screenshotResponse.data ?? ''), 'base64'),
+      dom,
+    };
+  }
 }
 
 function seedDashboardStore(store: Store, observationCount: number, ownerToken: string, semanticZoomCommunitySize = 0, projectCount = 1, unassignedCount = 0): number {
@@ -426,119 +440,347 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
   })();
 }
 
-export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Promise<T>,options:DashboardBrowserOptions={}):Promise<T>{
-  const fault=options.faultInjection;const controller=new AbortController();const deadlineMs=fault?.deadlineMs??35_000;const deadline=setTimeout(()=>controller.abort(abortError(`Dashboard browser lifecycle deadline exceeded after ${deadlineMs}ms`)),deadlineMs);
-  const ownerToken=randomBytes(12).toString('hex');
-  let store:Store|null=null;let bridge:ReturnType<typeof createHttpBridge>|null=null;let vite:ViteDevServer|null=null;let chrome:ChildProcess|null=null;let cdp:CdpConnection|null=null;let profile='';let result:T|undefined;let failure:Error|null=null;
-  try{
-    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken,options.semanticZoomCommunitySize??0,options.projectCount??1,options.unassignedCount??0);
-    const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
-    const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
-    const chromePath=resolveBrowserExecutable();if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');
-    const browserStart=await startBrowser(chromePath,controller.signal,fault);profile=browserStart.profile;chrome=browserStart.chrome;
-    const debugPort=browserStart.debugPort;await faultPoint('target',fault,controller.signal);
-    const response=await bounded(fetch(`http://127.0.0.1:${debugPort}/json/list`,{signal:controller.signal}),5_000,'Chrome target discovery',controller.signal);if(!response.ok)throw new Error(`Chrome target discovery failed: ${response.status}`);const targets=await bounded(response.json() as Promise<Array<{type:string;webSocketDebuggerUrl:string}>>,5_000,'Chrome target JSON',controller.signal);const pageTarget=targets.find((target)=>target.type==='page');if(!pageTarget)throw new Error('Real browser opened without a page target');
-    cdp=await CdpConnection.connect(pageTarget.webSocketDebuggerUrl,5_000,DEFAULT_CDP_TIMEOUT_MS,controller.signal);await faultPoint('cdp',fault,controller.signal);const browser=new DashboardBrowser(cdp,`http://127.0.0.1:${viteStart.port}`);await browser.initialize();if(options.webglDisabled)await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`(()=>{const original=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type,...args){if(type==='webgl2')return null;return original.call(this,type,...args)};globalThis.__THOTH_RESTORE_WEBGL__=()=>{HTMLCanvasElement.prototype.getContext=original}})();`});await faultPoint('init',fault,controller.signal);await faultPoint('work',fault,controller.signal);result=await bounded(run(browser),deadlineMs,'dashboard browser acceptance',controller.signal);
-  }catch(error){failure=asError(error);}finally{
-    clearTimeout(deadline);await requestBrowserClose(cdp);controller.abort(abortError('Dashboard browser lifecycle cleanup'));
-    const cleanupErrors=await cleanupHarness({cdp,chrome,vite,bridge,store,profile},fault);
-    if(cleanupErrors.length){const cleanupFailure=new AggregateError(cleanupErrors,'Dashboard browser cleanup failed');failure=failure?new AggregateError([failure,cleanupFailure],failure.message):cleanupFailure;}
+export async function withDashboardBrowser<T>(
+  run: (browser: DashboardBrowser) => Promise<T>,
+  options: DashboardBrowserOptions = {},
+): Promise<T> {
+  const fault = options.faultInjection;
+  const controller = new AbortController();
+  const deadlineMs = fault?.deadlineMs ?? 35_000;
+  const deadline = setTimeout(() => controller.abort(abortError(
+    `Dashboard browser lifecycle deadline exceeded after ${deadlineMs}ms`,
+  )), deadlineMs);
+  const ownerToken = randomBytes(12).toString('hex');
+  let store: Store | null = null;
+  let bridge: ReturnType<typeof createHttpBridge> | null = null;
+  let ownedBrowser: OwnedBrowser | null = null;
+  let browserControl: CdpConnection | null = null;
+  let cdp: CdpConnection | null = null;
+  let browserContextId = '';
+  let targetId = '';
+  let browser: DashboardBrowser | null = null;
+  let result: T | undefined;
+  let failure: Error | null = null;
+  try {
+    store = new Store(':memory:');
+    const ownerObservationId = seedDashboardStore(
+      store,
+      options.observations ?? 12,
+      ownerToken,
+      options.semanticZoomCommunitySize ?? 0,
+      options.projectCount ?? 1,
+      options.unassignedCount ?? 0,
+    );
+    const bridgeStart = await startBridge(
+      store,
+      ownerObservationId,
+      ownerToken,
+      controller.signal,
+      fault,
+    );
+    bridge = bridgeStart.bridge;
+    fault?.onResource?.('port', bridgeStart.port);
+    await faultPoint('bridge', fault, controller.signal);
+
+    let browserDescriptor: SharedDashboardBrowser;
+    if (requiresIsolatedBrowser(fault)) {
+      const chromePath = resolveBrowserExecutable();
+      if (!chromePath) throw new Error('Real browser unavailable: Chrome or Edge executable is required');
+      ownedBrowser = await startOwnedBrowser(chromePath, {
+        signal: controller.signal,
+        startupFailures: fault?.browserStartupFailures,
+        beforeReady: () => faultPoint('browser', fault, controller.signal),
+        onResource: fault?.onResource,
+      });
+      const pid = ownedBrowser.chrome.pid;
+      if (!pid) throw new Error('Isolated browser started without a process identifier');
+      browserDescriptor = {
+        debugPort: ownedBrowser.debugPort,
+        pid,
+        profile: ownedBrowser.profile,
+      };
+    } else {
+      browserDescriptor = inject('dashboardBrowser');
+    }
+
+    const browserWebSocket = await discoverBrowserWebSocket(
+      browserDescriptor.debugPort,
+      controller.signal,
+    );
+    browserControl = await CdpConnection.connect(
+      browserWebSocket,
+      5_000,
+      DEFAULT_CDP_TIMEOUT_MS,
+    );
+    const contextResult = await browserControl.send('Target.createBrowserContext');
+    browserContextId = String(contextResult.browserContextId ?? '');
+    if (!browserContextId) throw new Error('Chrome did not create an isolated browser context');
+    const targetResult = await browserControl.send('Target.createTarget', {
+      url: 'about:blank',
+      browserContextId,
+    });
+    targetId = String(targetResult.targetId ?? '');
+    if (!targetId) throw new Error('Chrome did not create an isolated page target');
+    await faultPoint('target', fault, controller.signal);
+    const targetWebSocket = await discoverTargetWebSocket(
+      browserDescriptor.debugPort,
+      targetId,
+      controller.signal,
+    );
+    cdp = await CdpConnection.connect(targetWebSocket, 5_000, DEFAULT_CDP_TIMEOUT_MS);
+    await faultPoint('cdp', fault, controller.signal);
+    browser = new DashboardBrowser(
+      cdp,
+      `http://127.0.0.1:${bridgeStart.port}`,
+      {
+        browserProcessId: browserDescriptor.pid,
+        browserContextId,
+        targetId,
+        sharedProcess: ownedBrowser === null,
+      },
+    );
+    await browser.initialize();
+    if (options.webglDisabled) {
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `(()=>{const original=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type,...args){if(type==='webgl2')return null;return original.call(this,type,...args)};globalThis.__THOTH_RESTORE_WEBGL__=()=>{HTMLCanvasElement.prototype.getContext=original}})();`,
+      });
+    }
+    await faultPoint('init', fault, controller.signal);
+    await faultPoint('work', fault, controller.signal);
+    result = await bounded(
+      run(browser),
+      deadlineMs,
+      'dashboard browser acceptance',
+      controller.signal,
+    );
+  } catch (error) {
+    failure = asError(error);
+    if (browser && shouldCaptureFailureDiagnostics(options, fault)) {
+      await captureFailureDiagnostics(browser, failure, options.diagnostics?.directory)
+        .catch(() => undefined);
+    }
+  } finally {
+    clearTimeout(deadline);
+    const cleanupErrors = await cleanupHarness({
+      cdp,
+      browserControl,
+      browserContextId,
+      targetId,
+      ownedBrowser,
+      bridge,
+      store,
+    }, fault);
+    controller.abort(abortError('Dashboard browser lifecycle cleanup'));
+    if (cleanupErrors.length) {
+      const cleanupFailure = new AggregateError(cleanupErrors, 'Dashboard browser cleanup failed');
+      failure = failure
+        ? new AggregateError([failure, cleanupFailure], failure.message)
+        : cleanupFailure;
+    }
   }
-  if(failure)throw failure;return result as T;
+  if (failure) throw failure;
+  return result as T;
+}
+
+function shouldCaptureFailureDiagnostics(
+  options: DashboardBrowserOptions,
+  fault?: HarnessFaultInjection,
+): boolean {
+  const enabled = options.diagnostics?.enabled ?? process.env.CI === 'true';
+  const intentionalFault = Boolean(
+    fault?.phase
+    || fault?.cleanupFault
+    || fault?.collision
+    || fault?.browserStartupFailures,
+  );
+  return enabled && !intentionalFault;
+}
+
+async function captureFailureDiagnostics(
+  browser: DashboardBrowser,
+  failure: Error,
+  configuredDirectory?: string,
+): Promise<void> {
+  const evidence = await bounded(
+    browser.captureFailureEvidence(),
+    5_000,
+    'browser failure diagnostics',
+  );
+  if (!evidence.screenshot.byteLength) throw new Error('Browser failure screenshot was empty');
+  if (evidence.screenshot.byteLength > MAX_DIAGNOSTIC_SCREENSHOT_BYTES) {
+    throw new Error('Browser failure screenshot exceeded byte limit');
+  }
+
+  const dom = truncateUtf8(evidence.dom, MAX_DIAGNOSTIC_DOM_BYTES);
+  const metadata = boundedDiagnosticMetadata(browser, failure);
+  const root = configuredDirectory ?? resolve('test-results/browser');
+  const runDirectory = join(
+    root,
+    `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}`,
+  );
+  await mkdir(runDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(join(runDirectory, 'screenshot.jpg'), evidence.screenshot),
+    writeFile(join(runDirectory, 'dom.html'), dom, 'utf8'),
+    writeFile(join(runDirectory, 'failure.json'), metadata, 'utf8'),
+  ]);
+}
+
+function boundedDiagnosticMetadata(browser: DashboardBrowser, failure: Error): string {
+  const metadata = JSON.stringify({
+    capturedAt: new Date().toISOString(),
+    origin: browser.origin,
+    lifecycle: browser.lifecycle,
+    error: {
+      name: truncateUtf8(failure.name, 256),
+      message: truncateUtf8(failure.message, 8 * 1024),
+      stack: truncateUtf8(failure.stack ?? '', 16 * 1024),
+    },
+  }, null, 2);
+  if (Buffer.byteLength(metadata, 'utf8') > MAX_DIAGNOSTIC_METADATA_BYTES) {
+    throw new Error('Browser failure metadata exceeded byte limit');
+  }
+  return metadata;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoded = Buffer.from(value, 'utf8');
+  if (encoded.byteLength <= maxBytes) return value;
+  for (let end = maxBytes; end > 0; end -= 1) {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(encoded.subarray(0, end));
+    } catch {
+      // Continue until the slice ends on a complete UTF-8 code point.
+    }
+  }
+  return '';
 }
 
 async function startBridge(store:Store,ownerObservationId:number,ownerToken:string,signal:AbortSignal,fault?:HarnessFaultInjection):Promise<{bridge:ReturnType<typeof createHttpBridge>;port:number}>{let last:Error|null=null;for(let attempt=0;attempt<5;attempt+=1){throwIfAborted(signal);const port=await bounded(availablePort(),2_000,'bridge port selection',signal);const blocker=fault?.collision==='bridge'&&attempt===0?await occupyPort(port):null;const candidate=createHttpBridge(store,{...getConfig(),httpPort:port});try{await bounded(candidate.start(),5_000,'HTTP bridge startup',signal);if(blocker){last=new Error(`EADDRINUSE: injected bridge collision on ${port}`);await bounded(candidate.stop(),2_000,'collided bridge cleanup',signal);await closeServer(blocker);continue;}if(!await bridgeIsOwned(port,ownerObservationId,ownerToken,signal)){last=new Error(`EADDRINUSE: bridge ownership check failed on ${port}`);await bounded(candidate.stop(),2_000,'unowned bridge cleanup',signal);continue;}return{bridge:candidate,port};}catch(error){last=asError(error);await closeServer(blocker);await bounded(candidate.stop(),2_000,'failed bridge cleanup').catch(()=>undefined);if(!isAddressInUse(last))throw last;}}throw new Error(`HTTP bridge port collision retries exhausted: ${last?.message}`);}
-async function startVite(backendPort:number,signal:AbortSignal,fault?:HarnessFaultInjection):Promise<{vite:ViteDevServer;port:number}>{const target=`http://127.0.0.1:${backendPort}`;const proxy=Object.fromEntries(['/stats','/context','/observations','/timeline','/projects','/observatory','/viz','/version','/operations','/operation-traces','/index','/graph/rebuild','/openapi.json'].map((path)=>[path,target]));let last:Error|null=null;for(let attempt=0;attempt<5;attempt+=1){throwIfAborted(signal);const port=await bounded(availablePort(),2_000,'Vite port selection',signal);const blocker=fault?.collision==='vite'&&attempt===0?await occupyPort(port):null;const candidate=await bounded(createViteServer({root:resolve('dashboard'),logLevel:'silent',server:{host:'127.0.0.1',port,strictPort:true,proxy}}),5_000,'Vite creation',signal);try{await bounded(candidate.listen(),5_000,'Vite startup',signal);await closeServer(blocker);return{vite:candidate,port};}catch(error){last=asError(error);await closeServer(blocker);await bounded(candidate.close(),2_000,'failed Vite cleanup').catch(()=>undefined);if(!isAddressInUse(last))throw last;}}throw new Error(`Vite port collision retries exhausted: ${last?.message}`);}
-async function cleanupHarness(resources:{cdp:CdpConnection|null;chrome:ChildProcess|null;vite:ViteDevServer|null;bridge:ReturnType<typeof createHttpBridge>|null;store:Store|null;profile:string},fault?:HarnessFaultInjection):Promise<Error[]>{const errors:Error[]=[];const step=async(name:HarnessFaultInjection['cleanupFault'],action:()=>void|Promise<void>,timeoutMs=3_000)=>{try{await bounded(Promise.resolve().then(action),timeoutMs,`${name} cleanup`);if(fault?.cleanupFault===name)throw new Error(`Injected ${name} cleanup failure`);}catch(error){errors.push(asError(error));}};await step('cdp',()=>resources.cdp?.close());await step('browser',()=>terminateBrowser(resources.chrome),15_000);await step('vite',()=>resources.vite?.close());await step('bridge',()=>resources.bridge?.stop());await step('store',()=>resources.store?.close());await step('profile',()=>resources.profile?removeDirectory(resources.profile):undefined,12_000);return errors;}
+function requiresIsolatedBrowser(fault?: HarnessFaultInjection): boolean {
+  return Boolean(
+    fault?.onResource
+    || fault?.phase === 'browser'
+    || fault?.cleanupFault === 'browser'
+    || fault?.cleanupFault === 'profile'
+    || fault?.browserStartupFailures,
+  );
+}
+
+async function discoverBrowserWebSocket(debugPort: number, signal: AbortSignal): Promise<string> {
+  const response = await bounded(
+    fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal }),
+    5_000,
+    'Chrome browser target discovery',
+    signal,
+  );
+  if (!response.ok) throw new Error(`Chrome browser target discovery failed: ${response.status}`);
+  const body = await bounded(
+    response.json() as Promise<{ webSocketDebuggerUrl?: string }>,
+    5_000,
+    'Chrome browser target JSON',
+    signal,
+  );
+  if (!body.webSocketDebuggerUrl) throw new Error('Chrome browser websocket target is unavailable');
+  return body.webSocketDebuggerUrl;
+}
+
+async function discoverTargetWebSocket(
+  debugPort: number,
+  targetId: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    throwIfAborted(signal);
+    const response = await bounded(
+      fetch(`http://127.0.0.1:${debugPort}/json/list`, { signal }),
+      1_000,
+      'Chrome page target discovery',
+      signal,
+    );
+    if (!response.ok) throw new Error(`Chrome page target discovery failed: ${response.status}`);
+    const targets = await response.json() as Array<{
+      id: string;
+      type: string;
+      webSocketDebuggerUrl?: string;
+    }>;
+    const target = targets.find((candidate) =>
+      candidate.id === targetId && candidate.type === 'page' && candidate.webSocketDebuggerUrl);
+    if (target?.webSocketDebuggerUrl) return target.webSocketDebuggerUrl;
+    await delay(25);
+  }
+  throw new Error(`Chrome page target ${targetId} did not publish a websocket endpoint`);
+}
+
+interface HarnessResources {
+  cdp: CdpConnection | null;
+  browserControl: CdpConnection | null;
+  browserContextId: string;
+  targetId: string;
+  ownedBrowser: OwnedBrowser | null;
+  bridge: ReturnType<typeof createHttpBridge> | null;
+  store: Store | null;
+}
+
+async function cleanupHarness(
+  resources: HarnessResources,
+  fault?: HarnessFaultInjection,
+): Promise<Error[]> {
+  const errors: Error[] = [];
+  const step = async (
+    name: HarnessFaultInjection['cleanupFault'],
+    action: () => void | Promise<void>,
+    timeoutMs = 3_000,
+  ) => {
+    try {
+      await bounded(Promise.resolve().then(action), timeoutMs, `${name} cleanup`);
+      if (fault?.cleanupFault === name) throw new Error(`Injected ${name} cleanup failure`);
+    } catch (error) {
+      errors.push(asError(error));
+    }
+  };
+  await step('cdp', () => resources.cdp?.close());
+  await step('context', () => disposeBrowserTarget(resources));
+  await step('browser', () => resources.ownedBrowser
+    ? stopOwnedBrowser(resources.ownedBrowser)
+    : undefined, 20_000);
+  await step('bridge', () => resources.bridge?.stop());
+  await step('store', () => resources.store?.close());
+  await step('profile', () => undefined);
+  return errors;
+}
+
+async function disposeBrowserTarget(resources: HarnessResources): Promise<void> {
+  const errors: Error[] = [];
+  try {
+    if (resources.targetId) {
+      await resources.browserControl?.send('Target.closeTarget', { targetId: resources.targetId });
+    }
+  } catch (error) {
+    errors.push(asError(error));
+  }
+  try {
+    if (resources.browserContextId) {
+      await resources.browserControl?.send('Target.disposeBrowserContext', {
+        browserContextId: resources.browserContextId,
+      });
+    }
+  } catch (error) {
+    errors.push(asError(error));
+  } finally {
+    resources.browserControl?.close();
+  }
+  if (errors.length) throw new AggregateError(errors, 'Browser context cleanup failed');
+}
 async function faultPoint(phase:HarnessPhase,fault:HarnessFaultInjection|undefined,signal:AbortSignal):Promise<void>{if(fault?.phase!==phase)return;await new Promise<void>((_,reject)=>{const abort=()=>reject(signal.reason instanceof Error?signal.reason:abortError('Harness fault aborted'));if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});});}
 async function availablePort():Promise<number>{return await new Promise((resolvePort,reject)=>{const server=createNetServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const address=server.address();if(!address||typeof address==='string')return reject(new Error('No test port'));const port=address.port;server.close((error)=>error?reject(error):resolvePort(port));});});}
 async function occupyPort(port:number):Promise<ReturnType<typeof createNetServer>>{const server=createNetServer();await new Promise<void>((resolveListen,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>resolveListen());});return server;}
 async function closeServer(server:ReturnType<typeof createNetServer>|null):Promise<void>{if(!server||!server.listening)return;await new Promise<void>((resolveClose)=>server.close(()=>resolveClose()));}
-async function startBrowser(chromePath:string,signal:AbortSignal,fault?:HarnessFaultInjection):Promise<{chrome:ChildProcess;profile:string;debugPort:string}>{
-  let lastError:Error|null=null;
-  for(let attempt=0;attempt<BROWSER_STARTUP_ATTEMPTS;attempt+=1){
-    throwIfAborted(signal);
-    const profile=mkdtempSync(resolve(tmpdir(),'thoth-dashboard-browser-'));
-    fault?.onResource?.('profile',profile);
-    const chrome=spawn(chromePath,browserLaunchArguments(profile),{stdio:['ignore','ignore','pipe'],windowsHide:true});
-    if(chrome.pid)fault?.onResource?.('pid',chrome.pid);
-    let stderr='';
-    chrome.stderr?.setEncoding('utf8');
-    chrome.stderr?.on('data',(chunk)=>{stderr=`${stderr}${String(chunk)}`.slice(-BROWSER_STDERR_LIMIT);});
-    try{
-      await faultPoint('browser',fault,signal);
-      if(attempt<(fault?.browserStartupFailures??0))throw new Error(`Injected transient browser startup failure on attempt ${attempt+1}`);
-      const debugPort=await readDevToolsPort(resolve(profile,'DevToolsActivePort'),signal,chrome,()=>stderr);
-      return{chrome,profile,debugPort};
-    }catch(error){
-      lastError=asError(error);
-      const cleanupErrors:Error[]=[];
-      await terminateBrowser(chrome).catch((cause)=>cleanupErrors.push(asError(cause)));
-      await removeDirectory(profile).catch((cause)=>cleanupErrors.push(asError(cause)));
-      if(cleanupErrors.length)throw new AggregateError([lastError,...cleanupErrors],'Failed browser startup attempt cleanup');
-      throwIfAborted(signal);
-    }
-  }
-  throw new Error(`Chrome startup retries exhausted after ${BROWSER_STARTUP_ATTEMPTS} attempts: ${lastError?.message??'unknown startup failure'}`);
-}
 async function bridgeIsOwned(port:number,observationId:number,ownerToken:string,signal:AbortSignal):Promise<boolean>{try{const response=await fetchWithTimeout(`http://127.0.0.1:${port}/observations/${observationId}`,500,signal);return response.ok&&(await response.text()).includes(ownerToken);}catch{return false;}}
 async function fetchWithTimeout(url:string,timeoutMs:number,signal:AbortSignal):Promise<Response>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(abortError(`Fetch timeout after ${timeoutMs}ms`)),timeoutMs);const abort=()=>controller.abort(signal.reason);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});try{return await fetch(url,{signal:controller.signal});}finally{clearTimeout(timer);signal.removeEventListener('abort',abort);}}
 function delay(milliseconds:number):Promise<void>{return new Promise((resolveDelay)=>setTimeout(resolveDelay,milliseconds));}
 async function bounded<T>(promise:Promise<T>,timeoutMs:number,label:string,signal?:AbortSignal):Promise<T>{let timer:ReturnType<typeof setTimeout>|undefined;let abort:()=>void=()=>undefined;try{return await Promise.race([promise,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label} timeout after ${timeoutMs}ms`)),timeoutMs);if(signal){abort=()=>reject(signal.reason instanceof Error?signal.reason:abortError(`${label} aborted`));if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}})]);}finally{if(timer)clearTimeout(timer);signal?.removeEventListener('abort',abort);}}
-async function removeDirectory(path:string):Promise<void>{const target=resolve(path);if(!isOwnedBrowserProfilePath(target))throw new Error(`Refusing to remove unvalidated browser profile: ${target}`);const deadline=Date.now()+10_000;let lastError:unknown;while(existsSync(target)){try{rmSync(target,{recursive:true,force:true});}catch(error){lastError=error;}if(!existsSync(target))return;if(Date.now()>=deadline)throw lastError instanceof Error?lastError:new Error(`Timed out removing browser profile: ${target}`);await delay(50);}}
-async function readDevToolsPort(path:string,signal:AbortSignal,chrome:ChildProcess,stderr:()=>string):Promise<string>{const started=Date.now();while(Date.now()-started<BROWSER_STARTUP_TIMEOUT_MS){throwIfAborted(signal);if(browserHasExited(chrome.exitCode,chrome.signalCode))throw browserStartupError('Chrome exited before publishing a DevTools port',chrome,stderr());try{if(existsSync(path)){const [port]=readFileSync(path,'utf8').trim().split(/\r?\n/);if(/^\d+$/.test(port))return port;}}catch{/* Chrome may still own the new file briefly on Windows. */}await delay(25);}throw browserStartupError('Timeout waiting for readable Chrome DevTools port',chrome,stderr());}
-function browserStartupError(message:string,chrome:ChildProcess,stderr:string):Error{const status=browserHasExited(chrome.exitCode,chrome.signalCode)?`exit=${chrome.exitCode??'null'} signal=${chrome.signalCode??'null'}`:'process=running';const detail=stderr.trim();return new Error(`${message}; ${status}${detail?`; stderr=${detail}`:''}`);}
-async function requestBrowserClose(cdp:CdpConnection|null):Promise<void>{if(!cdp)return;await bounded(cdp.send('Browser.close'),750,'Chrome graceful close').catch(()=>undefined);}
-async function terminateBrowser(chrome:ChildProcess|null):Promise<void>{if(!chrome||browserHasExited(chrome.exitCode,chrome.signalCode))return;chrome.kill();try{await waitForBrowserExit(chrome,8_000,'Chrome exit');}catch{chrome.kill('SIGKILL');try{await waitForBrowserExit(chrome,5_000,'forced Chrome exit');}catch(error){if(!browserProcessHasExited(chrome.exitCode,chrome.signalCode,chrome.pid))throw error;await delay(500);}}}
-async function waitForBrowserExit(chrome:ChildProcess,timeoutMs:number,label:string):Promise<void>{const deadline=Date.now()+timeoutMs;while(!browserHasExited(chrome.exitCode,chrome.signalCode)){if(Date.now()>=deadline)throw new Error(`${label} timeout after ${timeoutMs}ms`);await delay(50);}}
-function browserHasExited(exitCode:number|null,signalCode:NodeJS.Signals|null):boolean{return exitCode!==null||signalCode!==null;}
-function browserProcessHasExited(exitCode:number|null,signalCode:NodeJS.Signals|null,pid:number|undefined):boolean{return browserHasExited(exitCode,signalCode)||(typeof pid==='number'&&!processExists(pid));}
-function processExists(pid:number):boolean{try{process.kill(pid,0);return true;}catch(error){return error instanceof Error&&'code' in error&&error.code==='EPERM';}}
-function isOwnedBrowserProfilePath(path:string):boolean{
-  const root=resolve(tmpdir());
-  const target=resolve(path);
-  const relativePath=relative(root,target);
-  return relativePath.length>0
-    && relativePath!=='..'
-    && !relativePath.startsWith(`..${sep}`)
-    && !isAbsolute(relativePath)
-    && basename(target).startsWith('thoth-dashboard-browser-');
-}
-function resolveBrowserExecutable(options:BrowserExecutableResolutionOptions={}):string|null{
-  const environment=options.environment??process.env;
-  const pathExists=options.pathExists??existsSync;
-  const platform=options.platform??process.platform;
-  const candidates=[
-    environment.THOTH_MEM_BROWSER_PATH,
-    environment.CHROME_PATH,
-    environment.CHROME_BIN,
-    environment.EDGE_PATH,
-    ...(BROWSER_PATHS[platform]??[]),
-  ];
-  return candidates.find((candidate):candidate is string=>
-    typeof candidate==='string'&&candidate.length>0&&pathExists(candidate)
-  )??null;
-}
-function browserLaunchArguments(profile:string,platform:NodeJS.Platform=process.platform):string[]{
-  return [
-    '--headless=new',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-background-networking',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    ...(platform==='linux'?['--disable-dev-shm-usage']:[]),
-    '--disable-component-update',
-    '--disable-sync',
-    '--disable-default-apps',
-    '--disable-breakpad',
-    '--disable-crash-reporter',
-    'about:blank',
-  ];
-}
 function throwIfAborted(signal:AbortSignal):void{if(signal.aborted)throw(signal.reason instanceof Error?signal.reason:abortError('Harness lifecycle aborted'));}
 function abortError(message:string):Error{const error=new Error(message);error.name='AbortError';return error;}
 function asError(error:unknown):Error{return error instanceof Error?error:new Error(String(error));}
@@ -546,7 +788,7 @@ function isAddressInUse(error:Error):boolean{return /EADDRINUSE|address already 
 
 export const harnessFaultTestApi={
   async connectCdp(url:string,options:{connectTimeoutMs?:number;sendTimeoutMs?:number;signal?:AbortSignal}={}){const connection=await CdpConnection.connect(url,options.connectTimeoutMs??500,options.sendTimeoutMs??100,options.signal);return{send:(method:string,params:JsonObject={})=>connection.send(method,params),pendingCount:()=>connection.pendingCount(),close:()=>connection.close()};},
-  pathExists:(path:string)=>existsSync(path),
+  pathExists,
   browserHasExited,
   browserLaunchArguments,
   browserProcessHasExited,

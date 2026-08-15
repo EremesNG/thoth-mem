@@ -5,6 +5,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { harnessFaultTestApi, withDashboardBrowser } from './dashboard-browser-harness.js';
+import {
+  setupSharedDashboardBrowser,
+  type SharedDashboardBrowser,
+} from './dashboard-browser-global-setup.js';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -86,7 +90,63 @@ describe('dashboard browser harness faults', () => {
     }
   });
 
-  it.each(['bridge', 'vite', 'browser', 'target', 'cdp', 'init', 'work'] as const)(
+  it('reuses one browser process with isolated contexts and browser storage', async () => {
+    const identities: Array<{
+      pid: number;
+      contextId: string;
+      targetId: string;
+      shared: boolean;
+    }> = [];
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.evaluate(`localStorage.setItem('thoth-browser-isolation', 'first-context')`);
+      identities.push({
+        pid: browser.lifecycle.browserProcessId,
+        contextId: browser.lifecycle.browserContextId,
+        targetId: browser.lifecycle.targetId,
+        shared: browser.lifecycle.sharedProcess,
+      });
+    });
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      expect(await browser.evaluate(`localStorage.getItem('thoth-browser-isolation')`)).toBeNull();
+      identities.push({
+        pid: browser.lifecycle.browserProcessId,
+        contextId: browser.lifecycle.browserContextId,
+        targetId: browser.lifecycle.targetId,
+        shared: browser.lifecycle.sharedProcess,
+      });
+    });
+
+    expect(identities).toHaveLength(2);
+    expect(new Set(identities.map((identity) => identity.pid)).size).toBe(1);
+    expect(new Set(identities.map((identity) => identity.contextId)).size).toBe(2);
+    expect(new Set(identities.map((identity) => identity.targetId)).size).toBe(2);
+    expect(identities.every((identity) => identity.shared)).toBe(true);
+  }, 30_000);
+
+  it('releases an isolated global-setup browser process and profile after teardown', async () => {
+    const browserPath = harnessFaultTestApi.resolveBrowserExecutable();
+    if (!browserPath) throw new Error('Browser executable missing during browser-configured test');
+    let descriptor: SharedDashboardBrowser | null = null;
+    const teardown = await setupSharedDashboardBrowser({
+      provide(_key, value) {
+        descriptor = value;
+      },
+    }, { browserPath });
+    const started = descriptor as SharedDashboardBrowser | null;
+    if (!started) throw new Error('Isolated global setup did not provide browser metadata');
+    try {
+      expect(harnessFaultTestApi.processExists(started.pid)).toBe(true);
+      expect(harnessFaultTestApi.pathExists(started.profile)).toBe(true);
+    } finally {
+      await teardown();
+    }
+    expect(harnessFaultTestApi.processExists(started.pid)).toBe(false);
+    expect(harnessFaultTestApi.pathExists(started.profile)).toBe(false);
+  }, 30_000);
+
+  it.each(['bridge', 'browser', 'target', 'cdp', 'init', 'work'] as const)(
     'applies the hard lifecycle deadline and cleans resources after %s setup stalls',
     async (phase) => {
       const evidence = createEvidence();
@@ -98,21 +158,25 @@ describe('dashboard browser harness faults', () => {
     10_000,
   );
 
-  it('continues independently bounded cleanup after one cleanup step fails', async () => {
-    const evidence = createEvidence();
-    await expect(withDashboardBrowser(async () => undefined, {
-      faultInjection: { cleanupFault: 'browser', deadlineMs: 15_000, onResource: evidence.record },
-    })).rejects.toThrow(/cleanup failed/i);
-    await expectResourcesClean(evidence);
-  }, 30_000);
+  it.each(['cdp', 'context', 'browser', 'bridge', 'store', 'profile'] as const)(
+    'continues independently bounded cleanup after %s cleanup fails',
+    async (cleanupFault) => {
+      const evidence = createEvidence();
+      await expect(withDashboardBrowser(async () => undefined, {
+        faultInjection: { cleanupFault, deadlineMs: 15_000, onResource: evidence.record },
+      })).rejects.toThrow(/cleanup failed/i);
+      await expectResourcesClean(evidence);
+    },
+    30_000,
+  );
 
-  it.each(['bridge', 'vite'] as const)('recovers deterministically from an injected %s port collision', async (collision) => {
+  it('recovers deterministically from an injected bridge port collision', async () => {
     const evidence = createEvidence();
     await withDashboardBrowser(async (browser) => {
       await browser.goto('/');
       await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
       expect(await browser.count('.graph-navigator li')).toBeGreaterThan(0);
-    }, { faultInjection: { collision, deadlineMs: 10_000, onResource: evidence.record } });
+    }, { faultInjection: { collision: 'bridge', deadlineMs: 10_000, onResource: evidence.record } });
     await expectResourcesClean(evidence);
   }, 15_000);
 
