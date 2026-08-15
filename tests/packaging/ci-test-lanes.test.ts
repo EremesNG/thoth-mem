@@ -110,7 +110,7 @@ describe('CI test lanes', () => {
     }
 
     const browserBlock = jobBlock(workflow, 'browser-smoke');
-    expect(browserBlock).toContain('actions/upload-artifact@v4');
+    expect(browserBlock).toContain('actions/upload-artifact@v7');
     expect(browserBlock).toContain('if: failure()');
     expect(browserBlock).toContain('path: test-results/browser/');
     expect(browserBlock).toContain('if-no-files-found: ignore');
@@ -122,9 +122,45 @@ describe('CI test lanes', () => {
     expect(workflow).toMatch(/^  workflow_dispatch:/m);
     expect(workflow).not.toMatch(/^  pull_request:/m);
     expect(workflow).toContain('pnpm run test:browser:performance');
-    expect(workflow).toContain('actions/upload-artifact@v4');
+    expect(workflow).toContain('actions/upload-artifact@v7');
     expect(workflow).toContain('if: failure()');
     expect(workflow).toContain('path: test-results/browser/');
     expect(workflow).toContain('if-no-files-found: ignore');
+  });
+
+  it('gates tag publication on package, browser-smoke, and retrieval verification', async () => {
+    const workflow = await readRepositoryFile('.github/workflows/release.yml');
+    const packageGateIndex = workflow.indexOf('pnpm run prepublishOnly');
+    const browserGateIndex = workflow.indexOf('pnpm run test:browser');
+    const retrievalGateIndex = workflow.indexOf('pnpm run eval:retrieval');
+    const publishIndex = workflow.indexOf('npm publish --ignore-scripts');
+
+    expect(packageGateIndex).toBeGreaterThanOrEqual(0);
+    expect(browserGateIndex).toBeGreaterThan(packageGateIndex);
+    expect(retrievalGateIndex).toBeGreaterThan(browserGateIndex);
+    expect(publishIndex).toBeGreaterThan(retrievalGateIndex);
+    expect(workflow).not.toContain('pnpm run test:browser:performance');
+    expect(workflow).toMatch(/actions\/upload-artifact@v\d+/);
+    expect(workflow).toContain('if: failure()');
+    expect(workflow).toContain('path: test-results/browser/');
+    expect(workflow).toContain('if-no-files-found: ignore');
+  });
+
+  it('uses Node 24-compatible action majors in every delivery workflow', async () => {
+    const workflowPaths = [
+      '.github/workflows/ci.yml',
+      '.github/workflows/dashboard-performance.yml',
+      '.github/workflows/release.yml',
+    ];
+
+    for (const path of workflowPaths) {
+      const workflow = await readRepositoryFile(path);
+      expect(workflow).toContain('actions/checkout@v7');
+      expect(workflow).toContain('pnpm/action-setup@v6');
+      expect(workflow).toContain('actions/setup-node@v6');
+      if (workflow.includes('actions/upload-artifact@')) {
+        expect(workflow).toContain('actions/upload-artifact@v7');
+      }
+    }
   });
 });

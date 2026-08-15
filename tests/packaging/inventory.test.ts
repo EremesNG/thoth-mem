@@ -710,7 +710,7 @@ describe('build release verification', () => {
         /      - name: Setup pnpm\r?\n[\s\S]*?(?=\r?\n      - name:|$)/,
       )?.[0];
 
-      expect(setupPnpmStep).toContain('uses: pnpm/action-setup@v4');
+      expect(setupPnpmStep).toContain('uses: pnpm/action-setup@v6');
       expect(setupPnpmStep).toContain('run_install: false');
       expect(setupPnpmStep).not.toMatch(/^\s+version:/m);
     }
