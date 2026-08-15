@@ -25,6 +25,7 @@ interface GraphNavigatorProps {
 
 const DENSE_NAVIGATOR_THRESHOLD = 32;
 const DENSE_NAVIGATOR_CHUNK_SIZE = 32;
+const DENSE_NAVIGATOR_FRAME_FALLBACK_MS = 50;
 
 interface GraphNavigatorRowProps {
   node: VizNode;
@@ -177,7 +178,12 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
       return;
     }
     if (denseRenderLimit >= index.nodeIds.length) return;
-    const frame = requestAnimationFrame(() => {
+    let settled = false;
+    const publishNextChunk = () => {
+      if (settled) return;
+      settled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(fallback);
       setDenseRenderState((current) => ({
         datasetKey,
         limit: Math.min(
@@ -185,8 +191,14 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
           current.datasetKey === datasetKey ? current.limit + DENSE_NAVIGATOR_CHUNK_SIZE : DENSE_NAVIGATOR_THRESHOLD,
         ),
       }));
-    });
-    return () => cancelAnimationFrame(frame);
+    };
+    const frame = requestAnimationFrame(publishNextChunk);
+    const fallback = window.setTimeout(publishNextChunk, DENSE_NAVIGATOR_FRAME_FALLBACK_MS);
+    return () => {
+      settled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(fallback);
+    };
   }, [datasetKey, denseRenderLimit, denseRenderState.datasetKey, index.nodeIds.length, retainsCompleteList]);
 
   const completeRows = useMemo(() => {

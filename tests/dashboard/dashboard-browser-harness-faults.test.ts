@@ -116,6 +116,18 @@ describe('dashboard browser harness faults', () => {
     await expectResourcesClean(evidence);
   }, 15_000);
 
+  it('retries one transient browser startup and cleans every attempt', async () => {
+    const evidence = createEvidence();
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
+    }, { faultInjection: { browserStartupFailures: 1, deadlineMs: 20_000, onResource: evidence.record } });
+
+    expect(evidence.profiles).toHaveLength(2);
+    expect(evidence.pids).toHaveLength(2);
+    await expectResourcesClean(evidence);
+  }, 30_000);
+
   it('recognizes a browser terminated by signal even when exitCode remains null', () => {
     expect(harnessFaultTestApi.browserHasExited(null, 'SIGTERM')).toBe(true);
     expect(harnessFaultTestApi.browserHasExited(0, null)).toBe(true);
