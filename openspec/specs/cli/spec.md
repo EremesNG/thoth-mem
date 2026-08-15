@@ -843,3 +843,93 @@ Automated Codex setup verification MUST cover unforced tested `0.146.x` and `0.1
 - **GIVEN** forced modern setup needs no legacy filesystem changes
 - **WHEN** an unrelated `config.toml` exists
 - **THEN** output does not claim a configuration backup is required before mutation
+
+### Requirement: Journal Repair CLI Administration
+
+The CLI MUST expose preview-first `repair-sync-journal` with exactly one project or all-projects scope and explicit `--apply`. Apply without a fingerprint MUST obtain a bounded preview internally and pass its exact fingerprint to the unchanged Store apply contract. A supplied fingerprint MUST remain an effective binding. Any stale or persistence failure MUST surface without retrying a different batch.
+
+#### Scenario: US1 - Apply a repair without copying an internal fingerprint 1
+
+- **GIVEN** a repairable unchanged scope
+- **WHEN** the operator invokes `repair-sync-journal --apply` with exactly one scope
+- **THEN** the CLI obtains an internal preview and applies its fingerprint through the existing Store precondition contract
+
+#### Scenario: US1 - Apply a repair without copying an internal fingerprint 2
+
+- **GIVEN** repair candidates change between the internal preview and Store apply
+- **WHEN** apply re-evaluates the scope
+- **THEN** it fails non-zero without repair writes and does not retry a different unreviewed batch
+
+#### Scenario: US1 - Apply a repair without copying an internal fingerprint 3
+
+- **GIVEN** the operator does not select apply
+- **WHEN** repair runs
+- **THEN** it remains a read-only preview
+
+### Requirement: Trace Retention CLI Administration
+
+The CLI MUST expose preview-first `prune-operation-traces` with exactly one project or all-projects scope and explicit `--apply`, without requiring operator-supplied fingerprint or effective-time flags. Apply without those values MUST bind itself to one internal preview; supplied values MUST remain effective bindings. `--until-complete` MUST keep the first effective instant fixed, bind each subsequent batch to a fresh internal preview, emit compact progress and a final aggregate, and stop non-zero on stale state, failure, bounded-growth violation, or lack of progress.
+
+#### Scenario: US2 - Prune a bounded or complete backlog without copying bindings 1
+
+- **GIVEN** an eligible trace scope
+- **WHEN** the operator invokes `prune-operation-traces --apply`
+- **THEN** the CLI creates one internal preview and applies exactly its fingerprint and effective instant
+
+#### Scenario: US2 - Prune a bounded or complete backlog without copying bindings 2
+
+- **GIVEN** an eligible backlog spans multiple batches
+- **WHEN** the operator adds `--until-complete`
+- **THEN** the first internal preview fixes the effective instant and each later batch uses a fresh internal fingerprint until no eligible rows remain
+
+#### Scenario: US2 - Prune a bounded or complete backlog without copying bindings 3
+
+- **GIVEN** candidates change, a Store apply fails, no progress occurs, or eligible work grows beyond the initial bounded batch count
+- **WHEN** the loop detects it
+- **THEN** it exits non-zero, reports completed work truthfully, and does not claim rollback of already committed batches
+
+#### Scenario: US2 - Prune a bounded or complete backlog without copying bindings 4
+
+- **GIVEN** apply is not selected
+- **WHEN** the command runs
+- **THEN** it returns the existing read-only preview
+
+### Requirement: Database Compaction CLI Administration
+
+The CLI MUST expose preview-first `compact-database` for the resolved data directory with explicit `--apply`, bounded human-readable and machine-copyable results, non-zero exit on validation, exclusivity, space, checkpoint, `VACUUM`, reopen, or recovery failure, and no project scope or MCP tool registration. It MUST remain independent and MUST NOT invoke, require, or imply `prune-operation-traces` or `repair-sync-journal`.
+
+#### Scenario: US3 - Compact a database with guarded failure handling 1
+
+- **GIVEN** an existing database
+- **WHEN** `compact-database` runs without apply
+- **THEN** it performs no checkpoint, file creation, rename, deletion, or database mutation; uses an immutable open when no sidecars exist, normal read-only only when both readable WAL and SHM exist, and otherwise fails read-only; and reports page size, page count, freelist count, physical and logical size, estimated reclaimable bytes, journal mode, sidecar state, and available-versus-required free space
+
+#### Scenario: US3 - Compact a database with guarded failure handling 2
+
+- **GIVEN** a clean preflight and sufficient free space
+- **WHEN** `compact-database --apply` runs
+- **THEN** it estimates capacity from at least the greater of main-file and logical page bytes, checkpoints committed WAL state, rechecks capacity against refreshed metrics, verifies integrity, obtains SQLite write exclusivity, executes SQLite-managed `VACUUM`, reopens the database, verifies integrity, foreign keys, schema identity, journal mode, and durable readability, and reports exact before/after bytes
+
+#### Scenario: US3 - Compact a database with guarded failure handling 3
+
+- **GIVEN** another SQLite client prevents checkpoint or write exclusivity
+- **WHEN** apply starts
+- **THEN** it fails non-zero without claiming compaction or deleting any database file
+
+#### Scenario: US3 - Compact a database with guarded failure handling 4
+
+- **GIVEN** preflight, checkpoint, validation before `VACUUM`, or `VACUUM` before commit fails
+- **WHEN** the command unwinds
+- **THEN** no mutation or SQLite transaction recovery preserves the pre-operation logical database and the CLI never reports successful compaction
+
+#### Scenario: US3 - Compact a database with guarded failure handling 5
+
+- **GIVEN** verification fails after a committed `VACUUM`
+- **WHEN** the command unwinds
+- **THEN** the CLI exits non-zero, preserves the database and sidecar files for diagnosis, never reports successful compaction, and makes no claim that it restored the pre-operation physical database
+
+#### Scenario: US3 - Compact a database with guarded failure handling 6
+
+- **GIVEN** a custom data directory
+- **WHEN** preview or apply runs
+- **THEN** every database, sidecar, free-space check, and result path remains confined to that directory

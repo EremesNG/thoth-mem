@@ -53,6 +53,7 @@ Trace writes MUST NOT recursively create additional MCP or HTTP trace records.
 # Delta for Observability
 
 ## ADDED Requirements
+
 ### Requirement: Runtime Telemetry MUST Capture Payload and Token-Savings Metrics Per Tool
 Runtime observability MUST capture privacy-safe telemetry for MCP tool calls sufficient to compute per-tool average payload, request size, response size, evidence size when applicable, returned size, estimated-or-exact token counts, and token-savings/compression summaries. Telemetry MUST remain bounded and MUST distinguish exact token accounting from deterministic estimates.
 
@@ -112,3 +113,80 @@ New token-savings telemetry MUST compose with existing trace sanitization and tr
 - Design must identify where evidence/full/returned sizes are known for each tool, especially `mem_recall`, `mem_context`, `mem_project`, and `mem_get`.
 - Tests should prove secret redaction and non-recursive tracing still hold.
 
+### Requirement: Health Trace Exclusion
+
+Successful and failed `GET /health` route handling MUST NOT persist operation-trace rows, while the health response and bridge takeover behavior remain unchanged.
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 1
+
+- **GIVEN** the owner bridge is healthy
+- **WHEN** a non-owner polls `GET /health` repeatedly
+- **THEN** no operation trace is persisted for those requests
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 2
+
+- **GIVEN** a meaningful HTTP operation completes
+- **WHEN** tracing runs
+- **THEN** its sanitized bounded trace remains available through the existing list and detail contracts
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 3
+
+- **GIVEN** MCP tools are invoked
+- **WHEN** their handlers complete or fail
+- **THEN** their existing trace contract remains unchanged
+
+### Requirement: Status-Aware Trace Retention Policy
+
+Operation-trace retention MUST use independent UTC age cutoffs for successful and error traces, with strictly-older-than eligibility and deterministic oldest-first ordering.
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 1
+
+- **GIVEN** default configuration
+- **WHEN** retention is previewed at a fixed instant
+- **THEN** successful traces older than seven days and error traces older than thirty days are eligible while newer rows are protected
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 2
+
+- **GIVEN** more eligible rows than one run may delete
+- **WHEN** apply is invoked
+- **THEN** only the deterministic bounded batch is deleted and the result reports that eligible rows remain
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 3
+
+- **GIVEN** an unchanged preview whose eligible set fits within one run
+- **WHEN** apply supplies the preview fingerprint and exact effective instant so the same cutoffs are derived
+- **THEN** it deletes exactly the previewed rows transactionally and no other table is changed
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 4
+
+- **GIVEN** no explicit apply selection
+- **WHEN** the CLI or HTTP retention operation runs
+- **THEN** it returns a preview and performs no deletion
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 5
+
+- **GIVEN** retention has removed all eligible rows
+- **WHEN** it runs again at the same instant
+- **THEN** zero rows are deleted and recent success and error traces remain queryable
+
+### Requirement: Existing Trace Contracts Remain Intact
+
+Non-health HTTP and MCP traces MUST retain existing sanitization, truncation, privacy, metrics, non-recursion, filtering, listing, and detail behavior after health exclusion and retention are introduced.
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 1
+
+- **GIVEN** the owner bridge is healthy
+- **WHEN** a non-owner polls `GET /health` repeatedly
+- **THEN** no operation trace is persisted for those requests
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 2
+
+- **GIVEN** a meaningful HTTP operation completes
+- **WHEN** tracing runs
+- **THEN** its sanitized bounded trace remains available through the existing list and detail contracts
+
+#### Scenario: US3 - Keep liveness checks from becoming telemetry data 3
+
+- **GIVEN** MCP tools are invoked
+- **WHEN** their handlers complete or fail
+- **THEN** their existing trace contract remains unchanged

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { Store } from '../../src/store/index.js';
 import { runMigrations, runMigrationsWithSemantic } from '../../src/store/migrations.js';
-import { MIGRATIONS_SQL, PRAGMAS } from '../../src/store/schema.js';
+import { MIGRATIONS_SQL, PRAGMAS, SCHEMA_SQL } from '../../src/store/schema.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +17,24 @@ describe('Store — Migration behaviors', () => {
 
   afterEach(() => {
     store.close();
+  });
+
+  it('converges a populated legacy sync_mutations table without project idempotently', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      db.exec(`DROP TABLE sync_mutations; CREATE TABLE sync_mutations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT NOT NULL, entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL, sync_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      ); CREATE INDEX idx_sync_mutations_entity ON sync_mutations(entity_type, entity_id);
+      CREATE INDEX idx_sync_mutations_created_at ON sync_mutations(created_at);
+      INSERT INTO sync_mutations(operation, entity_type, entity_id, sync_id) VALUES ('create','session',0,'legacy');`);
+      runMigrations(db);
+      runMigrations(db);
+      expect((db.prepare('SELECT sync_id, project FROM sync_mutations').get() as { sync_id: string; project: null })).toEqual({ sync_id: 'legacy', project: null });
+      db.prepare("INSERT INTO sync_mutations(operation, entity_type, entity_id, sync_id, project) VALUES ('create','session',0,'current','p')").run();
+      expect((db.prepare('SELECT COUNT(*) AS count FROM sync_mutations').get() as { count: number }).count).toBe(2);
+    } finally { db.close(); }
   });
 
   it('auto-generates sync_id on saveObservation and savePrompt', () => {

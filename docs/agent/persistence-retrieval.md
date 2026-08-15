@@ -20,6 +20,8 @@ Typical save flow strips private content, validates/normalizes inputs, resolves 
 - Keep schema evolution idempotent and consistent with SQL `CHECK` constraints, FTS tables/triggers, and indexes.
 - Preserve the observation taxonomy, normalized deduplication/duplicate accounting, and topic-key revision/upsert semantics.
 - Preserve explicit project/session identity and nullability; changes can affect prompts, observations, summaries, sync, and retrieval together.
+- The semantic atlas derives its project hierarchy lazily from current observations without a schema migration. Each observation belongs to exactly one canonical project bucket before community detection, so project-owned constellations never mix projects; null, empty, or private-only project values use the deterministic Unassigned bucket. Cross-project evidence is represented only as aggregate project bridges.
+- Project and constellation public identities are full opaque hashes over canonical internal ownership tuples. Safe project labels are derived at presentation time and deterministically disambiguated without exposing canonical values. The revision-bound projection, per-project community partition, bounded fallback splitting, recall ownership lookup, and pivot revalidation must remain deterministic under input permutation.
 - Do not silently truncate durable content. Pagination/preview limits and warnings are public behavior.
 - Sync format/order, mutation watermarks, payload hashes, and imported-chunk status are compatibility behavior; test both current and legacy paths when touched.
 

@@ -1,6 +1,7 @@
 # Delta for Store
 
 ## ADDED Requirements
+
 ### Requirement: sqlite-vec MUST Be a Required Semantic Dependency
 The store runtime MUST attempt to load sqlite-vec into the active better-sqlite3 connection and treat semantic lane availability as dependent on successful extension/table readiness.
 
@@ -37,14 +38,6 @@ The store MUST detect stale semantic indexes by comparing persisted index metada
 - GIVEN persisted semantic metadata hash differs from active hash
 - WHEN staleness is evaluated
 - THEN semantic index state MUST be marked stale and semantic lanes eligible for degraded behavior
-
-### Requirement: Schema Evolution MUST Preserve Existing Lexical and Graph-lite Compatibility
-Semantic/KG schema additions MUST preserve existing FTS5 and `observation_facts` functionality.
-
-#### Scenario: Existing retrieval primitives remain functional
-- GIVEN semantic and KG migrations have run
-- WHEN lexical FTS5 and `observation_facts` retrieval are executed
-- THEN they MUST remain functionally available
 
 ### Requirement: Store.getContext MUST Accept And Enforce A Max-Output-Chars Budget
 `Store.getContext` MUST accept a maximum-output-character budget and MUST enforce
@@ -233,6 +226,7 @@ legacy reader for the same observations once their KG facts exist.
 - THEN the set of observations that contribute at least one fact MUST be the same## MODIFIED Requirements
 
 ## REMOVED Requirements
+
 ### Requirement: Schema Evolution MUST Preserve Existing Lexical and Graph-lite Compatibility
 **Reason:** This requirement guaranteed continued `observation_facts`
 ("graph-lite") functionality alongside FTS5. Because `observation_facts` is
@@ -293,6 +287,7 @@ observations, since `observation_facts` content is fully derivable.
 - WHEN rollback re-adds the idempotent table + index DDL and runs the rebuild
 - THEN the table MUST be recreatable and repopulatable from observations with no
   data loss (because its contents are fully derivable)## MODIFIED Requirements
+
 ### Requirement: Schema Evolution MUST Preserve Existing Lexical Compatibility
 Semantic/KG schema changes MUST preserve existing FTS5 functionality. The
 `observation_facts` table is REMOVED by this change (it is consolidated into
@@ -1076,6 +1071,7 @@ When schema evolution requires FTS rebuild, the system MUST rebuild indexes so s
 # Delta for Store
 
 ## ADDED Requirements
+
 ### Requirement: Store Session Persistence MUST Preserve Explicit Session and Project Identity
 Store session creation and enrichment paths MUST preserve explicit `session_id` and `project` values supplied by callers. Idempotent session creation MUST enrich only missing or placeholder project metadata when a stable explicit project becomes available, and MUST NOT overwrite an already stable non-placeholder project with a placeholder value.
 
@@ -1184,6 +1180,7 @@ This change MUST NOT silently rewrite existing historical records that already c
 # Delta for Store
 
 ## ADDED Requirements
+
 ### Requirement: Store Identity Boundaries MUST Consume a Shared Resolver v2 Contract
 Store save, session, import, sync, and mirrored HTTP/CLI persistence paths MUST consume one shared identity-resolution contract for project and session identity. The Store MUST preserve explicit identity, apply deterministic fallback only when required for compatibility, and expose degraded metadata for callers without silently diverging per surface.
 
@@ -1263,3 +1260,172 @@ The Store or its tracing/telemetry boundary MUST make aggregate token-savings me
 - Design must choose a privacy-safe telemetry schema or trace-summary path that can compute counts without raw bodies.
 - Tests should include direct Store health-state fixtures and telemetry aggregation over representative tool traces.
 
+### Requirement: Legacy Sync Mutation Schema Convergence
+
+Writable startup MUST idempotently add the nullable `project` column to an existing `sync_mutations` table before any current-version mutation can be recorded, while preserving existing rows and indexes.
+
+#### Scenario: US1 - Trust every successful durable write 1
+
+- **GIVEN** a legacy database with `sync_mutations` but no `project` column
+- **WHEN** the current store opens it one or more times
+- **THEN** the column and current indexes exist without duplicate-column failures or data loss
+
+#### Scenario: US1 - Trust every successful durable write 2
+
+- **GIVEN** a create, update, or delete whose mutation insert fails or lacks a non-empty stable identity
+- **WHEN** the public write is attempted
+- **THEN** it fails and neither the primary change nor a partial mutation is committed
+
+#### Scenario: US1 - Trust every successful durable write 3
+
+- **GIVEN** a primary write and its mutation can both persist
+- **WHEN** the public write returns success
+- **THEN** the matching ordered journal event contains a non-empty stable identity and is visible to incremental export
+
+#### Scenario: US1 - Trust every successful durable write 4
+
+- **GIVEN** an inbound legacy or V2 sync import
+- **WHEN** it creates or enriches a session while applying remote state
+- **THEN** it does not append a new outbound mutation or create a replication loop
+
+### Requirement: Atomic Primary and Journal Persistence
+
+Every locally-originated sync-eligible create, update, and delete of an observation, prompt, or session MUST commit its primary change and ordered mutation in one transaction or roll back both; inbound sync application remains an idempotent replication boundary and MUST NOT be re-journaled by this requirement.
+
+#### Scenario: US1 - Trust every successful durable write 1
+
+- **GIVEN** a legacy database with `sync_mutations` but no `project` column
+- **WHEN** the current store opens it one or more times
+- **THEN** the column and current indexes exist without duplicate-column failures or data loss
+
+#### Scenario: US1 - Trust every successful durable write 2
+
+- **GIVEN** a create, update, or delete whose mutation insert fails or lacks a non-empty stable identity
+- **WHEN** the public write is attempted
+- **THEN** it fails and neither the primary change nor a partial mutation is committed
+
+#### Scenario: US1 - Trust every successful durable write 3
+
+- **GIVEN** a primary write and its mutation can both persist
+- **WHEN** the public write returns success
+- **THEN** the matching ordered journal event contains a non-empty stable identity and is visible to incremental export
+
+#### Scenario: US1 - Trust every successful durable write 4
+
+- **GIVEN** an inbound legacy or V2 sync import
+- **WHEN** it creates or enriches a session while applying remote state
+- **THEN** it does not append a new outbound mutation or create a replication loop
+
+### Requirement: Transactional Bounded Trace Pruning
+
+The system MUST provide trace-retention preview and explicit apply operations. Preview MUST return its effective instant and a fingerprint binding scope, effective policy/cutoffs, and ordered selected batch. Apply MUST require both values, re-evaluate under an immediate transaction, fail without writes on mismatch, delete at most the configured per-run maximum transactionally, and report before, eligible, deleted, remaining, skipped, and after counts.
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 1
+
+- **GIVEN** default configuration
+- **WHEN** retention is previewed at a fixed instant
+- **THEN** successful traces older than seven days and error traces older than thirty days are eligible while newer rows are protected
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 2
+
+- **GIVEN** more eligible rows than one run may delete
+- **WHEN** apply is invoked
+- **THEN** only the deterministic bounded batch is deleted and the result reports that eligible rows remain
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 3
+
+- **GIVEN** an unchanged preview whose eligible set fits within one run
+- **WHEN** apply supplies the preview fingerprint and exact effective instant so the same cutoffs are derived
+- **THEN** it deletes exactly the previewed rows transactionally and no other table is changed
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 4
+
+- **GIVEN** no explicit apply selection
+- **WHEN** the CLI or HTTP retention operation runs
+- **THEN** it returns a preview and performs no deletion
+
+#### Scenario: US4 - Enforce bounded operation-trace retention safely 5
+
+- **GIVEN** retention has removed all eligible rows
+- **WHEN** it runs again at the same instant
+- **THEN** zero rows are deleted and recent success and error traces remain queryable
+
+### Requirement: Crash-Safe Database Compaction
+
+The system MUST provide sidecar-safe read-only compaction inspection and explicit compaction apply for exactly one resolved database. The compact-command module MUST enable better-sqlite3 URI handling before its first native constructor, use and verify the exact immutable target for sidecar-free preview, and fail closed if URI semantics are unavailable. Apply MUST estimate free-space capacity from at least the greater of main-file and logical page bytes, checkpoint committed WAL state, recheck capacity before `VACUUM`, validate integrity and schema identity, obtain SQLite write exclusivity, execute SQLite-managed `VACUUM`, reopen and validate integrity, foreign keys, schema identity, journal mode, and representative durable readability, and rely on SQLite transaction recovery for failures before or during commit rather than application-level raw replacement.
+
+#### Scenario: US3 - Compact a database with guarded failure handling 1
+
+- **GIVEN** an existing database
+- **WHEN** `compact-database` runs without apply
+- **THEN** it performs no checkpoint, file creation, rename, deletion, or database mutation; uses an immutable open when no sidecars exist, normal read-only only when both readable WAL and SHM exist, and otherwise fails read-only; and reports page size, page count, freelist count, physical and logical size, estimated reclaimable bytes, journal mode, sidecar state, and available-versus-required free space
+
+#### Scenario: US3 - Compact a database with guarded failure handling 2
+
+- **GIVEN** a clean preflight and sufficient free space
+- **WHEN** `compact-database --apply` runs
+- **THEN** it estimates capacity from at least the greater of main-file and logical page bytes, checkpoints committed WAL state, rechecks capacity against refreshed metrics, verifies integrity, obtains SQLite write exclusivity, executes SQLite-managed `VACUUM`, reopens the database, verifies integrity, foreign keys, schema identity, journal mode, and durable readability, and reports exact before/after bytes
+
+#### Scenario: US3 - Compact a database with guarded failure handling 3
+
+- **GIVEN** another SQLite client prevents checkpoint or write exclusivity
+- **WHEN** apply starts
+- **THEN** it fails non-zero without claiming compaction or deleting any database file
+
+#### Scenario: US3 - Compact a database with guarded failure handling 4
+
+- **GIVEN** preflight, checkpoint, validation before `VACUUM`, or `VACUUM` before commit fails
+- **WHEN** the command unwinds
+- **THEN** no mutation or SQLite transaction recovery preserves the pre-operation logical database and the CLI never reports successful compaction
+
+#### Scenario: US3 - Compact a database with guarded failure handling 5
+
+- **GIVEN** verification fails after a committed `VACUUM`
+- **WHEN** the command unwinds
+- **THEN** the CLI exits non-zero, preserves the database and sidecar files for diagnosis, never reports successful compaction, and makes no claim that it restored the pre-operation physical database
+
+#### Scenario: US3 - Compact a database with guarded failure handling 6
+
+- **GIVEN** a custom data directory
+- **WHEN** preview or apply runs
+- **THEN** every database, sidecar, free-space check, and result path remains confined to that directory
+
+### Requirement: Verified Compaction Preconditions and Results
+
+Compaction MUST report exact page, freelist, physical-size, logical-size, sidecar-state, journal, checkpoint, free-space, and before/after metrics; MUST check capacity before checkpoint and again from refreshed post-checkpoint metrics before `VACUUM`; MUST fail before `VACUUM` on integrity, space, or checkpoint precondition failure; MUST never manipulate database sidecars outside SQLite APIs; and MUST return success only after all post-compaction checks pass.
+
+#### Scenario: US3 - Compact a database with guarded failure handling 1
+
+- **GIVEN** an existing database
+- **WHEN** `compact-database` runs without apply
+- **THEN** it performs no checkpoint, file creation, rename, deletion, or database mutation; uses an immutable open when no sidecars exist, normal read-only only when both readable WAL and SHM exist, and otherwise fails read-only; and reports page size, page count, freelist count, physical and logical size, estimated reclaimable bytes, journal mode, sidecar state, and available-versus-required free space
+
+#### Scenario: US3 - Compact a database with guarded failure handling 2
+
+- **GIVEN** a clean preflight and sufficient free space
+- **WHEN** `compact-database --apply` runs
+- **THEN** it estimates capacity from at least the greater of main-file and logical page bytes, checkpoints committed WAL state, rechecks capacity against refreshed metrics, verifies integrity, obtains SQLite write exclusivity, executes SQLite-managed `VACUUM`, reopens the database, verifies integrity, foreign keys, schema identity, journal mode, and durable readability, and reports exact before/after bytes
+
+#### Scenario: US3 - Compact a database with guarded failure handling 3
+
+- **GIVEN** another SQLite client prevents checkpoint or write exclusivity
+- **WHEN** apply starts
+- **THEN** it fails non-zero without claiming compaction or deleting any database file
+
+#### Scenario: US3 - Compact a database with guarded failure handling 4
+
+- **GIVEN** preflight, checkpoint, validation before `VACUUM`, or `VACUUM` before commit fails
+- **WHEN** the command unwinds
+- **THEN** no mutation or SQLite transaction recovery preserves the pre-operation logical database and the CLI never reports successful compaction
+
+#### Scenario: US3 - Compact a database with guarded failure handling 5
+
+- **GIVEN** verification fails after a committed `VACUUM`
+- **WHEN** the command unwinds
+- **THEN** the CLI exits non-zero, preserves the database and sidecar files for diagnosis, never reports successful compaction, and makes no claim that it restored the pre-operation physical database
+
+#### Scenario: US3 - Compact a database with guarded failure handling 6
+
+- **GIVEN** a custom data directory
+- **WHEN** preview or apply runs
+- **THEN** every database, sidecar, free-space check, and result path remains confined to that directory

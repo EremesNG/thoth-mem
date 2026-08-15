@@ -2,6 +2,8 @@ import { ArrowRight, GitBranch, ListFilter, Search } from 'lucide-react';
 
 import type { ObservatoryLane, ObservatoryRecallResponse } from '../../api/client.js';
 import { readableLane } from './observatory-utils.js';
+import { presentStoredText } from '../safe-presentation.js';
+import { presentMemorySummary } from '../dashboard-presentation.js';
 
 interface RecallWorkspaceProps {
   recall: ObservatoryRecallResponse | null;
@@ -18,8 +20,8 @@ export default function RecallWorkspace({ recall, lanes, query, loading, onQuery
     <section className="observatory-panel recall-workspace" aria-labelledby="recall-heading" data-testid="recall-workspace">
       <div className="observatory-panel-header">
         <div>
-          <span className="observatory-kicker"><ListFilter size={14} /> Recall Workspace</span>
-          <h2 id="recall-heading">Hybrid lane evidence</h2>
+          <span className="observatory-kicker"><ListFilter size={14} /> Related memories</span>
+          <h2 id="recall-heading">Find the memories closest to this idea</h2>
         </div>
         <button type="button" className="map-icon-button" onClick={onRefresh} title="Refresh recall" disabled={loading}>
           <Search size={15} />
@@ -27,10 +29,10 @@ export default function RecallWorkspace({ recall, lanes, query, loading, onQuery
       </div>
 
       <label className="map-field">
-        <span>Query</span>
+        <span>What are you looking for?</span>
         <div className="map-input-icon">
           <Search size={14} />
-          <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search evidence across lanes" />
+          <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Describe an idea, decision, or question" />
         </div>
       </label>
 
@@ -44,18 +46,18 @@ export default function RecallWorkspace({ recall, lanes, query, loading, onQuery
                 <span className="badge badge-neutral">{hits.length}</span>
               </div>
               {hits.length === 0 ? (
-                <p className="observatory-muted">No scoped evidence returned.</p>
+                <p className="observatory-muted">No nearby memories came back from this path.</p>
               ) : (
                 hits.slice(0, 4).map((hit) => (
                   <div key={`${lane}-${hit.observation_id}`} className="observatory-evidence-item" tabIndex={0}>
                     <div>
-                      <strong>{hit.title}</strong>
-                      <p>{hit.preview || 'No public preview available.'}</p>
+                      <strong>{presentStoredText(hit.title)}</strong>
+                      <p>{presentMemorySummary(hit.preview) || 'No public preview available.'}</p>
                       <span className="observatory-provenance">
-                        {hit.project || 'Any project'} / {hit.topic_key || 'no topic'} / {new Date(hit.created_at).toLocaleDateString()}
+                        {presentStoredText(hit.project?.label) || 'Any project'} / {presentStoredText(hit.topic?.label) || 'no topic'} / {new Date(hit.created_at).toLocaleDateString()}
                       </span>
                     </div>
-                    <div className="observatory-pivot-actions" aria-label={`Pivot actions for ${hit.title}`}>
+                    <div className="observatory-pivot-actions" aria-label={`Pivot actions for ${presentStoredText(hit.title)}`}>
                       <button type="button" onClick={() => onPivot(hit.pivot_token, 'map')} title="Pivot to map">
                         <GitBranch size={14} />
                       </button>

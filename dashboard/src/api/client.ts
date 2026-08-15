@@ -301,17 +301,195 @@ export interface VizHealthResponse {
     recent_errors: Array<{ id: number; job_key: string; kind: string; state: string; attempt_count: number; last_error: string | null }>;
   };
 }
-export interface VizNode { id: string; kind: 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; }
-export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'semantic' | 'metadata' | 'fact'; label: string; summary: string; }
+export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; owner_project_id?: string | null; region_id?: string | null; representative_reason?: string; representative_signals?: SemanticAtlasRepresentativeSignal[]; representative_rank?: number; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
+export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'aggregate' | 'semantic' | 'metadata' | 'fact'; label: string; summary: string; weight?: number; evidence_count?: number; tier?: 'representative-backbone' | 'representative-semantic' | 'fact-support' | 'metadata'; relationship_class?: 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown'; direction?: 'directed' | 'undirected' | 'mixed' | 'unknown'; confidence?: 'high' | 'medium' | 'low' | 'unknown'; provenance?: SemanticAtlasRelationshipProvenance[]; }
 export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }
+export interface VizGraphPageRequest {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  page_size?: number;
+  cursor?: string;
+}
+export type VizGraphPageResponse = VizSliceResponse;
+export type AtlasHierarchy = 'global' | 'project';
+export type AtlasLevel = 'universe' | 'project' | 'community' | 'neighborhood';
+export type AtlasFacetKind = 'project' | 'session' | 'topic';
+export interface AtlasFacetRef { kind: AtlasFacetKind; token: string; label: string; }
+export interface AtlasFacetOption extends AtlasFacetRef { count: number; }
+export interface AtlasTokenScope {
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  relation: string | null;
+  query: string | null;
+  time_from: string | null;
+  time_to: string | null;
+}
+export interface SemanticAtlasPageRequest {
+  hierarchy?: AtlasHierarchy;
+  level?: AtlasLevel;
+  project_id?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  community_id?: string;
+  focus_node_id?: string;
+  depth?: 1 | 2;
+  page_size?: number;
+  cursor?: string;
+  presentation?: 'complete' | 'semantic-zoom';
+  region_id?: string;
+}
+export interface SemanticAtlasNode {
+  id: string;
+  kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic';
+  label: string;
+  snippet: string;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  community_id: string | null;
+  owner_project_id: string | null;
+  region_id?: string | null;
+  member_count: number | null;
+  project_count: number | null;
+  unclustered: boolean;
+  seed_x: number;
+  seed_y: number;
+}
+export interface SemanticAtlasEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  kind: 'aggregate' | 'semantic' | 'fact' | 'metadata';
+  relation: string;
+  label: string;
+  summary: string;
+  weight: number;
+  evidence_count: number;
+  tier: 'representative-backbone' | 'representative-semantic' | 'fact-support' | 'metadata';
+  relationship_class: 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown';
+  direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+export type SemanticAtlasRepresentativeSignal = 'structural' | 'bridge' | 'recency' | 'confidence' | 'diversity';
+export interface SemanticAtlasRelationshipProvenance {
+  source_kind: 'kg-triple' | 'legacy-fact' | 'community-aggregate' | 'unknown';
+  source_id: string;
+  relation: string;
+  evidence_count: number;
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+}
+export interface SemanticAtlasRegion {
+  id: string; community_id: string; label: string; summary: string; member_count: number;
+  project_count: number; time_from: string | null; time_to: string | null;
+  concepts: Array<{ label: string; count: number }>;
+  facets: { projects: AtlasFacetOption[]; sessions: AtlasFacetOption[]; topics: AtlasFacetOption[]; types: Array<{ value: ObservationType; count: number }> };
+  representatives: Array<{ node_id: string; reason: string; signals: SemanticAtlasRepresentativeSignal[]; rank: number }>;
+  seed_x: number; seed_y: number; unclustered: boolean;
+}
+export interface SemanticAtlasRegionBridge {
+  id: string; source_region_id: string; target_region_id: string; tier: 'region-aggregate';
+  relationship_class: 'aggregate'; direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  weight: number; evidence_count: number; relations: string[]; confidence: 'high' | 'medium' | 'low' | 'unknown';
+  representative_edge_ids: string[]; provenance: SemanticAtlasRelationshipProvenance[];
+}
+export interface SemanticAtlasProjectRegion {
+  id: string; label: string; summary: string; memory_count: number; constellation_count: number;
+  visible_constellation_count: number; omitted_constellation_count: number; constellation_ids: string[];
+  seed_x: number; seed_y: number; unassigned: boolean;
+}
+export interface SemanticAtlasProjectBridge {
+  id: string; source_project_id: string; target_project_id: string; tier: 'project-aggregate';
+  relationship_class: 'aggregate'; direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  weight: number; evidence_count: number; relations: string[]; confidence: 'high' | 'medium' | 'low' | 'unknown';
+  representative_edge_ids: string[]; provenance: SemanticAtlasRelationshipProvenance[];
+}
+export interface SemanticAtlasPageResponse {
+  hierarchy: AtlasHierarchy;
+  level: AtlasLevel;
+  generation: string;
+  presentation_key?: string;
+  presentation: 'complete' | 'semantic-zoom';
+  nodes: SemanticAtlasNode[];
+  edges: SemanticAtlasEdge[];
+  regions: SemanticAtlasRegion[];
+  region_bridges: SemanticAtlasRegionBridge[];
+  project_regions: SemanticAtlasProjectRegion[];
+  project_bridges: SemanticAtlasProjectBridge[];
+  counts: {
+    memory_count: number;
+    project_count: number;
+    community_count: number;
+    assigned_memory_count: number;
+    unclustered_memory_count: number;
+    supporting_entity_count: number;
+    relationship_count: number;
+    raw_entity_count: number;
+    raw_relationship_count: number;
+  };
+  coverage: {
+    state: 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+    projection_source: 'deterministic-kg' | 'deterministic-unclustered';
+    summary_state: 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+    observations_with_kg: number;
+    observations_without_kg: number;
+    degraded_reasons: string[];
+  };
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: ObservationType[];
+    relations: string[];
+  };
+  navigation: {
+    project_id: string | null;
+    community_id: string | null;
+    focus_node_id: string | null;
+    depth: 1 | 2 | null;
+    region_id: string | null;
+    source_project_count: number;
+    visible_project_count: number;
+    omitted_projects: number;
+    source_constellation_count: number;
+    visible_constellation_count: number;
+    omitted_constellations: number;
+    source_memory_count: number;
+    visible_memory_count: number;
+    source_relationship_count: number;
+    visible_relationship_count: number;
+    represented_source_relationship_count: number;
+    omitted_nodes: number;
+    omitted_edges: number;
+    raw_rich_render_safe: boolean;
+    raw_rich_render_limit: number;
+    scope: { project: AtlasFacetRef | null; session: AtlasFacetRef | null; topic: AtlasFacetRef | null; type: ObservationType | null; relation: string | null };
+  };
+  continuation: string | null;
+  truncated: boolean;
+  health: VizHealthResponse;
+}
 export interface VizInspectNodeResponse { id: string; kind: VizNode['kind']; label: string; snippet: string; metadata: Record<string, unknown>; links: string[]; }
 export interface VizInspectEdgeResponse { id: string; source_id: string; target_id: string; relation: string; label: string; summary: string; }
 export interface VizFiltersResponse { projects: string[]; sessions: string[]; topic_keys: string[]; types: ObservationType[]; relations: string[]; }
 export type ObservatoryLane = 'lexical' | 'sentence-vector' | 'chunk-vector' | 'fact-kg';
 export interface ObservatoryScope {
-  project?: string;
-  session_id?: string;
-  topic_key?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
   query?: string;
   type?: ObservationType;
   observation_type?: ObservationType;
@@ -320,7 +498,7 @@ export interface ObservatoryScope {
   time_to?: string;
 }
 export interface ObservatoryContextResponse {
-  scope: ObservatoryScope;
+  scope: AtlasTokenScope;
   context_token: string;
   health: VizHealthResponse;
   capabilities: { viz_fallback_available: boolean; observatory_routes_available: boolean };
@@ -330,9 +508,11 @@ export interface ObservatoryRecallHit {
   title: string;
   preview: string;
   type: ObservationType;
-  project: string | null;
-  session_id: string;
-  topic_key: string | null;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  community_id: string;
+  project_id: string | null;
   created_at: string;
   lane: ObservatoryLane;
   pivot_token: string;
@@ -342,9 +522,12 @@ export interface ObservatoryRecallResponse {
   lanes: Record<ObservatoryLane, ObservatoryRecallHit[]>;
 }
 export interface ObservatoryPivotResponse {
+  hierarchy: AtlasHierarchy;
   context_token: string;
-  scope: ObservatoryScope;
+  scope: AtlasTokenScope;
   focus_node_id: string;
+  community_id: string;
+  project_id: string | null;
   target: 'map' | 'timeline' | 'ledger' | 'recall';
 }
 export interface ObservatoryFrontierState {
@@ -688,6 +871,68 @@ export const api = {
     ).then(normalizeProjectGraphResponse);
   },
 
+  getVizGraphPage: (
+    params: VizGraphPageRequest = {},
+    signal?: AbortSignal,
+  ): Promise<VizGraphPageResponse> => {
+    const query = new URLSearchParams();
+    if (params.project) query.append('project', params.project);
+    if (params.session_id) query.append('session_id', params.session_id);
+    if (params.topic_key) query.append('topic_key', params.topic_key);
+    if (params.type) query.append('type', params.type);
+    if (params.observation_type) query.append('observation_type', params.observation_type);
+    if (params.relation) query.append('relation', params.relation);
+    if (params.query) query.append('query', params.query);
+    if (params.page_size !== undefined) query.append('page_size', String(params.page_size));
+    if (params.cursor) query.append('cursor', params.cursor);
+    const queryString = query.toString();
+    return apiFetch<VizGraphPageResponse>(`/viz/graph${queryString ? `?${queryString}` : ''}`, { signal });
+  },
+
+  getSemanticAtlasPage: (
+    params: SemanticAtlasPageRequest = {},
+    signal?: AbortSignal,
+  ): Promise<SemanticAtlasPageResponse> => {
+    const query = new URLSearchParams();
+    if (params.level) query.append('level', params.level);
+    if (params.hierarchy) query.append('hierarchy', params.hierarchy);
+    if (params.project_id) query.append('project_id', params.project_id);
+    if (params.project_token) query.append('project_token', params.project_token);
+    if (params.session_token) query.append('session_token', params.session_token);
+    if (params.topic_token) query.append('topic_token', params.topic_token);
+    if (params.type) query.append('type', params.type);
+    if (params.observation_type) query.append('observation_type', params.observation_type);
+    if (params.relation) query.append('relation', params.relation);
+    if (params.query) query.append('query', params.query);
+    if (params.community_id) query.append('community_id', params.community_id);
+    if (params.focus_node_id) query.append('focus_node_id', params.focus_node_id);
+    if (params.depth !== undefined) query.append('depth', String(params.depth));
+    if (params.page_size !== undefined) query.append('page_size', String(params.page_size));
+    if (params.cursor) query.append('cursor', params.cursor);
+    if (params.presentation) query.append('presentation', params.presentation);
+    if (params.region_id) query.append('region_id', params.region_id);
+    const queryString = query.toString();
+    const requestUrl = `/viz/atlas${queryString ? `?${queryString}` : ''}`;
+    return apiFetch<SemanticAtlasPageResponse>(requestUrl, { signal }).then((page) => {
+      const presentationKey = JSON.stringify({ hierarchy: page.hierarchy, level: page.level, project: page.navigation.project_id, generation: page.generation, region: page.navigation.region_id, focus: page.navigation.focus_node_id, request: requestUrl });
+      page.presentation_key = presentationKey;
+      if (typeof document !== 'undefined') {
+        const response = {
+          level: page.level,
+          generation: page.generation,
+          regionId: page.navigation.region_id,
+          focusNodeId: page.navigation.focus_node_id,
+          requestUrl,
+          presentationKey,
+          completeAt: performance.now(),
+        };
+        const history = JSON.parse(document.documentElement.dataset.atlasResponseHistory ?? '[]') as typeof response[];
+        document.documentElement.dataset.atlasResponseHistory = JSON.stringify([...history.slice(-63), response]);
+      }
+      return page;
+    });
+  },
+
   getVizSlice: (
     params?: { project?: string; session_id?: string; topic_key?: string; type?: ObservationType; observation_type?: ObservationType; relation?: string; query?: string; depth?: number; max_nodes?: number; max_edges?: number; cursor?: string },
     signal?: AbortSignal
@@ -724,14 +969,14 @@ export const api = {
     const query = new URLSearchParams();
     if (params?.project) query.append('project', params.project);
     const queryString = query.toString();
-    return apiFetch<VizInspectNodeResponse>(`/viz/inspect/node/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+    return apiFetch<VizInspectNodeResponse>(`/viz/inspect/node/${id.split(':').map(encodeURIComponent).join(':')}${queryString ? `?${queryString}` : ''}`, { signal });
   },
 
   inspectVizEdge: (id: string, params?: { project?: string }, signal?: AbortSignal): Promise<VizInspectEdgeResponse> => {
     const query = new URLSearchParams();
     if (params?.project) query.append('project', params.project);
     const queryString = query.toString();
-    return apiFetch<VizInspectEdgeResponse>(`/viz/inspect/edge/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`, { signal });
+    return apiFetch<VizInspectEdgeResponse>(`/viz/inspect/edge/${id.split(':').map(encodeURIComponent).join(':')}${queryString ? `?${queryString}` : ''}`, { signal });
   },
 
   getVizFilters: (params?: { project?: string; session_id?: string }, signal?: AbortSignal): Promise<VizFiltersResponse> => {
@@ -751,9 +996,9 @@ export const api = {
 
   getObservatoryContext: (params?: ObservatoryScope, signal?: AbortSignal): Promise<ObservatoryContextResponse> => {
     const query = new URLSearchParams();
-    if (params?.project) query.append('project', params.project);
-    if (params?.session_id) query.append('session_id', params.session_id);
-    if (params?.topic_key) query.append('topic_key', params.topic_key);
+    if (params?.project_token) query.append('project_token', params.project_token);
+    if (params?.session_token) query.append('session_token', params.session_token);
+    if (params?.topic_token) query.append('topic_token', params.topic_token);
     if (params?.query) query.append('query', params.query);
     if (params?.type) query.append('type', params.type);
     if (params?.observation_type) query.append('observation_type', params.observation_type);
@@ -765,18 +1010,19 @@ export const api = {
   },
 
   getObservatoryRecall: (
-    params: { context_token: string; lanes?: ObservatoryLane[]; limit?: number },
+    params: { context_token: string; hierarchy?: AtlasHierarchy; lanes?: ObservatoryLane[]; limit?: number },
     signal?: AbortSignal
   ): Promise<ObservatoryRecallResponse> => {
     const query = new URLSearchParams();
     query.append('context_token', params.context_token);
+    if (params.hierarchy) query.append('hierarchy', params.hierarchy);
     if (params.lanes && params.lanes.length > 0) query.append('lanes', params.lanes.join(','));
     if (params.limit !== undefined) query.append('limit', String(params.limit));
     return apiFetch<ObservatoryRecallResponse>(`/observatory/recall?${query.toString()}`, { signal });
   },
 
   resolveObservatoryPivot: (
-    payload: { pivot_token: string; target: 'map' | 'timeline' | 'ledger' | 'recall' },
+    payload: { pivot_token: string; hierarchy?: AtlasHierarchy; target: 'map' | 'timeline' | 'ledger' | 'recall' },
     signal?: AbortSignal
   ): Promise<ObservatoryPivotResponse> => {
     return apiFetch<ObservatoryPivotResponse>('/observatory/pivot', {

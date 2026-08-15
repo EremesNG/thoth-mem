@@ -1,6 +1,7 @@
 # Delta for Knowledge Graph
 
 ## ADDED Requirements
+
 ### Requirement: Broad Memory Content MUST Be Extracted into Typed Knowledge Triples
 Saved user prompts, observations, session-summary-like memory content, and conversation-like text MUST be processed into subject-relation-object triples with typed entities and typed relations.
 
@@ -21,30 +22,6 @@ The KG extractor MUST define a thoth-mem adapted taxonomy with at least 22 entit
 - GIVEN the KG extraction taxonomy is initialized
 - WHEN taxonomy metadata is inspected by tests or diagnostics
 - THEN it MUST expose at least 22 entity categories and at least 20 relation categories
-
-### Requirement: KG Records MUST Preserve Provenance and Confidence
-Knowledge triples MUST include source linkage, extraction metadata, and confidence metadata for ranking/fusion.
-
-#### Scenario: Triple includes source and confidence
-- GIVEN a persisted triple
-- WHEN retrieval/ranking reads KG evidence
-- THEN source memory identity, extractor metadata, and confidence metadata MUST be available
-
-### Requirement: KG Extraction MUST Be Idempotent and Update-Safe
-KG extraction MUST converge safely across retries, restarts, and source-content updates without duplicating equivalent triples.
-
-#### Scenario: Repeated extraction converges
-- GIVEN the same source content is extracted more than once
-- WHEN extraction results are persisted
-- THEN equivalent triples MUST be upserted or deduplicated without duplicate ranking evidence
-
-### Requirement: `observation_facts` MUST Remain Compatible as Graph-lite Fallback/Source
-Existing graph-lite `observation_facts` behavior MUST remain compatible and may be used as fallback/source when broader KG extraction is unavailable or partial.
-
-#### Scenario: Graph-lite remains queryable
-- GIVEN broader KG extraction is degraded or incomplete
-- WHEN graph retrieval is requested
-- THEN `observation_facts`-backed graph-lite results MUST still be available
 
 ### Requirement: KG Evidence MUST Participate in Fused Retrieval Ranking
 Graph/KG retrieval output MUST participate alongside sentence semantic, chunk semantic, and lexical FTS5 lanes in final ranking.
@@ -166,27 +143,8 @@ repeated runs (deduplicated by entity key and `triple_hash`).
 - GIVEN backfill has already run for an observation
 - WHEN backfill runs again for the same observation
 - THEN no duplicate entities or triples MUST be created (deduplicated by entity
-  key and `triple_hash`)## MODIFIED Requirements
+  key and `triple_hash`)
 
-## REMOVED Requirements
-### Requirement: `observation_facts` MUST Remain Compatible as Graph-lite Fallback/Source
-**Reason:** REV3 of the validated discovery finding (`review/thoth-mem/graph-gap`)
-established that `observation_facts` is a redundant legacy precursor, not a
-designed degraded-mode fallback. Its 7 relations and string subjects are a lossy
-subset of the rich KG, and both stores populate deterministically from the same
-content (the deterministic extractor always runs first), so there is no separate
-fallback lane that survives when `kg_triples` is absent. Consolidating onto
-`kg_triples` as the single source of graph truth removes the parallel duplication
-and unblocks B2/B3.
-
-**Migration:** All former `observation_facts` consumers obtain the
-`ObservationFact` projection from the KG-backed adapter
-(`getObservationFactsFromKg`, see the store delta). Legacy already-saved data is
-covered by operator-triggered deterministic backfill (see the indexing delta).
-The `observation_facts` table and its indexes are dropped via an idempotent,
-gated migration after backfill and reader migration are verified (see the store
-delta). The portable sync/export format is unaffected (it never serialized
-`observation_facts`).## MODIFIED Requirements
 ### Requirement: KG Records MUST Preserve Provenance and Confidence
 Knowledge triples MUST include source linkage, extraction metadata, and
 confidence metadata for ranking/fusion. This applies to BOTH the synchronous
@@ -912,6 +870,7 @@ Community construction and summaries MUST prefer current KG facts over supersede
 # Delta for Knowledge Graph
 
 ## ADDED Requirements
+
 ### Requirement: Community Health MUST Use a Stable Graph Freshness Basis
 Community-summary health MUST be based on a stable graph freshness basis or graph signature that can determine whether committed community summaries match the current project KG state. The basis MUST account for eligible KG entities/triples, source observation coverage, supersession markings, and pruning effects relevant to community construction.
 
@@ -971,3 +930,219 @@ The KG/community layer MUST retain enough latest job metadata for health readers
 ## Handoff Hints
 - Design should locate the existing community run/artifact metadata first and add only the minimal freshness basis needed for reliable health.
 - Verification should cover fresh, stale, rebuilding, failed, degraded, missing, and disabled states.
+
+### Requirement: Complete legacy-safe representation
+
+Every current scoped observation MUST belong to exactly one canonical project parent and one project-owned constellation even when KG, embeddings, topics, summaries, or a project value are absent; missing project values MUST use one deterministic synthetic Unassigned parent and missing semantic evidence MUST use bounded deterministic unclustered constellations without fabricated relationships.
+
+#### Scenario: US1 - Recognize the universe by project 1
+
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
+
+#### Scenario: US1 - Recognize the universe by project 2
+
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
+
+#### Scenario: US1 - Recognize the universe by project 3
+
+- **GIVEN** observations without a project
+- **WHEN** Universe loads
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
+
+#### Scenario: US1 - Recognize the universe by project 4
+
+- **GIVEN** more projects or constellations than the visual budget
+- **WHEN** Universe renders
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 1
+
+- **GIVEN** Universe overview
+- **WHEN** counts are presented
+- **THEN** source projects, visible project nebulae, source memories, source constellations, visible constellation cores, project bridges, and omitted identities remain distinct
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 2
+
+- **GIVEN** Project overview
+- **WHEN** counts are presented
+- **THEN** source memories, source constellations, visible constellations, aggregate bridges, and omissions refer only to the selected project
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 3
+
+- **GIVEN** duplicate private-safe project labels
+- **WHEN** nebulae and navigation choices render
+- **THEN** stable opaque identities remain distinct and labels are deterministically disambiguated without exposing canonical values
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 4
+
+- **GIVEN** missing or degraded structural evidence
+- **WHEN** the hierarchy is built
+- **THEN** every current observation remains assigned exactly once and degraded state is reported without fabricated relationships
+
+### Requirement: Observation-to-observation projection
+
+Atlas constellations MUST be partitioned independently within each canonical project parent from eligible weighted observation-to-observation evidence; project metadata MUST define the parent boundary but MUST NOT become a clustering node or edge, and eligible relationships crossing project boundaries MUST contribute only to aggregate project bridges.
+
+#### Scenario: US1 - Recognize the universe by project 1
+
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
+
+#### Scenario: US1 - Recognize the universe by project 2
+
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
+
+#### Scenario: US1 - Recognize the universe by project 3
+
+- **GIVEN** observations without a project
+- **WHEN** Universe loads
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
+
+#### Scenario: US1 - Recognize the universe by project 4
+
+- **GIVEN** more projects or constellations than the visual budget
+- **WHEN** Universe renders
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
+
+### Requirement: Superhub-resistant partitioning
+
+Deterministic community partitioning MUST exclude configured metadata classes and high-degree projection superhubs from the partitioning decision, then reattach eligible hub observations by deterministic weighted neighborhood evidence so one hub cannot collapse unrelated memory regions.
+
+#### Scenario: US2 - Survey the complete memory universe 1
+
+- **GIVEN** a sufficiently large active scope
+- **WHEN** Universe loads
+- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+
+#### Scenario: US2 - Survey the complete memory universe 2
+
+- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
+- **WHEN** communities and layout forces are constructed
+- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
+
+#### Scenario: US2 - Survey the complete memory universe 3
+
+- **GIVEN** a natural community larger than the Community navigation budget
+- **WHEN** the Universe projection is committed
+- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
+
+#### Scenario: US2 - Survey the complete memory universe 4
+
+- **GIVEN** relationships between memories in different communities
+- **WHEN** Universe renders
+- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
+
+#### Scenario: US2 - Survey the complete memory universe 5
+
+- **GIVEN** observations without eligible semantic relationships
+- **WHEN** Universe renders
+- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+
+### Requirement: Bounded deterministic communities
+
+A sufficiently large Community MUST be subdivided into 6–12 deterministic semantic regions derived only from the eligible weighted observation-to-observation projection; every source member MUST belong to exactly one region, metadata/superhubs MUST remain excluded, and any region above 35% of parent membership or 250 observations MUST be recursively split when the parent size permits.
+
+#### Scenario: US2 - Explore one constellation without a hairball 1
+
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+
+#### Scenario: US2 - Explore one constellation without a hairball 2
+
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+
+#### Scenario: US2 - Explore one constellation without a hairball 3
+
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+
+#### Scenario: US2 - Explore one constellation without a hairball 4
+
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+
+#### Scenario: US2 - Explore one constellation without a hairball 5
+
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
+
+### Requirement: Freshness and deterministic fallback
+
+Semantic atlas reads MUST distinguish fresh, stale, missing, rebuilding, failed, and degraded community state; they MUST prefer committed current artifacts when valid and otherwise use a deterministic bounded local fallback or expose one actionable recovery without requiring embeddings, an LLM, or a remote service.
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 1
+
+- **GIVEN** the normal observatory route
+- **WHEN** it loads
+- **THEN** it requests and renders semantic Universe rather than the raw heterogeneous graph
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 2
+
+- **GIVEN** the user explicitly opens bounded technical diagnostics
+- **WHEN** Raw graph mode is confirmed
+- **THEN** the corrected heterogeneous projection is available with its true entity/relationship counts and a clear large-graph warning
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 3
+
+- **GIVEN** missing, stale, rebuilding, failed, or degraded community artifacts
+- **WHEN** a semantic level is requested
+- **THEN** the atlas uses a deterministic bounded fallback or exposes one truthful recovery action without hiding current observations
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 4
+
+- **GIVEN** WebGL failure or reduced motion
+- **WHEN** the active semantic level changes
+- **THEN** the synchronized DOM navigator, filters, focus, counts, and recovery remain operable without nonessential animation
+
+#### Scenario: US4 - Retain diagnostics, access, and lifecycle safety 5
+
+- **GIVEN** private-marked source values or superseded requests
+- **WHEN** responses, labels, diagnostics, or asynchronous callbacks resolve
+- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, or external network traffic
+
+### Requirement: Stable region identity and naming
+
+Region IDs MUST derive from the complete sorted member identity set and algorithm version using a collision-resistant representation. Region names MUST use distinguishing private-safe semantic evidence, MUST exclude configured global/high-frequency evidence, MUST disambiguate duplicate labels deterministically, and MUST fall back to stable human names such as `Memory region 01` rather than internal identifiers.
+
+#### Scenario: US2 - Explore one constellation without a hairball 1
+
+- **GIVEN** a Community with more memories than the visual budget
+- **WHEN** it opens
+- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+
+#### Scenario: US2 - Explore one constellation without a hairball 2
+
+- **GIVEN** a sufficiently large Community
+- **WHEN** its internal projection is partitioned
+- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+
+#### Scenario: US2 - Explore one constellation without a hairball 3
+
+- **GIVEN** region evidence
+- **WHEN** region names are derived
+- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+
+#### Scenario: US2 - Explore one constellation without a hairball 4
+
+- **GIVEN** dense internal relationships
+- **WHEN** Community is in its overview band
+- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+
+#### Scenario: US2 - Explore one constellation without a hairball 5
+
+- **GIVEN** a small Community within the visual budget
+- **WHEN** it opens
+- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy

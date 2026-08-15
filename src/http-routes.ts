@@ -15,7 +15,8 @@ import type {
   VizExpandRequest,
   ObservatoryLane,
 } from './store/types.js';
-import { OBSERVATION_TYPES } from './store/types.js';
+import { OBSERVATION_TYPES, SemanticAtlasError, StaleAdminPreviewError, VizGraphPageError } from './store/types.js';
+import type { AdminStorageScope } from './store/types.js';
 import type { Store } from './store/index.js';
 import { syncExport, syncImport } from './sync/index.js';
 import { metadataFromResolution, resolveSaveIdentity } from './store/identity.js';
@@ -69,6 +70,10 @@ const OPERATION_CATALOG: OperationCatalogEntry[] = [
   { id: 'community-drop', origin: 'http', label: 'Drop communities', kind: 'admin', method: 'DELETE', path: '/communities', description: 'Drop derived KG community summary artifacts for one project or all projects.' },
   { id: 'maintenance-preview', origin: 'http', label: 'Maintenance preview', kind: 'admin', method: 'POST', path: '/maintenance/preview', description: 'Preview scoped consolidation, reflection, and decay maintenance without writes.' },
   { id: 'maintenance-apply', origin: 'http', label: 'Maintenance apply', kind: 'admin', method: 'POST', path: '/maintenance/apply', description: 'Apply scoped consolidation, reflection, and decay maintenance transactionally.' },
+  { id: 'sync-journal-repair-preview', origin: 'http', label: 'Sync journal repair preview', kind: 'admin', method: 'POST', path: '/sync/journal/repair/preview', description: 'Preview missing current-state sync journal coverage.' },
+  { id: 'sync-journal-repair-apply', origin: 'http', label: 'Sync journal repair apply', kind: 'admin', method: 'POST', path: '/sync/journal/repair/apply', description: 'Apply a fingerprint-bound sync journal repair batch.' },
+  { id: 'trace-retention-preview', origin: 'http', label: 'Trace retention preview', kind: 'admin', method: 'POST', path: '/operation-traces/retention/preview', description: 'Preview status-aware operation trace retention.' },
+  { id: 'trace-retention-apply', origin: 'http', label: 'Trace retention apply', kind: 'admin', method: 'POST', path: '/operation-traces/retention/apply', description: 'Apply a fingerprint-bound trace retention batch.' },
   { id: 'sync-export', origin: 'http', label: 'Sync export', kind: 'sync', method: 'POST', path: '/sync/export', description: 'Export incremental sync chunks.' },
   { id: 'sync-import', origin: 'http', label: 'Sync import', kind: 'sync', method: 'POST', path: '/sync/import', description: 'Import incremental sync chunks.' },
   { id: 'mcp-mem-save', origin: 'mcp', label: 'mem_save', kind: 'write', target: 'mem_save', description: 'Save observations, prompts, session summaries, or passive learnings.' },
@@ -1020,6 +1025,188 @@ export async function handleVizSlice(store: Store, request: HttpRouteRequest): P
   };
 }
 
+function parseAdminScope(body: Record<string, unknown> | undefined): AdminStorageScope {
+  const isBodyRecord = body !== undefined && body !== null && typeof body === 'object';
+  const hasProject = isBodyRecord && Object.prototype.hasOwnProperty.call(body, 'project');
+  const hasAll = isBodyRecord && Object.prototype.hasOwnProperty.call(body, 'all');
+  if (!isBodyRecord || hasProject === hasAll) {
+    throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+  }
+  if (hasProject) {
+    if (typeof body.project !== 'string' || body.project.trim().length === 0) {
+      throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+    }
+    return { project: body.project.trim() };
+  }
+  if (body.all !== true) {
+    throw new HttpRouteError(400, 'Exactly one non-blank project or all: true scope is required');
+  }
+  return { all: true };
+}
+
+function mapStaleAdmin(error: unknown): never {
+  if (error instanceof StaleAdminPreviewError) {
+    throw new HttpRouteError(409, error.message, { error: error.message, code: 'stale_admin_preview' });
+  }
+  throw error;
+}
+
+export async function handleSyncJournalRepairPreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.previewSyncJournalRepair(parseAdminScope(request.body as Record<string, unknown> | undefined)) };
+}
+
+export async function handleSyncJournalRepairApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  try {
+    return { status: 200, body: store.applySyncJournalRepair({
+      scope: parseAdminScope(body),
+      expected_selection_fingerprint: typeof body?.expected_fingerprint === 'string' ? body.expected_fingerprint : '',
+    }) };
+  } catch (error) { return mapStaleAdmin(error); }
+}
+
+export async function handleOperationTraceRetentionPreview(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  return { status: 200, body: store.previewOperationTraceRetention(parseAdminScope(request.body as Record<string, unknown> | undefined)) };
+}
+
+export async function handleOperationTraceRetentionApply(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const body = request.body as Record<string, unknown> | undefined;
+  try {
+    return { status: 200, body: store.applyOperationTraceRetention({
+      scope: parseAdminScope(body),
+      expected_selection_fingerprint: typeof body?.expected_fingerprint === 'string' ? body.expected_fingerprint : '',
+      effective_now: typeof body?.effective_now === 'string' ? body.effective_now : '',
+    }) };
+  } catch (error) { return mapStaleAdmin(error); }
+}
+
+export async function handleVizGraph(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  const pageSize = parseOptionalInteger(request.query.get('page_size'), 'page_size', 1);
+  if (pageSize !== undefined && pageSize > 250) {
+    throw new HttpRouteError(400, 'Invalid integer field: page_size');
+  }
+  try {
+    return {
+      status: 200,
+      body: store.getVisualizationGraphPage({
+        project: request.query.get('project') ?? undefined,
+        session_id: request.query.get('session_id') ?? undefined,
+        topic_key: request.query.get('topic_key') ?? undefined,
+        type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
+        observation_type: parseObservationType(
+          request.query.get('observation_type') ?? undefined,
+          'observation_type',
+        ),
+        relation: request.query.get('relation') ?? undefined,
+        query: request.query.get('query') ?? undefined,
+        page_size: pageSize,
+        cursor: request.query.get('cursor') ?? undefined,
+      }),
+    };
+  } catch (error) {
+    if (!(error instanceof VizGraphPageError)) throw error;
+    throw new HttpRouteError(
+      error.code === 'VIZ_GRAPH_GENERATION_STALE' ? 409 : 400,
+      error.message,
+      {
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+      },
+    );
+  }
+}
+
+function toSemanticAtlasHttpError(error: SemanticAtlasError): HttpRouteError {
+  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE'
+    || error.code === 'VIZ_ATLAS_PROJECT_GONE'
+    || error.code === 'VIZ_ATLAS_COMMUNITY_GONE'
+    || error.code === 'VIZ_ATLAS_REGION_GONE'
+    ? 409
+    : error.code === 'VIZ_ATLAS_FOCUS_INVALID'
+      ? 404
+      : 400;
+  return new HttpRouteError(status, error.message, {
+    error: error.message,
+    code: error.code,
+    retryable: error.retryable,
+    ...(error.recover_to_level ? { recover_to_level: error.recover_to_level } : {}),
+  });
+}
+
+export async function handleVizAtlas(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  if (request.query.has('project') || request.query.has('session_id') || request.query.has('topic_key')) {
+    throw new HttpRouteError(400, 'Raw facet values are not accepted by the semantic atlas.', {
+      error: 'Raw facet values are not accepted by the semantic atlas.',
+      code: 'VIZ_ATLAS_FACET_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  const hierarchy = request.query.get('hierarchy') ?? 'global';
+  if (!['global', 'project'].includes(hierarchy)) {
+    throw new HttpRouteError(400, 'Invalid field: hierarchy', {
+      error: 'Invalid field: hierarchy',
+      code: 'VIZ_ATLAS_HIERARCHY_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  const level = request.query.get('level') ?? 'universe';
+  if (!['universe', 'project', 'community', 'neighborhood'].includes(level)) {
+    throw new HttpRouteError(400, 'Invalid field: level', {
+      error: 'Invalid field: level',
+      code: 'VIZ_ATLAS_LEVEL_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  const pageSize = parseOptionalInteger(request.query.get('page_size'), 'page_size', 1);
+  if (pageSize !== undefined && pageSize > (hierarchy === 'project' ? 150 : 250)) {
+    throw new HttpRouteError(400, 'Invalid integer field: page_size');
+  }
+  const parsedDepth = parseOptionalInteger(request.query.get('depth'), 'depth', 1);
+  if (parsedDepth !== undefined && parsedDepth !== 1 && parsedDepth !== 2) {
+    throw new HttpRouteError(400, 'Invalid integer field: depth');
+  }
+  const presentation = request.query.get('presentation') ?? undefined;
+  if (presentation !== undefined && presentation !== 'complete' && presentation !== 'semantic-zoom') {
+    throw new HttpRouteError(400, 'Invalid field: presentation', {
+      error: 'Invalid field: presentation', code: 'VIZ_ATLAS_PRESENTATION_INVALID', retryable: false,
+    });
+  }
+  try {
+    return {
+      status: 200,
+      body: store.getSemanticAtlasPage({
+        hierarchy: hierarchy as 'global' | 'project',
+        level: level as 'universe' | 'project' | 'community' | 'neighborhood',
+        project_id: request.query.get('project_id') ?? undefined,
+        project_token: request.query.get('project_token') ?? undefined,
+        session_token: request.query.get('session_token') ?? undefined,
+        topic_token: request.query.get('topic_token') ?? undefined,
+        type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
+        observation_type: parseObservationType(
+          request.query.get('observation_type') ?? undefined,
+          'observation_type',
+        ),
+        relation: request.query.get('relation') ?? undefined,
+        query: request.query.get('query') ?? undefined,
+        community_id: request.query.get('community_id') ?? undefined,
+        focus_node_id: request.query.get('focus_node_id') ?? undefined,
+        depth: parsedDepth as 1 | 2 | undefined,
+        page_size: pageSize,
+        cursor: request.query.get('cursor') ?? undefined,
+        presentation,
+        region_id: request.query.get('region_id') ?? undefined,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
+    throw error;
+  }
+}
+
 export async function handleVizExpand(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
   const type = parseObservationType(body?.type, 'type');
@@ -1068,12 +1255,21 @@ export async function handleVizHealth(store: Store, request: HttpRouteRequest): 
 }
 
 export async function handleObservatoryContext(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
+  if (request.query.has('project') || request.query.has('session_id') || request.query.has('topic_key')) {
+    throw new HttpRouteError(400, 'Raw facet values are not accepted by the semantic Observatory.', {
+      error: 'Raw facet values are not accepted by the semantic Observatory.',
+      code: 'VIZ_ATLAS_FACET_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
+  try {
   return {
     status: 200,
-    body: store.getObservatoryContext({
-      project: request.query.get('project') ?? undefined,
-      session_id: request.query.get('session_id') ?? undefined,
-      topic_key: request.query.get('topic_key') ?? undefined,
+    body: store.getSemanticObservatoryContext({
+      project_token: request.query.get('project_token') ?? undefined,
+      session_token: request.query.get('session_token') ?? undefined,
+      topic_token: request.query.get('topic_token') ?? undefined,
       query: request.query.get('query') ?? undefined,
       relation: request.query.get('relation') ?? undefined,
       type: parseObservationType(request.query.get('type') ?? undefined, 'type'),
@@ -1082,15 +1278,24 @@ export async function handleObservatoryContext(store: Store, request: HttpRouteR
       time_to: request.query.get('time_to') ?? undefined,
     }),
   };
+  } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
+    throw error;
+  }
 }
 
 export async function handleObservatoryRecall(store: Store, request: HttpRouteRequest, context: HttpRouteContext): Promise<HttpRouteResponse> {
   const contextToken = request.query.get('context_token');
   if (!contextToken) throw new HttpRouteError(400, 'Missing required field: context_token');
   try {
+    const hierarchy = request.query.get('hierarchy') ?? 'global';
+    if (hierarchy !== 'global' && hierarchy !== 'project') {
+      throw new HttpRouteError(400, 'Invalid field: hierarchy');
+    }
     return {
       status: 200,
-      body: await store.getObservatoryRecall({
+      body: await store.getSemanticObservatoryRecall({
+        hierarchy,
         context_token: contextToken,
         lanes: parseObservatoryLanes(request.query.get('lanes')),
         limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
@@ -1099,6 +1304,7 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
       }),
     };
   } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
     if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
       throw new HttpRouteError(400, error.message);
     }
@@ -1108,6 +1314,10 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
 
 export async function handleObservatoryPivot(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
+  const hierarchy = body?.hierarchy === undefined ? 'global' : requireString(body.hierarchy, 'hierarchy');
+  if (hierarchy !== 'global' && hierarchy !== 'project') {
+    throw new HttpRouteError(400, 'Invalid field: hierarchy');
+  }
   const target = requireString(body?.target, 'target');
   if (!['map', 'timeline', 'ledger', 'recall'].includes(target)) {
     throw new HttpRouteError(400, 'Invalid field: target');
@@ -1115,12 +1325,14 @@ export async function handleObservatoryPivot(store: Store, request: HttpRouteReq
   try {
     return {
       status: 200,
-      body: store.resolveObservatoryPivot({
+      body: store.resolveSemanticObservatoryPivot({
+        hierarchy,
         pivot_token: requireString(body?.pivot_token, 'pivot_token'),
         target: target as 'map' | 'timeline' | 'ledger' | 'recall',
       }),
     };
   } catch (error) {
+    if (error instanceof SemanticAtlasError) throw toSemanticAtlasHttpError(error);
     if (error instanceof Error && (error.message.includes('token') || error.message.includes('Token') || error.message.includes('Expired'))) {
       throw new HttpRouteError(400, error.message);
     }

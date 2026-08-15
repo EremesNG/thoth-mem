@@ -40,6 +40,290 @@ function insertKgTriple(store: Store, input: {
 }
 
 describe('Store visualization', () => {
+  it('drains complete graph pages deterministically without losing or dangling identities', () => {
+    const store = new Store(':memory:');
+    try {
+      for (let index = 0; index < 8; index += 1) {
+        const saved = store.saveObservation({
+          title: `Complete memory ${index}`,
+          content: `**What**: Complete fact ${index}`,
+          project: 'viz-complete',
+          session_id: `complete-session-${index % 2}`,
+          topic_key: `complete/topic-${index % 3}`,
+          type: index % 2 === 0 ? 'decision' : 'discovery',
+        });
+        writeDeterministicKgFacts(store, saved.observation.id);
+      }
+
+      const drain = () => {
+        const pages = [];
+        let cursor: string | undefined;
+        do {
+          const page = store.getVisualizationGraphPage({
+            project: 'viz-complete',
+            page_size: 5,
+            cursor,
+          });
+          const nodeIds = new Set(page.nodes.map((node) => node.id));
+          expect(page.edges.every((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))).toBe(true);
+          pages.push(page);
+          cursor = page.continuation ?? undefined;
+        } while (cursor);
+        return pages;
+      };
+
+      const first = drain();
+      const second = drain();
+      expect(first.length).toBeGreaterThanOrEqual(3);
+      expect(second.map(({ health: _health, ...page }) => page)).toEqual(
+        first.map(({ health: _health, ...page }) => page),
+      );
+      expect(first.at(-1)).toMatchObject({ continuation: null, truncated: false });
+      expect(first.at(-1)?.state).toBe('dense');
+      expect(first.slice(0, -1).every((page) => page.truncated && page.continuation)).toBe(true);
+
+      const completeNodeIds = new Set(first.flatMap((page) => page.nodes.map((node) => node.id)));
+      const completeEdgeIds = new Set(first.flatMap((page) => page.edges.map((edge) => edge.id)));
+      const compatibility = store.getVisualizationSlice({
+        project: 'viz-complete',
+        max_nodes: 1_200,
+        max_edges: 3_600,
+      });
+      expect([...completeNodeIds].sort()).toEqual(compatibility.nodes.map((node) => node.id).sort());
+      expect([...completeEdgeIds].sort()).toEqual(compatibility.edges.map((edge) => edge.id).sort());
+    } finally {
+      store.close();
+    }
+  });
+
+  it('reports active semantic identities and exact complete Raw totals', () => {
+    const store = new Store(':memory:');
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        const saved = store.saveObservation({
+          title: `Accounting memory ${index}`,
+          content: `**What**: Shared accounting evidence`,
+          project: 'viz-accounting',
+          session_id: `accounting-session-${index}`,
+          topic_key: `accounting/topic-${index}`,
+          type: 'decision',
+        });
+        writeDeterministicKgFacts(store, saved.observation.id);
+      }
+
+      const universe = store.getSemanticAtlasPage({ level: 'universe' });
+      expect(universe.counts.supporting_entity_count).toBe(
+        universe.nodes.filter((node) => node.kind === 'fact').length,
+      );
+      expect(universe.counts.relationship_count).toBe(universe.edges.length);
+
+      const nodeIds = new Set<string>();
+      const edgeIds = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = store.getVisualizationGraphPage({
+          project: 'viz-accounting',
+          page_size: 1,
+          cursor,
+        });
+        page.nodes.forEach((node) => nodeIds.add(node.id));
+        page.edges.forEach((edge) => edgeIds.add(edge.id));
+        cursor = page.continuation ?? undefined;
+      } while (cursor);
+
+      expect(nodeIds.size).toBe(universe.counts.raw_entity_count);
+      expect(edgeIds.size).toBe(universe.counts.raw_relationship_count);
+      expect([...edgeIds].length).toBeGreaterThan(6);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('keeps full-value and private-safe-equivalent raw identities distinct across pages', () => {
+    const store = new Store(':memory:');
+    try {
+      const sharedPrefix = `session-${'x'.repeat(40)}`;
+      const sessions = Array.from({ length: 500 }, (_, index) => `${sharedPrefix}-${String(index).padStart(3, '0')}`);
+      sessions.push('shared-session-<private>ALPHA_SECRET</private>');
+      sessions.push('shared-session-<private>BETA_SECRET</private>');
+
+      for (const [index, sessionId] of sessions.entries()) {
+        store.saveObservation({
+          title: `Identity memory ${index}`,
+          content: `**What**: Stable identity evidence ${index}`,
+          project: 'viz-full-identities',
+          session_id: sessionId,
+          topic_key: `identity/topic/${index}`,
+          type: 'decision',
+        });
+      }
+
+      const drainSessionNodes = () => {
+        const sessionsById = new Map<string, string>();
+        let cursor: string | undefined;
+        do {
+          const page = store.getVisualizationGraphPage({
+            project: 'viz-full-identities',
+            page_size: 250,
+            cursor,
+          });
+          for (const node of page.nodes) {
+            if (node.kind === 'session') sessionsById.set(node.id, node.label);
+          }
+          cursor = page.continuation ?? undefined;
+        } while (cursor);
+        return sessionsById;
+      };
+
+      const first = drainSessionNodes();
+      const second = drainSessionNodes();
+      expect(first.size).toBe(502);
+      expect([...second.entries()].sort()).toEqual([...first.entries()].sort());
+      const serialized = JSON.stringify([...first.entries()]);
+      expect(serialized).not.toContain('ALPHA_SECRET');
+      expect(serialized).not.toContain('BETA_SECRET');
+      expect(serialized).not.toContain('<private>');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('advances through a valid page that adds no new merged identity', () => {
+    const store = new Store(':memory:');
+    try {
+      const saved = store.saveObservation({
+        title: 'Repeated fact memory',
+        content: '**What**: Shared object',
+        project: 'viz-duplicate-page',
+        session_id: 'duplicate-session',
+        type: 'decision',
+      });
+      writeDeterministicKgFacts(store, saved.observation.id);
+      insertKgTriple(store, {
+        observationId: saved.observation.id,
+        subject: 'Repeated fact memory',
+        relation: 'HAS_WHAT',
+        object: 'Shared object',
+        project: 'viz-duplicate-page',
+      });
+
+      const seenNodes = new Set<string>();
+      const seenEdges = new Set<string>();
+      let sawIdentityEmptyPage = false;
+      let cursor: string | undefined;
+      do {
+        const page = store.getVisualizationGraphPage({
+          project: 'viz-duplicate-page',
+          relation: 'HAS_WHAT',
+          page_size: 1,
+          cursor,
+        });
+        const newNodes = page.nodes.filter((node) => !seenNodes.has(node.id));
+        const newEdges = page.edges.filter((edge) => !seenEdges.has(edge.id));
+        if (newNodes.length === 0 && newEdges.length === 0) sawIdentityEmptyPage = true;
+        page.nodes.forEach((node) => seenNodes.add(node.id));
+        page.edges.forEach((edge) => seenEdges.add(edge.id));
+        cursor = page.continuation ?? undefined;
+      } while (cursor);
+
+      expect(sawIdentityEmptyPage).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects malformed, scope-replayed, and mutation-stale graph cursors', () => {
+    const makeStore = () => {
+      const store = new Store(':memory:');
+      const saved = store.saveObservation({
+        title: 'Mutable complete memory',
+        content: '**What**: Mutable graph fact',
+        project: 'viz-generation',
+        session_id: 'generation-session',
+        topic_key: 'generation/topic',
+        type: 'decision',
+      });
+      writeDeterministicKgFacts(store, saved.observation.id);
+      return { store, observationId: saved.observation.id };
+    };
+
+    const malformed = makeStore();
+    try {
+      expect(() => malformed.store.getVisualizationGraphPage({
+        project: 'viz-generation',
+        cursor: 'not-a-cursor',
+      })).toThrow(expect.objectContaining({ code: 'VIZ_GRAPH_CURSOR_INVALID' }));
+      const cursor = malformed.store.getVisualizationGraphPage({
+        project: 'viz-generation',
+        page_size: 1,
+      }).continuation;
+      expect(cursor).not.toBeNull();
+      expect(() => malformed.store.getVisualizationGraphPage({
+        project: 'another-project',
+        page_size: 1,
+        cursor: cursor ?? undefined,
+      })).toThrow(expect.objectContaining({ code: 'VIZ_GRAPH_CURSOR_INVALID' }));
+    } finally {
+      malformed.store.close();
+    }
+
+    const mutationCases: Array<{
+      name: string;
+      mutate: (store: Store, observationId: number) => void;
+    }> = [
+      {
+        name: 'insert',
+        mutate: (store) => {
+          store.saveObservation({
+            title: 'Inserted complete memory',
+            content: '**What**: New generation fact',
+            project: 'viz-generation',
+            session_id: 'generation-session',
+          });
+        },
+      },
+      {
+        name: 'delete',
+        mutate: (store, observationId) => {
+          store.getDb().prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ?").run(observationId);
+        },
+      },
+      {
+        name: 'update',
+        mutate: (store, observationId) => {
+          store.getDb().prepare("UPDATE observations SET title = 'Updated graph title', updated_at = datetime('now') WHERE id = ?").run(observationId);
+        },
+      },
+      {
+        name: 'supersede',
+        mutate: (store, observationId) => {
+          store.getDb().prepare(
+            "UPDATE kg_triples SET superseded_at = datetime('now') WHERE source_type = 'observation' AND source_id = ? AND relation = 'HAS_WHAT'"
+          ).run(observationId);
+        },
+      },
+    ];
+
+    for (const mutation of mutationCases) {
+      const fixture = makeStore();
+      try {
+        const first = fixture.store.getVisualizationGraphPage({
+          project: 'viz-generation',
+          page_size: 1,
+        });
+        expect(first.continuation, mutation.name).not.toBeNull();
+        mutation.mutate(fixture.store, fixture.observationId);
+        expect(() => fixture.store.getVisualizationGraphPage({
+          project: 'viz-generation',
+          page_size: 1,
+          cursor: first.continuation ?? undefined,
+        }), mutation.name).toThrow(expect.objectContaining({ code: 'VIZ_GRAPH_GENERATION_STALE' }));
+      } finally {
+        fixture.store.close();
+      }
+    }
+  });
+
   it('returns deterministic projection coordinates for unchanged slice scope', () => {
     const store = new Store(':memory:');
 

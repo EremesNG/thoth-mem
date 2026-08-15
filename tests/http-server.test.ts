@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getConfig } from '../src/config.js';
 import { createHttpBridge } from '../src/http-server.js';
 import { Store } from '../src/store/index.js';
@@ -318,6 +318,112 @@ afterEach(async () => {
 
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe('administrative storage HTTP contracts', () => {
+  it('previews repair and retention, maps stale apply to 409, publishes catalog/OpenAPI, and never traces health', async () => {
+    const bridge = await startBridge();
+    const post = (path: string, body: unknown) => fetchJson(path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }, bridge.port);
+    const repair = await post('/sync/journal/repair/preview', { all: true });
+    expect(repair.response.status).toBe(200);
+    expect(repair.body.dry_run).toBe(true);
+    const stale = await post('/sync/journal/repair/apply', { all: true, expected_fingerprint: `sha256:${'0'.repeat(64)}` });
+    expect(stale.response.status).toBe(409);
+    const retention = await post('/operation-traces/retention/preview', { all: true });
+    expect(retention.response.status).toBe(200);
+    expect(retention.body.effective_now).toMatch(/Z$/);
+    await fetchJson('/health', undefined, bridge.port);
+    await fetchJson('/health', undefined, bridge.port);
+    const healthTraces = bridge.store.listOperationTraces({ target: 'GET /health' });
+    expect(healthTraces.total).toBe(0);
+    const catalog = await fetchJson('/operations', undefined, bridge.port);
+    const operationPaths = catalog.body.operations.map((entry: { path?: string }) => entry.path);
+    expect(operationPaths).toContain('/sync/journal/repair/preview');
+    expect(operationPaths.some((path: string) => /compact/i.test(path))).toBe(false);
+    const openapi = await fetchJson('/openapi.json', undefined, bridge.port);
+    expect(openapi.body.paths).toHaveProperty('/operation-traces/retention/apply');
+    expect(Object.keys(openapi.body.paths).some((path) => /compact/i.test(path))).toBe(false);
+    expect((await post('/compact-database', {})).response.status).toBe(404);
+    expect(openapi.body.paths['/sync/journal/repair/preview'].post.requestBody.content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/AdminStorageScope' });
+    expect(openapi.body.paths['/sync/journal/repair/apply'].post.requestBody.content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/SyncJournalRepairApplyRequest' });
+    expect(openapi.body.paths['/sync/journal/repair/apply'].post.responses['200'].content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/SyncJournalRepairResult' });
+    expect(openapi.body.paths['/operation-traces/retention/apply'].post.requestBody.content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/OperationTraceRetentionApplyRequest' });
+    expect(openapi.body.paths['/operation-traces/retention/apply'].post.responses['200'].content['application/json'].schema)
+      .toEqual({ $ref: '#/components/schemas/OperationTraceRetentionResult' });
+    expect(openapi.body.paths['/operation-traces/retention/apply'].post.responses['409'])
+      .toEqual({ $ref: '#/components/responses/StaleAdminPreview' });
+    expect(openapi.body.components.schemas.SyncJournalRepairResult.required).toEqual([
+      'dry_run', 'scope', 'max_rows_per_run', 'selection_fingerprint', 'counts', 'has_more', 'samples',
+    ]);
+    expect(openapi.body.components.schemas.OperationTraceRetentionPolicy.required).toEqual([
+      'success_retention_days', 'error_retention_days', 'max_rows_per_run', 'success_cutoff', 'error_cutoff',
+    ]);
+    expect(openapi.body.components.schemas.OperationTraceRetentionResult.required).toEqual([
+      'dry_run', 'scope', 'effective_now', 'policy', 'selection_fingerprint', 'counts', 'has_more', 'sample_trace_ids',
+    ]);
+  });
+
+  it('validates exact scope and apply bindings while preserving zero-write conflict semantics', async () => {
+    const bridge = await startBridge();
+    const post = (path: string, body: unknown) => fetchJson(path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }, bridge.port);
+    for (const body of [{}, { project: ' ' }, { all: false }, { project: 'p', all: true }]) {
+      expect((await post('/sync/journal/repair/preview', body)).response.status).toBe(400);
+      expect((await post('/operation-traces/retention/preview', body)).response.status).toBe(400);
+    }
+    const repairBefore = bridge.store.getMutationsSince(0).length;
+    expect((await post('/sync/journal/repair/apply', { all: true })).response.status).toBe(409);
+    expect((await post('/sync/journal/repair/apply', { all: true, expected_fingerprint: 'bad' })).response.status).toBe(409);
+    expect(bridge.store.getMutationsSince(0)).toHaveLength(repairBefore);
+
+    const old = '2020-01-01T00:00:00.000Z';
+    bridge.store.saveOperationTrace({ trace_id: 'http-retention-old', origin: 'system', target: 'test', status: 'ok', started_at: old, finished_at: old, request: {} });
+    expect((await post('/operation-traces/retention/apply', { all: true })).response.status).toBe(409);
+    expect((await post('/operation-traces/retention/apply', { all: true, expected_fingerprint: `sha256:${'0'.repeat(64)}`, effective_now: 'not-a-time' })).response.status).toBe(409);
+    expect(bridge.store.getOperationTrace('http-retention-old')).not.toBeNull();
+  });
+
+  it('rejects malformed selector combinations before invoking repair or retention workflows', async () => {
+    const bridge = await startBridge();
+    const post = (path: string, body: unknown) => fetchJson(path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }, bridge.port);
+    const repairPreview = vi.spyOn(bridge.store, 'previewSyncJournalRepair');
+    const repairApply = vi.spyOn(bridge.store, 'applySyncJournalRepair');
+    const retentionPreview = vi.spyOn(bridge.store, 'previewOperationTraceRetention');
+    const retentionApply = vi.spyOn(bridge.store, 'applyOperationTraceRetention');
+    const invalidScopes = [
+      { project: 'p', all: false },
+      { project: 'p', all: true },
+      { all: false },
+      {},
+      { project: 'p', all: 'false' },
+      { project: 42, all: true },
+    ];
+
+    for (const scope of invalidScopes) {
+      expect((await post('/sync/journal/repair/preview', scope)).response.status).toBe(400);
+      expect((await post('/sync/journal/repair/apply', { ...scope, expected_fingerprint: 'bad' })).response.status).toBe(400);
+      expect((await post('/operation-traces/retention/preview', scope)).response.status).toBe(400);
+      expect((await post('/operation-traces/retention/apply', {
+        ...scope,
+        expected_fingerprint: 'bad',
+        effective_now: 'not-a-time',
+      })).response.status).toBe(400);
+    }
+
+    expect(repairPreview).not.toHaveBeenCalled();
+    expect(repairApply).not.toHaveBeenCalled();
+    expect(retentionPreview).not.toHaveBeenCalled();
+    expect(retentionApply).not.toHaveBeenCalled();
+  });
 });
 
 describe('createHttpBridge', () => {

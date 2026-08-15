@@ -3,22 +3,22 @@ import type { MapData } from '../map/map-types.js';
 
 export function nodeIdToObservationId(nodeId: string | null): number | null {
   if (!nodeId) return null;
-  const match = nodeId.match(/(\d+)$/);
+  const match = nodeId.match(/^obs:(\d+)$/);
   return match ? Number(match[1]) : null;
 }
 
 export function scopeToMapParams(scope: ObservatoryScope): {
-  project?: string;
-  session_id?: string;
-  topic_key?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
   type?: ObservatoryScope['type'];
   relation?: string;
   query?: string;
 } {
   return {
-    project: scope.project,
-    session_id: scope.session_id,
-    topic_key: scope.topic_key,
+    project_token: scope.project_token,
+    session_token: scope.session_token,
+    topic_token: scope.topic_token,
     type: scope.type ?? scope.observation_type,
     relation: scope.relation,
     query: scope.query,
@@ -50,5 +50,11 @@ export function formatShortDate(value: string): string {
 }
 
 export function readableLane(value: string): string {
-  return value.replace(/-/g, ' ');
+  const labels: Record<string, string> = {
+    lexical: 'Same words',
+    'sentence-vector': 'Similar meaning',
+    'chunk-vector': 'Related passages',
+    'fact-kg': 'Connected facts',
+  };
+  return labels[value] ?? value.replace(/-/g, ' ');
 }

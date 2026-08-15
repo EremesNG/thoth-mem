@@ -35,6 +35,8 @@ import {
   handleObservatoryRecall,
   handleObservatoryTimeline,
   handleOperationTraceDetail,
+  handleOperationTraceRetentionApply,
+  handleOperationTraceRetentionPreview,
   handleOperationTraces,
   handleOperationsCatalog,
   handleProjectGraph,
@@ -54,11 +56,15 @@ import {
   handleSuggestTopicKey,
   handleSyncExport,
   handleSyncImport,
+  handleSyncJournalRepairApply,
+  handleSyncJournalRepairPreview,
   handleTimeline,
   handleUpdateObservation,
   handleVersion,
   handleVizExpand,
+  handleVizAtlas,
   handleVizFilters,
+  handleVizGraph,
   handleVizHealth,
   handleVizInspectEdge,
   handleVizInspectNode,
@@ -75,6 +81,7 @@ interface RouteDefinition {
   handler: HttpRouteHandler;
   method: string;
   pattern: string;
+  trace?: boolean;
 }
 
 interface HttpBridgeConfig extends ThothConfig {
@@ -94,13 +101,15 @@ export interface HttpBridge {
 }
 
 const ROUTES: RouteDefinition[] = [
-  { method: 'GET', pattern: '/health', handler: async (_store, _request, _port) => handleHealth() },
+  { method: 'GET', pattern: '/health', handler: async (_store, _request, _port) => handleHealth(), trace: false },
   { method: 'GET', pattern: '/version', handler: handleVersion },
   { method: 'GET', pattern: '/openapi.json', handler: handleOpenApi },
   { method: 'GET', pattern: '/docs', handler: async (_store, _request, _port) => handleDocs() },
   { method: 'GET', pattern: '/operations', handler: handleOperationsCatalog },
   { method: 'GET', pattern: '/operation-traces', handler: handleOperationTraces },
   { method: 'GET', pattern: '/operation-traces/:trace_id', handler: handleOperationTraceDetail },
+  { method: 'POST', pattern: '/operation-traces/retention/preview', handler: handleOperationTraceRetentionPreview },
+  { method: 'POST', pattern: '/operation-traces/retention/apply', handler: handleOperationTraceRetentionApply },
   { method: 'GET', pattern: '/index/status', handler: handleIndexStatus },
   { method: 'POST', pattern: '/index/rebuild', handler: handleRebuildIndex },
   { method: 'POST', pattern: '/graph/rebuild', handler: handleRebuildGraph },
@@ -128,6 +137,8 @@ const ROUTES: RouteDefinition[] = [
   { method: 'GET', pattern: '/observatory/ledger/:id', handler: handleObservatoryLedger },
   { method: 'GET', pattern: '/observatory/timeline', handler: handleObservatoryTimeline },
   { method: 'GET', pattern: '/observatory/health', handler: handleObservatoryHealth },
+  { method: 'GET', pattern: '/viz/graph', handler: handleVizGraph },
+  { method: 'GET', pattern: '/viz/atlas', handler: handleVizAtlas },
   { method: 'GET', pattern: '/viz/slice', handler: handleVizSlice },
   { method: 'POST', pattern: '/viz/expand', handler: handleVizExpand },
   { method: 'GET', pattern: '/viz/inspect/node/:id', handler: handleVizInspectNode },
@@ -145,6 +156,8 @@ const ROUTES: RouteDefinition[] = [
   { method: 'POST', pattern: '/import', handler: handleImport },
   { method: 'POST', pattern: '/sync/export', handler: handleSyncExport },
   { method: 'POST', pattern: '/sync/import', handler: handleSyncImport },
+  { method: 'POST', pattern: '/sync/journal/repair/preview', handler: handleSyncJournalRepairPreview },
+  { method: 'POST', pattern: '/sync/journal/repair/apply', handler: handleSyncJournalRepairApply },
   { method: 'POST', pattern: '/projects/delete', handler: handleDeleteProject },
   { method: 'POST', pattern: '/projects/migrate', handler: handleMigrateProject },
 ];
@@ -458,6 +471,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
       let routeTarget = `${method} ${url.pathname}`;
       let body: Record<string, unknown> | undefined;
       let params: Record<string, string> = {};
+      let shouldTrace = true;
 
       try {
         const route = ROUTES.find((candidate) => candidate.method === method && matchRoute(url.pathname, candidate.pattern) !== null);
@@ -483,6 +497,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
         }
 
         routeTarget = `${method} ${route.pattern}`;
+        shouldTrace = route.trace !== false;
         params = matchRoute(url.pathname, route.pattern) ?? {};
         body = method === 'POST' || method === 'PATCH' || method === 'DELETE'
           ? await parseBody<Record<string, unknown>>(request)
@@ -495,7 +510,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
         const result = await route.handler(store, { body, params, query: url.searchParams }, routeContext);
 
         if (result.text !== undefined) {
-          recordHttpTrace({
+          if (shouldTrace) recordHttpTrace({
             body,
             method,
             params,
@@ -512,7 +527,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
           return;
         }
 
-        recordHttpTrace({
+        if (shouldTrace) recordHttpTrace({
           body,
           method,
           params,
@@ -529,7 +544,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
       } catch (error) {
         if (error instanceof HttpRouteError) {
           const errorBody = error.body ?? { error: error.message };
-          recordHttpTrace({
+          if (shouldTrace) recordHttpTrace({
             body,
             error: error.message,
             method,
@@ -548,7 +563,7 @@ export function createHttpBridge(store: Store, config: HttpBridgeConfig, options
         }
 
         const message = error instanceof Error ? error.message : String(error);
-        recordHttpTrace({
+        if (shouldTrace) recordHttpTrace({
           body,
           error: message,
           method,

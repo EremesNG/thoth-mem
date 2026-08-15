@@ -63,6 +63,15 @@
         }
       }
     },
+    "operationTraceRetention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "successRetentionDays": { "type": "integer", "minimum": 1, "default": 7 },
+        "errorRetentionDays": { "type": "integer", "minimum": 1, "default": 30 },
+        "maxRowsPerRun": { "type": "integer", "minimum": 1, "default": 50000 }
+      }
+    },
     "graphFactsSource": {
       "type": "string",
       "enum": ["legacy", "kg"],

@@ -14,6 +14,13 @@ export type VizDensityState = 'empty' | 'sparse' | 'dense';
 export type VizSemanticState = 'ready' | 'pending' | 'degraded' | 'rebuilding';
 export type OperationTraceOrigin = 'mcp' | 'http' | 'cli' | 'system';
 export type OperationTraceStatus = 'ok' | 'error';
+
+export class StaleAdminPreviewError extends Error {
+  constructor(message = 'Administrative preview is missing, malformed, or stale') {
+    super(message);
+    this.name = 'StaleAdminPreviewError';
+  }
+}
 export type IdentityField = 'session_id' | 'project';
 export type IdentitySource = 'explicit' | 'config' | 'cwd' | 'git' | 'package' | 'fallback' | 'import' | 'legacy';
 export type IdentityReason =
@@ -670,6 +677,161 @@ export interface VizSliceRequest {
   cursor?: string;
 }
 
+export type AdminStorageScope = { project: string } | { all: true };
+export type SyncJournalRepairScope = AdminStorageScope;
+
+export interface SyncJournalRepairSample {
+  entity_type: SyncEntityType;
+  entity_id: number;
+  sync_id: string;
+  operation: SyncOperation;
+}
+
+export interface SyncJournalRepairResult {
+  dry_run: boolean;
+  scope: SyncJournalRepairScope;
+  max_rows_per_run: 10_000;
+  selection_fingerprint: string;
+  counts: {
+    scanned: number;
+    candidates: number;
+    selected: number;
+    repaired: number;
+    remaining: number;
+    skipped: number;
+    ineligible_identity: number;
+    by_entity: Record<SyncEntityType, number>;
+    by_operation: Record<SyncOperation, number>;
+  };
+  has_more: boolean;
+  samples: SyncJournalRepairSample[];
+}
+
+export interface ApplySyncJournalRepairInput {
+  scope: SyncJournalRepairScope;
+  expected_selection_fingerprint: string;
+}
+
+export interface OperationTraceRetentionResult {
+  dry_run: boolean;
+  scope: AdminStorageScope;
+  effective_now: string;
+  policy: {
+    success_retention_days: number;
+    error_retention_days: number;
+    max_rows_per_run: number;
+    success_cutoff: string;
+    error_cutoff: string;
+  };
+  selection_fingerprint: string;
+  counts: {
+    before_in_scope: number;
+    eligible: number;
+    selected: number;
+    deleted: number;
+    remaining_eligible: number;
+    skipped_invalid_timestamp: number;
+    skipped_unsupported_status: number;
+    after_in_scope_at_commit: number;
+  };
+  has_more: boolean;
+  sample_trace_ids: string[];
+}
+
+export interface ApplyOperationTraceRetentionInput {
+  scope: AdminStorageScope;
+  expected_selection_fingerprint: string;
+  effective_now: string;
+}
+
+export type DatabaseSidecarState = 'none' | 'wal-and-shm';
+
+export interface DatabaseCompactionMetrics {
+  database_path: string;
+  database_bytes: number;
+  logical_database_bytes: number;
+  wal_bytes: number;
+  shm_bytes: number;
+  page_size: number;
+  page_count: number;
+  freelist_count: number;
+  reclaimable_bytes: number;
+  estimated_compacted_bytes: number;
+  filesystem_free_bytes: number;
+  required_free_bytes: number;
+  journal_mode: string;
+  wal_present: boolean;
+  shm_present: boolean;
+  sidecar_state: DatabaseSidecarState;
+}
+
+export interface DatabaseCompactionPreview {
+  dry_run: true;
+  can_compact: boolean;
+  no_op_reason: 'no-reclaimable-pages' | null;
+  metrics: DatabaseCompactionMetrics;
+}
+
+export interface DatabaseCheckpointResult {
+  busy: number;
+  log: number;
+  checkpointed: number;
+}
+
+export interface DatabaseCompactionChecks {
+  pre_integrity_ok: boolean;
+  post_integrity_ok: boolean;
+  pre_foreign_key_violations: number;
+  post_foreign_key_violations: number;
+  schema_identity_preserved: boolean;
+  durable_counts_preserved: boolean;
+  final_journal_mode: string;
+}
+
+export interface DatabaseCompactionResult {
+  dry_run: false;
+  skipped: boolean;
+  skip_reason: 'no-reclaimable-pages' | null;
+  before: DatabaseCompactionMetrics;
+  after: DatabaseCompactionMetrics;
+  reclaimed_bytes: number;
+  duration_ms: number;
+  checkpoint: DatabaseCheckpointResult;
+  checks: DatabaseCompactionChecks;
+}
+
+export interface VizGraphPageRequest {
+  project?: string;
+  session_id?: string;
+  topic_key?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  page_size?: number;
+  cursor?: string;
+}
+
+export type VizGraphPageErrorCode =
+  | 'VIZ_GRAPH_CURSOR_INVALID'
+  | 'VIZ_GRAPH_GENERATION_STALE';
+
+export interface VizGraphPageErrorBody {
+  error: string;
+  code: VizGraphPageErrorCode;
+  retryable: boolean;
+}
+
+export class VizGraphPageError extends Error {
+  readonly retryable: boolean;
+
+  constructor(readonly code: VizGraphPageErrorCode, message: string) {
+    super(message);
+    this.name = 'VizGraphPageError';
+    this.retryable = code === 'VIZ_GRAPH_GENERATION_STALE';
+  }
+}
+
 export interface VizExpandRequest {
   node_id: string;
   project?: string;
@@ -766,6 +928,347 @@ export interface VizSliceResponse {
   continuation: string | null;
   truncated: boolean;
   health: VizHealthResponse;
+}
+
+export type VizGraphPageResponse = VizSliceResponse;
+
+export type AtlasHierarchy = 'global' | 'project';
+export type AtlasLevel = 'universe' | 'project' | 'community' | 'neighborhood';
+export type AtlasCoverageState = 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
+export type AtlasFacetKind = 'project' | 'session' | 'topic';
+
+export interface AtlasFacetRef {
+  kind: AtlasFacetKind;
+  token: string;
+  label: string;
+}
+
+export interface AtlasFacetOption extends AtlasFacetRef {
+  count: number;
+}
+
+export interface AtlasTokenScope {
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  relation: string | null;
+  query: string | null;
+  time_from: string | null;
+  time_to: string | null;
+}
+
+export interface SemanticObservatoryContextRequest {
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  query?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  time_from?: string;
+  time_to?: string;
+}
+
+export interface SemanticObservatoryContextResponse {
+  scope: AtlasTokenScope;
+  context_token: string;
+  health: VizHealthResponse;
+  capabilities: {
+    viz_fallback_available: boolean;
+    observatory_routes_available: boolean;
+  };
+}
+
+export interface TokenSafeObservatoryRecallHit {
+  observation_id: number;
+  title: string;
+  preview: string;
+  type: ObservationType;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  community_id: string;
+  project_id: string | null;
+  created_at: string;
+  lane: ObservatoryLane;
+  pivot_token: string;
+}
+
+export interface TokenSafeObservatoryRecallResponse {
+  context_token: string;
+  lanes: Record<ObservatoryLane, TokenSafeObservatoryRecallHit[]>;
+  lane_states?: Partial<Record<ObservatoryLane, {
+    status: ObservatoryLaneStateStatus;
+    reason: ObservatoryLaneStateReason;
+  }>>;
+}
+
+export interface AtlasPivotLocation {
+  hierarchy: AtlasHierarchy;
+  context_token: string;
+  scope: AtlasTokenScope;
+  project_id: string | null;
+  focus_node_id: `obs:${number}`;
+  community_id: string;
+  target: ObservatoryPivotTarget;
+}
+
+export interface SemanticAtlasPageRequest {
+  hierarchy?: AtlasHierarchy;
+  level?: AtlasLevel;
+  project_id?: string;
+  project_token?: string;
+  session_token?: string;
+  topic_token?: string;
+  type?: ObservationType;
+  observation_type?: ObservationType;
+  relation?: string;
+  query?: string;
+  community_id?: string;
+  focus_node_id?: string;
+  depth?: 1 | 2;
+  page_size?: number;
+  cursor?: string;
+  presentation?: 'complete' | 'semantic-zoom';
+  region_id?: string;
+}
+
+export type SemanticAtlasNodeKind =
+  | 'community'
+  | 'observation'
+  | 'fact'
+  | 'session'
+  | 'project'
+  | 'topic';
+
+export interface SemanticAtlasNode {
+  id: string;
+  kind: SemanticAtlasNodeKind;
+  label: string;
+  snippet: string;
+  project: AtlasFacetRef | null;
+  session: AtlasFacetRef | null;
+  topic: AtlasFacetRef | null;
+  type: ObservationType | null;
+  community_id: string | null;
+  owner_project_id: string | null;
+  region_id?: string | null;
+  member_count: number | null;
+  project_count: number | null;
+  unclustered: boolean;
+  seed_x: number;
+  seed_y: number;
+}
+
+export interface SemanticAtlasEdge {
+  id: string;
+  source_id: string;
+  target_id: string;
+  kind: 'aggregate' | 'semantic' | 'fact' | 'metadata';
+  relation: string;
+  label: string;
+  summary: string;
+  weight: number;
+  evidence_count: number;
+  tier: Exclude<SemanticAtlasRelationshipTier, 'region-aggregate'>;
+  relationship_class: SemanticAtlasRelationshipClass;
+  direction: SemanticAtlasRelationshipDirection;
+  confidence: SemanticAtlasRelationshipConfidence;
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+
+export type SemanticAtlasRelationshipTier =
+  | 'region-aggregate'
+  | 'representative-backbone'
+  | 'representative-semantic'
+  | 'fact-support'
+  | 'metadata';
+export type SemanticAtlasRelationshipClass = 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown';
+export type SemanticAtlasRelationshipDirection = 'directed' | 'undirected' | 'mixed' | 'unknown';
+export type SemanticAtlasRelationshipConfidence = 'high' | 'medium' | 'low' | 'unknown';
+export type SemanticAtlasRepresentativeSignal = 'structural' | 'bridge' | 'recency' | 'confidence' | 'diversity';
+
+export interface SemanticAtlasRelationshipProvenance {
+  source_kind: 'kg-triple' | 'legacy-fact' | 'community-aggregate' | 'unknown';
+  source_id: string;
+  relation: string;
+  evidence_count: number;
+  confidence: SemanticAtlasRelationshipConfidence;
+}
+
+export interface SemanticAtlasRepresentativeExplanation {
+  node_id: string;
+  reason: string;
+  signals: SemanticAtlasRepresentativeSignal[];
+  rank: number;
+}
+
+export interface SemanticAtlasRegion {
+  id: string;
+  community_id: string;
+  label: string;
+  summary: string;
+  member_count: number;
+  project_count: number;
+  time_from: string | null;
+  time_to: string | null;
+  concepts: Array<{ label: string; count: number }>;
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: Array<{ value: ObservationType; count: number }>;
+  };
+  representatives: SemanticAtlasRepresentativeExplanation[];
+  seed_x: number;
+  seed_y: number;
+  unclustered: boolean;
+}
+
+export interface SemanticAtlasRegionBridge {
+  id: string;
+  source_region_id: string;
+  target_region_id: string;
+  tier: 'region-aggregate';
+  relationship_class: 'aggregate';
+  direction: SemanticAtlasRelationshipDirection;
+  weight: number;
+  evidence_count: number;
+  relations: string[];
+  confidence: SemanticAtlasRelationshipConfidence;
+  representative_edge_ids: string[];
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+
+export interface SemanticAtlasProjectRegion {
+  id: string;
+  label: string;
+  summary: string;
+  memory_count: number;
+  constellation_count: number;
+  visible_constellation_count: number;
+  omitted_constellation_count: number;
+  constellation_ids: string[];
+  seed_x: number;
+  seed_y: number;
+  unassigned: boolean;
+}
+
+export interface SemanticAtlasProjectBridge {
+  id: string;
+  source_project_id: string;
+  target_project_id: string;
+  tier: 'project-aggregate';
+  relationship_class: 'aggregate';
+  direction: SemanticAtlasRelationshipDirection;
+  weight: number;
+  evidence_count: number;
+  relations: string[];
+  confidence: SemanticAtlasRelationshipConfidence;
+  representative_edge_ids: string[];
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+
+export interface SemanticAtlasCounts {
+  memory_count: number;
+  project_count: number;
+  community_count: number;
+  assigned_memory_count: number;
+  unclustered_memory_count: number;
+  supporting_entity_count: number;
+  relationship_count: number;
+  raw_entity_count: number;
+  raw_relationship_count: number;
+}
+
+export interface SemanticAtlasPageResponse {
+  hierarchy: AtlasHierarchy;
+  level: AtlasLevel;
+  generation: string;
+  presentation: 'complete' | 'semantic-zoom';
+  nodes: SemanticAtlasNode[];
+  edges: SemanticAtlasEdge[];
+  regions: SemanticAtlasRegion[];
+  region_bridges: SemanticAtlasRegionBridge[];
+  project_regions: SemanticAtlasProjectRegion[];
+  project_bridges: SemanticAtlasProjectBridge[];
+  counts: SemanticAtlasCounts;
+  coverage: {
+    state: AtlasCoverageState;
+    projection_source: 'deterministic-kg' | 'deterministic-unclustered';
+    summary_state: AtlasCoverageState;
+    observations_with_kg: number;
+    observations_without_kg: number;
+    degraded_reasons: string[];
+  };
+  facets: {
+    projects: AtlasFacetOption[];
+    sessions: AtlasFacetOption[];
+    topics: AtlasFacetOption[];
+    types: ObservationType[];
+    relations: string[];
+  };
+  navigation: {
+    project_id: string | null;
+    community_id: string | null;
+    focus_node_id: string | null;
+    depth: 1 | 2 | null;
+    region_id: string | null;
+    source_project_count: number;
+    visible_project_count: number;
+    omitted_projects: number;
+    source_constellation_count: number;
+    visible_constellation_count: number;
+    omitted_constellations: number;
+    source_memory_count: number;
+    visible_memory_count: number;
+    source_relationship_count: number;
+    visible_relationship_count: number;
+    represented_source_relationship_count: number;
+    omitted_nodes: number;
+    omitted_edges: number;
+    raw_rich_render_safe: boolean;
+    raw_rich_render_limit: number;
+    scope: {
+      project: AtlasFacetRef | null;
+      session: AtlasFacetRef | null;
+      topic: AtlasFacetRef | null;
+      type: ObservationType | null;
+      relation: string | null;
+    };
+  };
+  continuation: string | null;
+  truncated: boolean;
+  health: VizHealthResponse;
+}
+
+export type SemanticAtlasErrorCode =
+  | 'VIZ_ATLAS_HIERARCHY_INVALID'
+  | 'VIZ_ATLAS_PROJECT_SCOPE_INVALID'
+  | 'VIZ_ATLAS_PROJECT_GONE'
+  | 'VIZ_ATLAS_CURSOR_INVALID'
+  | 'VIZ_ATLAS_GENERATION_STALE'
+  | 'VIZ_ATLAS_LEVEL_INVALID'
+  | 'VIZ_ATLAS_FACET_INVALID'
+  | 'VIZ_ATLAS_COMMUNITY_GONE'
+  | 'VIZ_ATLAS_FOCUS_INVALID'
+  | 'VIZ_ATLAS_PRESENTATION_INVALID'
+  | 'VIZ_ATLAS_REGION_GONE';
+
+export class SemanticAtlasError extends Error {
+  readonly retryable: boolean;
+  readonly recover_to_level?: AtlasLevel;
+
+  constructor(code: SemanticAtlasErrorCode, message: string, recoverToLevel?: AtlasLevel) {
+    super(message);
+    this.name = 'SemanticAtlasError';
+    this.code = code;
+    this.retryable = code === 'VIZ_ATLAS_GENERATION_STALE';
+    this.recover_to_level = recoverToLevel;
+  }
+
+  readonly code: SemanticAtlasErrorCode;
 }
 
 export interface VizInspectNodeResponse {

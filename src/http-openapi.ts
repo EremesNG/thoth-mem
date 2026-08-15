@@ -16,6 +16,28 @@ const GRAPH_RELATION_SCHEMA = {
   enum: ['HAS_TYPE', 'IN_PROJECT', 'HAS_TOPIC_KEY', 'HAS_WHAT', 'HAS_WHY', 'HAS_WHERE', 'HAS_LEARNED'],
 };
 
+function adminStorageOperation(summary: string, apply: boolean, retention: boolean): Record<string, unknown> {
+  const requestSchema = apply
+    ? { $ref: retention
+      ? '#/components/schemas/OperationTraceRetentionApplyRequest'
+      : '#/components/schemas/SyncJournalRepairApplyRequest' }
+    : { $ref: '#/components/schemas/AdminStorageScope' };
+  const resultSchema = { $ref: retention
+    ? '#/components/schemas/OperationTraceRetentionResult'
+    : '#/components/schemas/SyncJournalRepairResult' };
+  return {
+    post: {
+      summary,
+      requestBody: { required: true, content: { 'application/json': { schema: requestSchema } } },
+      responses: {
+        '200': { description: 'Administrative storage result', content: { 'application/json': { schema: resultSchema } } },
+        '400': { $ref: '#/components/responses/Error' },
+        ...(apply ? { '409': { $ref: '#/components/responses/StaleAdminPreview' } } : {}),
+      },
+    },
+  };
+}
+
 export function getOpenApiSpec(port: number): Record<string, unknown> {
   return {
     openapi: '3.0.0',
@@ -375,6 +397,10 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
         },
       },
+      '/sync/journal/repair/preview': adminStorageOperation('Preview sync journal repair', false, false),
+      '/sync/journal/repair/apply': adminStorageOperation('Apply sync journal repair', true, false),
+      '/operation-traces/retention/preview': adminStorageOperation('Preview operation trace retention', false, true),
+      '/operation-traces/retention/apply': adminStorageOperation('Apply operation trace retention', true, true),
       '/observations': {
         post: {
           summary: 'Create observation',
@@ -650,9 +676,9 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
         get: {
           summary: 'Get observatory scoped context token and capabilities',
           parameters: [
-            { name: 'project', in: 'query', schema: { type: 'string' } },
-            { name: 'session_id', in: 'query', schema: { type: 'string' } },
-            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'project_token', in: 'query', schema: { type: 'string' } },
+            { name: 'session_token', in: 'query', schema: { type: 'string' } },
+            { name: 'topic_token', in: 'query', schema: { type: 'string' } },
             { name: 'query', in: 'query', schema: { type: 'string' } },
             { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
             { name: 'observation_type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
@@ -660,25 +686,26 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             { name: 'time_from', in: 'query', schema: { type: 'string' } },
             { name: 'time_to', in: 'query', schema: { type: 'string' } },
           ],
-          responses: { '200': { description: 'Observatory context', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryContextResponse' } } } } },
+          responses: { '200': { description: 'Observatory context', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryContextResponse' } } } }, '400': { $ref: '#/components/responses/SemanticAtlasError' } },
         },
       },
       '/observatory/recall': {
         get: {
           summary: 'Get observatory hybrid lane recall payload',
           parameters: [
+            { name: 'hierarchy', in: 'query', schema: { type: 'string', enum: ['global', 'project'], default: 'global' } },
             { name: 'context_token', in: 'query', required: true, schema: { type: 'string' } },
             { name: 'lanes', in: 'query', schema: { type: 'string', example: 'lexical,sentence-vector' } },
             { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1 } },
           ],
-          responses: { '200': { description: 'Observatory recall', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryRecallResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+          responses: { '200': { description: 'Observatory recall', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryRecallResponse' } } } }, '400': { $ref: '#/components/responses/SemanticAtlasError' }, '404': { $ref: '#/components/responses/SemanticAtlasError' }, '409': { $ref: '#/components/responses/SemanticAtlasError' } },
         },
       },
       '/observatory/pivot': {
         post: {
           summary: 'Resolve pivot token into scoped target context',
           requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryPivotRequest' } } } },
-          responses: { '200': { description: 'Pivot resolved', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryPivotResponse' } } } }, '400': { $ref: '#/components/responses/Error' } },
+          responses: { '200': { description: 'Pivot resolved', content: { 'application/json': { schema: { $ref: '#/components/schemas/ObservatoryPivotResponse' } } } }, '400': { $ref: '#/components/responses/SemanticAtlasError' }, '404': { $ref: '#/components/responses/SemanticAtlasError' }, '409': { $ref: '#/components/responses/SemanticAtlasError' } },
         },
       },
       '/observatory/map/frontier': {
@@ -719,6 +746,91 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           summary: 'Get observatory health/index readiness',
           parameters: [{ name: 'project', in: 'query', schema: { type: 'string' } }],
           responses: { '200': { description: 'Health payload', content: { 'application/json': { schema: { $ref: '#/components/schemas/VizHealthResponse' } } } } },
+        },
+      },
+      '/viz/graph': {
+        get: {
+          summary: 'Stream the complete visualization graph for one stable scope generation',
+          parameters: [
+            { name: 'project', in: 'query', schema: { type: 'string' } },
+            { name: 'session_id', in: 'query', schema: { type: 'string' } },
+            { name: 'topic_key', in: 'query', schema: { type: 'string' } },
+            { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'observation_type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'relation', in: 'query', schema: { type: 'string' } },
+            { name: 'query', in: 'query', schema: { type: 'string' } },
+            { name: 'page_size', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 250, default: 250 } },
+            {
+              name: 'cursor',
+              in: 'query',
+              description: 'Opaque continuation bound to the normalized scope and graph generation.',
+              schema: { type: 'string' },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'One endpoint-complete graph page; continuation is null only after the full scope is drained.',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/VizSliceResponse' } } },
+            },
+            '400': { $ref: '#/components/responses/VizGraphPageError' },
+            '409': { $ref: '#/components/responses/VizGraphPageError' },
+          },
+        },
+      },
+      '/viz/atlas': {
+        get: {
+          summary: 'Navigate the semantic memory atlas by Universe, Project, Community, or Neighborhood',
+          description: 'Canonical owner-field matrix (every owner field not required by the selected row is forbidden): global/universe requires none; global/project is invalid; global/community requires community_id; global/neighborhood requires community_id and focus_node_id; project/universe requires none; project/project requires project_id; project/community requires project_id and community_id; project/neighborhood requires project_id, community_id, and focus_node_id.',
+          'x-valid-owner-matrix': [
+            { hierarchy: 'global', level: 'universe', valid: true, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+            { hierarchy: 'global', level: 'project', valid: false, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+            { hierarchy: 'global', level: 'community', valid: true, required_owner_fields: ['community_id'], forbidden_owner_fields: ['project_id', 'focus_node_id'] },
+            { hierarchy: 'global', level: 'neighborhood', valid: true, required_owner_fields: ['community_id', 'focus_node_id'], forbidden_owner_fields: ['project_id'] },
+            { hierarchy: 'project', level: 'universe', valid: true, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+            { hierarchy: 'project', level: 'project', valid: true, required_owner_fields: ['project_id'], forbidden_owner_fields: ['community_id', 'focus_node_id'] },
+            { hierarchy: 'project', level: 'community', valid: true, required_owner_fields: ['project_id', 'community_id'], forbidden_owner_fields: ['focus_node_id'] },
+            { hierarchy: 'project', level: 'neighborhood', valid: true, required_owner_fields: ['project_id', 'community_id', 'focus_node_id'], forbidden_owner_fields: [] },
+          ],
+          'x-page-size-by-hierarchy': {
+            global: { minimum: 1, maximum: 250, default: 250 },
+            project: { minimum: 1, maximum: 150, universe_default: 24, detail_default: 150 },
+          },
+          parameters: [
+            { name: 'hierarchy', in: 'query', description: 'Omission preserves the global compatibility hierarchy.', schema: { type: 'string', enum: ['global', 'project'], default: 'global' } },
+            { name: 'level', in: 'query', schema: { type: 'string', enum: ['universe', 'project', 'community', 'neighborhood'], default: 'universe' } },
+            { name: 'project_id', in: 'query', description: 'Opaque project navigation parent; never a raw project value or facet token.', schema: { type: 'string' } },
+            { name: 'project_token', in: 'query', schema: { type: 'string' } },
+            { name: 'session_token', in: 'query', schema: { type: 'string' } },
+            { name: 'topic_token', in: 'query', schema: { type: 'string' } },
+            { name: 'type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'observation_type', in: 'query', schema: OBSERVATION_TYPE_SCHEMA },
+            { name: 'relation', in: 'query', schema: { type: 'string' } },
+            { name: 'query', in: 'query', schema: { type: 'string' } },
+            { name: 'community_id', in: 'query', schema: { type: 'string' } },
+            { name: 'focus_node_id', in: 'query', schema: { type: 'string', pattern: '^obs:[0-9]+$' } },
+            { name: 'depth', in: 'query', schema: { type: 'integer', enum: [1, 2], default: 1 } },
+            {
+              name: 'page_size',
+              in: 'query',
+              description: 'Project hierarchy pages accept 1..150 items (Universe defaults to 24; deeper project pages default to 150). Values 151..250 are valid only for the global hierarchy, whose default is 250.',
+              schema: {
+                type: 'integer',
+                minimum: 1,
+                maximum: 250,
+                default: 250,
+                'x-project-hierarchy-maximum': 150,
+              },
+            },
+            { name: 'cursor', in: 'query', schema: { type: 'string' } },
+            { name: 'presentation', in: 'query', description: 'Community defaults to complete pagination; semantic-zoom returns one bounded representative projection.', schema: { type: 'string', enum: ['complete', 'semantic-zoom'], default: 'complete' } },
+            { name: 'region_id', in: 'query', description: 'Opaque current Community region, valid only with semantic-zoom.', schema: { type: 'string' } },
+          ],
+          responses: {
+            '200': { description: 'One generation-bound semantic atlas page', content: { 'application/json': { schema: { $ref: '#/components/schemas/SemanticAtlasPageResponse' } } } },
+            '400': { $ref: '#/components/responses/SemanticAtlasError' },
+            '404': { $ref: '#/components/responses/SemanticAtlasError' },
+            '409': { $ref: '#/components/responses/SemanticAtlasError' },
+          },
         },
       },
       '/viz/slice': {
@@ -1209,6 +1321,14 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
         },
+        StaleAdminPreview: {
+          description: 'Preview binding is missing, malformed, stale, or no longer matches current state',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/StaleAdminPreviewError' },
+            },
+          },
+        },
         DeleteProjectConflict: {
           description: 'Project deletion conflict response',
           content: {
@@ -1217,14 +1337,189 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
         },
+        VizGraphPageError: {
+          description: 'Invalid graph cursor or graph generation changed while paging',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/VizGraphPageError' },
+            },
+          },
+        },
+        SemanticAtlasError: {
+          description: 'Invalid or stale semantic atlas navigation state',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SemanticAtlasError' },
+            },
+          },
+        },
       },
       schemas: {
+        AdminStorageScope: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+          },
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        SyncJournalRepairApplyRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+            expected_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+          },
+          required: ['expected_fingerprint'],
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        OperationTraceRetentionApplyRequest: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', minLength: 1 },
+            all: { type: 'boolean', enum: [true] },
+            expected_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            effective_now: { type: 'string', format: 'date-time', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$' },
+          },
+          required: ['expected_fingerprint', 'effective_now'],
+          oneOf: [
+            { required: ['project'], not: { required: ['all'] } },
+            { required: ['all'], not: { required: ['project'] } },
+          ],
+        },
+        SyncJournalRepairResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean' },
+            scope: { $ref: '#/components/schemas/AdminStorageScope' },
+            max_rows_per_run: { type: 'integer', enum: [10_000] },
+            selection_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            counts: {
+              type: 'object',
+              properties: {
+                scanned: { type: 'integer', minimum: 0 }, candidates: { type: 'integer', minimum: 0 },
+                selected: { type: 'integer', minimum: 0 }, repaired: { type: 'integer', minimum: 0 },
+                remaining: { type: 'integer', minimum: 0 }, skipped: { type: 'integer', minimum: 0 },
+                ineligible_identity: { type: 'integer', minimum: 0 },
+                by_entity: {
+                  type: 'object',
+                  properties: { observation: { type: 'integer' }, prompt: { type: 'integer' }, session: { type: 'integer' } },
+                  required: ['observation', 'prompt', 'session'],
+                },
+                by_operation: {
+                  type: 'object',
+                  properties: { create: { type: 'integer' }, update: { type: 'integer' }, delete: { type: 'integer' } },
+                  required: ['create', 'update', 'delete'],
+                },
+              },
+              required: ['scanned', 'candidates', 'selected', 'repaired', 'remaining', 'skipped', 'ineligible_identity', 'by_entity', 'by_operation'],
+            },
+            has_more: { type: 'boolean' },
+            samples: {
+              type: 'array', maxItems: 50,
+              items: {
+                type: 'object',
+                properties: {
+                  entity_type: { type: 'string', enum: ['observation', 'prompt', 'session'] },
+                  entity_id: { type: 'integer' }, sync_id: { type: 'string', minLength: 1 },
+                  operation: { type: 'string', enum: ['create', 'update', 'delete'] },
+                },
+                required: ['entity_type', 'entity_id', 'sync_id', 'operation'],
+              },
+            },
+          },
+          required: ['dry_run', 'scope', 'max_rows_per_run', 'selection_fingerprint', 'counts', 'has_more', 'samples'],
+        },
+        OperationTraceRetentionPolicy: {
+          type: 'object',
+          properties: {
+            success_retention_days: { type: 'integer', minimum: 1 },
+            error_retention_days: { type: 'integer', minimum: 1 },
+            max_rows_per_run: { type: 'integer', minimum: 1 },
+            success_cutoff: { type: 'string', format: 'date-time' },
+            error_cutoff: { type: 'string', format: 'date-time' },
+          },
+          required: ['success_retention_days', 'error_retention_days', 'max_rows_per_run', 'success_cutoff', 'error_cutoff'],
+        },
+        OperationTraceRetentionResult: {
+          type: 'object',
+          properties: {
+            dry_run: { type: 'boolean' }, scope: { $ref: '#/components/schemas/AdminStorageScope' },
+            effective_now: { type: 'string', format: 'date-time' },
+            policy: { $ref: '#/components/schemas/OperationTraceRetentionPolicy' },
+            selection_fingerprint: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
+            counts: {
+              type: 'object',
+              properties: {
+                before_in_scope: { type: 'integer', minimum: 0 }, eligible: { type: 'integer', minimum: 0 },
+                selected: { type: 'integer', minimum: 0 }, deleted: { type: 'integer', minimum: 0 },
+                remaining_eligible: { type: 'integer', minimum: 0 }, skipped_invalid_timestamp: { type: 'integer', minimum: 0 },
+                skipped_unsupported_status: { type: 'integer', minimum: 0 }, after_in_scope_at_commit: { type: 'integer', minimum: 0 },
+              },
+              required: ['before_in_scope', 'eligible', 'selected', 'deleted', 'remaining_eligible', 'skipped_invalid_timestamp', 'skipped_unsupported_status', 'after_in_scope_at_commit'],
+            },
+            has_more: { type: 'boolean' },
+            sample_trace_ids: { type: 'array', maxItems: 50, items: { type: 'string' } },
+          },
+          required: ['dry_run', 'scope', 'effective_now', 'policy', 'selection_fingerprint', 'counts', 'has_more', 'sample_trace_ids'],
+        },
+        StaleAdminPreviewError: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            code: { type: 'string', enum: ['stale_admin_preview'] },
+          },
+          required: ['error', 'code'],
+        },
         Error: {
           type: 'object',
           properties: {
             error: { type: 'string' },
           },
           required: ['error'],
+        },
+        VizGraphPageError: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            code: {
+              type: 'string',
+              enum: ['VIZ_GRAPH_CURSOR_INVALID', 'VIZ_GRAPH_GENERATION_STALE'],
+            },
+            retryable: { type: 'boolean' },
+          },
+          required: ['error', 'code', 'retryable'],
+        },
+        SemanticAtlasError: {
+          type: 'object',
+          properties: {
+            error: { type: 'string' },
+            code: {
+              type: 'string',
+              enum: [
+                'VIZ_ATLAS_HIERARCHY_INVALID',
+                'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+                'VIZ_ATLAS_PROJECT_GONE',
+                'VIZ_ATLAS_CURSOR_INVALID',
+                'VIZ_ATLAS_GENERATION_STALE',
+                'VIZ_ATLAS_LEVEL_INVALID',
+                'VIZ_ATLAS_FACET_INVALID',
+                'VIZ_ATLAS_COMMUNITY_GONE',
+                'VIZ_ATLAS_FOCUS_INVALID',
+                'VIZ_ATLAS_PRESENTATION_INVALID',
+                'VIZ_ATLAS_REGION_GONE',
+              ],
+            },
+            retryable: { type: 'boolean' },
+            recover_to_level: { type: 'string', enum: ['universe', 'project', 'community', 'neighborhood'] },
+          },
+          required: ['error', 'code', 'retryable'],
         },
         OperationCatalogEntry: {
           type: 'object',
@@ -1795,19 +2090,34 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
           },
           required: ['sessions', 'observations', 'prompts', 'projects'],
         },
+        AtlasFacetRef: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['project', 'session', 'topic'] },
+            token: { type: 'string' },
+            label: { type: 'string' },
+          },
+          required: ['kind', 'token', 'label'],
+        },
+        AtlasFacetOption: {
+          allOf: [
+            { $ref: '#/components/schemas/AtlasFacetRef' },
+            { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] },
+          ],
+        },
         ObservatoryScope: {
           type: 'object',
           properties: {
-            project: { type: 'string' },
-            session_id: { type: 'string' },
-            topic_key: { type: 'string' },
-            query: { type: 'string' },
-            type: OBSERVATION_TYPE_SCHEMA,
-            observation_type: OBSERVATION_TYPE_SCHEMA,
-            relation: { type: 'string' },
-            time_from: { type: 'string' },
-            time_to: { type: 'string' },
+            project: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            session: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            topic: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            query: { type: 'string', nullable: true },
+            type: { ...OBSERVATION_TYPE_SCHEMA, nullable: true },
+            relation: { type: 'string', nullable: true },
+            time_from: { type: 'string', nullable: true },
+            time_to: { type: 'string', nullable: true },
           },
+          required: ['project', 'session', 'topic', 'query', 'type', 'relation', 'time_from', 'time_to'],
         },
         ObservatoryContextResponse: {
           type: 'object',
@@ -1833,14 +2143,16 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             title: { type: 'string' },
             preview: { type: 'string' },
             type: OBSERVATION_TYPE_SCHEMA,
-            project: { type: 'string', nullable: true },
-            session_id: { type: 'string' },
-            topic_key: { type: 'string', nullable: true },
+            project: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            session: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            topic: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            community_id: { type: 'string' },
+            project_id: { type: 'string', nullable: true },
             created_at: { type: 'string' },
             lane: { type: 'string', enum: ['lexical', 'sentence-vector', 'chunk-vector', 'fact-kg'] },
             pivot_token: { type: 'string' },
           },
-          required: ['observation_id', 'title', 'preview', 'type', 'project', 'session_id', 'topic_key', 'created_at', 'lane', 'pivot_token'],
+          required: ['observation_id', 'title', 'preview', 'type', 'project', 'session', 'topic', 'community_id', 'project_id', 'created_at', 'lane', 'pivot_token'],
         },
         ObservatoryRecallResponse: {
           type: 'object',
@@ -1882,6 +2194,7 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
         ObservatoryPivotRequest: {
           type: 'object',
           properties: {
+            hierarchy: { type: 'string', enum: ['global', 'project'], default: 'global' },
             pivot_token: { type: 'string' },
             target: { type: 'string', enum: ['map', 'timeline', 'ledger', 'recall'] },
           },
@@ -1890,12 +2203,28 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
         ObservatoryPivotResponse: {
           type: 'object',
           properties: {
+            hierarchy: { type: 'string', enum: ['global', 'project'] },
             context_token: { type: 'string' },
             scope: { $ref: '#/components/schemas/ObservatoryScope' },
+            project_id: { type: 'string', nullable: true },
             focus_node_id: { type: 'string' },
+            community_id: { type: 'string' },
             target: { type: 'string', enum: ['map', 'timeline', 'ledger', 'recall'] },
           },
-          required: ['context_token', 'scope', 'focus_node_id', 'target'],
+          required: ['hierarchy', 'context_token', 'scope', 'project_id', 'focus_node_id', 'community_id', 'target'],
+        },
+        AtlasPivotLocation: {
+          type: 'object',
+          properties: {
+            hierarchy: { type: 'string', enum: ['global', 'project'] },
+            context_token: { type: 'string' },
+            scope: { $ref: '#/components/schemas/ObservatoryScope' },
+            project_id: { type: 'string', nullable: true },
+            focus_node_id: { type: 'string' },
+            community_id: { type: 'string' },
+            target: { type: 'string', enum: ['map', 'timeline', 'ledger', 'recall'] },
+          },
+          required: ['hierarchy', 'context_token', 'scope', 'project_id', 'focus_node_id', 'community_id', 'target'],
         },
         ObservatoryFrontierState: {
           type: 'object',
@@ -2064,6 +2393,226 @@ export function getOpenApiSpec(port: number): Record<string, unknown> {
             },
           },
           required: ['semantic_state', 'pending_jobs', 'semantic'],
+        },
+        SemanticAtlasNode: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            kind: { type: 'string', enum: ['community', 'observation', 'fact', 'session', 'project', 'topic'] },
+            label: { type: 'string' },
+            snippet: { type: 'string' },
+            project: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            session: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            topic: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+            type: { ...OBSERVATION_TYPE_SCHEMA, nullable: true },
+            community_id: { type: 'string', nullable: true },
+            owner_project_id: { type: 'string', nullable: true },
+            region_id: { type: 'string', nullable: true },
+            member_count: { type: 'integer', nullable: true },
+            project_count: { type: 'integer', nullable: true },
+            unclustered: { type: 'boolean' },
+            seed_x: { type: 'number' },
+            seed_y: { type: 'number' },
+          },
+          required: ['id', 'kind', 'label', 'snippet', 'project', 'session', 'topic', 'type', 'community_id', 'owner_project_id', 'member_count', 'project_count', 'unclustered', 'seed_x', 'seed_y'],
+        },
+        SemanticAtlasEdge: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            source_id: { type: 'string' },
+            target_id: { type: 'string' },
+            kind: { type: 'string', enum: ['aggregate', 'semantic', 'fact', 'metadata'] },
+            relation: { type: 'string' },
+            label: { type: 'string' },
+            summary: { type: 'string' },
+            weight: { type: 'number' },
+            evidence_count: { type: 'integer' },
+            tier: { type: 'string', enum: ['representative-backbone', 'representative-semantic', 'fact-support', 'metadata'] },
+            relationship_class: { type: 'string', enum: ['aggregate', 'semantic', 'fact', 'metadata', 'unknown'] },
+            direction: { $ref: '#/components/schemas/SemanticAtlasDirection' },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+            provenance: { type: 'array', maxItems: 5, items: { $ref: '#/components/schemas/SemanticAtlasRelationshipProvenance' } },
+          },
+          required: ['id', 'source_id', 'target_id', 'kind', 'relation', 'label', 'summary', 'weight', 'evidence_count', 'tier', 'relationship_class', 'direction', 'confidence', 'provenance'],
+        },
+        SemanticAtlasPresentation: { type: 'string', enum: ['complete', 'semantic-zoom'] },
+        SemanticAtlasDirection: { type: 'string', enum: ['directed', 'undirected', 'mixed', 'unknown'] },
+        SemanticAtlasRelationshipProvenance: {
+          type: 'object',
+          properties: {
+            source_kind: { type: 'string', enum: ['kg-triple', 'legacy-fact', 'community-aggregate', 'unknown'] },
+            source_id: { type: 'string' },
+            relation: { type: 'string' },
+            evidence_count: { type: 'integer', minimum: 1 },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+          },
+          required: ['source_kind', 'source_id', 'relation', 'evidence_count', 'confidence'],
+        },
+        SemanticAtlasConcept: {
+          type: 'object',
+          properties: { label: { type: 'string' }, count: { type: 'integer', minimum: 1 } },
+          required: ['label', 'count'],
+        },
+        SemanticAtlasRegionTypeFacet: {
+          type: 'object',
+          properties: { value: OBSERVATION_TYPE_SCHEMA, count: { type: 'integer', minimum: 1 } },
+          required: ['value', 'count'],
+        },
+        SemanticAtlasRegionFacets: {
+          type: 'object',
+          properties: {
+            projects: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+            sessions: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+            topics: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+            types: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasRegionTypeFacet' } },
+          },
+          required: ['projects', 'sessions', 'topics', 'types'],
+        },
+        SemanticAtlasRepresentative: {
+          type: 'object',
+          properties: {
+            node_id: { type: 'string' },
+            reason: { type: 'string', maxLength: 120 },
+            signals: { type: 'array', minItems: 1, maxItems: 3, uniqueItems: true, items: { type: 'string', enum: ['structural', 'bridge', 'recency', 'confidence', 'diversity'] } },
+            rank: { type: 'integer', minimum: 1 },
+          },
+          required: ['node_id', 'reason', 'signals', 'rank'],
+        },
+        SemanticAtlasRegion: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }, community_id: { type: 'string' }, label: { type: 'string' }, summary: { type: 'string' },
+            member_count: { type: 'integer', minimum: 1 }, project_count: { type: 'integer', minimum: 0 },
+            time_from: { type: 'string', nullable: true }, time_to: { type: 'string', nullable: true },
+            concepts: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasConcept' } },
+            facets: { $ref: '#/components/schemas/SemanticAtlasRegionFacets' },
+            representatives: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasRepresentative' } },
+            seed_x: { type: 'number' }, seed_y: { type: 'number' }, unclustered: { type: 'boolean' },
+          },
+          required: ['id', 'community_id', 'label', 'summary', 'member_count', 'project_count', 'time_from', 'time_to', 'concepts', 'facets', 'representatives', 'seed_x', 'seed_y', 'unclustered'],
+        },
+        SemanticAtlasRegionBridge: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }, source_region_id: { type: 'string' }, target_region_id: { type: 'string' },
+            tier: { type: 'string', enum: ['region-aggregate'] }, relationship_class: { type: 'string', enum: ['aggregate'] },
+            direction: { $ref: '#/components/schemas/SemanticAtlasDirection' }, weight: { type: 'number' },
+            evidence_count: { type: 'integer', minimum: 1 }, relations: { type: 'array', items: { type: 'string' } },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+            representative_edge_ids: { type: 'array', items: { type: 'string' } },
+            provenance: { type: 'array', maxItems: 5, items: { $ref: '#/components/schemas/SemanticAtlasRelationshipProvenance' } },
+          },
+          required: ['id', 'source_region_id', 'target_region_id', 'tier', 'relationship_class', 'direction', 'weight', 'evidence_count', 'relations', 'confidence', 'representative_edge_ids', 'provenance'],
+        },
+        SemanticAtlasProjectRegion: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }, label: { type: 'string' }, summary: { type: 'string' },
+            memory_count: { type: 'integer', minimum: 0 }, constellation_count: { type: 'integer', minimum: 0 },
+            visible_constellation_count: { type: 'integer', minimum: 0 }, omitted_constellation_count: { type: 'integer', minimum: 0 },
+            constellation_ids: { type: 'array', items: { type: 'string' } },
+            seed_x: { type: 'number' }, seed_y: { type: 'number' }, unassigned: { type: 'boolean' },
+          },
+          required: ['id', 'label', 'summary', 'memory_count', 'constellation_count', 'visible_constellation_count', 'omitted_constellation_count', 'constellation_ids', 'seed_x', 'seed_y', 'unassigned'],
+        },
+        SemanticAtlasProjectBridge: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' }, source_project_id: { type: 'string' }, target_project_id: { type: 'string' },
+            tier: { type: 'string', enum: ['project-aggregate'] }, relationship_class: { type: 'string', enum: ['aggregate'] },
+            direction: { $ref: '#/components/schemas/SemanticAtlasDirection' }, weight: { type: 'number' },
+            evidence_count: { type: 'integer', minimum: 1 }, relations: { type: 'array', items: { type: 'string' } },
+            confidence: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+            representative_edge_ids: { type: 'array', items: { type: 'string' } },
+            provenance: { type: 'array', maxItems: 5, items: { $ref: '#/components/schemas/SemanticAtlasRelationshipProvenance' } },
+          },
+          required: ['id', 'source_project_id', 'target_project_id', 'tier', 'relationship_class', 'direction', 'weight', 'evidence_count', 'relations', 'confidence', 'representative_edge_ids', 'provenance'],
+        },
+        SemanticAtlasNavigation: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', nullable: true },
+            community_id: { type: 'string', nullable: true }, focus_node_id: { type: 'string', nullable: true },
+            depth: { type: 'integer', enum: [1, 2], nullable: true }, region_id: { type: 'string', nullable: true },
+            source_project_count: { type: 'integer', minimum: 0 }, visible_project_count: { type: 'integer', minimum: 0 },
+            omitted_projects: { type: 'integer', minimum: 0 }, source_constellation_count: { type: 'integer', minimum: 0 },
+            visible_constellation_count: { type: 'integer', minimum: 0 }, omitted_constellations: { type: 'integer', minimum: 0 },
+            source_memory_count: { type: 'integer', minimum: 0 }, visible_memory_count: { type: 'integer', minimum: 0 },
+            source_relationship_count: { type: 'integer', minimum: 0 }, visible_relationship_count: { type: 'integer', minimum: 0 },
+            represented_source_relationship_count: { type: 'integer', minimum: 0 }, omitted_nodes: { type: 'integer', minimum: 0 },
+            omitted_edges: { type: 'integer', minimum: 0 }, raw_rich_render_safe: { type: 'boolean' },
+            raw_rich_render_limit: { type: 'integer', minimum: 1 },
+            scope: {
+              type: 'object',
+              properties: {
+                project: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+                session: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+                topic: { allOf: [{ $ref: '#/components/schemas/AtlasFacetRef' }], nullable: true },
+                type: { ...OBSERVATION_TYPE_SCHEMA, nullable: true }, relation: { type: 'string', nullable: true },
+              },
+              required: ['project', 'session', 'topic', 'type', 'relation'],
+            },
+          },
+          required: ['project_id', 'community_id', 'focus_node_id', 'depth', 'region_id', 'source_project_count', 'visible_project_count', 'omitted_projects', 'source_constellation_count', 'visible_constellation_count', 'omitted_constellations', 'source_memory_count', 'visible_memory_count', 'source_relationship_count', 'visible_relationship_count', 'represented_source_relationship_count', 'omitted_nodes', 'omitted_edges', 'raw_rich_render_safe', 'raw_rich_render_limit', 'scope'],
+        },
+        SemanticAtlasPageResponse: {
+          type: 'object',
+          properties: {
+            hierarchy: { type: 'string', enum: ['global', 'project'] },
+            level: { type: 'string', enum: ['universe', 'project', 'community', 'neighborhood'] },
+            generation: { type: 'string' },
+            presentation: { $ref: '#/components/schemas/SemanticAtlasPresentation' },
+            nodes: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasNode' } },
+            edges: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasEdge' } },
+            regions: { type: 'array', items: { $ref: '#/components/schemas/SemanticAtlasRegion' } },
+            region_bridges: { type: 'array', maxItems: 450, items: { $ref: '#/components/schemas/SemanticAtlasRegionBridge' } },
+            project_regions: { type: 'array', maxItems: 150, items: { $ref: '#/components/schemas/SemanticAtlasProjectRegion' } },
+            project_bridges: { type: 'array', maxItems: 450, items: { $ref: '#/components/schemas/SemanticAtlasProjectBridge' } },
+            counts: {
+              type: 'object',
+              properties: {
+                memory_count: { type: 'integer' },
+                project_count: { type: 'integer' },
+                community_count: { type: 'integer' },
+                assigned_memory_count: { type: 'integer' },
+                unclustered_memory_count: { type: 'integer' },
+                supporting_entity_count: { type: 'integer' },
+                relationship_count: { type: 'integer' },
+                raw_entity_count: { type: 'integer' },
+                raw_relationship_count: { type: 'integer' },
+              },
+              required: ['memory_count', 'project_count', 'community_count', 'assigned_memory_count', 'unclustered_memory_count', 'supporting_entity_count', 'relationship_count', 'raw_entity_count', 'raw_relationship_count'],
+            },
+            coverage: {
+              type: 'object',
+              properties: {
+                state: { type: 'string', enum: ['fresh', 'stale', 'missing', 'rebuilding', 'failed', 'degraded'] },
+                projection_source: { type: 'string', enum: ['deterministic-kg', 'deterministic-unclustered'] },
+                summary_state: { type: 'string', enum: ['fresh', 'stale', 'missing', 'rebuilding', 'failed', 'degraded'] },
+                observations_with_kg: { type: 'integer' },
+                observations_without_kg: { type: 'integer' },
+                degraded_reasons: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['state', 'projection_source', 'summary_state', 'observations_with_kg', 'observations_without_kg', 'degraded_reasons'],
+            },
+            facets: {
+              type: 'object',
+              properties: {
+                projects: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+                sessions: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+                topics: { type: 'array', items: { $ref: '#/components/schemas/AtlasFacetOption' } },
+                types: { type: 'array', items: OBSERVATION_TYPE_SCHEMA },
+                relations: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['projects', 'sessions', 'topics', 'types', 'relations'],
+            },
+            navigation: { $ref: '#/components/schemas/SemanticAtlasNavigation' },
+            continuation: { type: 'string', nullable: true },
+            truncated: { type: 'boolean' },
+            health: { $ref: '#/components/schemas/VizHealthResponse' },
+          },
+          required: ['hierarchy', 'level', 'generation', 'presentation', 'nodes', 'edges', 'regions', 'region_bridges', 'project_regions', 'project_bridges', 'counts', 'coverage', 'facets', 'navigation', 'continuation', 'truncated', 'health'],
         },
         VizSliceResponse: {
           type: 'object',

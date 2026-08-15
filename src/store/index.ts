@@ -1,11 +1,32 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { SemanticAtlasError, StaleAdminPreviewError, VizGraphPageError } from './types.js';
+import { buildRawVisualizationProjection } from './visualization-projection.js';
+import {
+  buildAtlasFacetCatalog,
+  buildSemanticAtlasProjection,
+  enrichSemanticAtlasCommunityNodes,
+  resolveAtlasFacetToken,
+  type AtlasFacetCatalog,
+  type AtlasStructuralEvidence,
+  type SemanticAtlasProjection,
+} from './semantic-atlas.js';
+import { buildSemanticAtlasCommunityView } from './semantic-atlas-regions.js';
+import {
+  buildProjectAtlasProjection,
+  projectAtlasFingerprint,
+  type ProjectAtlasProjection,
+} from './project-atlas.js';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
-import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, type ThothConfig } from '../config.js';
+import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, DEFAULT_OPERATION_TRACE_RETENTION_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
+  AtlasHierarchy,
+  AtlasCoverageState,
   ContextInput,
+  AtlasPivotLocation,
+  AtlasTokenScope,
   CommunityPreviewResult,
   CommunityRebuildResult,
   CommunityHealthReadModel,
@@ -43,6 +64,11 @@ import type {
   SaveResult,
   SearchInput,
   SearchResult,
+  SemanticAtlasPageRequest,
+  SemanticAtlasPageResponse,
+  SemanticAtlasEdge,
+  SemanticObservatoryContextRequest,
+  SemanticObservatoryContextResponse,
   CommunityRetrievalInput,
   CommunityStateInput,
   Session,
@@ -57,6 +83,8 @@ import type {
   TimelineInput,
   TimelineResult,
   TopicKeySummary,
+  TokenSafeObservatoryRecallHit,
+  TokenSafeObservatoryRecallResponse,
   UpdateObservationInput,
   UserPrompt,
   ObservatoryContextResponse,
@@ -73,6 +101,8 @@ import type {
   ObservatoryTimelineResponse,
   VizExpandRequest,
   VizFiltersResponse,
+  VizGraphPageRequest,
+  VizGraphPageResponse,
   VizHealthResponse,
   VizInspectEdgeResponse,
   VizInspectNodeResponse,
@@ -80,6 +110,11 @@ import type {
   VizSliceRequest,
   VizSliceResponse,
   ListOperationTracesInput,
+  AdminStorageScope,
+  ApplyOperationTraceRetentionInput,
+  ApplySyncJournalRepairInput,
+  OperationTraceRetentionResult,
+  SyncJournalRepairResult,
 } from './types.js';
 import { metadataFromResolution, normalizeExplicitString, resolveSaveIdentity, mergeIdentityMetadata } from './identity.js';
 import { planMaintenance, type MaintenancePlan, type MaintenancePlanningRecord } from './maintenance.js';
@@ -119,6 +154,9 @@ type ObservationRow = Observation;
 type OperationTraceRow = Omit<OperationTrace, 'request_truncated' | 'response_truncated'> & {
   request_truncated: number;
   response_truncated: number;
+};
+type OperationTraceRetentionEvaluation = OperationTraceRetentionResult & {
+  selected_ids: number[];
 };
 
 type SearchRow = ObservationRow & { rank: number };
@@ -189,6 +227,8 @@ interface PruneCandidateRow {
 }
 
 const PRUNE_ID_BATCH_SIZE = 500;
+const ADMIN_PREVIEW_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const CANONICAL_UTC_MILLISECOND_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 type SemanticLaneReadiness = Record<SemanticLaneName, {
   pending: boolean;
   degraded: boolean;
@@ -205,6 +245,37 @@ type VizEdgeRow = {
   content: string;
   relation: string;
   object: string;
+};
+
+type VizGraphSourceRow = VizEdgeRow & {
+  source_key: string;
+};
+
+type VizGraphCursor = {
+  v: 1;
+  scope: string;
+  generation: string;
+  last_key: string;
+};
+
+type SemanticAtlasCursor = {
+  v: 1;
+  level: SemanticAtlasPageResponse['level'];
+  scope: string;
+  generation: string;
+  community_id: string | null;
+  focus_node_id: string | null;
+  offset: number;
+};
+
+type ProjectAtlasCursor = {
+  v: 2;
+  hierarchy: 'project';
+  level: 'universe' | 'project';
+  scope: string;
+  generation: string;
+  project_id: string | null;
+  offset: number;
 };
 
 type CommunityGraphTriple = {
@@ -346,6 +417,7 @@ const DEFAULT_CONFIG: ThothConfig = {
   knowledgeGraph: { ...DEFAULT_KNOWLEDGE_GRAPH_CONFIG },
   communitySummaries: { ...DEFAULT_COMMUNITY_SUMMARIES_CONFIG },
   maintenance: { ...DEFAULT_MAINTENANCE_CONFIG },
+  operationTraceRetention: { ...DEFAULT_OPERATION_TRACE_RETENTION_CONFIG },
 };
 
 const RETRIEVAL_QUERY_STOPWORDS = new Set([
@@ -390,6 +462,7 @@ const VIZ_LIMITS = {
   maxNodesDefault: 300,
   maxEdgesDefault: 900,
 };
+const VIZ_GRAPH_PAGE_SIZE_MAX = 250;
 
 const OBSERVATORY_CONTEXT_TTL_MS = 1000 * 60 * 30;
 const OBSERVATORY_PIVOT_TTL_MS = 1000 * 60 * 10;
@@ -636,6 +709,23 @@ export class Store {
     stale: true,
     degradedReason: null as string | null,
   };
+  private readonly semanticAtlasProjectionCache = new Map<string, {
+    projection: SemanticAtlasProjection;
+    generation: string;
+    observations: Observation[];
+    summaryCandidates: CommunitySummarySnapshot[];
+    summaryState: AtlasCoverageState;
+    health: VizHealthResponse;
+    lastUsed: number;
+    semanticViews: Map<string, ReturnType<typeof buildSemanticAtlasCommunityView>>;
+    projectProjection?: ProjectAtlasProjection;
+  }>();
+  private semanticAtlasSourceCache: {
+    revision: string;
+    allObservations: Observation[];
+    facetCatalog: AtlasFacetCatalog;
+  } | null = null;
+  private semanticAtlasLocalRevision = 0;
 
   constructor(
     dbPath: string,
@@ -696,6 +786,10 @@ export class Store {
           ...(maintenanceConfig?.decay ?? {}),
         },
       },
+      operationTraceRetention: {
+        ...DEFAULT_OPERATION_TRACE_RETENTION_CONFIG,
+        ...(config?.operationTraceRetention ?? {}),
+      },
     };
     this.db = this.openMode === 'read-only'
       ? new Database(dbPath, { readonly: true, fileMustExist: true })
@@ -705,6 +799,10 @@ export class Store {
       { deterministic: true },
       semanticTextPresence,
     );
+    this.db.function('thoth_mark_semantic_atlas_dirty', () => {
+      this.semanticAtlasLocalRevision += 1;
+      return this.semanticAtlasLocalRevision;
+    });
 
     if (this.openMode === 'read-only') {
       this.db.pragma('busy_timeout = 5000');
@@ -737,6 +835,7 @@ export class Store {
     this.enqueueRebuildOnConfigMismatch();
     this.enqueueRebuildOnMissingSemanticCoverage();
     this.reconcileSemanticIndexState();
+    this.installSemanticAtlasRevisionTriggers();
   }
 
   getSemanticIndexState(): {
@@ -1293,18 +1392,21 @@ export class Store {
     operation: SyncOperation,
     entityType: SyncEntityType,
     entityId: number,
-    syncId: string | null,
+    syncId: string,
     project: string | null = null
   ): void {
-    try {
-      this.db.prepare(
-        'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id, project) VALUES (?, ?, ?, ?, ?)'
-      ).run(operation, entityType, entityId, syncId, project);
-    } catch (error) {
-      process.stderr.write(
-        `[store] Failed to record sync mutation (${operation} ${entityType}#${entityId}): ${error instanceof Error ? error.message : String(error)}\n`
-      );
+    if (syncId.trim().length === 0) {
+      throw new Error(`Cannot record sync mutation for ${entityType}#${entityId}: stable identity is missing`);
     }
+    this.db.prepare(
+      'INSERT INTO sync_mutations (operation, entity_type, entity_id, sync_id, project) VALUES (?, ?, ?, ?, ?)'
+    ).run(operation, entityType, entityId, syncId, project);
+  }
+
+  private requireStableIdentity(value: string | null, context: string): string {
+    const identity = value?.trim();
+    if (!identity) throw new Error(`${context}: stable identity is missing`);
+    return identity;
   }
 
   private mapOperationTraceRow(row: OperationTraceRow | undefined): OperationTrace | null {
@@ -1430,6 +1532,223 @@ export class Store {
       ? this.db.prepare('SELECT * FROM operation_traces WHERE id = ?').get(traceIdOrId) as OperationTraceRow | undefined
       : this.db.prepare('SELECT * FROM operation_traces WHERE trace_id = ?').get(traceIdOrId) as OperationTraceRow | undefined;
     return this.mapOperationTraceRow(row);
+  }
+
+  private normalizeAdminScope(scope: AdminStorageScope): AdminStorageScope {
+    if ('project' in scope && typeof scope.project === 'string' && scope.project.trim().length > 0 && !('all' in scope)) {
+      return { project: scope.project.trim() };
+    }
+    if ('all' in scope && scope.all === true && !('project' in scope)) return { all: true };
+    throw new Error('Exactly one non-blank project or all: true scope is required');
+  }
+
+  private evaluateSyncJournalRepair(scopeInput: AdminStorageScope): SyncJournalRepairResult & {
+    selected_rows: Array<SyncJournalRepairResult['samples'][number] & { project: string | null }>;
+  } {
+    const scope = this.normalizeAdminScope(scopeInput);
+    type CurrentRow = { entity_type: SyncEntityType; entity_id: number; sync_id: string | null; deleted: number; project: string | null };
+    type RepairCandidate = SyncJournalRepairResult['samples'][number] & { project: string | null };
+    const scoped = (column: string): { sql: string; params: string[] } => 'project' in scope
+      ? { sql: ` WHERE ${column} = ?`, params: [scope.project] }
+      : { sql: '', params: [] };
+    const observationScope = scoped('project');
+    const promptScope = scoped('project');
+    const sessionScope = scoped('project');
+    const rows: CurrentRow[] = [
+      ...(this.db.prepare(`SELECT 'observation' AS entity_type, id AS entity_id, sync_id, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END AS deleted, project FROM observations${observationScope.sql}`)
+        .all(...observationScope.params) as CurrentRow[]),
+      ...(this.db.prepare(`SELECT 'prompt' AS entity_type, id AS entity_id, sync_id, 0 AS deleted, project FROM user_prompts${promptScope.sql}`)
+        .all(...promptScope.params) as CurrentRow[]),
+      ...(this.db.prepare(`SELECT 'session' AS entity_type, 0 AS entity_id, id AS sync_id, 0 AS deleted, project FROM sessions${sessionScope.sql}`)
+        .all(...sessionScope.params) as CurrentRow[]),
+    ];
+    const candidates: RepairCandidate[] = [];
+    let skipped = 0;
+    let ineligibleIdentity = 0;
+    const latestMutations = new Map<string, SyncOperation>();
+    const mutationRows = this.db.prepare(
+      `SELECT entity_type, sync_id, operation FROM sync_mutations
+       WHERE sync_id IS NOT NULL AND trim(sync_id) != '' ORDER BY id DESC`
+    ).all() as Array<{ entity_type: SyncEntityType; sync_id: string; operation: SyncOperation }>;
+    for (const mutation of mutationRows) {
+      const key = `${mutation.entity_type}\u0000${mutation.sync_id}`;
+      if (!latestMutations.has(key)) latestMutations.set(key, mutation.operation);
+    }
+    for (const row of rows) {
+      const syncId = row.sync_id?.trim();
+      if (!syncId) {
+        ineligibleIdentity += 1;
+        continue;
+      }
+      const latestOperation = latestMutations.get(`${row.entity_type}\u0000${syncId}`);
+      const covered = row.deleted === 1
+        ? latestOperation === 'delete'
+        : latestOperation === 'create' || latestOperation === 'update';
+      if (covered) {
+        skipped += 1;
+        continue;
+      }
+      candidates.push({
+        entity_type: row.entity_type,
+        entity_id: row.entity_id,
+        sync_id: syncId,
+        operation: row.deleted === 1 ? 'delete' : latestOperation ? 'update' : 'create',
+        project: row.project,
+      });
+    }
+    const rank: Record<SyncEntityType, number> = { observation: 0, prompt: 1, session: 2 };
+    candidates.sort((a, b) => rank[a.entity_type] - rank[b.entity_type]
+      || a.entity_id - b.entity_id || a.sync_id.localeCompare(b.sync_id));
+    const selected = candidates.slice(0, 10_000);
+    const selectionFingerprint = `sha256:${createHash('sha256').update(JSON.stringify({
+      scope,
+      max_rows_per_run: 10_000,
+      candidates: selected.map((row) => [row.entity_type, row.entity_id, row.sync_id, row.operation]),
+    })).digest('hex')}`;
+    const byEntity: Record<SyncEntityType, number> = { observation: 0, prompt: 0, session: 0 };
+    const byOperation: Record<SyncOperation, number> = { create: 0, update: 0, delete: 0 };
+    for (const candidate of candidates) {
+      byEntity[candidate.entity_type] += 1;
+      byOperation[candidate.operation] += 1;
+    }
+    const result: SyncJournalRepairResult = {
+      dry_run: true,
+      scope,
+      max_rows_per_run: 10_000,
+      selection_fingerprint: selectionFingerprint,
+      counts: {
+        scanned: rows.length,
+        candidates: candidates.length,
+        selected: selected.length,
+        repaired: 0,
+        remaining: candidates.length - selected.length,
+        skipped,
+        ineligible_identity: ineligibleIdentity,
+        by_entity: byEntity,
+        by_operation: byOperation,
+      },
+      has_more: candidates.length > selected.length,
+      samples: selected.slice(0, 50).map(({ project: _project, ...sample }) => sample),
+    };
+    Object.defineProperty(result, 'selected_rows', { value: selected, enumerable: false });
+    return result as SyncJournalRepairResult & {
+      selected_rows: Array<SyncJournalRepairResult['samples'][number] & { project: string | null }>;
+    };
+  }
+
+  previewSyncJournalRepair(scope: AdminStorageScope): SyncJournalRepairResult {
+    return this.evaluateSyncJournalRepair(scope);
+  }
+
+  applySyncJournalRepair(input: ApplySyncJournalRepairInput): SyncJournalRepairResult {
+    const expected = input.expected_selection_fingerprint;
+    if (!ADMIN_PREVIEW_FINGERPRINT_PATTERN.test(expected ?? '')) throw new StaleAdminPreviewError();
+    const apply = this.db.transaction(() => {
+      const preview = this.evaluateSyncJournalRepair(input.scope);
+      if (preview.selection_fingerprint !== expected) throw new StaleAdminPreviewError();
+      for (const candidate of preview.selected_rows) {
+        this.recordMutation(candidate.operation, candidate.entity_type, candidate.entity_id, candidate.sync_id, candidate.project);
+      }
+      return {
+        ...preview,
+        dry_run: false,
+        counts: { ...preview.counts, repaired: preview.counts.selected },
+      };
+    });
+    return apply.immediate();
+  }
+
+  private evaluateOperationTraceRetention(
+    scopeInput: AdminStorageScope,
+    effectiveNowInput?: string,
+  ): OperationTraceRetentionEvaluation {
+    const scope = this.normalizeAdminScope(scopeInput);
+    const effectiveNow = effectiveNowInput ?? new Date().toISOString();
+    if (!CANONICAL_UTC_MILLISECOND_PATTERN.test(effectiveNow)
+      || new Date(effectiveNow).toISOString() !== effectiveNow) throw new StaleAdminPreviewError('effective_now must be canonical UTC ISO-8601');
+    const retention = this.config.operationTraceRetention;
+    const successCutoff = new Date(Date.parse(effectiveNow) - retention.successRetentionDays * 86_400_000).toISOString();
+    const errorCutoff = new Date(Date.parse(effectiveNow) - retention.errorRetentionDays * 86_400_000).toISOString();
+    const where = 'project' in scope ? ' WHERE project = ?' : '';
+    const params = 'project' in scope ? [scope.project] : [];
+    const rows = this.db.prepare(`SELECT id, trace_id, status, started_at FROM operation_traces${where}`)
+      .all(...params) as Array<{ id: number; trace_id: string; status: string; started_at: string }>;
+    let skippedInvalid = 0;
+    let skippedStatus = 0;
+    const eligible = rows.filter((row) => {
+      if (!CANONICAL_UTC_MILLISECOND_PATTERN.test(row.started_at) || new Date(row.started_at).toISOString() !== row.started_at) {
+        skippedInvalid += 1;
+        return false;
+      }
+      if (row.status !== 'ok' && row.status !== 'error') {
+        skippedStatus += 1;
+        return false;
+      }
+      return row.started_at < (row.status === 'ok' ? successCutoff : errorCutoff);
+    }).sort((a, b) => a.started_at.localeCompare(b.started_at) || a.id - b.id);
+    const selected = eligible.slice(0, retention.maxRowsPerRun);
+    const policy = {
+      success_retention_days: retention.successRetentionDays,
+      error_retention_days: retention.errorRetentionDays,
+      max_rows_per_run: retention.maxRowsPerRun,
+      success_cutoff: successCutoff,
+      error_cutoff: errorCutoff,
+    };
+    const fingerprint = `sha256:${createHash('sha256').update(JSON.stringify({
+      scope, effective_now: effectiveNow, policy,
+      selected: selected.map((row) => [row.id, row.trace_id, row.status, row.started_at]),
+    })).digest('hex')}`;
+    const result: OperationTraceRetentionResult = {
+      dry_run: true,
+      scope,
+      effective_now: effectiveNow,
+      policy,
+      selection_fingerprint: fingerprint,
+      counts: {
+        before_in_scope: rows.length,
+        eligible: eligible.length,
+        selected: selected.length,
+        deleted: 0,
+        remaining_eligible: eligible.length - selected.length,
+        skipped_invalid_timestamp: skippedInvalid,
+        skipped_unsupported_status: skippedStatus,
+        after_in_scope_at_commit: rows.length,
+      },
+      has_more: eligible.length > selected.length,
+      sample_trace_ids: selected.slice(0, 50).map((row) => row.trace_id),
+    };
+    Object.defineProperty(result, 'selected_ids', {
+      value: selected.map((row) => row.id),
+      enumerable: false,
+    });
+    return result as OperationTraceRetentionEvaluation;
+  }
+
+  previewOperationTraceRetention(scope: AdminStorageScope, effectiveNow?: string): OperationTraceRetentionResult {
+    return this.evaluateOperationTraceRetention(scope, effectiveNow);
+  }
+
+  applyOperationTraceRetention(input: ApplyOperationTraceRetentionInput): OperationTraceRetentionResult {
+    if (!ADMIN_PREVIEW_FINGERPRINT_PATTERN.test(input.expected_selection_fingerprint ?? '')) throw new StaleAdminPreviewError();
+    const apply = this.db.transaction(() => {
+      const preview = this.evaluateOperationTraceRetention(input.scope, input.effective_now);
+      if (preview.selection_fingerprint !== input.expected_selection_fingerprint) throw new StaleAdminPreviewError();
+      let deleted = 0;
+      for (let offset = 0; offset < preview.selected_ids.length; offset += 500) {
+        const chunk = preview.selected_ids.slice(offset, offset + 500);
+        deleted += this.db.prepare(`DELETE FROM operation_traces WHERE id IN (${chunk.map(() => '?').join(',')})`).run(...chunk).changes;
+      }
+      return {
+        ...preview,
+        dry_run: false,
+        counts: {
+          ...preview.counts,
+          deleted,
+          after_in_scope_at_commit: preview.counts.before_in_scope - deleted,
+        },
+      };
+    });
+    return apply.immediate();
   }
 
   getOperationTraceTelemetry(input: { project?: string; since?: string; now?: string } = {}): OperationTraceTelemetry {
@@ -1576,61 +1895,52 @@ export class Store {
    * Ensure a session exists. Idempotent — creates if new, enriches missing fields if existing.
    * Replaces empty/unknown project and null/empty directory with provided values.
    */
-  ensureSession(sessionId: string, project: string, directory?: string): void {
-    // Check if session already exists
-    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId);
-    const isNew = !existing;
-
+  private persistSession(
+    sessionId: string,
+    project: string,
+    directory: string | undefined,
+    origin: 'local' | 'inbound',
+  ): Session {
+    const existing = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session | undefined;
     this.db
       .prepare(
         `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           project   = CASE WHEN sessions.project = '' OR sessions.project = 'unknown' THEN excluded.project ELSE sessions.project END,
+           project   = CASE WHEN (sessions.project = '' OR sessions.project = 'unknown')
+                             AND substr(sessions.id, 1, 12) <> 'manual-save-'
+                            THEN excluded.project ELSE sessions.project END,
            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
       )
       .run(sessionId, project, directory ?? null);
-
-    // Record mutation only for new sessions
-    if (isNew) {
-      this.recordMutation('create', 'session', 0, sessionId, project);
+    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Session;
+    if (origin === 'local') {
+      if (!existing) {
+        this.recordMutation('create', 'session', 0, sessionId, session.project);
+      } else if (existing.project !== session.project || existing.directory !== session.directory) {
+        this.recordMutation('update', 'session', 0, sessionId, session.project);
+      }
     }
+    return session;
+  }
+
+  ensureSession(sessionId: string, project: string, directory?: string): void {
+    this.db.transaction(() => this.persistSession(sessionId, project, directory, 'local'))();
   }
 
   startSession(id: string, project: string, directory?: string): Session {
-    const existing = this.db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
-    const isNew = !existing;
-
-    const result = this.db
-      .prepare(
-        `INSERT INTO sessions (id, project, directory) VALUES (?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-            directory = CASE WHEN sessions.directory IS NULL OR sessions.directory = '' THEN excluded.directory ELSE sessions.directory END`
-      )
-      .run(id, project, directory ?? null);
-
-    // Record mutation only for newly created sessions.
-    if (isNew && result.changes > 0) {
-      this.recordMutation('create', 'session', 0, id, project);
-    }
-
-    return this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+    return this.db.transaction(() => this.persistSession(id, project, directory, 'local'))();
   }
 
   endSession(id: string, summary?: string): Session | null {
-    const result = this.db
-      .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ? AND ended_at IS NULL")
-      .run(summary ?? null, id);
-
-    if (result.changes === 0) {
-      return null;
-    }
-
-    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
-
-    // Record mutation for session update
-    this.recordMutation('update', 'session', 0, id, session.project);
-
-    return session;
+    return this.db.transaction(() => {
+      const result = this.db
+        .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ? AND ended_at IS NULL")
+        .run(summary ?? null, id);
+      if (result.changes === 0) return null;
+      const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+      this.recordMutation('update', 'session', 0, id, session.project);
+      return session;
+    })();
   }
 
   private extractStructuredFacts(content: string): Array<{ relation: string; object: string }> {
@@ -1929,19 +2239,21 @@ export class Store {
   }
 
   checkpointSession(id: string, summary?: string): Session | null {
-    const result = this.db
-      .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?")
-      .run(summary ?? null, id);
+    return this.db.transaction(() => {
+      const result = this.db
+        .prepare("UPDATE sessions SET ended_at = datetime('now'), summary = ? WHERE id = ?")
+        .run(summary ?? null, id);
 
-    if (result.changes === 0) {
-      return null;
-    }
+      if (result.changes === 0) {
+        return null;
+      }
 
-    const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
+      const session = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 
-    this.recordMutation('update', 'session', 0, id, session.project);
+      this.recordMutation('update', 'session', 0, id, session.project);
 
-    return session;
+      return session;
+    })();
   }
 
   getSession(id: string): Session | null {
@@ -2152,6 +2464,10 @@ export class Store {
   }
 
   savePrompt(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
+    return this.db.transaction(() => this.savePromptInTransaction(sessionId, content, project))();
+  }
+
+  private savePromptInTransaction(sessionId: string | undefined, content: string, project?: string): SavePromptResult {
     const identity = resolveSaveIdentity({
       session_id: sessionId,
       project,
@@ -2180,23 +2496,21 @@ export class Store {
       };
     }
 
-    const syncId = randomUUID();
-    const result = this.db.prepare(
-      'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
-    ).run(identity.session_id, content, recordProject, syncId);
-
-    const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
-
-    if (!prompt) {
-      throw new Error('Failed to load created prompt');
-    }
-
-    this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
-
-    return {
-      ...prompt,
-      ...(identityMetadata ? { identity: identityMetadata } : {}),
-    };
+    return this.db.transaction(() => {
+      const syncId = randomUUID();
+      const result = this.db.prepare(
+        'INSERT INTO user_prompts (session_id, content, project, sync_id) VALUES (?, ?, ?, ?)'
+      ).run(identity.session_id, content, recordProject, syncId);
+      const prompt = this.db.prepare('SELECT * FROM user_prompts WHERE id = ?').get(Number(result.lastInsertRowid)) as UserPrompt | undefined;
+      if (!prompt || !prompt.sync_id?.trim()) {
+        throw new Error('Failed to load created prompt with stable identity');
+      }
+      this.recordMutation('create', 'prompt', prompt.id, prompt.sync_id, prompt.project);
+      return {
+        ...prompt,
+        ...(identityMetadata ? { identity: identityMetadata } : {}),
+      };
+    })();
   }
 
   recentPrompts(limit: number = 10, project?: string, sessionId?: string): UserPrompt[] {
@@ -3085,14 +3399,14 @@ export class Store {
              revision_count = revision_count + 1, updated_at = datetime('now')
          WHERE id = ?`
       ).run(reflection.title, reflection.content, project, normalizedHash, existingByScope.id);
-      this.recordMutation('update', 'observation', existingByScope.id, null, project);
-
       const observation = this.getObservation(existingByScope.id);
-      if (observation) {
-        this.refreshGraphFacts(observation);
-        this.markCommunitySummariesStale(observation.project, 'saveObservation');
-        this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
+      if (!observation?.sync_id?.trim()) {
+        throw new Error(`Cannot update maintenance reflection ${existingByScope.id}: stable identity is missing`);
       }
+      this.recordMutation('update', 'observation', observation.id, observation.sync_id, project);
+      this.refreshGraphFacts(observation);
+      this.markCommunitySummariesStale(observation.project, 'saveObservation');
+      this.planSemanticJobsForObservation({ observationId: observation.id, content: observation.content });
 
       return { observationId: existingByScope.id, topicKey: existingByScope.topic_key };
     }
@@ -3603,6 +3917,10 @@ export class Store {
   }
 
   saveObservation(input: SaveObservationInput): SaveResult {
+    return this.db.transaction(() => this.saveObservationInTransaction(input))();
+  }
+
+  private saveObservationInTransaction(input: SaveObservationInput): SaveResult {
     const strippedTitle = stripPrivateTags(input.title);
     const strippedContent = stripPrivateTags(input.content);
     const validation = validateContentLength(strippedContent, this.config.maxContentLength);
@@ -3638,16 +3956,13 @@ export class Store {
     );
 
     if (duplicate.isDuplicate && duplicate.existingId !== undefined) {
-      incrementDuplicate(this.db, duplicate.existingId);
-      const observation = this.getObservation(duplicate.existingId);
-
-      if (!observation) {
-        throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
-      }
-
-      this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
-
-      return { observation, action: 'deduplicated', ...(identityMetadata ? { identity: identityMetadata } : {}) };
+      return this.db.transaction(() => {
+        incrementDuplicate(this.db, duplicate.existingId!);
+        const observation = this.getObservation(duplicate.existingId!);
+        if (!observation) throw new Error(`Failed to load deduplicated observation ${duplicate.existingId}`);
+        this.recordMutation('update', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
+        return { observation, action: 'deduplicated' as const, ...(identityMetadata ? { identity: identityMetadata } : {}) };
+      })();
     }
 
     if (input.topic_key) {
@@ -3680,7 +3995,7 @@ export class Store {
             throw new Error(`Failed to load upserted observation ${existing.id}`);
           }
 
-          this.recordMutation('update', 'observation', observation.id, observation.sync_id, observation.project);
+          this.recordMutation('update', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
           this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
           return { observation, action: 'upserted', ...(identityMetadata ? { identity: identityMetadata } : {}) };
@@ -3711,7 +4026,7 @@ export class Store {
         throw new Error('Failed to load created observation');
       }
 
-      this.recordMutation('create', 'observation', observation.id, observation.sync_id, observation.project);
+      this.recordMutation('create', 'observation', observation.id, this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`), observation.project);
       this.refreshDerivedStateForObservation(observation, 'saveObservation');
 
       return { observation, action: 'created', ...(identityMetadata ? { identity: identityMetadata } : {}) };
@@ -3750,16 +4065,23 @@ export class Store {
         return false;
       }
 
+      if (!existing.sync_id?.trim()) {
+        throw new Error(`Cannot delete observation ${id}: stable identity is missing`);
+      }
+
       const result = this.db.transaction(() => {
         this.deleteSemanticArtifactsForObservation(id);
         this.deleteKnowledgeArtifactsForObservation(id);
         this.db.prepare('DELETE FROM observation_versions WHERE observation_id = ?').run(id);
-        return this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+        const deleted = this.db.prepare('DELETE FROM observations WHERE id = ?').run(id);
+        if (deleted.changes > 0) {
+          this.recordMutation('delete', 'observation', id, existing.sync_id!, existing.project);
+        }
+        return deleted;
       })();
 
       if (result.changes > 0) {
-        this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
-        this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
+        this.markCommunitySummariesStale(existing.project, 'deleteObservation');
       }
 
       return result.changes > 0;
@@ -3769,12 +4091,15 @@ export class Store {
       'SELECT sync_id, project FROM observations WHERE id = ? AND deleted_at IS NULL'
     ).get(id) as { sync_id: string | null; project: string | null } | undefined;
 
-    const result = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
+    if (!existing) return false;
+    if (!existing.sync_id?.trim()) throw new Error(`Cannot delete observation ${id}: stable identity is missing`);
+    const result = this.db.transaction(() => {
+      const updated = this.db.prepare("UPDATE observations SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
+      if (updated.changes > 0) this.recordMutation('delete', 'observation', id, existing.sync_id!, existing.project);
+      return updated;
+    })();
 
-    if (result.changes > 0) {
-      this.recordMutation('delete', 'observation', id, existing?.sync_id ?? null, existing?.project ?? null);
-      this.markCommunitySummariesStale(existing?.project ?? null, 'deleteObservation');
-    }
+    if (result.changes > 0) this.markCommunitySummariesStale(existing.project, 'deleteObservation');
 
     return result.changes > 0;
   }
@@ -3833,7 +4158,7 @@ export class Store {
       const updated = this.getObservation(input.id);
 
       if (updated) {
-        this.recordMutation('update', 'observation', updated.id, updated.sync_id, updated.project);
+        this.recordMutation('update', 'observation', updated.id, this.requireStableIdentity(updated.sync_id, `Observation ${updated.id}`), updated.project);
         this.refreshDerivedStateForObservation(updated, 'updateObservation', current.project);
       }
 
@@ -4884,6 +5209,288 @@ export class Store {
     };
   }
 
+  private currentAtlasFacetCatalog() {
+    return buildAtlasFacetCatalog(this.mapObservationRows(
+      this.db.prepare('SELECT * FROM observations WHERE deleted_at IS NULL ORDER BY id ASC').all() as ObservationRow[],
+    ));
+  }
+
+  private atlasTokenScopeFromInternal(scope: ObservatoryScope): AtlasTokenScope {
+    const normalized = this.normalizeObservatoryScope(scope);
+    const catalog = this.currentAtlasFacetCatalog();
+    return {
+      project: normalized.project ? catalog.refsByValue.project.get(normalized.project) ?? null : null,
+      session: normalized.session_id ? catalog.refsByValue.session.get(normalized.session_id) ?? null : null,
+      topic: normalized.topic_key ? catalog.refsByValue.topic.get(normalized.topic_key) ?? null : null,
+      type: normalized.type ?? normalized.observation_type ?? null,
+      relation: normalized.relation ?? null,
+      query: normalized.query ? stripPrivateTags(normalized.query).trim() || null : null,
+      time_from: normalized.time_from ?? null,
+      time_to: normalized.time_to ?? null,
+    };
+  }
+
+  private resolveSemanticObservatoryScope(input: SemanticObservatoryContextRequest): {
+    internal: ObservatoryScope;
+    public: AtlasTokenScope;
+  } {
+    const catalog = this.currentAtlasFacetCatalog();
+    const resolve = (kind: 'project' | 'session' | 'topic', token: string | undefined): string | undefined => {
+      const value = resolveAtlasFacetToken(catalog, kind, token);
+      if (token && !value) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_FACET_INVALID',
+          'A selected atlas filter is no longer available.',
+          'universe',
+        );
+      }
+      return value;
+    };
+    const project = resolve('project', input.project_token);
+    const sessionId = resolve('session', input.session_token);
+    const topicKey = resolve('topic', input.topic_token);
+    const internal = this.normalizeObservatoryScope({
+      project,
+      session_id: sessionId,
+      topic_key: topicKey,
+      query: stripPrivateTags(input.query ?? '').trim() || undefined,
+      type: input.type,
+      observation_type: input.observation_type,
+      relation: input.relation,
+      time_from: input.time_from,
+      time_to: input.time_to,
+    });
+    return {
+      internal,
+      public: {
+        project: project ? catalog.refsByValue.project.get(project) ?? null : null,
+        session: sessionId ? catalog.refsByValue.session.get(sessionId) ?? null : null,
+        topic: topicKey ? catalog.refsByValue.topic.get(topicKey) ?? null : null,
+        type: internal.type ?? internal.observation_type ?? null,
+        relation: internal.relation ?? null,
+        query: internal.query ?? null,
+        time_from: internal.time_from ?? null,
+        time_to: internal.time_to ?? null,
+      },
+    };
+  }
+
+  getSemanticObservatoryContext(
+    input: SemanticObservatoryContextRequest = {},
+  ): SemanticObservatoryContextResponse {
+    const resolved = this.resolveSemanticObservatoryScope(input);
+    return {
+      scope: resolved.public,
+      context_token: this.encodeScopedToken('context', { scope: resolved.internal }, OBSERVATORY_CONTEXT_TTL_MS),
+      health: this.getVisualizationHealth({ project: resolved.internal.project }),
+      capabilities: {
+        viz_fallback_available: true,
+        observatory_routes_available: true,
+      },
+    };
+  }
+
+  async getSemanticObservatoryRecall(input: {
+    hierarchy?: AtlasHierarchy;
+    context_token: string;
+    lanes?: ObservatoryLane[];
+    limit?: number;
+    embeddingProvider?: EmbeddingProviderAdapter | null;
+    hydeGenerator?: HydeGenerator | null;
+  }): Promise<TokenSafeObservatoryRecallResponse> {
+    const parsed = this.decodeScopedToken<{ scope: ObservatoryScope }>('context', input.context_token);
+    const scope = this.normalizeObservatoryScope(parsed.scope);
+    const publicScope = this.atlasTokenScopeFromInternal(scope);
+    if (
+      (scope.project && !publicScope.project)
+      || (scope.session_id && !publicScope.session)
+      || (scope.topic_key && !publicScope.topic)
+    ) {
+      throw new SemanticAtlasError(
+        'VIZ_ATLAS_FACET_INVALID',
+        'The atlas search scope is no longer current.',
+        'universe',
+      );
+    }
+    const response = await this.getObservatoryRecall(input);
+    const mapHit = (hit: ObservatoryRecallHit): TokenSafeObservatoryRecallHit => {
+      const focusNodeId = `obs:${hit.observation_id}` as const;
+      const hierarchy = input.hierarchy ?? 'global';
+      const projectOwner = hierarchy === 'project'
+        ? this.resolveProjectAtlasOwnerForObservation(publicScope, focusNodeId)
+        : null;
+      const communityId = projectOwner?.communityId
+        ?? this.resolveGlobalAtlasCommunityForObservation(publicScope, focusNodeId);
+      if (!communityId) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_FOCUS_INVALID',
+          'A recalled memory is no longer available in this atlas scope.',
+          'universe',
+        );
+      }
+      const catalog = this.currentAtlasFacetCatalog();
+      return {
+        observation_id: hit.observation_id,
+        title: hit.title,
+        preview: hit.preview,
+        type: hit.type,
+        project: hit.project ? catalog.refsByValue.project.get(hit.project) ?? null : null,
+        session: catalog.refsByValue.session.get(hit.session_id) ?? null,
+        topic: hit.topic_key ? catalog.refsByValue.topic.get(hit.topic_key) ?? null : null,
+        community_id: communityId,
+        project_id: projectOwner?.projectId ?? null,
+        created_at: hit.created_at,
+        lane: hit.lane,
+        pivot_token: this.encodeScopedToken('pivot', {
+          scope,
+          target: 'recall' as ObservatoryPivotTarget,
+          focus_node_id: focusNodeId,
+          hierarchy,
+          project_id: projectOwner?.projectId ?? null,
+          community_id: communityId,
+        }, OBSERVATORY_PIVOT_TTL_MS),
+      };
+    };
+    return {
+      context_token: response.context_token,
+      lanes: {
+        lexical: response.lanes.lexical.map(mapHit),
+        'sentence-vector': response.lanes['sentence-vector'].map(mapHit),
+        'chunk-vector': response.lanes['chunk-vector'].map(mapHit),
+        'fact-kg': response.lanes['fact-kg'].map(mapHit),
+      },
+      lane_states: response.lane_states,
+    };
+  }
+
+  resolveSemanticObservatoryPivot(input: {
+    hierarchy?: AtlasHierarchy;
+    pivot_token: string;
+    target: ObservatoryPivotTarget;
+  }): AtlasPivotLocation {
+    const parsed = this.decodeScopedToken<{
+      scope: ObservatoryScope;
+      focus_node_id: string;
+      hierarchy?: AtlasHierarchy;
+      project_id?: string | null;
+      community_id?: string;
+    }>('pivot', input.pivot_token);
+    const match = parsed.focus_node_id.match(/^obs:(\d+)$/);
+    if (!match) {
+      throw new SemanticAtlasError(
+        'VIZ_ATLAS_FOCUS_INVALID',
+        'The selected search result is no longer available.',
+        'universe',
+      );
+    }
+    const scope = this.normalizeObservatoryScope(parsed.scope);
+    const publicScope = this.atlasTokenScopeFromInternal(scope);
+    const focusNodeId = `obs:${Number.parseInt(match[1]!, 10)}` as const;
+    const hierarchy = input.hierarchy ?? 'global';
+    if ((parsed.hierarchy ?? 'global') !== hierarchy) {
+      throw new SemanticAtlasError(
+        'VIZ_ATLAS_HIERARCHY_INVALID',
+        'The selected search result belongs to a different atlas hierarchy.',
+        'universe',
+      );
+    }
+    if (hierarchy === 'project') {
+      const owner = this.resolveProjectAtlasOwnerForObservation(publicScope, focusNodeId);
+      if (
+        !owner
+        || (parsed.project_id && parsed.project_id !== owner.projectId)
+        || (parsed.community_id && parsed.community_id !== owner.communityId)
+      ) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_COMMUNITY_GONE',
+          'The recalled memory moved to a newer project constellation.',
+          owner ? 'project' : 'universe',
+        );
+      }
+      return {
+        hierarchy,
+        context_token: this.encodeScopedToken('context', { scope }, OBSERVATORY_CONTEXT_TTL_MS),
+        scope: publicScope,
+        project_id: owner.projectId,
+        focus_node_id: focusNodeId,
+        community_id: owner.communityId,
+        target: input.target,
+      };
+    }
+    const currentCommunityId = this.resolveGlobalAtlasCommunityForObservation(publicScope, focusNodeId);
+    if (!currentCommunityId || (parsed.community_id && parsed.community_id !== currentCommunityId)) {
+      throw new SemanticAtlasError(
+        'VIZ_ATLAS_COMMUNITY_GONE',
+        'The recalled memory moved to a newer constellation.',
+        'universe',
+      );
+    }
+    return {
+      hierarchy: 'global',
+      context_token: this.encodeScopedToken('context', { scope }, OBSERVATORY_CONTEXT_TTL_MS),
+      scope: publicScope,
+      project_id: null,
+      focus_node_id: focusNodeId,
+      community_id: currentCommunityId,
+      target: input.target,
+    };
+  }
+
+  private resolveProjectAtlasOwnerForObservation(
+    scope: AtlasTokenScope,
+    focusNodeId: `obs:${number}`,
+  ): { projectId: string; communityId: string } | null {
+    this.getSemanticAtlasPage({
+      hierarchy: 'project',
+      level: 'universe',
+      project_token: scope.project?.token,
+      session_token: scope.session?.token,
+      topic_token: scope.topic?.token,
+      type: scope.type ?? undefined,
+      relation: scope.relation ?? undefined,
+      query: scope.query ?? undefined,
+      page_size: 1,
+    });
+    const projectionCacheKey = this.semanticAtlasProjectionCacheKey(scope);
+    const cached = this.semanticAtlasProjectionCache.get(projectionCacheKey);
+    const projectProjection = cached?.projectProjection;
+    const projectId = projectProjection?.projectByObservationId.get(focusNodeId);
+    const communityId = projectProjection?.communityByObservationId.get(focusNodeId);
+    return projectId && communityId ? { projectId, communityId } : null;
+  }
+
+  private resolveGlobalAtlasCommunityForObservation(
+    scope: AtlasTokenScope,
+    focusNodeId: `obs:${number}`,
+  ): string | null {
+    this.getSemanticAtlasPage({
+      hierarchy: 'global',
+      level: 'universe',
+      project_token: scope.project?.token,
+      session_token: scope.session?.token,
+      topic_token: scope.topic?.token,
+      type: scope.type ?? undefined,
+      relation: scope.relation ?? undefined,
+      query: scope.query ?? undefined,
+      page_size: 1,
+    });
+    const projectionCacheKey = this.semanticAtlasProjectionCacheKey(scope);
+    return this.semanticAtlasProjectionCache.get(projectionCacheKey)
+      ?.projection.communityByObservationId.get(focusNodeId) ?? null;
+  }
+
+  private semanticAtlasProjectionCacheKey(scope: AtlasTokenScope): string {
+    return createHash('sha256').update(JSON.stringify({
+      revision: this.getSemanticAtlasRevision(),
+      project_token: scope.project?.token ?? null,
+      session_token: scope.session?.token ?? null,
+      topic_token: scope.topic?.token ?? null,
+      type: scope.type ?? null,
+      relation: scope.relation?.trim() || null,
+      query: stripPrivateTags(scope.query ?? '').trim().toLowerCase(),
+    })).digest('hex');
+  }
+
   getObservatoryContext(input: ObservatoryScope = {}): ObservatoryContextResponse {
     const scope = this.normalizeObservatoryScope(input);
     return {
@@ -5131,15 +5738,1151 @@ export class Store {
     };
   }
 
+  getVisualizationGraphPage(input: VizGraphPageRequest = {}): VizGraphPageResponse {
+    const readPage = this.db.transaction(() => {
+      const scope = this.normalizeVizGraphScope(input);
+      const scopeFingerprint = this.hashVizGraphValue(JSON.stringify(scope));
+      const rows = this.getVisualizationGraphRows(scope);
+      const generation = this.hashVizGraphRows(rows);
+      const cursor = input.cursor
+        ? this.decodeVizGraphCursor(input.cursor)
+        : null;
+
+      if (cursor && cursor.scope !== scopeFingerprint) {
+        throw new VizGraphPageError(
+          'VIZ_GRAPH_CURSOR_INVALID',
+          'The graph continuation belongs to a different memory scope.',
+        );
+      }
+      if (cursor && cursor.generation !== generation) {
+        throw new VizGraphPageError(
+          'VIZ_GRAPH_GENERATION_STALE',
+          'The memory graph changed while it was loading.',
+        );
+      }
+
+      const pageSize = Math.min(
+        Math.max(Math.trunc(input.page_size ?? VIZ_GRAPH_PAGE_SIZE_MAX), 1),
+        VIZ_GRAPH_PAGE_SIZE_MAX,
+      );
+      let startIndex = 0;
+      if (cursor) {
+        const cursorIndex = rows.findIndex((row) => row.source_key === cursor.last_key);
+        if (cursorIndex < 0) {
+          throw new VizGraphPageError(
+            'VIZ_GRAPH_CURSOR_INVALID',
+            'The graph continuation does not identify a current page boundary.',
+          );
+        }
+        startIndex = cursorIndex + 1;
+      }
+
+      const pageRows = rows.slice(startIndex, startIndex + pageSize);
+      const hasMore = startIndex + pageRows.length < rows.length;
+      const projection = buildRawVisualizationProjection(pageRows, {
+        ...scope,
+      });
+      const { nodes, edges } = projection;
+      const lastRow = pageRows.at(-1);
+      const continuation = hasMore && lastRow
+        ? this.encodeVizGraphCursor({
+            v: 1,
+            scope: scopeFingerprint,
+            generation,
+            last_key: lastRow.source_key,
+          })
+        : null;
+      const state: VizGraphPageResponse['state'] = rows.length === 0
+        ? 'empty'
+        : rows.length >= pageSize
+          ? 'dense'
+          : 'sparse';
+
+      return {
+        nodes,
+        edges,
+        state,
+        continuation,
+        truncated: continuation !== null,
+        health: this.getVisualizationHealth({ project: scope.project }),
+      };
+    });
+
+    return readPage();
+  }
+
+  private getSemanticAtlasStructuralEvidence(
+    observationIds: number[],
+    relationFilter?: string,
+  ): AtlasStructuralEvidence[] {
+    if (observationIds.length === 0) return [];
+    const knowledgeGraph = this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG;
+    const allowedRelations = [...new Set(knowledgeGraph.kgRelationAllowList
+      .map((relation) => relation.trim().toUpperCase())
+      .filter(Boolean))]
+      .filter((relation) => !relationFilter || relation === relationFilter)
+      .sort();
+    if (allowedRelations.length === 0) return [];
+    const supersededFilter = knowledgeGraph.kgSupersedeEnabled
+      ? 'AND t.superseded_by_triple_id IS NULL AND t.superseded_at IS NULL'
+      : '';
+    const records: AtlasStructuralEvidence[] = [];
+    const chunkSize = 400;
+    for (let offset = 0; offset < observationIds.length; offset += chunkSize) {
+      const observationChunk = observationIds.slice(offset, offset + chunkSize);
+      const rows = this.db.prepare(
+        `SELECT t.id, t.source_id AS observation_id, t.relation, t.confidence,
+          se.id AS subject_id, se.canonical_name AS subject_label,
+          oe.id AS object_id, oe.canonical_name AS object_label
+         FROM kg_triples t
+         JOIN kg_entities se ON se.id = t.subject_entity_id
+         JOIN kg_entities oe ON oe.id = t.object_entity_id
+         JOIN observations o ON o.id = t.source_id
+         WHERE t.source_type = 'observation'
+         AND o.deleted_at IS NULL
+         AND t.relation IN (${allowedRelations.map(() => '?').join(',')})
+         AND t.source_id IN (${observationChunk.map(() => '?').join(',')})
+         ${supersededFilter}
+         ORDER BY t.source_id ASC, t.id ASC`,
+      ).all(...allowedRelations, ...observationChunk) as Array<{
+        id: number;
+        observation_id: number;
+        relation: string;
+        confidence: number;
+        subject_id: number;
+        subject_label: string;
+        object_id: number;
+        object_label: string;
+      }>;
+      for (const row of rows) {
+        const shared = {
+          observation_id: row.observation_id,
+          relation: row.relation,
+          confidence: row.confidence,
+          provenance_id: `kg:${row.id}`,
+          direction: 'directed' as const,
+          source_kind: 'kg-triple' as const,
+        };
+        records.push({
+          ...shared,
+          entity_key: `kg-entity:${row.subject_id}`,
+          label: row.subject_label,
+          endpoint_role: 'subject',
+        });
+        if (row.object_id !== row.subject_id) {
+          records.push({
+            ...shared,
+            entity_key: `kg-entity:${row.object_id}`,
+            label: row.object_label,
+            endpoint_role: 'object',
+          });
+        }
+      }
+    }
+    return records;
+  }
+
+  private installSemanticAtlasRevisionTriggers(): void {
+    const existingTables = new Set(
+      (this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
+        .map((row) => row.name),
+    );
+    const sourceTables = [
+      'observations',
+      'observation_facts',
+      'kg_entities',
+      'kg_triples',
+      'kg_community_runs',
+      'kg_communities',
+    ] as const;
+    for (const table of sourceTables) {
+      if (!existingTables.has(table)) continue;
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE'] as const) {
+        const name = `thoth_semantic_atlas_${table}_${operation.toLowerCase()}`;
+        this.db.exec(
+          `CREATE TEMP TRIGGER IF NOT EXISTS ${name}
+           AFTER ${operation} ON main.${table}
+           BEGIN
+             SELECT thoth_mark_semantic_atlas_dirty();
+           END`,
+        );
+      }
+    }
+  }
+
+  private getSemanticAtlasRevision(): string {
+    const externalChanges = this.db.pragma('data_version', { simple: true }) as number;
+    return `${this.semanticAtlasLocalRevision}:${externalChanges}`;
+  }
+
+  getSemanticAtlasPage(input: SemanticAtlasPageRequest = {}): SemanticAtlasPageResponse {
+    const readPage = this.db.transaction(() => {
+      const hierarchy = input.hierarchy ?? 'global';
+      const level = input.level ?? 'universe';
+      const presentation = input.presentation ?? 'complete';
+      const hasUnexpectedOwner = (
+        (level === 'universe' && Boolean(input.community_id || input.focus_node_id))
+        || (level === 'project' && Boolean(input.community_id || input.focus_node_id))
+        || (level === 'community' && Boolean(input.focus_node_id))
+      );
+      if (hasUnexpectedOwner) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'This semantic level received an owner identity that belongs to a deeper location.',
+          level === 'universe' ? 'universe' : level,
+        );
+      }
+      if (hierarchy === 'global' && (level === 'project' || input.project_id)) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'Project locations require explicit project hierarchy negotiation.',
+          'universe',
+        );
+      }
+      if (hierarchy === 'project') {
+        const projectRequired = level === 'project' || level === 'community' || level === 'neighborhood';
+        if (projectRequired && !input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'This semantic location requires an opaque owning project.',
+            'universe',
+          );
+        }
+        if (level === 'universe' && input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'Universe project pages do not accept a selected project identity.',
+            'universe',
+          );
+        }
+      }
+      if (
+        (presentation === 'semantic-zoom' && level !== 'community')
+        || (input.region_id && (level !== 'community' || presentation !== 'semantic-zoom'))
+        || (input.presentation !== undefined && input.presentation !== 'complete' && input.presentation !== 'semantic-zoom')
+      ) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_PRESENTATION_INVALID',
+          'Semantic zoom presentation and region focus are available only for Community navigation.',
+          level,
+        );
+      }
+      if (level === 'community' && !input.community_id) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_LEVEL_INVALID',
+          'Community navigation requires a current community.',
+          'universe',
+        );
+      }
+      if (level === 'neighborhood' && (!input.community_id || !input.focus_node_id)) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_LEVEL_INVALID',
+          'Neighborhood navigation requires a current community and focused memory.',
+          'community',
+        );
+      }
+      const depth: 1 | 2 = input.depth === 2 ? 2 : 1;
+      const revision = this.getSemanticAtlasRevision();
+      let sourceCache = this.semanticAtlasSourceCache;
+      if (!sourceCache || sourceCache.revision !== revision) {
+        const allObservations = this.mapObservationRows(
+          this.db.prepare('SELECT * FROM observations WHERE deleted_at IS NULL ORDER BY id ASC').all() as ObservationRow[],
+        );
+        sourceCache = {
+          revision,
+          allObservations,
+          facetCatalog: buildAtlasFacetCatalog(allObservations),
+        };
+        this.semanticAtlasSourceCache = sourceCache;
+        this.semanticAtlasProjectionCache.clear();
+      }
+      const { allObservations, facetCatalog } = sourceCache;
+      const resolveFacet = (
+        kind: 'project' | 'session' | 'topic',
+        token: string | undefined,
+      ): string | undefined => {
+        const value = resolveAtlasFacetToken(facetCatalog, kind, token);
+        if (token && !value) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_FACET_INVALID',
+            'A selected atlas filter is no longer available.',
+            'universe',
+          );
+        }
+        return value;
+      };
+      const project = resolveFacet('project', input.project_token);
+      const sessionId = resolveFacet('session', input.session_token);
+      const topicKey = resolveFacet('topic', input.topic_token);
+      const observationType = input.type ?? input.observation_type;
+      const query = stripPrivateTags(input.query ?? '').trim().toLowerCase();
+      const projectionCacheKey = createHash('sha256').update(JSON.stringify({
+        revision,
+        project_token: input.project_token ?? null,
+        session_token: input.session_token ?? null,
+        topic_token: input.topic_token ?? null,
+        type: observationType ?? null,
+        relation: input.relation?.trim() || null,
+        query,
+      })).digest('hex');
+      let cachedProjection = this.semanticAtlasProjectionCache.get(projectionCacheKey);
+      if (!cachedProjection) {
+        const observations = allObservations.filter((observation) => (
+          (!project || observation.project === project)
+          && (!sessionId || observation.session_id === sessionId)
+          && (!topicKey || observation.topic_key === topicKey)
+          && (!observationType || observation.type === observationType)
+          && (!query || `${observation.title} ${observation.content}`.toLowerCase().includes(query))
+        ));
+        const scopedObservationIds = new Set(observations.map((observation) => observation.id));
+        const facts = this.getObservationFacts({ project, topic_key: topicKey })
+          .filter((fact) => scopedObservationIds.has(fact.observation_id));
+        const structuralEvidence = this.getSemanticAtlasStructuralEvidence(
+          observations.map((observation) => observation.id),
+          input.relation,
+        );
+        const summaryResults = [...new Set(observations
+          .map((observation) => observation.project)
+          .filter((candidate): candidate is string => Boolean(candidate)))]
+          .sort()
+          .map((summaryProject) => this.getCommunitySummariesForRetrieval({
+            project: summaryProject,
+            limit: 150,
+            maxChars: 240,
+          }));
+        const summaryCandidates = summaryResults
+          .filter((result) => result.state === 'fresh')
+          .flatMap((result) => result.candidates);
+        const summaryStates = summaryResults.map((result) => result.state);
+        const summaryState: AtlasCoverageState = summaryStates.length === 0
+          ? 'missing'
+          : summaryStates.every((state) => state === 'fresh')
+            ? 'fresh'
+            : summaryStates.includes('rebuilding')
+              ? 'rebuilding'
+              : summaryStates.includes('failed')
+                ? 'failed'
+                : summaryStates.includes('stale')
+                  ? 'stale'
+                  : summaryStates.includes('degraded') || summaryStates.includes('fresh')
+                    ? 'degraded'
+                    : 'missing';
+        const generationHash = createHash('sha256');
+        generationHash.update('semantic-atlas-generation-v1\0');
+        for (const observation of allObservations) {
+          generationHash.update(JSON.stringify([
+            observation.id,
+            observation.project,
+            observation.session_id,
+            observation.topic_key,
+          ]));
+        }
+        for (const observation of observations) {
+          generationHash.update(JSON.stringify([
+            observation.id,
+            observation.project,
+            observation.session_id,
+            observation.topic_key,
+            observation.type,
+            observation.title,
+            observation.content,
+            observation.updated_at,
+          ]));
+        }
+        for (const fact of facts) {
+          generationHash.update(JSON.stringify([
+            fact.id,
+            fact.observation_id,
+            fact.relation,
+            fact.object,
+            fact.superseded === true,
+          ]));
+        }
+        for (const evidence of structuralEvidence) {
+          generationHash.update(JSON.stringify([
+            evidence.observation_id,
+            evidence.entity_key,
+            evidence.relation,
+            evidence.confidence,
+            evidence.provenance_id,
+            evidence.endpoint_role,
+          ]));
+        }
+        for (const summaryResult of summaryResults) {
+          generationHash.update(JSON.stringify([
+            summaryResult.project,
+            summaryResult.state,
+            summaryResult.run_id,
+            summaryResult.graph_signature,
+            summaryResult.candidates.map((candidate) => [
+              candidate.community_id,
+              candidate.summary_text,
+              candidate.source_observation_ids,
+            ]),
+          ]));
+        }
+        cachedProjection = {
+          projection: buildSemanticAtlasProjection({
+            observations,
+            facts,
+            structuralEvidence,
+            facetCatalog,
+            relation: input.relation,
+          }),
+          generation: generationHash.digest('hex'),
+          observations,
+          summaryCandidates,
+          summaryState,
+          health: this.getVisualizationHealth({ project }),
+          lastUsed: Date.now(),
+          semanticViews: new Map(),
+        };
+        this.semanticAtlasProjectionCache.set(projectionCacheKey, cachedProjection);
+        if (this.semanticAtlasProjectionCache.size > 4) {
+          const oldest = [...this.semanticAtlasProjectionCache.entries()]
+            .sort((left, right) => left[1].lastUsed - right[1].lastUsed)[0]?.[0];
+          if (oldest) this.semanticAtlasProjectionCache.delete(oldest);
+        }
+      } else {
+        cachedProjection.lastUsed = Date.now();
+      }
+      const {
+        projection,
+        generation,
+        observations,
+        summaryCandidates,
+        summaryState,
+        health,
+      } = cachedProjection;
+      let projectProjection: ProjectAtlasProjection | null = null;
+      let projectGeneration = generation;
+      if (hierarchy === 'project') {
+        projectProjection = cachedProjection.projectProjection ?? buildProjectAtlasProjection({
+          globalProjection: projection,
+          facetCatalog,
+        });
+        cachedProjection.projectProjection = projectProjection;
+        projectGeneration = createHash('sha256')
+          .update(generation)
+          .update(projectAtlasFingerprint(projectProjection))
+          .digest('hex');
+      }
+      if (hierarchy === 'project' && level === 'universe') {
+        const currentProjectProjection = projectProjection!;
+        const projectScopeFingerprint = createHash('sha256').update(JSON.stringify({
+          hierarchy,
+          level,
+          project_token: input.project_token ?? null,
+          session_token: input.session_token ?? null,
+          topic_token: input.topic_token ?? null,
+          type: observationType ?? null,
+          relation: input.relation?.trim() || null,
+          query,
+        })).digest('hex');
+        let start = 0;
+        if (input.cursor) {
+          let cursor: ProjectAtlasCursor;
+          try {
+            cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as ProjectAtlasCursor;
+          } catch {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid.', level);
+          }
+          if (
+            cursor.v !== 2
+            || cursor.hierarchy !== 'project'
+            || cursor.level !== 'universe'
+            || cursor.scope !== projectScopeFingerprint
+            || cursor.generation !== projectGeneration
+            || cursor.project_id !== null
+            || !Number.isInteger(cursor.offset)
+            || cursor.offset < 0
+            || cursor.offset > currentProjectProjection.projects.length
+          ) {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid or stale.', level);
+          }
+          start = cursor.offset;
+        }
+        const pageSize = Math.min(Math.max(Math.trunc(input.page_size ?? 24), 1), 150);
+        const end = Math.min(currentProjectProjection.projects.length, start + pageSize);
+        const pageProjects = currentProjectProjection.projects.slice(start, end);
+        const coreBudget = Math.min(150, pageSize * 3);
+        const visibleCommunities = new Map<string, typeof pageProjects[number]['communities'][number]>();
+        for (let round = 0; visibleCommunities.size < coreBudget; round += 1) {
+          let added = false;
+          for (const projectEntry of pageProjects) {
+            const community = projectEntry.communities[round];
+            if (!community || visibleCommunities.size >= coreBudget) continue;
+            visibleCommunities.set(community.id, community);
+            added = true;
+          }
+          if (!added) break;
+        }
+        const nodes = [...visibleCommunities.values()].map((community) => community.node);
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        const edges = pageProjects.flatMap((projectEntry) => projectEntry.projection.aggregateEdges)
+          .filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id));
+        const pageProjectIds = new Set(pageProjects.map((projectEntry) => projectEntry.id));
+        const projectBridges = currentProjectProjection.projectBridges.filter((bridge) => (
+          pageProjectIds.has(bridge.source_project_id) && pageProjectIds.has(bridge.target_project_id)
+        ));
+        const projectRegions = pageProjects.map((projectEntry) => {
+          const constellationIds = projectEntry.communities
+            .map((community) => community.id)
+            .filter((id) => visibleCommunities.has(id));
+          return {
+            ...projectEntry.region,
+            visible_constellation_count: constellationIds.length,
+            omitted_constellation_count: projectEntry.communities.length - constellationIds.length,
+            constellation_ids: constellationIds,
+          };
+        });
+        const sourceConstellationCount = currentProjectProjection.projects.reduce(
+          (total, projectEntry) => total + projectEntry.communities.length,
+          0,
+        );
+        const continuation = end < currentProjectProjection.projects.length
+          ? Buffer.from(JSON.stringify({
+              v: 2,
+              hierarchy: 'project',
+              level: 'universe',
+              scope: projectScopeFingerprint,
+              generation: projectGeneration,
+              project_id: null,
+              offset: end,
+            } satisfies ProjectAtlasCursor)).toString('base64url')
+          : null;
+        const missingKg = observations.length - projection.observationsWithKg;
+        const coverageState = observations.length === 0 || projection.observationsWithKg === 0
+          ? 'missing'
+          : missingKg > 0 ? 'degraded' : 'fresh';
+        return {
+          hierarchy,
+          level,
+          generation: projectGeneration,
+          presentation: 'complete',
+          nodes,
+          edges,
+          regions: [],
+          region_bridges: [],
+          project_regions: projectRegions,
+          project_bridges: projectBridges,
+          counts: {
+            memory_count: observations.length,
+            project_count: currentProjectProjection.projects.length,
+            community_count: sourceConstellationCount,
+            assigned_memory_count: observations.length,
+            unclustered_memory_count: currentProjectProjection.projects.flatMap((entry) => entry.communities)
+              .filter((community) => community.unclustered)
+              .reduce((total, community) => total + community.member_ids.length, 0),
+            supporting_entity_count: 0,
+            relationship_count: projectBridges.length + edges.length,
+            raw_entity_count: projection.rawEntityCount,
+            raw_relationship_count: projection.rawRelationshipCount,
+          },
+          coverage: {
+            state: coverageState,
+            projection_source: projection.evidenceLinks.length > 0
+              ? 'deterministic-kg'
+              : 'deterministic-unclustered',
+            summary_state: summaryState,
+            observations_with_kg: projection.observationsWithKg,
+            observations_without_kg: missingKg,
+            degraded_reasons: missingKg > 0
+              ? ['Some memories do not yet have structural graph evidence.']
+              : [],
+          },
+          facets: projection.facets,
+          navigation: {
+            project_id: null,
+            community_id: null,
+            focus_node_id: null,
+            depth: null,
+            region_id: null,
+            source_project_count: currentProjectProjection.projects.length,
+            visible_project_count: pageProjects.length,
+            omitted_projects: currentProjectProjection.projects.length - pageProjects.length,
+            source_constellation_count: sourceConstellationCount,
+            visible_constellation_count: nodes.length,
+            omitted_constellations: sourceConstellationCount - nodes.length,
+            source_memory_count: observations.length,
+            visible_memory_count: 0,
+            source_relationship_count: projection.evidenceLinks.length,
+            visible_relationship_count: edges.length + projectBridges.length,
+            represented_source_relationship_count: edges.length + projectBridges.length,
+            omitted_nodes: Math.max(0, sourceConstellationCount - nodes.length),
+            omitted_edges: Math.max(0, projection.evidenceLinks.length - edges.length - projectBridges.length),
+            raw_rich_render_safe: projection.rawEntityCount <= 5_000,
+            raw_rich_render_limit: 5_000,
+            scope: {
+              project: project ? facetCatalog.refsByValue.project.get(project) ?? null : null,
+              session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
+              topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
+              type: observationType ?? null,
+              relation: input.relation?.trim() || null,
+            },
+          },
+          continuation,
+          truncated: continuation !== null || sourceConstellationCount > nodes.length,
+          health,
+        } satisfies SemanticAtlasPageResponse;
+      }
+      if (hierarchy === 'project' && level === 'project') {
+        if (!input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_HIERARCHY_INVALID',
+            'Project navigation requires an opaque project identity.',
+            'universe',
+          );
+        }
+        const projectEntry = projectProjection!.projectById.get(input.project_id);
+        if (!projectEntry) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_GONE',
+            'This project nebula is no longer current.',
+            'universe',
+          );
+        }
+        if (project && projectEntry.canonical_project !== project) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'The project navigation parent conflicts with the active project facet.',
+            'universe',
+          );
+        }
+        const projectScopeFingerprint = createHash('sha256').update(JSON.stringify({
+          hierarchy,
+          level,
+          project_id: projectEntry.id,
+          project_token: input.project_token ?? null,
+          session_token: input.session_token ?? null,
+          topic_token: input.topic_token ?? null,
+          type: observationType ?? null,
+          relation: input.relation?.trim() || null,
+          query,
+        })).digest('hex');
+        let start = 0;
+        if (input.cursor) {
+          let cursor: ProjectAtlasCursor;
+          try {
+            cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as ProjectAtlasCursor;
+          } catch {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid.', level);
+          }
+          if (
+            cursor.v !== 2
+            || cursor.hierarchy !== 'project'
+            || cursor.level !== 'project'
+            || cursor.scope !== projectScopeFingerprint
+            || cursor.generation !== projectGeneration
+            || cursor.project_id !== projectEntry.id
+            || !Number.isInteger(cursor.offset)
+            || cursor.offset < 0
+            || cursor.offset > projectEntry.communities.length
+          ) {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid or stale.', level);
+          }
+          start = cursor.offset;
+        }
+        const pageSize = Math.min(Math.max(Math.trunc(input.page_size ?? 150), 1), 150);
+        const end = Math.min(projectEntry.communities.length, start + pageSize);
+        const nodes = projectEntry.communities.slice(start, end).map((community) => community.node);
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        const edges = projectEntry.projection.aggregateEdges.filter((edge) => (
+          nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id)
+        ));
+        const continuation = end < projectEntry.communities.length
+          ? Buffer.from(JSON.stringify({
+              v: 2,
+              hierarchy: 'project',
+              level: 'project',
+              scope: projectScopeFingerprint,
+              generation: projectGeneration,
+              project_id: projectEntry.id,
+              offset: end,
+            } satisfies ProjectAtlasCursor)).toString('base64url')
+          : null;
+        const projectMemoryCount = projectEntry.projection.observations.length;
+        const missingKg = projectMemoryCount - projectEntry.projection.observationsWithKg;
+        return {
+          hierarchy,
+          level,
+          generation: projectGeneration,
+          presentation: 'complete',
+          nodes,
+          edges,
+          regions: [],
+          region_bridges: [],
+          project_regions: [],
+          project_bridges: [],
+          counts: {
+            memory_count: projectMemoryCount,
+            project_count: 1,
+            community_count: projectEntry.communities.length,
+            assigned_memory_count: projectMemoryCount,
+            unclustered_memory_count: projectEntry.communities
+              .filter((community) => community.unclustered)
+              .reduce((total, community) => total + community.member_ids.length, 0),
+            supporting_entity_count: 0,
+            relationship_count: projectEntry.projection.aggregateEdges.length,
+            raw_entity_count: projectEntry.projection.rawEntityCount,
+            raw_relationship_count: projectEntry.projection.rawRelationshipCount,
+          },
+          coverage: {
+            state: projectMemoryCount === 0 || projectEntry.projection.observationsWithKg === 0
+              ? 'missing'
+              : missingKg > 0 ? 'degraded' : 'fresh',
+            projection_source: projectEntry.projection.evidenceLinks.length > 0
+              ? 'deterministic-kg'
+              : 'deterministic-unclustered',
+            summary_state: summaryState,
+            observations_with_kg: projectEntry.projection.observationsWithKg,
+            observations_without_kg: missingKg,
+            degraded_reasons: missingKg > 0
+              ? ['Some memories do not yet have structural graph evidence.']
+              : [],
+          },
+          facets: projectEntry.projection.facets,
+          navigation: {
+            project_id: projectEntry.id,
+            community_id: null,
+            focus_node_id: null,
+            depth: null,
+            region_id: null,
+            source_project_count: 1,
+            visible_project_count: 1,
+            omitted_projects: 0,
+            source_constellation_count: projectEntry.communities.length,
+            visible_constellation_count: nodes.length,
+            omitted_constellations: projectEntry.communities.length - nodes.length,
+            source_memory_count: projectMemoryCount,
+            visible_memory_count: 0,
+            source_relationship_count: projectEntry.projection.aggregateEdges.length,
+            visible_relationship_count: edges.length,
+            represented_source_relationship_count: edges.length,
+            omitted_nodes: Math.max(0, projectEntry.communities.length - nodes.length),
+            omitted_edges: Math.max(0, projectEntry.projection.aggregateEdges.length - edges.length),
+            raw_rich_render_safe: projectEntry.projection.rawEntityCount <= 5_000,
+            raw_rich_render_limit: 5_000,
+            scope: {
+              project: projectEntry.canonical_project
+                ? facetCatalog.refsByValue.project.get(projectEntry.canonical_project) ?? null
+                : null,
+              session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
+              topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
+              type: observationType ?? null,
+              relation: input.relation?.trim() || null,
+            },
+          },
+          continuation,
+          truncated: continuation !== null,
+          health,
+        } satisfies SemanticAtlasPageResponse;
+      }
+      if (hierarchy === 'global' && level === 'project') {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'Project navigation requires explicit project hierarchy negotiation.',
+          'universe',
+        );
+      }
+      let activeProjection = projection;
+      let activeObservations = observations;
+      let activeProjectId: string | null = null;
+      let activeCanonicalProject: string | null = project ?? null;
+      if (hierarchy === 'project' && (level === 'community' || level === 'neighborhood')) {
+        if (!input.project_id || !input.community_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_HIERARCHY_INVALID',
+            'Project-hierarchy detail requires opaque project and constellation ownership.',
+            input.project_id ? 'project' : 'universe',
+          );
+        }
+        const projectEntry = projectProjection!.projectById.get(input.project_id);
+        if (!projectEntry) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_GONE',
+            'This project nebula is no longer current.',
+            'universe',
+          );
+        }
+        if (project && projectEntry.canonical_project !== project) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'The project navigation parent conflicts with the active project facet.',
+            'universe',
+          );
+        }
+        const community = projectProjection!.communityById.get(input.community_id);
+        if (!community || community.project_id !== projectEntry.id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_COMMUNITY_GONE',
+            'This constellation does not belong to the selected project.',
+            'project',
+          );
+        }
+        activeProjection = projectEntry.projection;
+        activeObservations = projectEntry.projection.observations;
+        activeProjectId = projectEntry.id;
+        activeCanonicalProject = projectEntry.canonical_project;
+      }
+      const activeGeneration = hierarchy === 'project' ? projectGeneration : generation;
+      const scopeFingerprint = createHash('sha256').update(JSON.stringify({
+        hierarchy,
+        level,
+        project_id: activeProjectId,
+        project_token: input.project_token ?? null,
+        session_token: input.session_token ?? null,
+        topic_token: input.topic_token ?? null,
+        type: observationType ?? null,
+        relation: input.relation?.trim() || null,
+        query,
+        community_id: input.community_id ?? null,
+        focus_node_id: input.focus_node_id ?? null,
+        depth: level === 'neighborhood' ? depth : null,
+        presentation,
+        region_id: input.region_id ?? null,
+      })).digest('hex');
+      let cursor: SemanticAtlasCursor | null = null;
+      if (input.cursor) {
+        try {
+          const parsed = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as Partial<SemanticAtlasCursor>;
+          if (
+            parsed.v !== 1
+            || parsed.level !== level
+            || typeof parsed.scope !== 'string'
+            || typeof parsed.generation !== 'string'
+            || typeof parsed.offset !== 'number'
+            || !Number.isInteger(parsed.offset)
+            || parsed.offset < 0
+          ) {
+            throw new Error('invalid cursor');
+          }
+          cursor = parsed as SemanticAtlasCursor;
+        } catch {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_CURSOR_INVALID',
+            'The atlas continuation is invalid.',
+            level,
+          );
+        }
+        if (cursor.scope !== scopeFingerprint) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_CURSOR_INVALID',
+            'The atlas continuation belongs to a different view.',
+            level,
+          );
+        }
+        if (cursor.generation !== activeGeneration) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_GENERATION_STALE',
+            'The memory atlas changed while it was loading.',
+            level,
+          );
+        }
+      }
+
+      let sourceNodes = enrichSemanticAtlasCommunityNodes(activeProjection, summaryCandidates);
+      let sourceEdges = activeProjection.aggregateEdges;
+      let communityId: string | null = null;
+      let focusNodeId: string | null = null;
+      let omittedNodes = 0;
+      let omittedEdges = 0;
+      let regions: SemanticAtlasPageResponse['regions'] = [];
+      let regionBridges: SemanticAtlasPageResponse['region_bridges'] = [];
+      let regionId: string | null = null;
+      let representedSourceRelationshipCount = sourceEdges.length;
+      let sourceMemoryCount = sourceNodes.length;
+      let sourceRelationshipCount = sourceEdges.length;
+
+      if (level === 'community') {
+        const community = activeProjection.communities.find((candidate) => candidate.id === input.community_id);
+        if (!community) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_COMMUNITY_GONE',
+            'This memory constellation is no longer current.',
+            'universe',
+          );
+        }
+        communityId = community.id;
+        sourceNodes = community.member_ids.map((memberId) => activeProjection.observationNodes.get(memberId)!);
+        const memberIds = new Set(community.member_ids);
+        sourceEdges = activeProjection.semanticEdges.filter((edge) => (
+          memberIds.has(edge.source_id) && memberIds.has(edge.target_id)
+        ));
+        sourceMemoryCount = sourceNodes.length;
+        sourceRelationshipCount = sourceEdges.length;
+        if (presentation === 'semantic-zoom') {
+          const semanticViewKey = `${community.id}\0${input.region_id ?? ''}`;
+          let workingSet = cachedProjection.semanticViews.get(semanticViewKey);
+          if (!workingSet) {
+            workingSet = buildSemanticAtlasCommunityView({
+              community,
+              observations: activeProjection.observations,
+              observationNodes: activeProjection.observationNodes,
+              evidenceLinks: activeProjection.evidenceLinks,
+              presentationEvidence: activeProjection.presentationEvidence,
+              regionId: input.region_id,
+            });
+            cachedProjection.semanticViews.set(semanticViewKey, workingSet);
+            if (cachedProjection.semanticViews.size > 16) {
+              const oldestKey = cachedProjection.semanticViews.keys().next().value;
+              if (oldestKey) cachedProjection.semanticViews.delete(oldestKey);
+            }
+          }
+          if (input.region_id && !workingSet.regions.some((region) => region.id === input.region_id)) {
+            throw new SemanticAtlasError(
+              'VIZ_ATLAS_REGION_GONE',
+              'This semantic region is no longer current in its constellation.',
+              'community',
+            );
+          }
+          sourceNodes = workingSet.nodes;
+          sourceEdges = workingSet.edges;
+          regions = workingSet.regions;
+          regionBridges = workingSet.region_bridges;
+          regionId = workingSet.region_id;
+          omittedNodes = workingSet.omitted_memory_count;
+          omittedEdges = workingSet.omitted_relationship_count;
+          representedSourceRelationshipCount = workingSet.represented_source_relationship_count;
+        }
+      } else if (level === 'neighborhood') {
+        focusNodeId = input.focus_node_id!;
+        if (!activeProjection.observationNodes.has(focusNodeId)) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_FOCUS_INVALID',
+            'The focused memory is not available in this atlas scope.',
+            'universe',
+          );
+        }
+        communityId = activeProjection.communityByObservationId.get(focusNodeId) ?? null;
+        if (input.community_id && input.community_id !== communityId) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_COMMUNITY_GONE',
+            'The focused memory now belongs to a different constellation.',
+            'universe',
+          );
+        }
+        const adjacency = new Map<string, Array<{ id: string; weight: number }>>();
+        for (const link of activeProjection.evidenceLinks) {
+          const source = adjacency.get(link.source_id) ?? [];
+          source.push({ id: link.target_id, weight: link.weight });
+          adjacency.set(link.source_id, source);
+          const target = adjacency.get(link.target_id) ?? [];
+          target.push({ id: link.source_id, weight: link.weight });
+          adjacency.set(link.target_id, target);
+        }
+        const hops = new Map<string, number>([[focusNodeId, 0]]);
+        const scores = new Map<string, number>([[focusNodeId, Number.POSITIVE_INFINITY]]);
+        const queue = [focusNodeId];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          const currentHop = hops.get(current)!;
+          if (currentHop >= depth) continue;
+          const neighbors = [...(adjacency.get(current) ?? [])]
+            .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id));
+          for (const neighbor of neighbors) {
+            scores.set(neighbor.id, (scores.get(neighbor.id) ?? 0) + neighbor.weight);
+            if (hops.has(neighbor.id)) continue;
+            hops.set(neighbor.id, currentHop + 1);
+            queue.push(neighbor.id);
+          }
+        }
+        const candidateIds = [...hops.keys()].sort((left, right) => {
+          if (left === focusNodeId) return -1;
+          if (right === focusNodeId) return 1;
+          return (hops.get(left)! - hops.get(right)!)
+            || ((scores.get(right) ?? 0) - (scores.get(left) ?? 0))
+            || left.localeCompare(right);
+        });
+        const candidateSet = new Set(candidateIds);
+        const allSupportingIds = [...new Set(candidateIds.flatMap(
+          (id) => activeProjection.supportingNodeIdsByObservationId.get(id) ?? [],
+        ))];
+        const neighborhoodNodeLimit = 180;
+        const desiredSupportingCount = Math.min(48, allSupportingIds.length);
+        const boundedIds = candidateIds.slice(0, Math.max(1, neighborhoodNodeLimit - desiredSupportingCount));
+        const supportingIds = [...new Set(boundedIds.flatMap(
+          (id) => activeProjection.supportingNodeIdsByObservationId.get(id) ?? [],
+        ))].slice(0, neighborhoodNodeLimit - boundedIds.length);
+        if (boundedIds.length + supportingIds.length < neighborhoodNodeLimit) {
+          boundedIds.push(...candidateIds.slice(
+            boundedIds.length,
+            boundedIds.length + (neighborhoodNodeLimit - boundedIds.length - supportingIds.length),
+          ));
+        }
+        omittedNodes = Math.max(0, candidateIds.length - boundedIds.length)
+          + Math.max(0, allSupportingIds.length - supportingIds.length);
+        const boundedSet = new Set(boundedIds);
+        const supportingSet = new Set(supportingIds);
+        sourceNodes = [
+          ...boundedIds.map((id) => activeProjection.observationNodes.get(id)!),
+          ...supportingIds.map((id) => activeProjection.supportingNodes.get(id)!),
+        ];
+        const edgesFor = (ids: Set<string>): SemanticAtlasEdge[] => {
+          const unique = new Map<string, SemanticAtlasEdge>();
+          for (const id of ids) {
+            for (const edge of activeProjection.semanticEdgesByNodeId.get(id) ?? []) {
+              if (ids.has(edge.source_id) && ids.has(edge.target_id)) unique.set(edge.id, edge);
+            }
+          }
+          return [...unique.values()];
+        };
+        const semanticNeighborhoodEdges = edgesFor(boundedSet);
+        const supportingNeighborhoodEdges = boundedIds.flatMap((id) => activeProjection.supportingEdgesByObservationId.get(id) ?? [])
+          .filter((edge) => supportingSet.has(edge.target_id));
+        const candidateSemanticEdges = edgesFor(candidateSet);
+        const candidateSupportingEdges = candidateIds.flatMap((id) => activeProjection.supportingEdgesByObservationId.get(id) ?? []);
+        sourceMemoryCount = candidateIds.length + allSupportingIds.length;
+        sourceRelationshipCount = candidateSemanticEdges.length + candidateSupportingEdges.length;
+        sourceEdges = [...semanticNeighborhoodEdges, ...supportingNeighborhoodEdges]
+          .sort((left, right) => (
+            Number(right.confidence === 'high') - Number(left.confidence === 'high')
+            || right.evidence_count - left.evidence_count
+            || right.weight - left.weight
+            || left.id.localeCompare(right.id)
+          ))
+          .slice(0, 450);
+        representedSourceRelationshipCount = sourceEdges.length;
+        omittedEdges = Math.max(0, sourceRelationshipCount - representedSourceRelationshipCount);
+      }
+
+      const completePageLimit = hierarchy === 'project' ? 150 : 250;
+      const pageSize = presentation === 'semantic-zoom'
+        ? sourceNodes.length
+        : Math.min(Math.max(Math.trunc(input.page_size ?? completePageLimit), 1), completePageLimit);
+      const start = cursor?.offset ?? 0;
+      if (start > sourceNodes.length) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_CURSOR_INVALID',
+          'The atlas continuation no longer identifies a page boundary.',
+          level,
+        );
+      }
+      const end = Math.min(sourceNodes.length, start + pageSize);
+      const nodes = sourceNodes.slice(start, end);
+      const accumulatedIds = new Set(sourceNodes.slice(0, end).map((node) => node.id));
+      const newIds = new Set(nodes.map((node) => node.id));
+      const edges = sourceEdges.filter((edge) => (
+        accumulatedIds.has(edge.source_id)
+        && accumulatedIds.has(edge.target_id)
+        && (newIds.has(edge.source_id) || newIds.has(edge.target_id))
+      ));
+      const continuation = end < sourceNodes.length
+        ? Buffer.from(JSON.stringify({
+            v: 1,
+            level,
+            scope: scopeFingerprint,
+            generation: activeGeneration,
+            community_id: communityId,
+            focus_node_id: focusNodeId,
+            offset: end,
+          } satisfies SemanticAtlasCursor)).toString('base64url')
+        : null;
+      if (presentation !== 'semantic-zoom') representedSourceRelationshipCount = sourceEdges.length;
+      const unclusteredMemoryCount = activeProjection.communities
+        .filter((community) => community.unclustered)
+        .reduce((sum, community) => sum + community.member_ids.length, 0);
+      const missingKg = activeObservations.length - activeProjection.observationsWithKg;
+      const coverageState = activeObservations.length === 0 || activeProjection.observationsWithKg === 0
+        ? 'missing'
+        : missingKg > 0
+          ? 'degraded'
+          : 'fresh';
+      const representedConstellationCount = level === 'universe' ? nodes.length : communityId ? 1 : 0;
+
+      return {
+        hierarchy,
+        level,
+        generation: activeGeneration,
+        presentation,
+        nodes,
+        edges,
+        regions,
+        region_bridges: regionBridges,
+        project_regions: [],
+        project_bridges: [],
+        counts: {
+          memory_count: activeObservations.length,
+          project_count: hierarchy === 'project' ? 1 : activeProjection.facets.projects.length,
+          community_count: activeProjection.communities.length,
+          assigned_memory_count: activeObservations.length,
+          unclustered_memory_count: unclusteredMemoryCount,
+          supporting_entity_count: sourceNodes.filter((node) => node.kind === 'fact').length,
+          relationship_count: sourceRelationshipCount,
+          raw_entity_count: activeProjection.rawEntityCount,
+          raw_relationship_count: activeProjection.rawRelationshipCount,
+        },
+        coverage: {
+          state: coverageState,
+          projection_source: activeProjection.evidenceLinks.length > 0
+            ? 'deterministic-kg'
+            : 'deterministic-unclustered',
+          summary_state: summaryState,
+          observations_with_kg: activeProjection.observationsWithKg,
+          observations_without_kg: missingKg,
+          degraded_reasons: [
+            ...(missingKg > 0 ? ['Some memories do not yet have structural graph evidence.'] : []),
+            ...(['stale', 'rebuilding', 'failed', 'degraded'].includes(summaryState)
+              ? [`Community summaries are ${summaryState}; deterministic atlas labels remain available.`]
+              : []),
+          ],
+        },
+        facets: activeProjection.facets,
+        navigation: {
+          project_id: activeProjectId,
+          community_id: communityId,
+          focus_node_id: focusNodeId,
+          depth: level === 'neighborhood' ? depth : null,
+          region_id: regionId,
+          source_project_count: hierarchy === 'project' ? 1 : activeProjection.facets.projects.length,
+          visible_project_count: hierarchy === 'project' ? 1 : 0,
+          omitted_projects: hierarchy === 'project' ? 0 : activeProjection.facets.projects.length,
+          source_constellation_count: activeProjection.communities.length,
+          visible_constellation_count: representedConstellationCount,
+          omitted_constellations: Math.max(
+            0,
+            activeProjection.communities.length - representedConstellationCount,
+          ),
+          source_memory_count: sourceMemoryCount,
+          visible_memory_count: nodes.length,
+          source_relationship_count: sourceRelationshipCount,
+          visible_relationship_count: edges.length + regionBridges.length,
+          represented_source_relationship_count: representedSourceRelationshipCount,
+          omitted_nodes: omittedNodes,
+          omitted_edges: omittedEdges,
+          raw_rich_render_safe: activeProjection.rawEntityCount <= 5_000,
+          raw_rich_render_limit: 5_000,
+          scope: {
+            project: activeCanonicalProject
+              ? facetCatalog.refsByValue.project.get(activeCanonicalProject) ?? null
+              : null,
+            session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
+            topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
+            type: observationType ?? null,
+            relation: input.relation?.trim() || null,
+          },
+        },
+        continuation,
+        truncated: continuation !== null || omittedNodes > 0 || omittedEdges > 0,
+        health,
+      } satisfies SemanticAtlasPageResponse;
+    });
+
+    return readPage();
+  }
+
   getVisualizationSlice(input: VizSliceRequest = {}): VizSliceResponse {
     const maxNodes = Math.min(Math.max(input.max_nodes ?? VIZ_LIMITS.maxNodesDefault, 1), VIZ_LIMITS.maxNodesHard);
     const maxEdges = Math.min(Math.max(input.max_edges ?? VIZ_LIMITS.maxEdgesDefault, 1), VIZ_LIMITS.maxEdgesHard);
     const rows = this.getVisualizationRows(input, maxEdges);
-    const nodesMap = new Map<string, VizNode>();
-    const edges = this.buildVisualizationEdges(rows, maxEdges, nodesMap, input);
-    const nodes = Array.from(nodesMap.values()).slice(0, maxNodes);
+    const projection = buildRawVisualizationProjection(rows, { ...input, maxEdges });
+    const nodes = projection.nodes.slice(0, maxNodes);
+    const edges = projection.edges.filter((edge) => (
+      nodes.some((node) => node.id === edge.source_id)
+      && nodes.some((node) => node.id === edge.target_id)
+    ));
     const state = this.computeVizState(nodes.length, maxNodes);
-    const truncated = edges.length >= maxEdges || nodesMap.size > maxNodes;
+    const truncated = projection.edges.length >= maxEdges || projection.nodes.length > maxNodes;
     return {
       nodes,
       edges,
@@ -5167,9 +6910,10 @@ export class Store {
     const observationId = Number.parseInt(idMatch[1], 10);
     const rows = this.getVisualizationRows({ ...input }, maxEdges * 2).filter((row) => row.observation_id === observationId);
     const fallbackRows = rows.length > 0 ? rows : this.getVisualizationRows({ ...input, max_edges: maxEdges }, maxEdges).slice(0, maxEdges);
-    const nodesMap = new Map<string, VizNode>();
-    const edges = this.buildVisualizationEdges(fallbackRows, maxEdges, nodesMap, input);
-    const nodes = Array.from(nodesMap.values()).slice(0, maxNodes);
+    const projection = buildRawVisualizationProjection(fallbackRows, { ...input, maxEdges });
+    const nodes = projection.nodes.slice(0, maxNodes);
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edges = projection.edges.filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id));
     return {
       nodes,
       edges,
@@ -5201,16 +6945,21 @@ export class Store {
     };
   }
 
-  inspectVisualizationEdge(edgeId: string, _input: { project?: string } = {}): VizInspectEdgeResponse | null {
-    const [sourceId, relation, targetId] = edgeId.split('|');
-    if (!sourceId || !relation || !targetId) return null;
+  inspectVisualizationEdge(edgeId: string, input: { project?: string } = {}): VizInspectEdgeResponse | null {
+    const rows = this.getVisualizationGraphRows(this.normalizeVizGraphScope(input));
+    const projection = buildRawVisualizationProjection(rows, {
+      project: input.project,
+      maxEdges: Math.max(rows.length * 4, 1),
+    });
+    const edge = projection.edges.find((candidate) => candidate.id === edgeId);
+    if (!edge) return null;
     return {
-      id: edgeId,
-      source_id: sourceId,
-      target_id: targetId,
-      relation,
-      label: relation,
-      summary: `Relationship ${relation}`,
+      id: edge.id,
+      source_id: edge.source_id,
+      target_id: edge.target_id,
+      relation: edge.relation,
+      label: edge.label,
+      summary: edge.summary,
     };
   }
 
@@ -5243,6 +6992,182 @@ export class Store {
       types: typeRows.map((row) => row.type),
       relations: relationRows.map((row) => row.relation).filter((value): value is string => Boolean(value)),
     };
+  }
+
+  private normalizeVizGraphScope(input: VizGraphPageRequest): Omit<VizGraphPageRequest, 'cursor' | 'page_size'> {
+    const normalize = (value: string | undefined): string | undefined => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    return {
+      project: normalize(input.project),
+      session_id: normalize(input.session_id),
+      topic_key: normalize(input.topic_key),
+      type: input.type,
+      observation_type: input.observation_type,
+      relation: normalize(input.relation),
+      query: normalize(input.query),
+    };
+  }
+
+  private getVisualizationGraphRows(
+    input: Omit<VizGraphPageRequest, 'cursor' | 'page_size'>,
+  ): VizGraphSourceRow[] {
+    const observationParams: Array<string | number> = [];
+    const observationSql = [
+      'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content',
+      'FROM observations o',
+      'WHERE o.deleted_at IS NULL',
+    ];
+    this.appendVizGraphObservationScope(observationSql, observationParams, input, 'o');
+    observationSql.push('ORDER BY o.id ASC');
+    const observations = this.db.prepare(observationSql.join(' ')).all(...observationParams) as Array<
+      Omit<VizEdgeRow, 'relation' | 'object'>
+    >;
+
+    let rows: VizGraphSourceRow[];
+    if (this.config.graphFactsSource === 'legacy') {
+      const params: Array<string | number> = [];
+      const sql = [
+        'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content,',
+        "printf('legacy:%016d:%016d', o.id, f.id) as source_key, f.relation, f.object",
+        'FROM observation_facts f',
+        'JOIN observations o ON o.id = f.observation_id',
+        'WHERE o.deleted_at IS NULL',
+      ];
+      this.appendVizGraphObservationScope(sql, params, input, 'o');
+      sql.push('ORDER BY o.id ASC, f.id ASC');
+      try {
+        rows = this.db.prepare(sql.join(' ')).all(...params) as VizGraphSourceRow[];
+      } catch (error) {
+        if (!this.isMissingLegacyObservationFactsError(error)) throw error;
+        rows = [];
+      }
+    } else {
+      const metadataRows = observations.flatMap((observation): VizGraphSourceRow[] => {
+        const metadata = [
+          { relation: 'HAS_TYPE', object: observation.type },
+          ...(observation.project ? [{ relation: 'IN_PROJECT', object: observation.project }] : []),
+          ...(observation.topic_key ? [{ relation: 'HAS_TOPIC_KEY', object: observation.topic_key }] : []),
+        ];
+        return metadata.map((fact, index) => ({
+          ...observation,
+          source_key: `kg:${String(observation.observation_id).padStart(16, '0')}:m:${String(index).padStart(2, '0')}`,
+          relation: fact.relation,
+          object: fact.object,
+        }));
+      });
+      const params: Array<string | number> = [];
+      const sql = [
+        'SELECT o.id as observation_id, o.session_id, o.title, o.type, o.project, o.topic_key, o.content,',
+        "printf('kg:%016d:t:%016d', o.id, t.id) as source_key, t.relation, oe.canonical_name as object",
+        'FROM kg_triples t',
+        'JOIN kg_entities oe ON oe.id = t.object_entity_id',
+        'JOIN observations o ON o.id = t.source_id',
+        "WHERE t.source_type = 'observation'",
+        'AND o.deleted_at IS NULL',
+        `AND t.relation IN (${KG_OBSERVATION_FACT_CONTENT_RELATIONS.map(() => '?').join(',')})`,
+      ];
+      params.push(...KG_OBSERVATION_FACT_CONTENT_RELATIONS);
+      if ((this.config.knowledgeGraph ?? DEFAULT_KNOWLEDGE_GRAPH_CONFIG).kgSupersedeEnabled) {
+        sql.push('AND t.superseded_by_triple_id IS NULL AND t.superseded_at IS NULL');
+      }
+      this.appendVizGraphObservationScope(sql, params, input, 'o');
+      sql.push('ORDER BY o.id ASC, t.id ASC');
+      const contentRows = this.db.prepare(sql.join(' ')).all(...params) as VizGraphSourceRow[];
+      rows = [...metadataRows, ...contentRows].sort((left, right) => left.source_key.localeCompare(right.source_key));
+    }
+
+    const query = input.query
+      ? sanitizeFTS(input.query).replaceAll('"', '').trim().toLowerCase()
+      : '';
+    return rows.filter((row) => {
+      if (input.relation && row.relation !== input.relation) return false;
+      if (!query) return true;
+      return `${row.title} ${row.content} ${row.object}`.toLowerCase().includes(query);
+    });
+  }
+
+  private appendVizGraphObservationScope(
+    sql: string[],
+    params: Array<string | number>,
+    input: Omit<VizGraphPageRequest, 'cursor' | 'page_size'>,
+    alias: string,
+  ): void {
+    if (input.project) {
+      sql.push(`AND ${alias}.project = ?`);
+      params.push(input.project);
+    }
+    if (input.session_id) {
+      sql.push(`AND ${alias}.session_id = ?`);
+      params.push(input.session_id);
+    }
+    if (input.topic_key) {
+      sql.push(`AND ${alias}.topic_key = ?`);
+      params.push(input.topic_key);
+    }
+    if (input.type) {
+      sql.push(`AND ${alias}.type = ?`);
+      params.push(input.type);
+    }
+    if (input.observation_type) {
+      sql.push(`AND ${alias}.type = ?`);
+      params.push(input.observation_type);
+    }
+  }
+
+  private hashVizGraphRows(rows: VizGraphSourceRow[]): string {
+    const hash = createHash('sha256');
+    for (const row of rows) {
+      hash.update(JSON.stringify([
+        row.source_key,
+        row.observation_id,
+        row.session_id,
+        row.title,
+        row.type,
+        row.project,
+        row.topic_key,
+        row.content,
+        row.relation,
+        row.object,
+      ]));
+      hash.update('\n');
+    }
+    return hash.digest('hex');
+  }
+
+  private hashVizGraphValue(value: string): string {
+    return createHash('sha256').update(value).digest('hex');
+  }
+
+  private encodeVizGraphCursor(cursor: VizGraphCursor): string {
+    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+  }
+
+  private decodeVizGraphCursor(token: string): VizGraphCursor {
+    try {
+      const decoded = Buffer.from(token, 'base64url').toString('utf8');
+      const canonical = Buffer.from(decoded, 'utf8').toString('base64url');
+      if (!decoded || canonical !== token.replace(/=+$/u, '')) throw new Error('Invalid base64url');
+      const parsed = JSON.parse(decoded) as Partial<VizGraphCursor>;
+      if (
+        parsed.v !== 1
+        || typeof parsed.scope !== 'string'
+        || !/^[a-f0-9]{64}$/u.test(parsed.scope)
+        || typeof parsed.generation !== 'string'
+        || !/^[a-f0-9]{64}$/u.test(parsed.generation)
+        || typeof parsed.last_key !== 'string'
+        || parsed.last_key.length === 0
+      ) {
+        throw new Error('Invalid graph cursor payload');
+      }
+      return parsed as VizGraphCursor;
+    } catch {
+      throw new VizGraphPageError(
+        'VIZ_GRAPH_CURSOR_INVALID',
+        'The graph continuation is malformed.',
+      );
+    }
   }
 
   private getVisualizationRows(input: VizSliceRequest, limit: number): VizEdgeRow[] {
@@ -5850,6 +7775,20 @@ export class Store {
 
   migrateProject(oldProject: string, newProject: string): MigrateProjectResult {
     const migrate = this.db.transaction(() => {
+      const sessionRows = this.db.prepare('SELECT id FROM sessions WHERE project = ? ORDER BY id')
+        .all(oldProject) as Array<{ id: string }>;
+      const observationRows = this.db.prepare(
+        'SELECT id, sync_id, deleted_at FROM observations WHERE project = ? ORDER BY id'
+      ).all(oldProject) as Array<{ id: number; sync_id: string | null; deleted_at: string | null }>;
+      const promptRows = this.db.prepare('SELECT id, sync_id FROM user_prompts WHERE project = ? ORDER BY id')
+        .all(oldProject) as Array<{ id: number; sync_id: string | null }>;
+      const missingObservation = observationRows.find((row) => !row.sync_id?.trim());
+      const missingPrompt = promptRows.find((row) => !row.sync_id?.trim());
+      if (missingObservation || missingPrompt) {
+        const entity = missingObservation ? `observation ${missingObservation.id}` : `prompt ${missingPrompt!.id}`;
+        throw new Error(`Cannot migrate project: ${entity} has no stable identity`);
+      }
+
       const sessions = this.db.prepare(
         'UPDATE sessions SET project = ? WHERE project = ?'
       ).run(newProject, oldProject);
@@ -5865,6 +7804,22 @@ export class Store {
       this.db.prepare(
         "UPDATE kg_triples SET project = ?, updated_at = datetime('now') WHERE project = ?"
       ).run(newProject, oldProject);
+
+      for (const session of sessionRows) {
+        this.recordMutation('update', 'session', 0, session.id, newProject);
+      }
+      for (const observation of observationRows) {
+        this.recordMutation(
+          observation.deleted_at === null ? 'update' : 'delete',
+          'observation',
+          observation.id,
+          observation.sync_id!,
+          newProject,
+        );
+      }
+      for (const prompt of promptRows) {
+        this.recordMutation('update', 'prompt', prompt.id, prompt.sync_id!, newProject);
+      }
 
       return {
         old_project: oldProject,
@@ -5926,9 +7881,12 @@ export class Store {
       const observations = this.db.prepare(
         'SELECT id, sync_id FROM observations WHERE project = ? ORDER BY id'
       ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+
       const prompts = this.db.prepare(
         'SELECT id, sync_id FROM user_prompts WHERE project = ? ORDER BY id'
       ).all(targetProject) as Array<{ id: number; sync_id: string | null }>;
+      for (const observation of observations) this.requireStableIdentity(observation.sync_id, `Observation ${observation.id}`);
+      for (const prompt of prompts) this.requireStableIdentity(prompt.sync_id, `Prompt ${prompt.id}`);
 
       const observationVersionsDeleted = (this.db.prepare(
         `SELECT COUNT(*) as count
@@ -5938,11 +7896,11 @@ export class Store {
       ).get(targetProject) as { count: number }).count;
 
       for (const observation of observations) {
-        this.recordMutation('delete', 'observation', observation.id, observation.sync_id, targetProject);
+        this.recordMutation('delete', 'observation', observation.id, observation.sync_id!, targetProject);
       }
 
       for (const prompt of prompts) {
-        this.recordMutation('delete', 'prompt', prompt.id, prompt.sync_id, targetProject);
+        this.recordMutation('delete', 'prompt', prompt.id, prompt.sync_id!, targetProject);
       }
 
       for (const session of sessions) {
@@ -6072,7 +8030,7 @@ export class Store {
         }
         const recordProject = normalizeExplicitString(obs.project) ?? null;
 
-        this.ensureSession(identity.session_id!, identity.session_project);
+        this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
 
         const result = this.db.prepare(
           `INSERT INTO observations (session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, sync_id, revision_count, duplicate_count, created_at, updated_at)
@@ -6118,7 +8076,7 @@ export class Store {
         }
         const recordProject = normalizeExplicitString(prompt.project) ?? null;
 
-        this.ensureSession(identity.session_id!, identity.session_project);
+        this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
 
         this.db.prepare(
           `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
@@ -6235,11 +8193,30 @@ export class Store {
         if (mutation.operation === 'create') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id FROM observations WHERE sync_id = ? LIMIT 1'
-            ).get(syncId) as { id: number } | undefined;
+              'SELECT id, project, deleted_at FROM observations WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null; deleted_at: string | null } | undefined;
 
             if (existingObservation) {
-              skipped++;
+              if (existingObservation.deleted_at !== null && asNullableString(data.deleted_at) === null) {
+                const title = asNullableString(data.title);
+                const content = asNullableString(data.content);
+                const typeValue = data.type;
+                if (!title || !content || !isObservationType(typeValue)) { skipped++; continue; }
+                const project = asNullableString(data.project);
+                const identity = resolveSaveIdentity({ session_id: asNullableString(data.session_id), project, requireSessionProject: true, config: this.config, source: 'legacy' });
+                this.persistSession(identity.session_id!, identity.session_project, undefined, 'inbound');
+                this.db.prepare(
+                  `UPDATE observations SET session_id = ?, type = ?, title = ?, content = ?, tool_name = ?, project = ?, scope = ?,
+                   topic_key = ?, normalized_hash = ?, revision_count = ?, duplicate_count = ?, last_seen_at = ?,
+                   updated_at = COALESCE(?, datetime('now')), deleted_at = NULL WHERE id = ?`
+                ).run(identity.session_id, typeValue, title, content, asNullableString(data.tool_name), project,
+                  isObservationScope(data.scope) ? data.scope : 'project', asNullableString(data.topic_key),
+                  asNullableString(data.normalized_hash) ?? computeHash(content), asPositiveInteger(data.revision_count, 1),
+                  asPositiveInteger(data.duplicate_count, 1), asNullableString(data.last_seen_at), asNullableString(data.updated_at), existingObservation.id);
+                const restored = this.getObservation(existingObservation.id);
+                if (restored) this.refreshDerivedStateForObservation(restored, 'applyV2Chunk', existingObservation.project);
+                applied++;
+              } else skipped++;
               continue;
             }
 
@@ -6270,7 +8247,7 @@ export class Store {
             const scope = isObservationScope(scopeValue) ? scopeValue : 'project';
             const normalizedHash = asNullableString(data.normalized_hash) ?? computeHash(content);
 
-            this.ensureSession(resolvedSessionId, identity.session_project);
+            this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
             const result = this.db.prepare(
               `INSERT INTO observations (
@@ -6351,7 +8328,7 @@ export class Store {
               identityReports.push(identityMetadata);
             }
             const resolvedSessionId = identity.session_id!;
-            this.ensureSession(resolvedSessionId, identity.session_project);
+            this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
             this.db.prepare(
               `INSERT INTO user_prompts (session_id, content, project, sync_id, created_at)
@@ -6414,8 +8391,8 @@ export class Store {
         if (mutation.operation === 'update') {
           if (mutation.entity_type === 'observation') {
             const existingObservation = this.db.prepare(
-              'SELECT id, project FROM observations WHERE sync_id = ? AND deleted_at IS NULL LIMIT 1'
-            ).get(syncId) as { id: number; project: string | null } | undefined;
+              'SELECT id, project, deleted_at FROM observations WHERE sync_id = ? LIMIT 1'
+            ).get(syncId) as { id: number; project: string | null; deleted_at: string | null } | undefined;
 
             if (!existingObservation) {
               skipped++;
@@ -6441,7 +8418,7 @@ export class Store {
                 identityReports.push(identityMetadata);
               }
               const resolvedSessionId = identity.session_id!;
-              this.ensureSession(resolvedSessionId, identity.session_project);
+              this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
               setClauses.push('session_id = ?');
               params.push(resolvedSessionId);
@@ -6549,6 +8526,10 @@ export class Store {
               setClauses.push("updated_at = datetime('now')");
             }
 
+            if (has('deleted_at') && asNullableString(data.deleted_at) === null) {
+              setClauses.push('deleted_at = NULL');
+            }
+
             if (setClauses.length === 0) {
               skipped++;
               continue;
@@ -6556,7 +8537,7 @@ export class Store {
 
             params.push(existingObservation.id);
             const result = this.db.prepare(
-              `UPDATE observations SET ${setClauses.join(', ')} WHERE id = ? AND deleted_at IS NULL`
+              `UPDATE observations SET ${setClauses.join(', ')} WHERE id = ?`
             ).run(...params);
 
             if (result.changes > 0) {
@@ -6603,7 +8584,7 @@ export class Store {
                 identityReports.push(identityMetadata);
               }
               const resolvedSessionId = identity.session_id!;
-              this.ensureSession(resolvedSessionId, identity.session_project);
+              this.persistSession(resolvedSessionId, identity.session_project, undefined, 'inbound');
 
               setClauses.push('session_id = ?');
               params.push(resolvedSessionId);

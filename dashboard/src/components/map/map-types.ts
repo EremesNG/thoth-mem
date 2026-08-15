@@ -1,5 +1,6 @@
 import type {
   ObservationType,
+  SemanticAtlasPageResponse,
   VizDensityState,
   VizEdge,
   VizHealthResponse,
@@ -48,6 +49,7 @@ export interface ProjectedEdge extends VizEdge {
 
 export interface MapData extends VizSliceResponse {
   health: VizHealthResponse;
+  atlas?: Omit<SemanticAtlasPageResponse, 'nodes' | 'edges' | 'health'>;
 }
 
 export type InspectorDetails =

@@ -1,0 +1,8 @@
+{
+  "regionCommitMs": 34.39999997615814,
+  "neighborhoodCommitMs": 104,
+  "exactKey": true,
+  "regionLongTaskMs": 90,
+  "neighborhoodLongTaskMs": 55,
+  "maximumLongTaskMs": 90
+}

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
 import { Store } from '../src/store/index.js';
-import type { ExportData } from '../src/store/types.js';
+import type { ExportData, OperationTraceRetentionResult } from '../src/store/types.js';
 import type { SetupResult } from '../src/setup/types.js';
 import { runCli } from '../src/cli.js';
 import { parseArgs, shouldRunCli } from '../src/index.js';
@@ -250,6 +250,66 @@ async function captureCli(
   return { stdout, stderr, exitCode };
 }
 
+async function captureCliFailure(args: string[]): Promise<{ stdout: string; stderr: string; error: unknown }> {
+  let stdout = '';
+  let stderr = '';
+  const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    stdout += String(chunk);
+    return true;
+  }) as typeof process.stdout.write);
+  const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write);
+
+  let error: unknown;
+  try {
+    await runCli(args);
+  } catch (caught) {
+    error = caught;
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  }
+  return { stdout, stderr, error };
+}
+
+function retentionResult(input: {
+  fingerprint: string;
+  effectiveNow: string;
+  eligible: number;
+  selected: number;
+  deleted: number;
+  remaining: number;
+  hasMore: boolean;
+}): OperationTraceRetentionResult {
+  return {
+    dry_run: input.deleted === 0,
+    scope: { all: true },
+    effective_now: input.effectiveNow,
+    policy: {
+      success_retention_days: 7,
+      error_retention_days: 30,
+      max_rows_per_run: 1,
+      success_cutoff: '2026-08-05T12:00:00.000Z',
+      error_cutoff: '2026-07-13T12:00:00.000Z',
+    },
+    selection_fingerprint: input.fingerprint,
+    counts: {
+      before_in_scope: input.eligible,
+      eligible: input.eligible,
+      selected: input.selected,
+      deleted: input.deleted,
+      remaining_eligible: input.remaining,
+      skipped_invalid_timestamp: 0,
+      skipped_unsupported_status: 0,
+      after_in_scope_at_commit: input.eligible - input.deleted,
+    },
+    has_more: input.hasMore,
+    sample_trace_ids: input.selected > 0 ? [`trace-${input.fingerprint}`] : [],
+  };
+}
+
 describe('runCli', () => {
   let tempDir: string;
 
@@ -270,8 +330,512 @@ describe('runCli', () => {
     expect(stdout).toContain('delete-project <project>');
     expect(stdout).toContain('rebuild-index');
     expect(stdout).toContain('--data-dir=<path>');
+    expect(stdout).toContain('--until-complete');
+    expect(stdout).toContain('Continue preview-bound retention batches after the first apply');
     expect(stdout).toContain('setup <opencode|codex|claude>');
     expect(stdout).toContain('for Codex, override only the version gate');
+  });
+
+  it('dispatches both preview-first administrative storage commands through runCli', async () => {
+    const repair = await captureCli(['repair-sync-journal', '--all', '--data-dir', tempDir]);
+    expect(repair.exitCode).toBe(0);
+    expect(repair.stdout).toContain('## Sync Journal Repair');
+    expect(repair.stdout).toContain('**Mode:** preview');
+    expect(shouldRunCli(['repair-sync-journal', '--all'])).toBe(true);
+
+    const retention = await captureCli(['prune-operation-traces', '--all', '--data-dir', tempDir]);
+    expect(retention.exitCode).toBe(0);
+    expect(retention.stdout).toContain('## Operation Trace Retention');
+    expect(retention.stdout).toContain('**Effective now:**');
+    expect(shouldRunCli(['prune-operation-traces', '--all'])).toBe(true);
+    expect(ALL_TOOLS).toHaveLength(6);
+  });
+
+  it('exposes compact-database as preview-first with only apply and data-dir options', async () => {
+    expect((await captureCli(['--help'])).stdout).toContain('compact-database');
+    expect(shouldRunCli(['compact-database'])).toBe(true);
+
+    const missingDir = join(tempDir, 'missing');
+    await expect(captureCli(['compact-database', '--data-dir', missingDir]))
+      .rejects.toThrow(/target.*missing|does not exist/i);
+    expect(existsSync(missingDir)).toBe(false);
+
+    for (const invalid of [
+      ['--all'],
+      ['--project', 'p'],
+      ['--until-complete'],
+      ['--expected-fingerprint', `sha256:${'0'.repeat(64)}`],
+      ['extra'],
+    ]) {
+      await expect(captureCli(['compact-database', ...invalid, '--data-dir', missingDir]))
+        .rejects.toThrow(/compact-database.*only|unknown option/i);
+      expect(existsSync(missingDir)).toBe(false);
+    }
+  });
+
+  it('previews and applies compact-database with bounded Markdown and JSON', async () => {
+    ensureDir(tempDir);
+    const dbPath = join(tempDir, 'thoth.db');
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE compact_cli (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+    const insert = db.prepare('INSERT INTO compact_cli(value) VALUES (?)');
+    db.transaction(() => {
+      for (let index = 0; index < 400; index += 1) insert.run('c'.repeat(2000));
+    })();
+    db.exec('DELETE FROM compact_cli WHERE id > 2');
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.close();
+
+    const preview = await captureCli(['compact-database', '--data-dir', tempDir]);
+    expect(preview.exitCode).toBe(0);
+    expect(preview.stdout).toContain('## Database Compaction');
+    expect(preview.stdout).toContain('**Mode:** preview');
+    expect(preview.stdout).not.toContain('c'.repeat(100));
+    const previewJson = JSON.parse(preview.stdout.match(/```json\n([\s\S]+?)\n```/)?.[1] ?? 'null');
+    expect(previewJson).toMatchObject({ dry_run: true, metrics: { database_path: dbPath } });
+
+    const applied = await captureCli(['compact-database', '--apply', '--data-dir', tempDir]);
+    expect(applied.exitCode).toBe(0);
+    expect(applied.stdout).toContain('**Mode:** apply');
+    const appliedJson = JSON.parse(applied.stdout.match(/```json\n([\s\S]+?)\n```/)?.[1] ?? 'null');
+    expect(appliedJson).toMatchObject({
+      dry_run: false,
+      skipped: false,
+      checks: { final_journal_mode: 'wal' },
+    });
+  });
+
+  it('keeps compact-database preview and apply independent from repair and retention workflows', async () => {
+    ensureDir(tempDir);
+    const dbPath = join(tempDir, 'thoth.db');
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.exec('CREATE TABLE compact_independent (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+    const insert = db.prepare('INSERT INTO compact_independent(value) VALUES (?)');
+    db.transaction(() => {
+      for (let index = 0; index < 300; index += 1) insert.run('i'.repeat(2000));
+    })();
+    db.exec('DELETE FROM compact_independent WHERE id > 1');
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    db.close();
+
+    const repairPreview = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const repairApply = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+    const retentionPreview = vi.spyOn(Store.prototype, 'previewOperationTraceRetention');
+    const retentionApply = vi.spyOn(Store.prototype, 'applyOperationTraceRetention');
+
+    try {
+      expect((await captureCli(['compact-database', '--data-dir', tempDir])).exitCode).toBe(0);
+      expect((await captureCli(['compact-database', '--apply', '--data-dir', tempDir])).exitCode).toBe(0);
+
+      expect(repairPreview).not.toHaveBeenCalled();
+      expect(repairApply).not.toHaveBeenCalled();
+      expect(retentionPreview).not.toHaveBeenCalled();
+      expect(retentionApply).not.toHaveBeenCalled();
+    } finally {
+      repairPreview.mockRestore();
+      repairApply.mockRestore();
+      retentionPreview.mockRestore();
+      retentionApply.mockRestore();
+    }
+  });
+
+  it('applies operation-trace retention until the preview-bound backlog is complete', async () => {
+    ensureDir(tempDir);
+    const retention = { successRetentionDays: 7, errorRetentionDays: 30, maxRowsPerRun: 2 };
+    writeFileSync(join(tempDir, 'config.json'), JSON.stringify({ operationTraceRetention: retention }));
+    const dbPath = join(tempDir, 'thoth.db');
+    const effectiveNow = '2026-08-12T12:00:00.000Z';
+    const store = new Store(dbPath, { operationTraceRetention: retention });
+    try {
+      for (let index = 1; index <= 5; index += 1) {
+        store.saveOperationTrace({
+          trace_id: `until-complete-${index}`,
+          origin: 'system',
+          target: 'until-complete-test',
+          status: 'ok',
+          started_at: `2026-01-0${index}T00:00:00.000Z`,
+          finished_at: `2026-01-0${index}T00:00:00.001Z`,
+          request: {},
+        });
+      }
+    } finally {
+      store.close();
+    }
+
+    const applied = await captureCli([
+      'prune-operation-traces', '--all', '--apply', '--until-complete',
+      '--data-dir', tempDir,
+    ]);
+
+    expect(applied.exitCode).toBe(0);
+    expect(applied.stderr).toBe('');
+    expect(applied.stdout).toContain('Batch 1/3: deleted 2, remaining 3');
+    expect(applied.stdout).toContain('Batch 3/3: deleted 1, remaining 0');
+    expect(applied.stdout).toContain('**Mode:** apply-until-complete');
+    expect(applied.stdout).toContain('**Batches completed:** 3');
+    expect(applied.stdout).toContain('**Total deleted:** 5');
+    expect(applied.stdout).toContain('**Remaining eligible:** 0');
+
+    const after = new Store(dbPath, { operationTraceRetention: retention });
+    try {
+      expect(after.previewOperationTraceRetention({ all: true }, effectiveNow).counts.eligible).toBe(0);
+    } finally {
+      after.close();
+    }
+  });
+
+  it('terminates retention continuation after one persistence failure without retrying or claiming completion', async () => {
+    const effectiveNow = '2026-08-12T12:00:00.000Z';
+    const previewSpy = vi.spyOn(Store.prototype, 'previewOperationTraceRetention').mockReturnValue(retentionResult({
+      fingerprint: 'batch-1', effectiveNow, eligible: 2, selected: 1, deleted: 0, remaining: 1, hasMore: true,
+    }));
+    const applySpy = vi.spyOn(Store.prototype, 'applyOperationTraceRetention')
+      .mockImplementation(() => { throw new Error('injected retention persistence failure'); });
+
+    try {
+      const failure = await captureCliFailure([
+        'prune-operation-traces', '--all', '--apply', '--until-complete', '--data-dir', tempDir,
+      ]);
+
+      expect(failure.error).toBeInstanceOf(Error);
+      expect(failure.stderr).toContain('injected retention persistence failure');
+      expect(failure.stdout).not.toContain('**Mode:** apply-until-complete');
+      expect(previewSpy).toHaveBeenCalledOnce();
+      expect(applySpy).toHaveBeenCalledOnce();
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('terminates retention continuation when eligible growth exceeds the initial batch bound', async () => {
+    const effectiveNow = '2026-08-12T12:00:00.000Z';
+    const previewSpy = vi.spyOn(Store.prototype, 'previewOperationTraceRetention')
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-1', effectiveNow, eligible: 2, selected: 1, deleted: 0, remaining: 1, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-2', effectiveNow, eligible: 2, selected: 1, deleted: 0, remaining: 1, hasMore: true,
+      }));
+    const applySpy = vi.spyOn(Store.prototype, 'applyOperationTraceRetention')
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-1', effectiveNow, eligible: 2, selected: 1, deleted: 1, remaining: 1, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-2', effectiveNow, eligible: 2, selected: 1, deleted: 1, remaining: 1, hasMore: true,
+      }));
+
+    try {
+      const failure = await captureCliFailure([
+        'prune-operation-traces', '--all', '--apply', '--until-complete', '--data-dir', tempDir,
+      ]);
+
+      expect(failure.error).toBeInstanceOf(Error);
+      expect(failure.stderr).toMatch(/backlog changed/i);
+      expect(failure.stdout).toContain('Batch 2/2: deleted 1, remaining 1');
+      expect(failure.stdout).not.toContain('**Mode:** apply-until-complete');
+      expect(previewSpy).toHaveBeenCalledTimes(2);
+      expect(applySpy).toHaveBeenCalledTimes(2);
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('terminates retention continuation when the next preview cannot select progress', async () => {
+    const effectiveNow = '2026-08-12T12:00:00.000Z';
+    const previewSpy = vi.spyOn(Store.prototype, 'previewOperationTraceRetention')
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-1', effectiveNow, eligible: 2, selected: 1, deleted: 0, remaining: 1, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-2', effectiveNow, eligible: 1, selected: 0, deleted: 0, remaining: 1, hasMore: true,
+      }));
+    const applySpy = vi.spyOn(Store.prototype, 'applyOperationTraceRetention').mockReturnValue(retentionResult({
+      fingerprint: 'batch-1', effectiveNow, eligible: 2, selected: 1, deleted: 1, remaining: 1, hasMore: true,
+    }));
+
+    try {
+      const failure = await captureCliFailure([
+        'prune-operation-traces', '--all', '--apply', '--until-complete', '--data-dir', tempDir,
+      ]);
+
+      expect(failure.error).toBeInstanceOf(Error);
+      expect(failure.stderr).toMatch(/made no progress/i);
+      expect(failure.stdout).toContain('Batch 1/2: deleted 1, remaining 1');
+      expect(failure.stdout).not.toContain('**Mode:** apply-until-complete');
+      expect(previewSpy).toHaveBeenCalledTimes(2);
+      expect(applySpy).toHaveBeenCalledOnce();
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('keeps one effective instant while binding every retention continuation batch to a fresh fingerprint', async () => {
+    const effectiveNow = '2026-08-12T12:00:00.000Z';
+    const previewSpy = vi.spyOn(Store.prototype, 'previewOperationTraceRetention')
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-1', effectiveNow, eligible: 3, selected: 1, deleted: 0, remaining: 2, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-2', effectiveNow, eligible: 2, selected: 1, deleted: 0, remaining: 1, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-3', effectiveNow, eligible: 1, selected: 1, deleted: 0, remaining: 0, hasMore: false,
+      }));
+    const applySpy = vi.spyOn(Store.prototype, 'applyOperationTraceRetention')
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-1', effectiveNow, eligible: 3, selected: 1, deleted: 1, remaining: 2, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-2', effectiveNow, eligible: 2, selected: 1, deleted: 1, remaining: 1, hasMore: true,
+      }))
+      .mockReturnValueOnce(retentionResult({
+        fingerprint: 'batch-3', effectiveNow, eligible: 1, selected: 1, deleted: 1, remaining: 0, hasMore: false,
+      }));
+
+    try {
+      const applied = await captureCli([
+        'prune-operation-traces', '--all', '--apply', '--until-complete', '--data-dir', tempDir,
+      ]);
+
+      expect(applied.exitCode).toBe(0);
+      expect(applied.stdout).toContain('**Mode:** apply-until-complete');
+      expect(previewSpy.mock.calls).toEqual([
+        [{ all: true }],
+        [{ all: true }, effectiveNow],
+        [{ all: true }, effectiveNow],
+      ]);
+      expect(applySpy.mock.calls.map(([input]) => input)).toEqual([
+        { scope: { all: true }, expected_selection_fingerprint: 'batch-1', effective_now: effectiveNow },
+        { scope: { all: true }, expected_selection_fingerprint: 'batch-2', effective_now: effectiveNow },
+        { scope: { all: true }, expected_selection_fingerprint: 'batch-3', effective_now: effectiveNow },
+      ]);
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('keeps supplied administrative bindings effective and never retries a stale apply', async () => {
+    const suppliedFingerprint = `sha256:${'1'.repeat(64)}`;
+    const suppliedNow = '2026-01-01T00:00:00.000Z';
+    const repairPreview = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const repairApply = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+    const retentionPreview = vi.spyOn(Store.prototype, 'previewOperationTraceRetention');
+    const retentionApply = vi.spyOn(Store.prototype, 'applyOperationTraceRetention');
+
+    try {
+      await expect(captureCli([
+        'repair-sync-journal', '--all', '--apply', '--expected-fingerprint', suppliedFingerprint,
+        '--data-dir', tempDir,
+      ])).rejects.toThrow(/stale|preview/i);
+      expect(repairPreview).not.toHaveBeenCalled();
+      expect(repairApply).toHaveBeenCalledOnce();
+      expect(repairApply).toHaveBeenCalledWith({
+        scope: { all: true },
+        expected_selection_fingerprint: suppliedFingerprint,
+      });
+
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply',
+        '--expected-fingerprint', suppliedFingerprint, '--effective-now', suppliedNow,
+        '--data-dir', tempDir,
+      ])).rejects.toThrow(/stale|preview/i);
+      expect(retentionPreview).not.toHaveBeenCalled();
+      expect(retentionApply).toHaveBeenCalledOnce();
+      expect(retentionApply).toHaveBeenCalledWith({
+        scope: { all: true },
+        expected_selection_fingerprint: suppliedFingerprint,
+        effective_now: suppliedNow,
+      });
+    } finally {
+      repairPreview.mockRestore();
+      repairApply.mockRestore();
+      retentionPreview.mockRestore();
+      retentionApply.mockRestore();
+    }
+  });
+
+  it('does not retry a different repair batch after an internally bound apply fails', async () => {
+    const previewSpy = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const applySpy = vi.spyOn(Store.prototype, 'applySyncJournalRepair')
+      .mockImplementation(() => { throw new Error('Administrative preview is stale'); });
+
+    try {
+      await expect(captureCli(['repair-sync-journal', '--all', '--apply', '--data-dir', tempDir]))
+        .rejects.toThrow(/stale/i);
+      expect(previewSpy).toHaveBeenCalledOnce();
+      expect(applySpy).toHaveBeenCalledOnce();
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('never treats explicitly empty administrative bindings as omitted', async () => {
+    const repairPreview = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const repairApply = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+    const retentionPreview = vi.spyOn(Store.prototype, 'previewOperationTraceRetention');
+    const retentionApply = vi.spyOn(Store.prototype, 'applyOperationTraceRetention');
+
+    try {
+      await expect(captureCli([
+        'repair-sync-journal', '--all', '--apply', '--expected-fingerprint=', '--data-dir', tempDir,
+      ])).rejects.toThrow(/(?:expected-fingerprint.*value|value.*expected-fingerprint|malformed)/i);
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply', '--expected-fingerprint=',
+        '--effective-now=2026-01-01T00:00:00.000Z', '--data-dir', tempDir,
+      ])).rejects.toThrow(/(?:expected-fingerprint.*value|value.*expected-fingerprint|malformed)/i);
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply',
+        `--expected-fingerprint=sha256:${'1'.repeat(64)}`, '--effective-now=', '--data-dir', tempDir,
+      ])).rejects.toThrow(/(?:effective-now.*value|value.*effective-now|malformed)/i);
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply', '--expected-fingerprint=',
+        '--effective-now=', '--data-dir', tempDir,
+      ])).rejects.toThrow(/value|malformed/i);
+
+      expect(repairPreview).not.toHaveBeenCalled();
+      expect(repairApply).not.toHaveBeenCalled();
+      expect(retentionPreview).not.toHaveBeenCalled();
+      expect(retentionApply).not.toHaveBeenCalled();
+    } finally {
+      repairPreview.mockRestore();
+      repairApply.mockRestore();
+      retentionPreview.mockRestore();
+      retentionApply.mockRestore();
+    }
+  });
+
+  it('passes explicitly supplied malformed bindings to the fail-closed Store contract without previewing', async () => {
+    const repairPreview = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const repairApply = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+    const retentionPreview = vi.spyOn(Store.prototype, 'previewOperationTraceRetention');
+    const retentionApply = vi.spyOn(Store.prototype, 'applyOperationTraceRetention');
+
+    try {
+      await expect(captureCli([
+        'repair-sync-journal', '--all', '--apply', '--expected-fingerprint=malformed',
+        '--data-dir', tempDir,
+      ])).rejects.toThrow(/stale|preview/i);
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply',
+        `--expected-fingerprint=sha256:${'1'.repeat(64)}`, '--effective-now=not-a-time',
+        '--data-dir', tempDir,
+      ])).rejects.toThrow(/stale|preview|effective/i);
+
+      expect(repairPreview).not.toHaveBeenCalled();
+      expect(repairApply).toHaveBeenCalledOnce();
+      expect(retentionPreview).not.toHaveBeenCalled();
+      expect(retentionApply).toHaveBeenCalledOnce();
+    } finally {
+      repairPreview.mockRestore();
+      repairApply.mockRestore();
+      retentionPreview.mockRestore();
+      retentionApply.mockRestore();
+    }
+  });
+
+  it('rejects --until-complete outside operation-trace retention apply before opening Store', async () => {
+    const dbPath = join(tempDir, 'thoth.db');
+
+    await expect(captureCli([
+      'prune-operation-traces', '--all', '--until-complete', '--data-dir', tempDir,
+    ])).rejects.toThrow(/until-complete.*apply/i);
+    expect(existsSync(dbPath)).toBe(false);
+
+    await expect(captureCli([
+      'repair-sync-journal', '--all', '--apply', '--until-complete',
+      '--expected-fingerprint', `sha256:${'0'.repeat(64)}`, '--data-dir', tempDir,
+    ])).rejects.toThrow(/until-complete.*prune-operation-traces/i);
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  it('internally binds repair apply once when no fingerprint is supplied', async () => {
+    const previewSpy = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const applySpy = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+
+    try {
+      const result = await captureCli(['repair-sync-journal', '--all', '--apply', '--data-dir', tempDir]);
+
+      expect(result.exitCode).toBe(0);
+      expect(previewSpy).toHaveBeenCalledOnce();
+      expect(applySpy).toHaveBeenCalledOnce();
+      expect(applySpy).toHaveBeenCalledWith({
+        scope: { all: true },
+        expected_selection_fingerprint: previewSpy.mock.results[0]?.value.selection_fingerprint,
+      });
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('internally binds retention apply and rejects a partial supplied pair', async () => {
+    const previewSpy = vi.spyOn(Store.prototype, 'previewOperationTraceRetention');
+    const applySpy = vi.spyOn(Store.prototype, 'applyOperationTraceRetention');
+
+    try {
+      const result = await captureCli(['prune-operation-traces', '--all', '--apply', '--data-dir', tempDir]);
+
+      expect(result.exitCode).toBe(0);
+      expect(previewSpy).toHaveBeenCalledOnce();
+      expect(applySpy).toHaveBeenCalledWith({
+        scope: { all: true },
+        expected_selection_fingerprint: previewSpy.mock.results[0]?.value.selection_fingerprint,
+        effective_now: previewSpy.mock.results[0]?.value.effective_now,
+      });
+      await expect(captureCli([
+        'prune-operation-traces', '--all', '--apply',
+        '--expected-fingerprint', `sha256:${'0'.repeat(64)}`, '--data-dir', tempDir,
+      ])).rejects.toThrow(/complete pair|effective-now/i);
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('rejects retention-only --effective-now for repair preview and apply before invoking Store', async () => {
+    const previewSpy = vi.spyOn(Store.prototype, 'previewSyncJournalRepair');
+    const applySpy = vi.spyOn(Store.prototype, 'applySyncJournalRepair');
+    const effectiveNow = '2026-01-01T00:00:00.000Z';
+    const expectedFingerprint = `sha256:${'0'.repeat(64)}`;
+
+    try {
+      await expect(captureCli([
+        'repair-sync-journal', '--all', '--effective-now', effectiveNow, '--data-dir', tempDir,
+      ])).rejects.toThrow(/Preview mode|effective-now/i);
+      await expect(captureCli([
+        'repair-sync-journal', '--all', '--apply', '--expected-fingerprint', expectedFingerprint,
+        '--effective-now', effectiveNow, '--data-dir', tempDir,
+      ])).rejects.toThrow(/effective-now/i);
+
+      expect(previewSpy).not.toHaveBeenCalled();
+      expect(applySpy).not.toHaveBeenCalled();
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it('rejects invalid administrative scopes and malformed preview bindings without writes', async () => {
+    for (const command of ['repair-sync-journal', 'prune-operation-traces']) {
+      await expect(captureCli([command, '--data-dir', tempDir])).rejects.toThrow(/Exactly one/);
+      await expect(captureCli([command, '--project', 'p', '--all', '--data-dir', tempDir])).rejects.toThrow(/Exactly one/);
+      await expect(captureCli([command, '--all', '--expected-fingerprint', `sha256:${'0'.repeat(64)}`, '--data-dir', tempDir]))
+        .rejects.toThrow(/Preview mode/);
+    }
+    const store = new Store(join(tempDir, 'memory.db'));
+    try {
+      const before = store.getMutationsSince(0).length;
+      await expect(captureCli(['repair-sync-journal', '--all', '--apply', '--expected-fingerprint', 'bad', '--data-dir', tempDir]))
+        .rejects.toThrow(/stale|preview/i);
+      expect(store.getMutationsSince(0)).toHaveLength(before);
+    } finally { store.close(); }
   });
 
   it('setup command contract keeps project paths command-scoped and returns the setup exit code', async () => {

@@ -81,6 +81,7 @@ Sync import/export MUST return explicit failure output on unreadable/corrupt art
 # Delta for Sync
 
 ## ADDED Requirements
+
 ### Requirement: Sync Export MUST Preserve Stable Identity Fields
 Sync export MUST preserve explicit session and project identity for exported sessions, prompts, observations, mutations, and chunk metadata where those fields are part of the portable contract. Export MUST NOT replace present explicit identity with placeholders and MUST NOT omit identity needed for downstream project/session-scoped recall.
 
@@ -155,3 +156,122 @@ The CLI sync and sync-import default directory behavior SHOULD remain the existi
 - Design should specify the exact sync result fields or CLI text used for identity degradation and resolved-directory reporting.
 - Tests should cover explicit identity export/import, legacy missing identity import, replay idempotency with fallbacks, and CLI default directory visibility.
 
+### Requirement: Fail-Closed Journal Contract
+
+A mutation-journal persistence failure or missing stable identity MUST propagate as an explicit failed local write and MUST NOT be converted into a successful, null-identity, or merely logged primary operation. Inbound legacy/V2 import MUST use an origin-aware non-journaling path and MUST produce zero outbound mutation growth from applied remote state.
+
+#### Scenario: US1 - Trust every successful durable write 1
+
+- **GIVEN** a legacy database with `sync_mutations` but no `project` column
+- **WHEN** the current store opens it one or more times
+- **THEN** the column and current indexes exist without duplicate-column failures or data loss
+
+#### Scenario: US1 - Trust every successful durable write 2
+
+- **GIVEN** a create, update, or delete whose mutation insert fails or lacks a non-empty stable identity
+- **WHEN** the public write is attempted
+- **THEN** it fails and neither the primary change nor a partial mutation is committed
+
+#### Scenario: US1 - Trust every successful durable write 3
+
+- **GIVEN** a primary write and its mutation can both persist
+- **WHEN** the public write returns success
+- **THEN** the matching ordered journal event contains a non-empty stable identity and is visible to incremental export
+
+#### Scenario: US1 - Trust every successful durable write 4
+
+- **GIVEN** an inbound legacy or V2 sync import
+- **WHEN** it creates or enriches a session while applying remote state
+- **THEN** it does not append a new outbound mutation or create a replication loop
+
+### Requirement: Deterministic Journal Repair Preview
+
+The system MUST provide a read-only repair preview for exactly one project or all projects that identifies current sync-eligible records with stable identities lacking sufficient journal coverage, reports active/delete repair counts by entity type, bounds any returned identifiers, and returns a deterministic selection fingerprint that binds scope and the ordered candidate batch.
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 1
+
+- **GIVEN** sync-eligible rows with stable identities and missing current-state journal coverage
+- **WHEN** an operator requests repair preview for exactly one project or all projects
+- **THEN** the system reports bounded counts by entity and operation without mutating any row
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 2
+
+- **GIVEN** an unchanged repair preview
+- **WHEN** the operator explicitly applies the same scope with the preview's selection fingerprint
+- **THEN** the system appends deterministic current-state mutations for exactly the reported rows without changing their memory content, titles, identities, timestamps, or deletion state
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 3
+
+- **GIVEN** a successfully repaired scope
+- **WHEN** repair is previewed or applied again
+- **THEN** zero duplicate repair mutations are created
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 4
+
+- **GIVEN** a legacy record without a stable sync identity
+- **WHEN** repair evaluates it
+- **THEN** the record is reported as ineligible and no identity is allocated implicitly
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 5
+
+- **GIVEN** an operator has not selected apply mode
+- **WHEN** either administrative surface is invoked
+- **THEN** the operation remains read-only
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 6
+
+- **GIVEN** candidates change after preview or the supplied fingerprint is missing or stale
+- **WHEN** apply is attempted
+- **THEN** it fails before writes and requires a fresh preview
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 7
+
+- **GIVEN** a downstream store has a tombstoned observation with the repaired stable identity while the source observation is active
+- **WHEN** it imports the repaired current-state event
+- **THEN** the observation is idempotently restored to the active source state
+
+### Requirement: Idempotent Journal Repair Apply and Convergence
+
+Explicit repair apply MUST require the expected preview fingerprint, re-evaluate under an immediate transaction, fail without writes on mismatch, append current-state mutations for exactly the bound candidates, preserve primary source memory state, avoid duplicates on repeated runs, and report repaired, skipped, and remaining counts. Inbound application of a repaired non-delete observation event MUST idempotently upsert by stable identity and restore a matching soft-deleted row to the active payload state.
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 1
+
+- **GIVEN** sync-eligible rows with stable identities and missing current-state journal coverage
+- **WHEN** an operator requests repair preview for exactly one project or all projects
+- **THEN** the system reports bounded counts by entity and operation without mutating any row
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 2
+
+- **GIVEN** an unchanged repair preview
+- **WHEN** the operator explicitly applies the same scope with the preview's selection fingerprint
+- **THEN** the system appends deterministic current-state mutations for exactly the reported rows without changing their memory content, titles, identities, timestamps, or deletion state
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 3
+
+- **GIVEN** a successfully repaired scope
+- **WHEN** repair is previewed or applied again
+- **THEN** zero duplicate repair mutations are created
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 4
+
+- **GIVEN** a legacy record without a stable sync identity
+- **WHEN** repair evaluates it
+- **THEN** the record is reported as ineligible and no identity is allocated implicitly
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 5
+
+- **GIVEN** an operator has not selected apply mode
+- **WHEN** either administrative surface is invoked
+- **THEN** the operation remains read-only
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 6
+
+- **GIVEN** candidates change after preview or the supplied fingerprint is missing or stale
+- **WHEN** apply is attempted
+- **THEN** it fails before writes and requires a fresh preview
+
+#### Scenario: US2 - Repair sync-visible legacy gaps explicitly 7
+
+- **GIVEN** a downstream store has a tombstoned observation with the repaired stable identity while the source observation is active
+- **WHEN** it imports the repaired current-state event
+- **THEN** the observation is idempotently restored to the active source state

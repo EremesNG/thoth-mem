@@ -164,6 +164,18 @@ describe('setup CLI routing', () => {
     expect(runCli).toHaveBeenCalledWith(['setup', 'codex', '--plan']);
     expect(process.exit).toHaveBeenCalledWith(3);
   });
+
+  it('dispatches compact-database through runCli without starting MCP', async () => {
+    const runCli = vi.fn().mockResolvedValue(0);
+    vi.doMock('../src/cli.js', () => ({ runCli }));
+    process.argv = ['node', 'thoth-mem', 'compact-database', '--data-dir', 'C:/disposable'];
+
+    expect(shouldRunCli(process.argv.slice(2))).toBe(true);
+    await main();
+
+    expect(runCli).toHaveBeenCalledWith(['compact-database', '--data-dir', 'C:/disposable']);
+    expect(mocks.createServer).not.toHaveBeenCalled();
+  });
 });
 
 describe('startMcpServer lifecycle shutdown', () => {

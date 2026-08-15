@@ -3,7 +3,8 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 // Define the router context
 interface RouterContextType {
   path: string;
-  navigate: (to: string) => void;
+  location: { pathname: string; search: string };
+  navigate: (to: string, options?: { replace?: boolean }) => void;
 }
 
 const RouterContext = createContext<RouterContextType | undefined>(undefined);
@@ -21,17 +22,12 @@ interface RouterProviderProps {
 }
 
 export function RouterProvider({ children }: RouterProviderProps) {
-  const normalizePath = (to: string) => new URL(to, window.location.origin).pathname || '/';
-
-  // Get initial path from window.location.pathname
-  const [path, setPath] = useState(() => {
-    // Strip base path if any
-    return window.location.pathname || '/';
-  });
+  const readLocation = () => ({ pathname: window.location.pathname || '/', search: window.location.search || '' });
+  const [location, setLocation] = useState(readLocation);
 
   useEffect(() => {
     const handlePopState = () => {
-      setPath(window.location.pathname || '/');
+      setLocation(readLocation());
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -40,13 +36,14 @@ export function RouterProvider({ children }: RouterProviderProps) {
     };
   }, []);
 
-  const navigate = (to: string) => {
-    window.history.pushState(null, '', to);
-    setPath(normalizePath(to));
+  const navigate = (to: string, options?: { replace?: boolean }) => {
+    const next = new URL(to, window.location.origin);
+    window.history[options?.replace ? 'replaceState' : 'pushState'](null, '', `${next.pathname}${next.search}${next.hash}`);
+    setLocation({ pathname: next.pathname || '/', search: next.search });
   };
 
   return (
-    <RouterContext.Provider value={{ path, navigate }}>
+    <RouterContext.Provider value={{ path: location.pathname, location, navigate }}>
       {children}
     </RouterContext.Provider>
   );

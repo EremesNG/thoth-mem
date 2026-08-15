@@ -1,5 +1,7 @@
-import type { VizDensityState, VizEdge, VizNode, VizSliceResponse } from '../../api/client.js';
+import { ApiError } from '../../api/client.js';
+import type { SemanticAtlasPageResponse, VizDensityState, VizEdge, VizNode, VizSliceResponse } from '../../api/client.js';
 import type { MapFilters } from './map-types.js';
+import { presentStoredText } from '../safe-presentation.js';
 
 export const DEFAULT_MAP_FILTERS: MapFilters = {
   project: '',
@@ -19,13 +21,7 @@ export function isWorkspaceRoute(path: string): boolean {
 }
 
 export function sanitizeMapText(value: string | null | undefined): string {
-  if (!value) return '';
-
-  return value
-    .replace(/<private>[\s\S]*?<\/private>/gi, ' ')
-    .replace(/\[private\][\s\S]*?\[\/private\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return presentStoredText(value);
 }
 
 export function parseMapFilters(search: string): MapFilters {
@@ -73,11 +69,125 @@ export function mergeVizSlices(base: VizSliceResponse, incoming: VizSliceRespons
   for (const item of base.edges) edges.set(item.id, item);
   for (const item of incoming.edges) edges.set(item.id, item);
 
+  const nodeIds = new Set(nodes.keys());
+
   return {
     ...incoming,
     nodes: Array.from(nodes.values()),
-    edges: Array.from(edges.values()),
+    edges: Array.from(edges.values()).filter((edge) => (
+      nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id)
+    )),
   };
+}
+
+export function mergeSemanticAtlasPages(
+  base: SemanticAtlasPageResponse,
+  incoming: SemanticAtlasPageResponse,
+): SemanticAtlasPageResponse {
+  if (base.hierarchy !== incoming.hierarchy
+    || base.level !== incoming.level
+    || base.navigation.project_id !== incoming.navigation.project_id
+    || base.generation !== incoming.generation) {
+    throw new ApiError(409, 'Atlas generation changed', {
+      code: 'VIZ_ATLAS_GENERATION_STALE',
+      retryable: true,
+    });
+  }
+  const nodes = new Map(base.nodes.map((node) => [node.id, node]));
+  const edges = new Map(base.edges.map((edge) => [edge.id, edge]));
+  incoming.nodes.forEach((node) => nodes.set(node.id, node));
+  incoming.edges.forEach((edge) => edges.set(edge.id, edge));
+  const nodeIds = new Set(nodes.keys());
+  return {
+    ...incoming,
+    nodes: [...nodes.values()],
+    edges: [...edges.values()].filter((edge) => (
+      nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id)
+    )),
+  };
+}
+
+export function semanticAtlasPageToVizSlice(
+  page: SemanticAtlasPageResponse,
+): VizSliceResponse & { atlas: Omit<SemanticAtlasPageResponse, 'nodes' | 'edges' | 'health'> } {
+  const explanationByNode = new Map((page.regions ?? []).flatMap((region) => (
+    region.representatives.map((explanation) => [explanation.node_id, explanation] as const)
+  )));
+  const nodes: VizNode[] = page.nodes.map((node) => ({
+    id: node.id,
+    kind: node.kind,
+    label: sanitizeMapText(node.label),
+    snippet: sanitizeMapText(node.snippet),
+    project: node.project?.label ?? null,
+    session_id: node.session?.label ?? null,
+    topic_key: node.topic?.label ?? null,
+    type: node.type,
+    seed_x: node.seed_x,
+    seed_y: node.seed_y,
+    semantic_level: page.level,
+    community_id: node.community_id,
+    owner_project_id: node.owner_project_id,
+    region_id: page.hierarchy === 'project' && page.level === 'universe'
+      ? node.owner_project_id
+      : node.region_id ?? null,
+    representative_reason: explanationByNode.get(node.id)?.reason,
+    representative_signals: explanationByNode.get(node.id)?.signals,
+    representative_rank: explanationByNode.get(node.id)?.rank,
+    member_count: node.member_count,
+    project_count: node.project_count,
+    unclustered: node.unclustered,
+  }));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges: VizEdge[] = page.edges
+    .filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+    .map((edge) => ({
+      id: edge.id,
+      source_id: edge.source_id,
+      target_id: edge.target_id,
+      relation: edge.relation,
+      kind: edge.kind,
+      label: sanitizeMapText(edge.label),
+      summary: sanitizeMapText(edge.summary),
+      weight: edge.weight,
+      evidence_count: edge.evidence_count,
+      tier: edge.tier,
+      relationship_class: edge.relationship_class,
+      direction: edge.direction,
+      confidence: edge.confidence,
+      provenance: edge.provenance,
+    }));
+  return {
+    nodes,
+    edges,
+    state: nodes.length === 0 ? 'empty' : nodes.length >= 30 ? 'dense' : 'sparse',
+    continuation: page.continuation,
+    truncated: page.truncated,
+    health: page.health,
+    atlas: {
+      hierarchy: page.hierarchy,
+      level: page.level,
+      generation: page.generation,
+      presentation_key: page.presentation_key,
+      presentation: page.presentation,
+      regions: page.regions,
+      region_bridges: page.region_bridges,
+      project_regions: page.project_regions,
+      project_bridges: page.project_bridges,
+      counts: page.counts,
+      coverage: page.coverage,
+      facets: page.facets,
+      navigation: page.navigation,
+      continuation: page.continuation,
+      truncated: page.truncated,
+    },
+  };
+}
+
+export function mergeVizSlicesWithOutcome(base: VizSliceResponse, incoming: VizSliceResponse) {
+  const visibleNodes = new Set(base.nodes.map((node) => node.id));
+  const addedNodeIds = incoming.nodes.filter((node) => !visibleNodes.has(node.id)).map((node) => node.id);
+  const alreadyVisibleNodeIds = incoming.nodes.filter((node) => visibleNodes.has(node.id)).map((node) => node.id);
+  return { slice: mergeVizSlices(base, incoming), addedNodeIds, alreadyVisibleNodeIds, continuation: incoming.continuation, exhausted: !incoming.continuation && addedNodeIds.length === 0 };
 }
 
 export function selectVisibleEdges(edges: VizEdge[], zoom: number, state: VizDensityState): VizEdge[] {

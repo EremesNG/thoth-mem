@@ -2,6 +2,8 @@ import { Clock, Forward, NotebookTabs } from 'lucide-react';
 
 import type { ObservatoryTimelineResponse } from '../../api/client.js';
 import { formatShortDate } from './observatory-utils.js';
+import { presentStoredText } from '../safe-presentation.js';
+import { presentObservationType } from '../dashboard-presentation.js';
 
 interface TimelineSurfaceProps {
   timeline: ObservatoryTimelineResponse | null;
@@ -16,8 +18,8 @@ export default function TimelineSurface({ timeline, focusNodeId, loading, onLoad
     <section className="observatory-panel timeline-surface" aria-labelledby="timeline-heading" data-testid="timeline-surface">
       <div className="observatory-panel-header">
         <div>
-          <span className="observatory-kicker"><Clock size={14} /> Timeline</span>
-          <h2 id="timeline-heading">Scoped playback</h2>
+          <span className="observatory-kicker"><Clock size={14} /> Memory story</span>
+          <h2 id="timeline-heading">Follow how this knowledge evolved</h2>
         </div>
         <button type="button" className="map-icon-button" onClick={onLoadMore} title="Continue timeline" disabled={loading || !timeline?.continuation}>
           <Forward size={15} />
@@ -36,13 +38,13 @@ export default function TimelineSurface({ timeline, focusNodeId, loading, onLoad
             >
               <NotebookTabs size={14} />
               <span>
-                <strong>{event.title}</strong>
-                <small>{formatShortDate(event.created_at)} / {event.type}</small>
+                <strong>{presentStoredText(event.title)}</strong>
+                <small>{formatShortDate(event.created_at)} · {presentObservationType(event.type)}</small>
               </span>
             </button>
           );
         })}
-        {!timeline?.events.length && <p className="observatory-muted">No events in the current scoped window.</p>}
+        {!timeline?.events.length && <p className="observatory-muted">No memories have appeared in this part of the story yet.</p>}
       </div>
     </section>
   );
