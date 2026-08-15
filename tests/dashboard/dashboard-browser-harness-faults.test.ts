@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { harnessFaultTestApi, withDashboardBrowser } from './dashboard-browser-harness.js';
@@ -123,6 +125,35 @@ describe('dashboard browser harness faults', () => {
   it('recognizes an owned browser that disappeared before child metadata settles', () => {
     expect(harnessFaultTestApi.browserProcessHasExited(null, null, process.pid)).toBe(false);
     expect(harnessFaultTestApi.browserProcessHasExited(null, null, 2_147_483_647)).toBe(true);
+  });
+
+  it('resolves configured and Linux browser executables', () => {
+    expect(harnessFaultTestApi.resolveBrowserExecutable({
+      environment: {
+        THOTH_MEM_BROWSER_PATH: '/missing/browser',
+        CHROME_PATH: '/opt/google/chrome',
+      },
+      pathExists: (path) => path === '/opt/google/chrome',
+      platform: 'linux',
+    })).toBe('/opt/google/chrome');
+
+    expect(harnessFaultTestApi.resolveBrowserExecutable({
+      environment: {},
+      pathExists: (path) => path === '/usr/bin/google-chrome',
+      platform: 'linux',
+    })).toBe('/usr/bin/google-chrome');
+  });
+
+  it('accepts only owned browser profiles inside the platform temp directory', () => {
+    expect(harnessFaultTestApi.isOwnedBrowserProfilePath(
+      resolve(tmpdir(), 'thoth-dashboard-browser-owned'),
+    )).toBe(true);
+    expect(harnessFaultTestApi.isOwnedBrowserProfilePath(
+      resolve(tmpdir(), 'unowned-browser-profile'),
+    )).toBe(false);
+    expect(harnessFaultTestApi.isOwnedBrowserProfilePath(
+      resolve(tmpdir(), '..', 'thoth-dashboard-browser-outside'),
+    )).toBe(false);
   });
 });
 

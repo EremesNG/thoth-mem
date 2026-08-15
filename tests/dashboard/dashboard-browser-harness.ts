@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createConnection, createServer as createNetServer, type Socket } from 'node:net';
@@ -143,6 +143,30 @@ export interface BrowserRoute {
 type HarnessPhase='bridge'|'vite'|'browser'|'target'|'cdp'|'init'|'work';
 interface HarnessFaultInjection {phase?:HarnessPhase;deadlineMs?:number;cleanupFault?:'cdp'|'browser'|'vite'|'bridge'|'store'|'profile';collision?:'bridge'|'vite';onResource?:(kind:'profile'|'pid'|'port',value:string|number)=>void;}
 interface DashboardBrowserOptions {observations?:number;projectCount?:number;unassignedCount?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
+interface BrowserExecutableResolutionOptions {
+  environment?: NodeJS.ProcessEnv;
+  pathExists?: (path: string) => boolean;
+  platform?: NodeJS.Platform;
+}
+
+const BROWSER_PATHS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+  win32: [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  ],
+  darwin: [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  ],
+  linux: [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/microsoft-edge',
+    '/usr/bin/microsoft-edge-stable',
+  ],
+};
 
 export class DashboardBrowser {
   readonly requests: Array<{ url: string; method: string }> = [];
@@ -407,7 +431,7 @@ export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Pr
     store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken,options.semanticZoomCommunitySize??0,options.projectCount??1,options.unassignedCount??0);
     const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
     const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
-    const chromePath=['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe','C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(existsSync);if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');
+    const chromePath=resolveBrowserExecutable();if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');
     profile=mkdtempSync(resolve(tmpdir(),'thoth-dashboard-browser-'));fault?.onResource?.('profile',profile);chrome=spawn(chromePath,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-sync','--disable-default-apps','--disable-breakpad','--disable-crash-reporter','about:blank'],{stdio:'ignore',windowsHide:true});if(chrome.pid)fault?.onResource?.('pid',chrome.pid);await faultPoint('browser',fault,controller.signal);
     const debugPort=await readDevToolsPort(resolve(profile,'DevToolsActivePort'),controller.signal);await faultPoint('target',fault,controller.signal);
     const response=await bounded(fetch(`http://127.0.0.1:${debugPort}/json/list`,{signal:controller.signal}),5_000,'Chrome target discovery',controller.signal);if(!response.ok)throw new Error(`Chrome target discovery failed: ${response.status}`);const targets=await bounded(response.json() as Promise<Array<{type:string;webSocketDebuggerUrl:string}>>,5_000,'Chrome target JSON',controller.signal);const pageTarget=targets.find((target)=>target.type==='page');if(!pageTarget)throw new Error('Real browser opened without a page target');
@@ -431,7 +455,7 @@ async function bridgeIsOwned(port:number,observationId:number,ownerToken:string,
 async function fetchWithTimeout(url:string,timeoutMs:number,signal:AbortSignal):Promise<Response>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(abortError(`Fetch timeout after ${timeoutMs}ms`)),timeoutMs);const abort=()=>controller.abort(signal.reason);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});try{return await fetch(url,{signal:controller.signal});}finally{clearTimeout(timer);signal.removeEventListener('abort',abort);}}
 function delay(milliseconds:number):Promise<void>{return new Promise((resolveDelay)=>setTimeout(resolveDelay,milliseconds));}
 async function bounded<T>(promise:Promise<T>,timeoutMs:number,label:string,signal?:AbortSignal):Promise<T>{let timer:ReturnType<typeof setTimeout>|undefined;let abort:()=>void=()=>undefined;try{return await Promise.race([promise,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label} timeout after ${timeoutMs}ms`)),timeoutMs);if(signal){abort=()=>reject(signal.reason instanceof Error?signal.reason:abortError(`${label} aborted`));if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}})]);}finally{if(timer)clearTimeout(timer);signal?.removeEventListener('abort',abort);}}
-async function removeDirectory(path:string):Promise<void>{const root=resolve(tmpdir());const target=resolve(path);if(!target.startsWith(`${root}\\`)||!target.split(/[\\/]/).pop()?.startsWith('thoth-dashboard-browser-'))throw new Error(`Refusing to remove unvalidated browser profile: ${target}`);const deadline=Date.now()+10_000;let lastError:unknown;while(existsSync(target)){try{rmSync(target,{recursive:true,force:true});}catch(error){lastError=error;}if(!existsSync(target))return;if(Date.now()>=deadline)throw lastError instanceof Error?lastError:new Error(`Timed out removing browser profile: ${target}`);await delay(50);}}
+async function removeDirectory(path:string):Promise<void>{const target=resolve(path);if(!isOwnedBrowserProfilePath(target))throw new Error(`Refusing to remove unvalidated browser profile: ${target}`);const deadline=Date.now()+10_000;let lastError:unknown;while(existsSync(target)){try{rmSync(target,{recursive:true,force:true});}catch(error){lastError=error;}if(!existsSync(target))return;if(Date.now()>=deadline)throw lastError instanceof Error?lastError:new Error(`Timed out removing browser profile: ${target}`);await delay(50);}}
 async function readDevToolsPort(path:string,signal:AbortSignal):Promise<string>{const started=Date.now();while(Date.now()-started<8_000){throwIfAborted(signal);try{if(existsSync(path)){const [port]=readFileSync(path,'utf8').trim().split(/\r?\n/);if(/^\d+$/.test(port))return port;}}catch{/* Chrome may still own the new file briefly on Windows. */}await delay(25);}throw new Error('Timeout waiting for readable Chrome DevTools port');}
 async function requestBrowserClose(cdp:CdpConnection|null):Promise<void>{if(!cdp)return;await bounded(cdp.send('Browser.close'),750,'Chrome graceful close').catch(()=>undefined);}
 async function terminateBrowser(chrome:ChildProcess|null):Promise<void>{if(!chrome||browserHasExited(chrome.exitCode,chrome.signalCode))return;chrome.kill();try{await waitForBrowserExit(chrome,8_000,'Chrome exit');}catch{chrome.kill('SIGKILL');try{await waitForBrowserExit(chrome,5_000,'forced Chrome exit');}catch(error){if(!browserProcessHasExited(chrome.exitCode,chrome.signalCode,chrome.pid))throw error;await delay(500);}}}
@@ -439,6 +463,31 @@ async function waitForBrowserExit(chrome:ChildProcess,timeoutMs:number,label:str
 function browserHasExited(exitCode:number|null,signalCode:NodeJS.Signals|null):boolean{return exitCode!==null||signalCode!==null;}
 function browserProcessHasExited(exitCode:number|null,signalCode:NodeJS.Signals|null,pid:number|undefined):boolean{return browserHasExited(exitCode,signalCode)||(typeof pid==='number'&&!processExists(pid));}
 function processExists(pid:number):boolean{try{process.kill(pid,0);return true;}catch(error){return error instanceof Error&&'code' in error&&error.code==='EPERM';}}
+function isOwnedBrowserProfilePath(path:string):boolean{
+  const root=resolve(tmpdir());
+  const target=resolve(path);
+  const relativePath=relative(root,target);
+  return relativePath.length>0
+    && relativePath!=='..'
+    && !relativePath.startsWith(`..${sep}`)
+    && !isAbsolute(relativePath)
+    && basename(target).startsWith('thoth-dashboard-browser-');
+}
+function resolveBrowserExecutable(options:BrowserExecutableResolutionOptions={}):string|null{
+  const environment=options.environment??process.env;
+  const pathExists=options.pathExists??existsSync;
+  const platform=options.platform??process.platform;
+  const candidates=[
+    environment.THOTH_MEM_BROWSER_PATH,
+    environment.CHROME_PATH,
+    environment.CHROME_BIN,
+    environment.EDGE_PATH,
+    ...(BROWSER_PATHS[platform]??[]),
+  ];
+  return candidates.find((candidate):candidate is string=>
+    typeof candidate==='string'&&candidate.length>0&&pathExists(candidate)
+  )??null;
+}
 function throwIfAborted(signal:AbortSignal):void{if(signal.aborted)throw(signal.reason instanceof Error?signal.reason:abortError('Harness lifecycle aborted'));}
 function abortError(message:string):Error{const error=new Error(message);error.name='AbortError';return error;}
 function asError(error:unknown):Error{return error instanceof Error?error:new Error(String(error));}
@@ -449,6 +498,8 @@ export const harnessFaultTestApi={
   pathExists:(path:string)=>existsSync(path),
   browserHasExited,
   browserProcessHasExited,
+  isOwnedBrowserProfilePath,
   processExists,
+  resolveBrowserExecutable,
   portListens:async(port:number)=>await new Promise<boolean>((resolveCheck)=>{const socket=createConnection({host:'127.0.0.1',port});let settled=false;let timer:ReturnType<typeof setTimeout>;const settle=(listens:boolean)=>{if(settled)return;settled=true;clearTimeout(timer);socket.removeAllListeners();socket.destroy();resolveCheck(listens);};timer=setTimeout(()=>settle(false),250);timer.unref();socket.once('connect',()=>settle(true));socket.once('error',()=>settle(false));}),
 };
