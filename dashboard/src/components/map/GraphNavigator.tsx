@@ -25,6 +25,7 @@ interface GraphNavigatorProps {
 
 const DENSE_NAVIGATOR_THRESHOLD = 32;
 const DENSE_NAVIGATOR_CHUNK_SIZE = 32;
+const DENSE_NAVIGATOR_PUBLICATION_SIZE = 128;
 const DENSE_NAVIGATOR_FRAME_FALLBACK_MS = 50;
 
 interface GraphNavigatorRowProps {
@@ -188,7 +189,7 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
         datasetKey,
         limit: Math.min(
           index.nodeIds.length,
-          current.datasetKey === datasetKey ? current.limit + DENSE_NAVIGATOR_CHUNK_SIZE : DENSE_NAVIGATOR_THRESHOLD,
+          current.datasetKey === datasetKey ? current.limit + DENSE_NAVIGATOR_PUBLICATION_SIZE : DENSE_NAVIGATOR_THRESHOLD,
         ),
       }));
     };
