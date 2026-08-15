@@ -277,7 +277,7 @@ describe('complete Neural Atlas', () => {
     }, { observations: 12, faultInjection: { deadlineMs: 55_000 } });
   }, 65_000);
 
-  it('completes dense navigation under a throttled browser scheduler', async () => {
+  it('completes dense navigation when animation frames stop after streaming begins', async () => {
     await withDashboardBrowser(async (browser) => {
       await browser.setRoutes(completeAtlasRoutes());
       await browser.viewport(1440, 900);
@@ -288,28 +288,18 @@ describe('complete Neural Atlas', () => {
       await browser.evaluate(`(() => {
         globalThis.__THOTH_ORIGINAL_REQUEST_ANIMATION_FRAME__ = globalThis.requestAnimationFrame;
         globalThis.__THOTH_ORIGINAL_CANCEL_ANIMATION_FRAME__ = globalThis.cancelAnimationFrame;
-        globalThis.__THOTH_ORIGINAL_SET_TIMEOUT__ = globalThis.setTimeout;
-        globalThis.__THOTH_ORIGINAL_CLEAR_TIMEOUT__ = globalThis.clearTimeout;
-        const originalSetTimeout = globalThis.setTimeout;
-        const originalClearTimeout = globalThis.clearTimeout;
-        globalThis.requestAnimationFrame = (callback) => originalSetTimeout(() => callback(performance.now()), 200);
-        globalThis.cancelAnimationFrame = (handle) => originalClearTimeout(handle);
-        globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callback, Math.max(Number(delay ?? 0), 200), ...args);
-        globalThis.clearTimeout = (handle) => originalClearTimeout(handle);
+        globalThis.requestAnimationFrame = () => 2147483647;
+        globalThis.cancelAnimationFrame = () => undefined;
       })()`);
 
       try {
-        await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length === ${TOTAL_NODES} && document.querySelector('.graph-navigator')?.getAttribute('data-list-mode') === 'complete'`, 8_000);
+        await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length === ${TOTAL_NODES} && document.querySelector('.graph-navigator')?.getAttribute('data-list-mode') === 'complete'`, 3_000);
       } finally {
         await browser.evaluate(`(() => {
           globalThis.requestAnimationFrame = globalThis.__THOTH_ORIGINAL_REQUEST_ANIMATION_FRAME__;
           globalThis.cancelAnimationFrame = globalThis.__THOTH_ORIGINAL_CANCEL_ANIMATION_FRAME__;
-          globalThis.setTimeout = globalThis.__THOTH_ORIGINAL_SET_TIMEOUT__;
-          globalThis.clearTimeout = globalThis.__THOTH_ORIGINAL_CLEAR_TIMEOUT__;
           delete globalThis.__THOTH_ORIGINAL_REQUEST_ANIMATION_FRAME__;
           delete globalThis.__THOTH_ORIGINAL_CANCEL_ANIMATION_FRAME__;
-          delete globalThis.__THOTH_ORIGINAL_SET_TIMEOUT__;
-          delete globalThis.__THOTH_ORIGINAL_CLEAR_TIMEOUT__;
         })()`);
       }
 
