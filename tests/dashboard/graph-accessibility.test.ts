@@ -15,6 +15,128 @@ async function enterNeighborhood(browser: DashboardBrowser): Promise<void> {
 }
 
 describe('graph accessibility facilities', () => {
+  it('exposes distinct keyboard actions for a project nebula and its constellation cores', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`);
+      expect(await browser.text('#graph-navigator-heading')).toBe('Projects and constellations');
+      await browser.evaluate(`document.querySelector('.graph-project-groups .project-group-action')?.focus()`);
+      await browser.key('Enter');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'project' && new URLSearchParams(location.search).has('project_id')`);
+      expect(await browser.text('#graph-navigator-heading')).toBe('Constellations in this project');
+      await browser.back();
+      await browser.waitFor(`!new URLSearchParams(location.search).has('level')`);
+      await browser.evaluate(`document.querySelector('.graph-project-groups li[data-node-id] > button:first-child')?.focus()`);
+      await browser.key(' ');
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && new URLSearchParams(location.search).has('project_id')`);
+      expect(await browser.text('#graph-navigator-heading')).toBe('Memories in this constellation');
+    }, { observations: 24 });
+  }, 45_000);
+
+  it('keeps project contour and label hits distinct from contained Cosmos cores', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`);
+      try {
+        await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`, 30_000);
+      } catch (cause) {
+        const diagnostics = await browser.evaluate(`(() => {
+          const shell = document.querySelector('[data-testid="map-canvas-shell"]');
+          return {
+            finalFit: shell?.getAttribute('data-final-fit-settled'),
+            fitEpoch: shell?.getAttribute('data-fit-epoch'),
+            finalFitEpoch: shell?.getAttribute('data-final-fit-epoch'),
+            regionFitEpoch: shell?.getAttribute('data-region-fit-epoch'),
+            regions: [...document.querySelectorAll('.semantic-region-layer g[data-region-id]')].map((group) => ({
+              id: group.getAttribute('data-region-id'),
+              sources: group.getAttribute('data-source-points'),
+              bounds: group.getAttribute('data-region-bounds'),
+              labelVisible: group.getAttribute('data-label-visible'),
+            })),
+          };
+        })()`);
+        throw new Error(`${cause instanceof Error ? cause.message : String(cause)}; ${JSON.stringify(diagnostics)}`);
+      }
+      await browser.click('button[aria-label="Pause motion"]');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-paused') === 'true'`);
+
+      const target = async () => browser.evaluate<{
+        projectId: string;
+        label: { x: number; y: number };
+        contour: { x: number; y: number };
+        core: { id: string; x: number; y: number };
+      }>(`(() => {
+        const host = document.querySelector('.cosmos-graph-host')?.getBoundingClientRect();
+        const group = [...document.querySelectorAll('.semantic-region-layer g[data-region-id]')].find((candidate) => candidate.querySelector(':scope > text'));
+        const label = group?.querySelector(':scope > text')?.getBoundingClientRect();
+        const path = group?.querySelector(':scope > path');
+        const points = JSON.parse(group?.getAttribute('data-source-points') ?? '[]');
+        if (!host || !group || !label || !(path instanceof SVGPathElement) || !points[0]?.id) throw new Error('Missing project interaction geometry');
+        const local = path.getPointAtLength(Math.max(1, path.getTotalLength() * 0.08));
+        const screen = local.matrixTransform(path.getScreenCTM());
+        return {
+          projectId: group.getAttribute('data-region-id') ?? '',
+          label: { x: label.left + label.width / 2, y: label.top + label.height / 2 },
+          contour: { x: screen.x, y: screen.y },
+          core: { id: points[0].id, x: host.left + points[0].x, y: host.top + points[0].y },
+        };
+      })()`);
+
+      const labelTarget = await target();
+      await browser.mouseClick(labelTarget.label.x, labelTarget.label.y);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'project' && new URLSearchParams(location.search).get('project_id') === ${JSON.stringify(labelTarget.projectId)}`);
+
+      await browser.back();
+      await browser.waitFor(`!new URLSearchParams(location.search).has('level') && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`);
+      const contourTarget = await target();
+      await browser.mouseClick(contourTarget.contour.x, contourTarget.contour.y);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'project' && new URLSearchParams(location.search).get('project_id') === ${JSON.stringify(contourTarget.projectId)}`);
+
+      await browser.back();
+      await browser.waitFor(`!new URLSearchParams(location.search).has('level') && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`);
+      const coreTarget = await target();
+      await browser.mouseClick(coreTarget.core.x, coreTarget.core.y);
+      await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community' && new URLSearchParams(location.search).get('project_id') === ${JSON.stringify(coreTarget.projectId)}`);
+      expect(new URL(await browser.url()).searchParams.get('community')).toBeTruthy();
+    }, { observations: 72, projectCount: 6 });
+  }, 55_000);
+
+  it('reveals suppressed constellation and memory names on pointer hover without navigating', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.viewport(1440, 900);
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`, 30_000);
+      await browser.click('button[aria-label="Pause motion"]');
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-paused') === 'true'`);
+
+      const hoverSuppressedNode = async () => {
+        await browser.waitFor(`document.querySelector('.semantic-node-hit-target[data-persistent-label="false"]')`);
+        const target = await browser.evaluate<{ id: string; x: number; y: number; label: string }>(`(() => {
+          const hit = document.querySelector('.semantic-node-hit-target[data-persistent-label="false"]');
+          if (!(hit instanceof SVGCircleElement)) throw new Error('Missing suppressed semantic node target');
+          const bounds = hit.getBoundingClientRect();
+          const id = hit.getAttribute('data-node-id') ?? '';
+          const label = document.querySelector('.graph-navigator li[data-node-id="' + CSS.escape(id) + '"] > button:first-child')?.textContent?.trim() ?? '';
+          return { id, x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2, label };
+        })()`);
+        const originalUrl = await browser.url();
+        await browser.mouseMove(target.x, target.y);
+        await browser.waitFor(`Boolean(document.querySelector('.cosmos-point-tooltip')?.textContent)`);
+        expect(target.label).toContain(await browser.text('.cosmos-point-tooltip'));
+        expect(await browser.url()).toBe(originalUrl);
+      };
+
+      await hoverSuppressedNode();
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community' && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-region-screen-ready') === 'true'`, 30_000);
+      if (await browser.attribute('[data-testid="map-canvas-shell"]', 'data-paused') !== 'true') {
+        await browser.click('button[aria-label="Pause motion"]');
+      }
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-paused') === 'true'`);
+      await hoverSuppressedNode();
+    }, { observations: 72, projectCount: 6 });
+  }, 55_000);
+
   it('exposes every viewport, traversal, selection, expansion, pan, and clear command', () => {
     const keys=['0','+','-','r','p','ArrowRight','ArrowLeft','Enter','e','h','j','k','l','Escape'];
     expect(keys.map(graphCommandForKey)).toEqual(['fit','zoom-in','zoom-out','reset','toggle-pause','next','previous','select','expand','pan-left','pan-down','pan-up','pan-right','clear']);
@@ -47,13 +169,17 @@ describe('graph accessibility facilities', () => {
           .find((item) => item.textContent?.includes('Browser memory 1'));
         if (!(row instanceof HTMLElement) || !row.dataset.nodeId) throw new Error('Missing target memory');
         const communityId = new URL(location.href).searchParams.get('community');
+        const projectId = new URL(location.href).searchParams.get('project_id');
         if (!communityId) throw new Error('Missing current community');
+        if (!projectId) throw new Error('Missing current project');
         const query = new URLSearchParams({
+          hierarchy: 'project',
           level: 'neighborhood',
+          project_id: projectId,
           community_id: communityId,
           focus_node_id: row.dataset.nodeId,
           depth: '2',
-          page_size: '180',
+          page_size: '150',
         });
         const response = await fetch('/viz/atlas?' + query.toString()).then((value) => value.json());
         const node = response.nodes?.find((candidate) => candidate.id === row.dataset.nodeId);

@@ -142,7 +142,7 @@ export interface BrowserRoute {
 
 type HarnessPhase='bridge'|'vite'|'browser'|'target'|'cdp'|'init'|'work';
 interface HarnessFaultInjection {phase?:HarnessPhase;deadlineMs?:number;cleanupFault?:'cdp'|'browser'|'vite'|'bridge'|'store'|'profile';collision?:'bridge'|'vite';onResource?:(kind:'profile'|'pid'|'port',value:string|number)=>void;}
-interface DashboardBrowserOptions {observations?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
+interface DashboardBrowserOptions {observations?:number;projectCount?:number;unassignedCount?:number;semanticZoomCommunitySize?:number;faultInjection?:HarnessFaultInjection;webglDisabled?:boolean;}
 
 export class DashboardBrowser {
   readonly requests: Array<{ url: string; method: string }> = [];
@@ -243,13 +243,19 @@ export class DashboardBrowser {
   async captureScreenshot(): Promise<string> { const response=await this.cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});return String(response.data??''); }
 }
 
-function seedDashboardStore(store: Store, observationCount: number, ownerToken: string, semanticZoomCommunitySize = 0): number {
+function seedDashboardStore(store: Store, observationCount: number, ownerToken: string, semanticZoomCommunitySize = 0, projectCount = 1, unassignedCount = 0): number {
   const db = store.getDb();
   const topicKey = (index: number) => index === 1
     ? 'browser/alpha'
     : index === 2
       ? 'browser/beta'
       : `browser/topic-${index}`;
+  const projectFor = (index: number): string | null => {
+    if (index > observationCount - Math.min(Math.max(0, unassignedCount), observationCount)) return null;
+    return projectCount === 1
+      ? 'browser-nebula'
+      : `browser-project-${String(((index - 1) % projectCount) + 1).padStart(3, '0')}`;
+  };
   const upsertEntity = db.prepare(
     `INSERT INTO kg_entities (entity_key, entity_type, canonical_name, aliases_json, metadata_json, updated_at)
      VALUES (?, 'concept', ?, '[]', '{}', datetime('now'))
@@ -321,10 +327,11 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
   if (observationCount <= 500) {
     let ownerObservationId = 0;
     for (let index = 1; index <= observationCount; index += 1) {
+      const project = projectFor(index);
       const saved = store.saveObservation({
         title: `Browser memory ${index}`,
         content: `**What**: Browser region ${Math.floor((index - 1) / 50) + 1}\n**Why**: Supports ${Math.max(1, index - 1)}\n**Where**: Browser test atlas\n**Learned**: <private>HIDDEN_${index}</private> Public ${index} ${ownerToken}`,
-        project: 'browser-nebula',
+        project,
         session_id: 'browser-session',
         topic_key: topicKey(index),
         type: index % 2 ? 'decision' : 'discovery',
@@ -343,7 +350,7 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
       `INSERT INTO observations (
         id, session_id, type, title, content, project, scope, topic_key,
         normalized_hash, created_at, updated_at
-      ) VALUES (?, 'browser-session', ?, ?, ?, 'browser-nebula', 'project', ?, ?, datetime('now'), datetime('now'))`,
+      ) VALUES (?, 'browser-session', ?, ?, ?, ?, 'project', ?, ?, datetime('now'), datetime('now'))`,
     );
     for (let index = 1; index <= observationCount; index += 1) {
       insertObservation.run(
@@ -351,6 +358,7 @@ function seedDashboardStore(store: Store, observationCount: number, ownerToken: 
         index % 2 ? 'decision' : 'discovery',
         `Browser memory ${index}`,
         `Browser region ${Math.floor((index - 1) / 50) + 1}. Public ${index} ${ownerToken}`,
+        projectFor(index),
         topicKey(index),
         `browser-hash-${index}`,
       );
@@ -396,7 +404,7 @@ export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Pr
   const ownerToken=randomBytes(12).toString('hex');
   let store:Store|null=null;let bridge:ReturnType<typeof createHttpBridge>|null=null;let vite:ViteDevServer|null=null;let chrome:ChildProcess|null=null;let cdp:CdpConnection|null=null;let profile='';let result:T|undefined;let failure:Error|null=null;
   try{
-    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken,options.semanticZoomCommunitySize??0);
+    store=new Store(':memory:');const ownerObservationId=seedDashboardStore(store,options.observations??12,ownerToken,options.semanticZoomCommunitySize??0,options.projectCount??1,options.unassignedCount??0);
     const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
     const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
     const chromePath=['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe','C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(existsSync);if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');

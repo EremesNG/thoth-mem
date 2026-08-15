@@ -120,7 +120,7 @@ describe('complete Neural Atlas', () => {
     await withDashboardBrowser(async (browser) => {
       await browser.setRoutes(completeAtlasRoutes());
       await browser.viewport(1440, 900);
-      await browser.goto('/');
+      await browser.goto('/?hierarchy=global');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
       await browser.evaluate(`(() => {
         globalThis.__THOTH_LONG_TASKS__ = [];
@@ -132,6 +132,7 @@ describe('complete Neural Atlas', () => {
           globalThis.__THOTH_LONG_TASK_OBSERVER__ = observer;
         }
       })()`);
+      const ambientStartsBeforeRaw = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-ambient-starts'));
       await browser.click('button[aria-label="Open Raw graph diagnostics"]');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'raw'`, 30_000);
       await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-dataset-version') ?? 0) >= 1`, 30_000);
@@ -163,7 +164,7 @@ describe('complete Neural Atlas', () => {
       expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-simulation-starts'))).toBeGreaterThanOrEqual(1);
       expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-simulation-starts'))).toBeLessThanOrEqual(2);
       expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-simulation-ends'))).toBeLessThanOrEqual(1);
-      expect(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-ambient-starts')).toBe('1');
+      expect(Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-ambient-starts')) - ambientStartsBeforeRaw).toBe(1);
       expect(await browser.text('body')).not.toMatch(/Reveal more|FULL_ATLAS_SECRET|<private>/);
       await collectLongTasks('streaming');
 
@@ -212,7 +213,7 @@ describe('complete Neural Atlas', () => {
     await withDashboardBrowser(async (browser) => {
       await browser.setRoutes(completeAtlasRoutes(650));
       await browser.viewport(1440, 900);
-      await browser.goto('/');
+      await browser.goto('/?hierarchy=global');
       await browser.evaluate(`(() => {
         globalThis.__THOTH_SLOW_PAGE_TASKS__ = [];
         if (!('PerformanceObserver' in globalThis)) return;
@@ -227,6 +228,7 @@ describe('complete Neural Atlas', () => {
         globalThis.__THOTH_SLOW_PAGE_OBSERVER__?.takeRecords();
         globalThis.__THOTH_SLOW_PAGE_TASKS__ = [];
       })()`);
+      const ambientStartsBeforeRaw = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-ambient-starts'));
       await browser.click('button[aria-label="Open Raw graph diagnostics"]');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'raw'`, 30_000);
       await browser.waitFor(`Boolean(document.querySelector('[data-testid="map-canvas-shell"]')) && document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-renderer-status') !== 'loading'`, 30_000);
@@ -255,7 +257,7 @@ describe('complete Neural Atlas', () => {
       expect(simulationStarts).toBeGreaterThanOrEqual(1);
       expect(simulationStarts).toBeLessThanOrEqual(2);
       expect(Number(await browser.attribute(shell, 'data-simulation-ends'))).toBeLessThanOrEqual(1);
-      expect(await browser.attribute(shell, 'data-ambient-starts')).toBe('1');
+      expect(Number(await browser.attribute(shell, 'data-ambient-starts')) - ambientStartsBeforeRaw).toBe(1);
       expect(Number(await browser.attribute(shell, 'data-maximum-tick-gap'))).toBeLessThanOrEqual(250);
       expect(Number(await browser.attribute(shell, 'data-maximum-step'))).toBeLessThanOrEqual(8);
       const runtimeApplyMs = Number(await browser.attribute('.cosmos-graph-host', 'data-last-data-apply-ms'));
@@ -298,7 +300,7 @@ describe('complete Neural Atlas', () => {
           },
         },
       ]);
-      await browser.goto('/');
+      await browser.goto('/?hierarchy=global');
       await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`, 30_000);
       await browser.click('button[aria-label="Open Raw graph diagnostics"]');
       await browser.waitFor(`document.querySelector('.atlas-diagnostics')?.getAttribute('data-mode') === 'error'`, 20_000);
@@ -333,14 +335,14 @@ describe('complete Neural Atlas', () => {
       const stalePage = scopedUniversePage('Stale scope constellation', 'scope-stale', 'facet:project:scope-a');
       const freshPage = scopedUniversePage('Fresh scope constellation', 'scope-fresh', 'facet:project:scope-a');
       await browser.setRoutes([
-        { includes: '/viz/atlas?level=universe&project_token=facet%3Aproject%3Ascope-a&query=scope-b', status: 200, delayMs: 40, body: freshPage },
+        { includes: '/viz/atlas?level=universe&hierarchy=project&project_token=facet%3Aproject%3Ascope-a&query=scope-b', status: 200, delayMs: 40, body: freshPage },
         {
-          includes: '/viz/atlas?level=universe&project_token=facet%3Aproject%3Ascope-a',
+          includes: '/viz/atlas?level=universe&hierarchy=project&project_token=facet%3Aproject%3Ascope-a',
           status: 200,
           delayMs: 1_200,
           body: stalePage,
         },
-        { includes: '/viz/atlas?level=universe', status: 200, body: initialPage },
+        { includes: '/viz/atlas?level=universe&hierarchy=project', status: 200, body: initialPage },
       ]);
 
       await browser.goto('/');

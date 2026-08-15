@@ -6,7 +6,7 @@ const WORLD_CENTER = 2_048;
 const UNIVERSE_WIDTH = 1_120;
 const UNIVERSE_HEIGHT = 700;
 
-export type NeuralAtlasLayoutLevel = 'universe' | 'community' | 'neighborhood' | 'raw';
+export type NeuralAtlasLayoutLevel = 'project-universe' | 'universe' | 'project' | 'community' | 'neighborhood' | 'raw';
 
 export interface NeuralAtlasLayoutNode {
   id: string;
@@ -92,7 +92,7 @@ export function buildNeuralAtlasLayout(
   const communityIndices = [...new Set(nodes.map((node) => node.community))]
     .sort((left, right) => left - right);
   const naturalAspect = seedHeight > 0 ? seedWidth / seedHeight : seedWidth > 0 ? 4 : 1;
-  const rawLayout = level === 'universe'
+  const rawLayout = level === 'universe' || level === 'project'
     ? layoutUniverseNetwork(nodes, links)
     : level === 'neighborhood'
     ? layoutNeighborhoodSupport(nodes, links, focusIndex)
@@ -132,7 +132,7 @@ export function buildNeuralAtlasLayout(
     if (target >= 0 && target < nodes.length) linkedDegrees[target] += 1;
   }
   const clusterStrengths = nodes.map((node, index) => {
-    if (level === 'universe') return 0;
+    if (level === 'universe' || level === 'project') return 0;
     if (level === 'neighborhood') return 0.42;
     const degree = Math.max(node.degree, linkedDegrees[index]);
     return 0.035 + Math.min(0.075, Math.sqrt(Math.max(0, degree)) * 0.018);

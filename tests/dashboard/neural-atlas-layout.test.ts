@@ -101,6 +101,22 @@ describe('Neural Atlas world layout', () => {
     expect(layout.extent.width / layout.extent.height).toBeGreaterThan(1.35);
   });
 
+  it('contains constellation cores around deterministic project centers in project Universe', () => {
+    const nodes = [
+      node('alpha:1', -10, -8, 0, 3), node('alpha:2', 12, 9, 0, 2), node('alpha:3', 4, -2, 0, 1),
+      node('beta:1', -8, 10, 1, 3), node('beta:2', 11, -9, 1, 2), node('beta:3', -3, 2, 1, 1),
+      node('unassigned:1', 0, 0, 2, 0),
+    ];
+    const layout = buildNeuralAtlasLayout(nodes, [[0, 1], [1, 2], [3, 4], [4, 5], [2, 3]], 'project-universe');
+    const point = (index: number): [number, number] => [layout.positions[index * 2]!, layout.positions[index * 2 + 1]!];
+    const distance = (left: number, right: number) => Math.hypot(point(left)[0] - point(right)[0], point(left)[1] - point(right)[1]);
+
+    expect(Math.max(distance(0, 1), distance(0, 2), distance(3, 4), distance(3, 5)))
+      .toBeLessThan(Math.min(distance(0, 3), distance(1, 4), distance(2, 5)));
+    expect(layout.extent.communityCount).toBe(3);
+    expect(layout.positions.every(Number.isFinite)).toBe(true);
+  });
+
   it('anchors multiple Community regions irregularly and preserves unchanged representatives', () => {
     const nodes = [
       node('region-a:1', -4, -2, 0, 5), node('region-b:1', 0, 5, 1, 4), node('region-c:1', 7, -1, 2, 3),

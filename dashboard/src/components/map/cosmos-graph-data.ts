@@ -24,6 +24,8 @@ export interface CosmosFocusNeighborhood {
   linkIndices: number[];
 }
 
+export type CosmosRegionKind = 'project' | 'community' | null;
+
 export interface CosmosGraphData {
   nodes: VizNode[];
   edges: VizEdge[];
@@ -52,6 +54,7 @@ export interface CosmosGraphData {
   linkArrows: boolean[];
   quality: CosmosDenseQuality;
   focus: CosmosFocusNeighborhood | null;
+  regionKind: CosmosRegionKind;
   preserveReplacementPositions: boolean;
   layoutIdentity: string;
 }
@@ -69,6 +72,42 @@ export interface CosmosMotionConfig {
   initialSettleMs: number;
 }
 
+export function semanticLayoutIdentityFromPresentation(
+  level: VizNode['semantic_level'] | 'raw' | null,
+  presentationKey: string,
+): string {
+  if (!level || level === 'raw') return 'raw';
+  try {
+    const presentation = JSON.parse(presentationKey) as Record<string, unknown>;
+    const request = typeof presentation.request === 'string'
+      ? JSON.parse(presentation.request) as Record<string, unknown>
+      : {};
+    const identity = {
+      hierarchy: presentation.hierarchy ?? request.hierarchy ?? 'global',
+      level,
+      project: presentation.project ?? request.project_id ?? null,
+      community: request.community_id ?? null,
+      pageCursor: presentation.pageCursor ?? request.cursor ?? null,
+      focus: level === 'neighborhood'
+        ? presentation.focus ?? request.focus_node_id ?? null
+        : null,
+      scope: {
+        projectToken: request.project_token ?? null,
+        sessionToken: request.session_token ?? null,
+        topicToken: request.topic_token ?? null,
+        type: request.type ?? request.observation_type ?? null,
+        relation: request.relation ?? null,
+        query: request.query ?? null,
+        timeFrom: request.time_from ?? null,
+        timeTo: request.time_to ?? null,
+      },
+    };
+    return `${level}:location:${encodeURIComponent(JSON.stringify(identity))}`;
+  } catch {
+    return `${level}:location:${encodeURIComponent(presentationKey)}`;
+  }
+}
+
 export function cosmosMotionConfig(reducedMotion: boolean): CosmosMotionConfig {
   if (reducedMotion) {
     return { transitionDuration: 0, activationStepMs: 0, initialSettleMs: 0 };
@@ -82,6 +121,7 @@ export function buildCosmosGraphData(
   edges: VizEdge[],
   focusId: string | null,
   previousCommunityAnchorIds: readonly string[] = [],
+  layoutIdentity?: string,
 ): CosmosGraphData {
   const pointIndexById = new Map(nodes.map((node, index) => [node.id, index]));
   const visibleEdges = edges.filter(
@@ -93,6 +133,18 @@ export function buildCosmosGraphData(
     pointDegrees[pointIndexById.get(edge.target_id)!] += 1;
   }
   const semanticLevel = nodes.find((node) => node.semantic_level)?.semantic_level ?? null;
+  const regionKind: CosmosRegionKind = semanticLevel === 'community'
+    ? 'community'
+    : semanticLevel === 'universe' && nodes.some((node) => Boolean(node.owner_project_id))
+      ? 'project'
+      : null;
+  const semanticLocationIdentity = layoutIdentity ?? (semanticLevel === 'project'
+    ? `project:${nodes.find((node) => node.owner_project_id)?.owner_project_id ?? 'unknown'}`
+    : semanticLevel === 'community'
+      ? `community:${nodes.find((node) => node.community_id)?.community_id ?? 'unknown'}`
+      : semanticLevel === 'universe' && nodes.some((node) => node.owner_project_id)
+        ? `project-universe:${[...new Set(nodes.map((node) => node.owner_project_id).filter(Boolean))].sort().join('|')}`
+        : semanticLevel ?? 'raw');
   const semanticCommunityFallback = nodes.find((node) => node.community_id)?.community_id
     ?? `semantic:${semanticLevel ?? 'unknown'}`;
   const pointCommunityKeys = semanticLevel
@@ -143,7 +195,9 @@ export function buildCosmosGraphData(
       pointIndexById.get(edge.source_id)!,
       pointIndexById.get(edge.target_id)!,
     ]),
-    semanticLevel ?? 'raw',
+    semanticLevel === 'universe' && nodes.some((node) => node.owner_project_id)
+      ? 'project-universe'
+      : semanticLevel ?? 'raw',
     focusId ? pointIndexById.get(focusId) : undefined,
   );
   const { ids: extentAnchorIds, indices: extentAnchorIndices } = selectExtentAnchors(
@@ -179,8 +233,9 @@ export function buildCosmosGraphData(
     linkArrows: visibleEdges.map(() => quality.renderArrows),
     quality,
     focus: null,
-    preserveReplacementPositions: semanticLevel !== 'neighborhood',
-    layoutIdentity: semanticLevel ?? 'raw',
+    regionKind,
+    preserveReplacementPositions: Boolean(semanticLevel),
+    layoutIdentity: semanticLocationIdentity,
   }, focusId);
 }
 
@@ -204,7 +259,9 @@ export function focusCosmosGraphData(data: CosmosGraphData, focusId: string | nu
     linkIndices.push(linkIndex);
   });
 
-  const neighborhoodIdentity = `neighborhood:focus:${focusId}`;
+  const neighborhoodIdentity = data.layoutIdentity.startsWith('neighborhood:location:')
+    ? data.layoutIdentity
+    : `neighborhood:focus:${focusId}`;
   const base = data.nodes.some((node) => node.semantic_level === 'neighborhood')
     && data.layoutIdentity !== neighborhoodIdentity
     ? (() => {
@@ -283,7 +340,6 @@ export function focusRegionCosmosGraphData(data: CosmosGraphData, regionId: stri
     pointPositions: positions,
     pointSizes: data.pointSizes.map((size, index) => size * (data.nodes[index]?.region_id === regionId ? 1.18 : 0.58)),
     preserveReplacementPositions: false,
-    layoutIdentity: `${data.layoutIdentity}:region:${regionId}`,
   };
 }
 
@@ -371,7 +427,8 @@ function semanticCommunityKey(
   level: NonNullable<VizNode['semantic_level']>,
   fallback: string,
 ): string {
-  if (level === 'universe') return node.community_id ?? node.id;
+  if (level === 'universe') return node.owner_project_id ?? node.community_id ?? node.id;
+  if (level === 'project') return node.community_id ?? node.id;
   if (level === 'community') return node.region_id ?? node.community_id ?? fallback;
   return node.community_id ?? fallback;
 }

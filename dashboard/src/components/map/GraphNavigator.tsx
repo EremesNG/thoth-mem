@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import type { AtlasLevel, SemanticAtlasRegion, VizEdge, VizNode } from '../../api/client.js';
+import type { AtlasLevel, SemanticAtlasProjectRegion, SemanticAtlasRegion, VizEdge, VizNode } from '../../api/client.js';
 import { presentNodeKind, presentRelation } from '../dashboard-presentation.js';
 import { presentStoredText } from '../safe-presentation.js';
 
@@ -15,6 +15,12 @@ interface GraphNavigatorProps {
   regions?: SemanticAtlasRegion[];
   regionId?: string | null;
   onRegionFocus?: (regionId: string) => void;
+  projectRegions?: SemanticAtlasProjectRegion[];
+  onProjectFocus?: (projectId: string) => void;
+  onPreviousPage?: () => void;
+  onNextPage?: () => void;
+  hasPreviousPage?: boolean;
+  hasNextPage?: boolean;
 }
 
 const DENSE_NAVIGATOR_THRESHOLD = 32;
@@ -116,7 +122,7 @@ export function buildGraphNavigationIndex(nodes: VizNode[], edges: VizEdge[]) {
   };
 }
 
-function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent, level = 'raw', regions = [], regionId = null, onRegionFocus }: GraphNavigatorProps) {
+function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent, level = 'raw', regions = [], regionId = null, onRegionFocus, projectRegions = [], onProjectFocus, onPreviousPage, onNextPage, hasPreviousPage = false, hasNextPage = false }: GraphNavigatorProps) {
   const navigatorRef = useRef<HTMLElement>(null);
   const datasetKey = `${level}:${nodes.length}:${nodes[0]?.id ?? ''}:${nodes[nodes.length - 1]?.id ?? ''}`;
   const [denseRenderState, setDenseRenderState] = useState({
@@ -144,7 +150,9 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
       : index.nodeIds;
   const denseListComplete = !retainsCompleteList || denseRenderLimit >= index.nodeIds.length;
   const heading = level === 'universe'
-    ? 'Constellations'
+    ? projectRegions.length > 0 ? 'Projects and constellations' : 'Constellations'
+    : level === 'project'
+      ? 'Constellations in this project'
     : level === 'community'
       ? 'Memories in this constellation'
       : level === 'neighborhood'
@@ -258,7 +266,40 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
           ))}
         </div>
       ) : null}
-      <ul>
+      {level === 'universe' && projectRegions.length > 0 ? (
+        <div className="graph-project-groups" aria-label="Projects and their constellations">
+          {projectRegions.map((project) => (
+            <section key={project.id} data-project-id={project.id}>
+              <button
+                type="button"
+                className="project-group-action"
+                onClick={() => onProjectFocus?.(project.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onProjectFocus?.(project.id);
+                }}
+              >
+                <strong>{presentStoredText(project.label)}</strong>
+                <span>{project.memory_count.toLocaleString()} memories · {project.constellation_count.toLocaleString()} constellations</span>
+              </button>
+              <ul>
+                {project.constellation_ids.map((id) => {
+                  const node = index.nodeById.get(id);
+                  if (!node) return null;
+                  return <GraphNavigatorRow key={id} node={node} relation={index.relationByNodeId.get(id)} active={id === focusNodeId} onFocus={onFocus} onExpand={onExpand} onIntent={onIntent} />;
+                })}
+              </ul>
+            </section>
+          ))}
+          <nav className="project-page-controls" aria-label="Project directory pages">
+            <button type="button" disabled={!hasPreviousPage} onClick={onPreviousPage}>Previous projects</button>
+            <span aria-live="polite">{projectRegions.length} projects on this page</span>
+            <button type="button" disabled={!hasNextPage} onClick={onNextPage}>Next projects</button>
+          </nav>
+        </div>
+      ) : <ul>
         {completeRows ?? visibleIds.map((id) => {
           const node = index.nodeById.get(id);
           if (!node) return null;
@@ -274,7 +315,7 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
             />
           );
         })}
-      </ul>
+      </ul>}
     </section>
   );
 }

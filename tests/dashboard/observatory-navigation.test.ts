@@ -3,9 +3,35 @@ import { applyObservatoryPivot, buildObservatoryUrl, createInitialObservatorySta
 import { withDashboardBrowser } from './dashboard-browser-harness.js';
 
 describe('observatory deep-link state', () => {
+  it('round-trips opaque project hierarchy and bounded project pages in the location trail', () => {
+    let state = createInitialObservatoryState();
+    expect(state).toMatchObject({ hierarchy: 'project', level: 'universe', projectId: null, pageCursor: null });
+    state = applyObservatoryPivot(state, {
+      hierarchy: 'project', level: 'universe', projectId: null, communityId: null,
+      regionId: null, focusNodeId: null, pageCursor: 'atlas-page:2',
+    });
+    state = applyObservatoryPivot(state, {
+      hierarchy: 'project', level: 'project', projectId: 'project:opaque', communityId: null,
+      regionId: null, focusNodeId: null, pageCursor: null,
+    });
+    state = applyObservatoryPivot(state, {
+      hierarchy: 'project', level: 'community', projectId: 'project:opaque', communityId: 'community:owned',
+      regionId: null, focusNodeId: null, pageCursor: null,
+    });
+
+    expect(parseObservatorySearch(serializeObservatoryState(state))).toMatchObject({
+      hierarchy: 'project', level: 'community', projectId: 'project:opaque',
+      communityId: 'community:owned', pageCursor: null,
+    });
+    expect(navigateObservatoryTrail(navigateObservatoryTrail(state, -1), -1)).toMatchObject({
+      hierarchy: 'project', level: 'universe', projectId: null, pageCursor: 'atlas-page:2',
+    });
+    expect(state.locationTrail).toHaveLength(4);
+  });
+
   it('round-trips region focus only at Community', () => {
     const community = {
-      ...createInitialObservatoryState(), level: 'community' as const,
+      ...createInitialObservatoryState(), hierarchy: 'global' as const, level: 'community' as const,
       communityId: 'community:42', regionId: 'region:opaque',
     };
     expect(parseObservatorySearch(serializeObservatoryState(community))).toMatchObject({
@@ -18,7 +44,7 @@ describe('observatory deep-link state', () => {
   });
 
   it('round-trips scope, density, cue, instrument and focus identifiers', () => {
-    const state = { ...createInitialObservatoryState(), level:'neighborhood' as const, communityId:'community:42', scope: { project_token:'facet:project:opaque', session_token:'facet:session:opaque', topic_token:'facet:topic:opaque', type:'decision' as const, relation:'SUPPORTS', query:'why' }, density:'wide' as const, focusNodeId:'obs:42', activeSurface:'timeline' as const };
+    const state = { ...createInitialObservatoryState(), hierarchy:'global' as const, level:'neighborhood' as const, communityId:'community:42', scope: { project_token:'facet:project:opaque', session_token:'facet:session:opaque', topic_token:'facet:topic:opaque', type:'decision' as const, relation:'SUPPORTS', query:'why' }, density:'wide' as const, focusNodeId:'obs:42', activeSurface:'timeline' as const };
     const parsed = parseObservatorySearch(serializeObservatoryState(state));
     expect(parsed).toMatchObject({ level:'neighborhood', communityId:'community:42', scope: state.scope, density:'wide', focusNodeId:'obs:42', activeSurface:'timeline' });
     expect(buildObservatoryUrl(state)).toMatch(/^\/?/);
@@ -45,6 +71,20 @@ describe('observatory deep-link state', () => {
     expect(forward).toMatchObject({ level:'neighborhood', communityId:'community:1', focusNodeId:'obs:1', locationTrailIndex:2 });
     expect(forward.locationTrail).toHaveLength(3);
   });
+  it('resets the internal atlas trail when the Universe breadcrumb returns to the root', async () => {
+    await withDashboardBrowser(async (browser) => {
+      await browser.goto('/');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`);
+      await browser.click('.graph-navigator li > button:first-child');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'community'`);
+      expect(await browser.count('.focus-trail')).toBe(1);
+
+      await browser.click('.atlas-breadcrumbs button:first-child');
+      await browser.waitFor(`document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-level') === 'universe' && document.querySelector('[data-testid="memory-map-surface"]')?.getAttribute('data-atlas-load-state') === 'complete'`);
+
+      expect(await browser.count('.focus-trail')).toBe(0);
+    }, { observations: 24 });
+  }, 45_000);
   it('restores Universe, Community, and Neighborhood through browser history and recovers invalid focus', async () => {
     await withDashboardBrowser(async (browser) => {
       const graphCount = async () => {
@@ -87,9 +127,7 @@ describe('observatory deep-link state', () => {
 
       await browser.goto('/');
       await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length > 0`);
-      const communityId = await browser.evaluate<string>(`fetch('/viz/atlas?level=universe&page_size=250')
-        .then((response) => response.json())
-        .then((atlas) => [...atlas.nodes].sort((left, right) => (right.member_count ?? 0) - (left.member_count ?? 0))[0]?.id ?? '')`);
+      const communityId = await browser.evaluate<string>(`document.querySelector('.graph-navigator li[data-node-id]')?.getAttribute('data-node-id') ?? ''`);
       expect(communityId).toBeTruthy();
       await browser.click(`.graph-navigator li[data-node-id="${communityId}"] > button:first-child`);
       await browser.waitFor(`new URLSearchParams(location.search).get('level') === 'community'`);

@@ -710,7 +710,7 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
   }
   .neural-atlas-workspace .observatory-grid[data-dock-open='true'] .atlas-control-cluster {
     z-index: 15;
-    bottom: calc(var(--atlas-visual-bottom-inset, 0px) + var(--atlas-sheet-height, min(70dvh, 620px)) + 8px);
+    bottom: calc(var(--atlas-visual-bottom-inset, 0px) + min(var(--atlas-sheet-height, 70dvh), 70dvh) + 8px);
   }
   .neural-atlas-workspace .atlas-control-cluster .graph-pan-pad { display: none; }
   .neural-atlas-workspace .atlas-control-cluster .graph-command-bar {
@@ -746,9 +746,19 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
   filter: drop-shadow(0 0 18px color-mix(in srgb, var(--region-color, #67e8f9) 10%, transparent));
   stroke-dasharray: none;
   vector-effect: non-scaling-stroke;
-  pointer-events: visiblePainted;
-  cursor: pointer;
+  pointer-events: none;
   transition: fill 180ms ease, opacity 180ms ease, stroke-width 180ms ease;
+}
+
+.semantic-region-layer g[data-region-id] > path[data-role='region-contour'] {
+  stroke: transparent;
+  stroke-width: 18px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.semantic-region-layer g[data-region-id] > path[data-role='region-contour']:hover {
+  fill: color-mix(in srgb, var(--region-color, #67e8f9) 18%, transparent);
 }
 
 .semantic-region-layer .semantic-region-bridge {
@@ -776,13 +786,35 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
   filter: drop-shadow(0 0 24px color-mix(in srgb, var(--region-color, #67e8f9) 18%, transparent));
 }
 
+.semantic-region-layer g[data-region-kind='project'] > path {
+  fill: color-mix(in srgb, var(--region-color, #67e8f9) 12%, transparent);
+  filter: drop-shadow(0 0 24px color-mix(in srgb, var(--region-color, #67e8f9) 14%, transparent));
+}
+
 .semantic-region-layer text {
   fill: #d9f7ff;
   font: 600 13px/1.2 "IBM Plex Mono", monospace;
   paint-order: stroke;
   stroke: #020711;
   stroke-width: 4px;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.semantic-region-layer g[data-region-kind='project'] > text {
+  fill: color-mix(in srgb, var(--region-color, #67e8f9) 24%, #e9f9ff);
+  letter-spacing: .015em;
+}
+
+.semantic-region-layer .semantic-node-hit-target {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .semantic-region-layer g[data-region-id] > path[data-role='region-contour'] { stroke-width: 26px; }
 }
 
 .graph-region-groups {
@@ -810,6 +842,55 @@ dt { color: var(--starlight-tertiary); font: .65rem var(--font-mono); } dd { mar
 }
 
 .graph-region-groups span { color: #81a6b5; font-size: .75rem; }
+
+.graph-project-groups {
+  display: grid;
+  gap: .65rem;
+  margin-block: .55rem .8rem;
+}
+
+.graph-project-groups > section {
+  border: 1px solid color-mix(in srgb, var(--atlas-cyan, #67e8f9) 18%, transparent);
+  border-radius: .7rem;
+  background: color-mix(in srgb, #06111d 90%, transparent);
+  overflow: hidden;
+}
+
+.graph-project-groups .project-group-action {
+  display: grid;
+  width: 100%;
+  gap: .2rem;
+  padding: .65rem .75rem;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--atlas-cyan, #67e8f9) 14%, transparent);
+  background: color-mix(in srgb, var(--atlas-cyan, #67e8f9) 7%, transparent);
+  color: #e6fbff;
+  text-align: left;
+}
+
+.graph-project-groups .project-group-action span,
+.project-page-controls span { color: #81a6b5; font-size: .72rem; }
+.graph-project-groups ul { margin: 0; padding: .3rem; }
+.graph-project-groups li { border-radius: .4rem; }
+
+.project-page-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: .45rem;
+}
+.project-page-controls button { min-height: 40px; }
+
+.graph-project-groups button:focus-visible,
+.project-page-controls button:focus-visible {
+  outline: 2px solid var(--atlas-cyan, #67e8f9);
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .project-page-controls { grid-template-columns: 1fr 1fr; }
+  .project-page-controls span { grid-column: 1 / -1; grid-row: 1; text-align: center; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .semantic-region-layer path { transition: none; }

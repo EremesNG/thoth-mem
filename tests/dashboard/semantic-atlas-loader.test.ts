@@ -15,6 +15,7 @@ function node(id: string): SemanticAtlasNode {
     topic: null,
     type: 'manual',
     community_id: 'community:1',
+    owner_project_id: null,
     member_count: null,
     project_count: null,
     unclustered: false,
@@ -25,6 +26,7 @@ function node(id: string): SemanticAtlasNode {
 
 function page(ids: string[], continuation: string | null, generation = 'g1'): SemanticAtlasPageResponse {
   return {
+    hierarchy: 'global',
     level: 'community',
     generation,
     presentation: 'complete',
@@ -35,6 +37,8 @@ function page(ids: string[], continuation: string | null, generation = 'g1'): Se
     }] : [],
     regions: [],
     region_bridges: [],
+    project_regions: [],
+    project_bridges: [],
     counts: {
       memory_count: 2, project_count: 1, community_count: 1, assigned_memory_count: 2,
       unclustered_memory_count: 0, supporting_entity_count: 1, relationship_count: 1,
@@ -46,7 +50,9 @@ function page(ids: string[], continuation: string | null, generation = 'g1'): Se
     },
     facets: { projects: [], sessions: [], topics: [], types: ['manual'], relations: ['HAS_WHAT'] },
     navigation: {
-      community_id: 'community:1', focus_node_id: null, depth: null, region_id: null,
+      project_id: null, community_id: 'community:1', focus_node_id: null, depth: null, region_id: null,
+      source_project_count: 1, visible_project_count: 1, omitted_projects: 0,
+      source_constellation_count: 1, visible_constellation_count: 1, omitted_constellations: 0,
       source_memory_count: 2, visible_memory_count: ids.length, source_relationship_count: 1,
       visible_relationship_count: ids.includes('obs:2') ? 1 : 0, represented_source_relationship_count: ids.includes('obs:2') ? 1 : 0,
       omitted_nodes: 0, omitted_edges: 0,
@@ -93,6 +99,29 @@ describe('semantic atlas loader', () => {
     expect(result.data?.continuation).toBe('must-not-drain');
   });
 
+  it('keeps project-directory pages discrete and exposes their continuation', async () => {
+    const requests: Array<string | undefined> = [];
+    const result = await loadSemanticAtlas({
+      request: { hierarchy: 'project', level: 'universe', page_size: 24 },
+      pageMode: 'single-page',
+      signal: new AbortController().signal,
+      fetchPage: async ({ cursor }) => {
+        requests.push(cursor);
+        return {
+          ...page(['community:1'], 'project-page-2'),
+          hierarchy: 'project',
+          level: 'universe',
+        };
+      },
+      onSnapshot: () => undefined,
+      yieldControl: async () => undefined,
+    });
+
+    expect(requests).toEqual([undefined]);
+    expect(result).toMatchObject({ phase: 'complete', pagesLoaded: 1, continuation: 'project-page-2' });
+    expect(result.data?.continuation).toBe('project-page-2');
+  });
+
   it('merges generation-consistent pages and retains exact counts and endpoint closure', async () => {
     const cursors: Array<string | undefined> = [];
     const result = await loadSemanticAtlas({
@@ -136,6 +165,15 @@ describe('semantic atlas loader', () => {
   });
 
   it('returns a safe parent recovery for a gone community and rejects repeated cursors', async () => {
+    const goneProject = await loadSemanticAtlas({
+      request: { hierarchy: 'project', level: 'project', project_id: 'project:old' },
+      signal: new AbortController().signal,
+      fetchPage: async () => { throw new ApiError(409, 'Gone project', { code: 'VIZ_ATLAS_PROJECT_GONE', recover_to_level: 'universe' }); },
+      onSnapshot: () => undefined,
+      yieldControl: async () => undefined,
+    });
+    expect(goneProject).toMatchObject({ phase: 'recovery', recoveryLevel: 'universe', data: null });
+
     const gone = await loadSemanticAtlas({
       request: { level: 'community', community_id: 'community:old' },
       signal: new AbortController().signal,
@@ -153,6 +191,18 @@ describe('semantic atlas loader', () => {
       yieldControl: async () => undefined,
     });
     expect(missingFocus).toMatchObject({ phase: 'recovery', recoveryLevel: 'universe', data: null });
+
+    const missingRegion = await loadSemanticAtlas({
+      request: {
+        hierarchy: 'project', level: 'community', project_id: 'project:one',
+        community_id: 'community:one', region_id: 'region:missing', presentation: 'semantic-zoom',
+      },
+      signal: new AbortController().signal,
+      fetchPage: async () => { throw new ApiError(409, 'Missing region', { code: 'VIZ_ATLAS_REGION_GONE', recover_to_level: 'community' }); },
+      onSnapshot: () => undefined,
+      yieldControl: async () => undefined,
+    });
+    expect(missingRegion).toMatchObject({ phase: 'recovery', recoveryLevel: 'community', data: null });
 
     const repeated = await loadSemanticAtlas({
       request: { level: 'community', community_id: 'community:1' },

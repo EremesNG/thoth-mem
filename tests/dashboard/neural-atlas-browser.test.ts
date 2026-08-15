@@ -228,6 +228,13 @@ describe('immersive Neural Atlas production route', () => {
       expect(await unreachableControls()).toEqual([]);
       await browser.pageScale(2);
       await browser.waitFor(`document.querySelector('[data-testid="neural-atlas-workspace"]')?.getAttribute('data-visual-scale') === '2' && Number(document.querySelector('[data-testid="neural-atlas-workspace"]')?.getAttribute('data-visual-width')) <= 181`);
+      await browser.waitFor(`(() => {
+        const dock = document.querySelector('.atlas-dock');
+        const viewport = visualViewport;
+        if (!(dock instanceof HTMLElement) || !viewport || dock.dataset.open !== 'true') return false;
+        const rect = dock.getBoundingClientRect();
+        return Math.abs(rect.left - viewport.offsetLeft) <= 2 && Math.abs(rect.width - viewport.width) <= 2;
+      })()`);
       expect(await browser.evaluate<boolean>('document.documentElement.scrollWidth <= innerWidth')).toBe(true);
       expect(await browser.evaluate<boolean>(`(() => {
         const dock = document.querySelector('.atlas-dock')?.getBoundingClientRect();
@@ -334,7 +341,7 @@ describe('immersive Neural Atlas production route', () => {
           body: firstPage,
         },
       ]);
-      await browser.goto('/?level=neighborhood&community=community%3Aprogressive&focus=obs%3A1');
+      await browser.goto('/?hierarchy=global&level=neighborhood&community=community%3Aprogressive&focus=obs%3A1');
       await browser.waitFor(`document.querySelectorAll('.graph-navigator li').length === 1`);
       await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-focus-id') === 'obs:1'`);
       await browser.click('button[aria-label="Zoom in"]');

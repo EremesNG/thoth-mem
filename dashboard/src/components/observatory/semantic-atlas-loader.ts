@@ -35,6 +35,7 @@ interface LoadSemanticAtlasOptions {
   onSnapshot: (snapshot: SemanticAtlasSnapshot) => void;
   initialData?: SemanticAtlasPageResponse | null;
   initialCursor?: string | null;
+  pageMode?: 'accumulate' | 'single-page';
   maxAutomaticRestarts?: number;
   yieldControl?: () => Promise<void>;
 }
@@ -85,7 +86,7 @@ function apiErrorCode(error: unknown): string | null {
 function apiRecoveryLevel(error: unknown): AtlasLevel | null {
   if (!(error instanceof ApiError) || !error.body || typeof error.body !== 'object') return null;
   const level = (error.body as Record<string, unknown>).recover_to_level;
-  return level === 'universe' || level === 'community' || level === 'neighborhood' ? level : null;
+  return level === 'universe' || level === 'project' || level === 'community' || level === 'neighborhood' ? level : null;
 }
 
 function isStaleGeneration(error: unknown): boolean {
@@ -97,7 +98,10 @@ function isStaleGeneration(error: unknown): boolean {
 function isRecoverableLocation(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   const code = apiErrorCode(error);
-  return code === 'VIZ_ATLAS_COMMUNITY_GONE' || code === 'VIZ_ATLAS_FOCUS_INVALID';
+  return code === 'VIZ_ATLAS_PROJECT_GONE'
+    || code === 'VIZ_ATLAS_COMMUNITY_GONE'
+    || code === 'VIZ_ATLAS_REGION_GONE'
+    || code === 'VIZ_ATLAS_FOCUS_INVALID';
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -151,7 +155,9 @@ export async function loadSemanticAtlas(options: LoadSemanticAtlasOptions): Prom
             ...(continuation ? { cursor: continuation } : {}),
           }, options.signal);
           throwIfAborted(options.signal);
-          accumulator = accumulator ? mergeSemanticAtlasPages(accumulator, response) : response;
+          accumulator = options.pageMode === 'single-page'
+            ? response
+            : accumulator ? mergeSemanticAtlasPages(accumulator, response) : response;
           pagesLoaded += 1;
           continuation = response.continuation;
           if (continuation && seenCursors.has(continuation)) {
@@ -163,7 +169,7 @@ export async function loadSemanticAtlas(options: LoadSemanticAtlasOptions): Prom
             && accumulator.nodes.length >= 180;
           const semanticCommunityReady = response.level === 'community'
             && response.presentation === 'semantic-zoom';
-          if (!continuation || neighborhoodCapReached || semanticCommunityReady) {
+          if (options.pageMode === 'single-page' || !continuation || neighborhoodCapReached || semanticCommunityReady) {
             const complete = makeSnapshot('complete', accumulator, continuation, pagesLoaded, restartCount);
             publisher.flush(complete);
             return complete;

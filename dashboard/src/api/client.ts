@@ -301,7 +301,7 @@ export interface VizHealthResponse {
     recent_errors: Array<{ id: number; job_key: string; kind: string; state: string; attempt_count: number; last_error: string | null }>;
   };
 }
-export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; region_id?: string | null; representative_reason?: string; representative_signals?: SemanticAtlasRepresentativeSignal[]; representative_rank?: number; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
+export interface VizNode { id: string; kind: 'community' | 'observation' | 'fact' | 'session' | 'project' | 'topic'; label: string; snippet: string; project: string | null; session_id?: string | null; topic_key: string | null; type: ObservationType | null; seed_x: number; seed_y: number; semantic_level?: AtlasLevel; community_id?: string | null; owner_project_id?: string | null; region_id?: string | null; representative_reason?: string; representative_signals?: SemanticAtlasRepresentativeSignal[]; representative_rank?: number; member_count?: number | null; project_count?: number | null; unclustered?: boolean; }
 export interface VizEdge { id: string; source_id: string; target_id: string; relation: string; kind?: 'aggregate' | 'semantic' | 'metadata' | 'fact'; label: string; summary: string; weight?: number; evidence_count?: number; tier?: 'representative-backbone' | 'representative-semantic' | 'fact-support' | 'metadata'; relationship_class?: 'aggregate' | 'semantic' | 'fact' | 'metadata' | 'unknown'; direction?: 'directed' | 'undirected' | 'mixed' | 'unknown'; confidence?: 'high' | 'medium' | 'low' | 'unknown'; provenance?: SemanticAtlasRelationshipProvenance[]; }
 export interface VizSliceResponse { nodes: VizNode[]; edges: VizEdge[]; state: VizDensityState; continuation: string | null; truncated: boolean; health: VizHealthResponse; }
 export interface VizGraphPageRequest {
@@ -316,7 +316,8 @@ export interface VizGraphPageRequest {
   cursor?: string;
 }
 export type VizGraphPageResponse = VizSliceResponse;
-export type AtlasLevel = 'universe' | 'community' | 'neighborhood';
+export type AtlasHierarchy = 'global' | 'project';
+export type AtlasLevel = 'universe' | 'project' | 'community' | 'neighborhood';
 export type AtlasFacetKind = 'project' | 'session' | 'topic';
 export interface AtlasFacetRef { kind: AtlasFacetKind; token: string; label: string; }
 export interface AtlasFacetOption extends AtlasFacetRef { count: number; }
@@ -331,7 +332,9 @@ export interface AtlasTokenScope {
   time_to: string | null;
 }
 export interface SemanticAtlasPageRequest {
+  hierarchy?: AtlasHierarchy;
   level?: AtlasLevel;
+  project_id?: string;
   project_token?: string;
   session_token?: string;
   topic_token?: string;
@@ -357,6 +360,7 @@ export interface SemanticAtlasNode {
   topic: AtlasFacetRef | null;
   type: ObservationType | null;
   community_id: string | null;
+  owner_project_id: string | null;
   region_id?: string | null;
   member_count: number | null;
   project_count: number | null;
@@ -402,7 +406,19 @@ export interface SemanticAtlasRegionBridge {
   weight: number; evidence_count: number; relations: string[]; confidence: 'high' | 'medium' | 'low' | 'unknown';
   representative_edge_ids: string[]; provenance: SemanticAtlasRelationshipProvenance[];
 }
+export interface SemanticAtlasProjectRegion {
+  id: string; label: string; summary: string; memory_count: number; constellation_count: number;
+  visible_constellation_count: number; omitted_constellation_count: number; constellation_ids: string[];
+  seed_x: number; seed_y: number; unassigned: boolean;
+}
+export interface SemanticAtlasProjectBridge {
+  id: string; source_project_id: string; target_project_id: string; tier: 'project-aggregate';
+  relationship_class: 'aggregate'; direction: 'directed' | 'undirected' | 'mixed' | 'unknown';
+  weight: number; evidence_count: number; relations: string[]; confidence: 'high' | 'medium' | 'low' | 'unknown';
+  representative_edge_ids: string[]; provenance: SemanticAtlasRelationshipProvenance[];
+}
 export interface SemanticAtlasPageResponse {
+  hierarchy: AtlasHierarchy;
   level: AtlasLevel;
   generation: string;
   presentation_key?: string;
@@ -411,6 +427,8 @@ export interface SemanticAtlasPageResponse {
   edges: SemanticAtlasEdge[];
   regions: SemanticAtlasRegion[];
   region_bridges: SemanticAtlasRegionBridge[];
+  project_regions: SemanticAtlasProjectRegion[];
+  project_bridges: SemanticAtlasProjectBridge[];
   counts: {
     memory_count: number;
     project_count: number;
@@ -438,10 +456,17 @@ export interface SemanticAtlasPageResponse {
     relations: string[];
   };
   navigation: {
+    project_id: string | null;
     community_id: string | null;
     focus_node_id: string | null;
     depth: 1 | 2 | null;
     region_id: string | null;
+    source_project_count: number;
+    visible_project_count: number;
+    omitted_projects: number;
+    source_constellation_count: number;
+    visible_constellation_count: number;
+    omitted_constellations: number;
     source_memory_count: number;
     visible_memory_count: number;
     source_relationship_count: number;
@@ -487,6 +512,7 @@ export interface ObservatoryRecallHit {
   session: AtlasFacetRef | null;
   topic: AtlasFacetRef | null;
   community_id: string;
+  project_id: string | null;
   created_at: string;
   lane: ObservatoryLane;
   pivot_token: string;
@@ -496,10 +522,12 @@ export interface ObservatoryRecallResponse {
   lanes: Record<ObservatoryLane, ObservatoryRecallHit[]>;
 }
 export interface ObservatoryPivotResponse {
+  hierarchy: AtlasHierarchy;
   context_token: string;
   scope: AtlasTokenScope;
   focus_node_id: string;
   community_id: string;
+  project_id: string | null;
   target: 'map' | 'timeline' | 'ledger' | 'recall';
 }
 export interface ObservatoryFrontierState {
@@ -867,6 +895,8 @@ export const api = {
   ): Promise<SemanticAtlasPageResponse> => {
     const query = new URLSearchParams();
     if (params.level) query.append('level', params.level);
+    if (params.hierarchy) query.append('hierarchy', params.hierarchy);
+    if (params.project_id) query.append('project_id', params.project_id);
     if (params.project_token) query.append('project_token', params.project_token);
     if (params.session_token) query.append('session_token', params.session_token);
     if (params.topic_token) query.append('topic_token', params.topic_token);
@@ -884,7 +914,7 @@ export const api = {
     const queryString = query.toString();
     const requestUrl = `/viz/atlas${queryString ? `?${queryString}` : ''}`;
     return apiFetch<SemanticAtlasPageResponse>(requestUrl, { signal }).then((page) => {
-      const presentationKey = JSON.stringify({ level: page.level, generation: page.generation, region: page.navigation.region_id, focus: page.navigation.focus_node_id, request: requestUrl });
+      const presentationKey = JSON.stringify({ hierarchy: page.hierarchy, level: page.level, project: page.navigation.project_id, generation: page.generation, region: page.navigation.region_id, focus: page.navigation.focus_node_id, request: requestUrl });
       page.presentation_key = presentationKey;
       if (typeof document !== 'undefined') {
         const response = {
@@ -980,18 +1010,19 @@ export const api = {
   },
 
   getObservatoryRecall: (
-    params: { context_token: string; lanes?: ObservatoryLane[]; limit?: number },
+    params: { context_token: string; hierarchy?: AtlasHierarchy; lanes?: ObservatoryLane[]; limit?: number },
     signal?: AbortSignal
   ): Promise<ObservatoryRecallResponse> => {
     const query = new URLSearchParams();
     query.append('context_token', params.context_token);
+    if (params.hierarchy) query.append('hierarchy', params.hierarchy);
     if (params.lanes && params.lanes.length > 0) query.append('lanes', params.lanes.join(','));
     if (params.limit !== undefined) query.append('limit', String(params.limit));
     return apiFetch<ObservatoryRecallResponse>(`/observatory/recall?${query.toString()}`, { signal });
   },
 
   resolveObservatoryPivot: (
-    payload: { pivot_token: string; target: 'map' | 'timeline' | 'ledger' | 'recall' },
+    payload: { pivot_token: string; hierarchy?: AtlasHierarchy; target: 'map' | 'timeline' | 'ledger' | 'recall' },
     signal?: AbortSignal
   ): Promise<ObservatoryPivotResponse> => {
     return apiFetch<ObservatoryPivotResponse>('/observatory/pivot', {

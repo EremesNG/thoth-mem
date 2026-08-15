@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { flushSync } from 'react-dom';
 
 import type { AtlasLevel, SemanticAtlasRegion, SemanticAtlasRegionBridge, VizDensityState, VizEdge, VizNode, VizSemanticState } from '../../api/client.js';
 import {
@@ -6,6 +7,7 @@ import {
   cosmosMotionConfig,
   focusCosmosGraphData,
   focusRegionCosmosGraphData,
+  semanticLayoutIdentityFromPresentation,
   type CosmosGraphData,
 } from './cosmos-graph-data.js';
 import type {
@@ -18,12 +20,13 @@ import {
   CosmosGraphRuntime,
   type CosmosMotionProbe,
   type CosmosNodeOverlay,
+  type CosmosRegionScreenGroup,
   type CosmosRuntimeSnapshot,
   type SemanticRelationshipClassFilter,
 } from './cosmos-graph-runtime.js';
 import type { GraphViewportCommand } from './map-navigation.js';
 import type { MapSelection } from './map-types.js';
-import { buildSemanticRegionOverlays } from './semantic-region-overlay.js';
+import { buildSemanticRegionOverlays, type SemanticRegionOverlayBounds } from './semantic-region-overlay.js';
 
 interface MapCanvasProps {
   nodes: VizNode[];
@@ -63,16 +66,27 @@ export interface MapCanvasRenderCommit {
   presentationKey: string;
 }
 
+function semanticLevelFromLayoutIdentity(identity: string): CosmosGraphLevel {
+  if (identity.startsWith('project-universe:')) return 'universe';
+  if (identity.startsWith('universe:')) return 'universe';
+  if (identity.startsWith('project:')) return 'project';
+  if (identity.startsWith('community:')) return 'community';
+  if (identity.startsWith('neighborhood:')) return 'neighborhood';
+  if (identity === 'universe') return 'universe';
+  return 'raw';
+}
+
 interface GraphRenderInput {
   level: CosmosGraphLevel;
   generation: string;
+  layoutIdentity: string;
   nodes: VizNode[];
   edges: VizEdge[];
 }
 
 interface PendingGraphData {
   data: CosmosGraphData;
-  identity: Pick<GraphRenderInput, 'level' | 'generation'> | null;
+  identity: Pick<GraphRenderInput, 'level' | 'generation' | 'layoutIdentity'> | null;
 }
 
 const PROGRESSIVE_GRAPH_COMMIT_INTERVAL_MS = 1_800;
@@ -93,6 +107,7 @@ function sameGraphNode(left: VizNode, right: VizNode | undefined): boolean {
     && left.seed_y === right.seed_y
     && left.semantic_level === right.semantic_level
     && left.community_id === right.community_id
+    && left.owner_project_id === right.owner_project_id
     && left.member_count === right.member_count
     && left.project_count === right.project_count
     && left.unclustered === right.unclustered
@@ -115,7 +130,11 @@ function sameGraphEdge(left: VizEdge, right: VizEdge | undefined): boolean {
 }
 
 function graphInputRemainsCompatible(candidate: GraphRenderInput, current: GraphRenderInput): boolean {
-  if (candidate.level !== current.level || candidate.generation !== current.generation) return false;
+  if (
+    candidate.level !== current.level
+    || candidate.generation !== current.generation
+    || candidate.layoutIdentity !== current.layoutIdentity
+  ) return false;
   if (candidate.nodes.length === 0 && current.nodes.length > 0) return false;
   const currentNodes = new Map(current.nodes.map((node) => [node.id, node]));
   const currentEdges = new Map(current.edges.map((edge) => [edge.id, edge]));
@@ -128,6 +147,8 @@ const initialRuntimeSnapshot: CosmosRuntimeSnapshot = {
   motionPhase: 'idle',
   initialSettled: false,
   finalFitSettled: false,
+  fitEpoch: 0,
+  finalFitEpoch: -1,
   motionDiagnosticsEpoch: 0,
   datasetVersion: 0,
   lastTransition: 'none',
@@ -218,8 +239,16 @@ export default function MapCanvas({
   const [regionScreenLayout, setRegionScreenLayout] = useState<{
     width: number;
     height: number;
-    regions: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
-  }>({ width: 1, height: 1, regions: [] });
+    kind: CosmosGraphData['regionKind'];
+    fitEpoch: number;
+    visualViewportGeneration: number;
+    exclusions: SemanticRegionOverlayBounds[];
+    regions: CosmosRegionScreenGroup[];
+  }>({ width: 1, height: 1, kind: null, fitEpoch: -1, visualViewportGeneration: 0, exclusions: [], regions: [] });
+  const [visualViewportGeneration, setVisualViewportGeneration] = useState(0);
+  const visualViewportGenerationRef = useRef(0);
+  const [visualViewportSynchronized, setVisualViewportSynchronized] = useState(false);
+  const visualViewportFrameRef = useRef<number | null>(null);
   const [motionProbe, setMotionProbe] = useState<CosmosMotionProbe | null>(null);
   const [reducedMotion, setReducedMotion] = useState(
     () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
@@ -244,17 +273,20 @@ export default function MapCanvas({
     ?? nodes.find((node) => node.semantic_level)?.semantic_level
     ?? 'raw';
   const renderGeneration = atlasGeneration ?? `${renderLevel}:local`;
+  const renderLayoutIdentity = semanticLayoutIdentityFromPresentation(renderLevel, presentationKey);
   const [graphRenderInput, setGraphRenderInput] = useState<GraphRenderInput>(
-    () => ({ level: renderLevel, generation: renderGeneration, nodes, edges }),
+    () => ({ level: renderLevel, generation: renderGeneration, layoutIdentity: renderLayoutIdentity, nodes, edges }),
   );
   const rawGraphWorkerReady = graphRenderInput.level === 'raw' && graphWorkerReady;
   const graphRenderInputRef = useRef(graphRenderInput);
-  const preparedGraphIdentityRef = useRef<Pick<GraphRenderInput, 'level' | 'generation'> | null>(null);
+  const desiredGraphInputRef = useRef<GraphRenderInput>(graphRenderInput);
+  const preparedGraphIdentityRef = useRef<Pick<GraphRenderInput, 'level' | 'generation' | 'layoutIdentity'> | null>(null);
   const pendingGraphRenderInputRef = useRef<GraphRenderInput | null>(null);
   const graphRenderInputTimerRef = useRef<number | null>(null);
   const lastGraphRenderCommitAtRef = useRef(performance.now());
   const lastPresentationCommitKeyRef = useRef<string | null>(null);
   const [preparedGraphData, setPreparedGraphData] = useState<CosmosGraphData>(EMPTY_GRAPH_DATA);
+  const [dataApplyEpoch, setDataApplyEpoch] = useState(0);
   const graphData = useMemo(
     () => focusCosmosGraphData(focusRegionCosmosGraphData(preparedGraphData, regionId), focusId),
     [focusId, preparedGraphData, regionId],
@@ -264,17 +296,30 @@ export default function MapCanvas({
     () => [...new Set(graphData.pointColors)].slice(0, 5),
     [graphData.pointColors],
   );
+  const visibleRegionLabelIds = useMemo(() => {
+    const limit = regionScreenLayout.width <= 480 ? 6 : regionScreenLayout.width <= 900 ? 9 : 12;
+    return new Set([...regions]
+      .sort((left, right) => Number(right.id === regionId) - Number(left.id === regionId)
+        || right.member_count - left.member_count
+        || left.id.localeCompare(right.id))
+      .slice(0, limit)
+      .map((region) => region.id));
+  }, [regionId, regionScreenLayout.width, regions]);
   const regionOverlays = useMemo(() => {
     const width = Math.max(regionScreenLayout.width, 1);
     const height = Math.max(regionScreenLayout.height, 1);
-    const pointsByRegion = new Map(regionScreenLayout.regions.map((region) => [region.id, region.points]));
+    const screenGroups = new Map(regionScreenLayout.regions.map((region) => [region.id, region]));
     return buildSemanticRegionOverlays(regions.map((region, index) => ({
       id: region.id, label: region.label, memberCount: region.member_count,
-      color: communityColors[index % Math.max(communityColors.length, 1)] ?? '#67e8f9',
+      color: screenGroups.get(region.id)?.color
+        ?? communityColors[index % Math.max(communityColors.length, 1)]
+        ?? '#67e8f9',
       focused: region.id === regionId,
-      points: pointsByRegion.get(region.id) ?? [],
-    })), { width, height });
-  }, [communityColors, regionId, regionScreenLayout, regions]);
+      points: screenGroups.get(region.id)?.points ?? [],
+      cameraBound: regionScreenLayout.kind === 'project',
+      labelVisible: visibleRegionLabelIds.has(region.id),
+    })), { width, height }, regionScreenLayout.exclusions);
+  }, [communityColors, regionId, regionScreenLayout, regions, visibleRegionLabelIds]);
   const pointSizeSummary = useMemo(() => {
     const sorted = [...graphData.pointSizes].sort((left, right) => left - right);
     return {
@@ -287,15 +332,14 @@ export default function MapCanvas({
     () => new Map(regionOverlays.map((overlay) => [overlay.id, overlay])),
     [regionOverlays],
   );
-  const visibleRegionLabelIds = useMemo(() => {
-    const limit = regionScreenLayout.width <= 480 ? 6 : regionScreenLayout.width <= 900 ? 9 : 12;
-    return new Set([...regionOverlays]
-      .sort((left, right) => Number(right.focused) - Number(left.focused)
-        || right.memberCount - left.memberCount
-        || left.id.localeCompare(right.id))
-      .slice(0, limit)
-      .map((overlay) => overlay.id));
-  }, [regionOverlays, regionScreenLayout.width]);
+  const nodeLabelById = useMemo(
+    () => new Map(graphData.pointIds.map((id, index) => [id, graphData.pointLabels[index] ?? id])),
+    [graphData.pointIds, graphData.pointLabels],
+  );
+  const persistentLabelNodeIds = useMemo(
+    () => new Set(nodeOverlays.filter((overlay) => overlay.labelVisible).map((overlay) => overlay.id)),
+    [nodeOverlays],
+  );
   const visibleRegionBridges = useMemo(() => {
     if (regionId) return [];
     const diagonal = Math.hypot(regionScreenLayout.width, regionScreenLayout.height) || 1;
@@ -316,11 +360,61 @@ export default function MapCanvas({
       .slice(0, 4)
       .map(({ bridge }) => bridge);
   }, [regionBridges, regionId, regionOverlayById, regionScreenLayout.height, regionScreenLayout.width]);
+  const projectUniverse = renderLevel === 'universe' && regions.length > 0;
+  const regionSourcesReady = regions.length > 0
+    && regionScreenLayout.kind !== null
+    && regionOverlays.length === regions.length
+    && regionOverlays.every((overlay) => overlay.sourcePointCount > 0);
+  const inside = (bounds: SemanticRegionOverlayBounds) => (
+    bounds.x >= -1
+    && bounds.y >= -1
+    && bounds.x + bounds.width <= regionScreenLayout.width + 1
+    && bounds.y + bounds.height <= regionScreenLayout.height + 1
+  );
+  const intersects = (left: SemanticRegionOverlayBounds, right: SemanticRegionOverlayBounds) => (
+    left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y
+  );
+  const projectGeometryReady = regionScreenLayout.kind !== 'project' || regionOverlays.every((overlay) => (
+    inside(overlay.bounds)
+    && overlay.sourcePoints.every((point) => (
+      point.x >= overlay.bounds.x - 1
+      && point.x <= overlay.bounds.x + overlay.bounds.width + 1
+      && point.y >= overlay.bounds.y - 1
+      && point.y <= overlay.bounds.y + overlay.bounds.height + 1
+    ))
+    && (!overlay.labelVisible || (
+      inside(overlay.labelBounds)
+      && regionScreenLayout.exclusions.every((excluded) => !intersects(overlay.labelBounds, excluded))
+    ))
+  ));
+  const projectFitReady = regionScreenLayout.kind !== 'project' || (
+    visualViewportSynchronized
+    && snapshot.finalFitSettled
+    && snapshot.finalFitEpoch === snapshot.fitEpoch
+    && regionScreenLayout.fitEpoch === snapshot.finalFitEpoch
+    && regionScreenLayout.visualViewportGeneration === visualViewportGeneration
+  );
+  const regionScreenReady = regionSourcesReady && projectGeometryReady && projectFitReady;
+  const finalFitPresentationSettled = snapshot.finalFitSettled
+    && (regionScreenLayout.kind !== 'project' || regionScreenReady);
+  const runtimePresentationReady = presentationReady
+    && snapshot.datasetVersion > 0
+    && snapshot.focusId === focusId;
   const linkWidthSummary = useMemo(() => ({
     minimum: graphData.linkWidths.length ? Math.min(...graphData.linkWidths) : 0,
     maximum: graphData.linkWidths.length ? Math.max(...graphData.linkWidths) : 0,
   }), [graphData.linkWidths]);
   graphDataRef.current = graphData;
+  desiredGraphInputRef.current = {
+    level: renderLevel,
+    generation: renderGeneration,
+    layoutIdentity: renderLayoutIdentity,
+    nodes,
+    edges,
+  };
   onSelectRef.current = onSelect;
   onPausedChangeRef.current = onPausedChange;
   onRenderCommitRef.current = onRenderCommit;
@@ -358,6 +452,7 @@ export default function MapCanvas({
   ) => {
     const applyStartedAt = performance.now();
     runtime.setData(next.data);
+    setDataApplyEpoch((current) => current + 1);
     if (hostRef.current) {
       const duration = performance.now() - applyStartedAt;
       const previousMaximum = Number(hostRef.current.dataset.maximumDataApplyMs ?? 0);
@@ -370,7 +465,7 @@ export default function MapCanvas({
       runtime.focus(nextFocusId, next.data.focus);
       appliedFocusIdRef.current = nextFocusId;
     }
-    if (next.identity) {
+    if (next.identity && !next.data.nodes.some((node) => node.semantic_level)) {
       const commitAt = performance.now();
       if (hostRef.current) hostRef.current.dataset.lastRenderCommitAt = String(commitAt);
       if (typeof document !== 'undefined') {
@@ -398,31 +493,50 @@ export default function MapCanvas({
     });
   };
 
-  useEffect(() => {
-    const identity = preparedGraphIdentityRef.current;
-    if (
-      !complete
-      || presentationKey === 'raw'
-      || lastPresentationCommitKeyRef.current === presentationKey
-      || !identity
-      || identity.level !== atlasLevel
-      || identity.generation !== atlasGeneration
-      || graphData.pointIds.length !== nodes.length
-      || snapshot.status !== 'ready'
-      || snapshot.focusId !== focusId
-    ) return;
+  useLayoutEffect(() => {
+    const runtimeIdentity = runtimeRef.current?.getDataIdentity() ?? null;
+    const runtimeLevel = runtimeIdentity
+      ? semanticLevelFromLayoutIdentity(runtimeIdentity.layoutIdentity)
+      : null;
+    const desiredPointIds = regionId
+      ? graphDataRef.current.pointIds
+      : nodes.map((node) => node.id);
+    const pointIdentityMatches = runtimeIdentity?.pointIds.length === desiredPointIds.length
+      && runtimeIdentity.pointIds.every((id, index) => id === desiredPointIds[index]);
+    const blocker = !complete ? 'incomplete'
+      : presentationKey === 'raw' ? 'raw'
+        : lastPresentationCommitKeyRef.current === presentationKey ? 'already-committed'
+          : !runtimeIdentity ? 'missing-runtime-data'
+            : runtimeIdentity.layoutIdentity !== renderLayoutIdentity ? 'layout-identity'
+              : runtimeLevel !== atlasLevel ? `runtime-level:${runtimeLevel ?? 'none'}->${atlasLevel}`
+                : !pointIdentityMatches ? 'point-identity'
+                  : snapshot.status !== 'ready' ? 'status'
+                    : !snapshot.finalFitSettled ? 'final-fit'
+                      : snapshot.focusId !== focusId ? 'focus'
+                        : null;
+    if (blocker) {
+      if (hostRef.current) hostRef.current.dataset.semanticCommitBlocker = blocker;
+      return;
+    }
     const commitAt = performance.now();
-    const commit = { level: atlasLevel, generation: atlasGeneration, regionId, focusId, presentationKey, commitAt };
+    if (hostRef.current) {
+      delete hostRef.current.dataset.semanticCommitBlocker;
+      hostRef.current.dataset.lastRenderCommitAt = String(commitAt);
+    }
+    const committedLevel = runtimeLevel!;
+    const committedGeneration = atlasGeneration!;
+    const commit = { level: committedLevel, generation: committedGeneration, regionId, focusId, presentationKey, commitAt };
     const history = JSON.parse(document.documentElement.dataset.atlasRenderCommitHistory ?? '[]') as typeof commit[];
     document.documentElement.dataset.atlasRenderCommitHistory = JSON.stringify([...history.slice(-31), commit]);
     lastPresentationCommitKeyRef.current = presentationKey;
     onRenderCommitRef.current?.({
-      ...identity,
+      level: committedLevel,
+      generation: committedGeneration,
       focusId,
-      pointCount: graphData.pointIds.length,
+      pointCount: runtimeIdentity!.pointIds.length,
       presentationKey,
     });
-  }, [atlasGeneration, atlasLevel, complete, focusId, graphData.pointIds.length, nodes.length, presentationKey, regionId, snapshot.focusId, snapshot.status]);
+  }, [atlasGeneration, atlasLevel, complete, dataApplyEpoch, focusId, graphData.pointIds.length, nodes.length, presentationKey, regionId, renderLayoutIdentity, snapshot.finalFitSettled, snapshot.focusId, snapshot.status]);
 
   const drainGraphData = (runtime: CosmosGraphRuntime, generation: number) => {
     if (graphDataDrainActiveRef.current) return;
@@ -463,8 +577,9 @@ export default function MapCanvas({
         requestId: response.requestId,
         level: requestInput.level,
         generation: requestInput.generation,
+        layoutIdentity: requestInput.layoutIdentity,
       })
-      && graphInputRemainsCompatible(requestInput, graphRenderInputRef.current),
+      && graphInputRemainsCompatible(requestInput, desiredGraphInputRef.current),
     );
     if (!requestInput || !compatible) return;
     if (!response.ok) {
@@ -482,6 +597,7 @@ export default function MapCanvas({
     const identity = {
       level: response.level,
       generation: response.generation,
+      layoutIdentity: response.layoutIdentity,
     };
     preparedGraphIdentityRef.current = identity;
     const preparedFocusId = focusIdRef.current;
@@ -553,6 +669,7 @@ export default function MapCanvas({
       requestId,
       level: graphRenderInput.level,
       generation: graphRenderInput.generation,
+      layoutIdentity: graphRenderInput.layoutIdentity,
       nodes: graphRenderInput.nodes,
       edges: graphRenderInput.edges,
       previousCommunityAnchorIds: communityAnchorIdsRef.current,
@@ -562,12 +679,14 @@ export default function MapCanvas({
         requestId,
         level: graphRenderInput.level,
         generation: graphRenderInput.generation,
+        layoutIdentity: graphRenderInput.layoutIdentity,
         ok: true,
         graphData: buildCosmosGraphData(
           graphRenderInput.nodes,
           graphRenderInput.edges,
           null,
           communityAnchorIdsRef.current,
+          graphRenderInput.layoutIdentity,
         ),
       });
       return;
@@ -582,15 +701,18 @@ export default function MapCanvas({
       && current.edges === edges
       && current.level === renderLevel
       && current.generation === renderGeneration
+      && current.layoutIdentity === renderLayoutIdentity
     ) return;
     pendingGraphRenderInputRef.current = {
       level: renderLevel,
       generation: renderGeneration,
+      layoutIdentity: renderLayoutIdentity,
       nodes,
       edges,
     };
     const semanticIdentityChanged = current.level !== renderLevel
-      || current.generation !== renderGeneration;
+      || current.generation !== renderGeneration
+      || current.layoutIdentity !== renderLayoutIdentity;
     const firstIdentityChanged = current.nodes[0]?.id !== nodes[0]?.id;
     const lastIdentityChanged = current.nodes[current.nodes.length - 1]?.id !== nodes[nodes.length - 1]?.id;
     const shouldCommitImmediately = semanticIdentityChanged
@@ -608,7 +730,7 @@ export default function MapCanvas({
     const elapsed = performance.now() - lastGraphRenderCommitAtRef.current;
     const delay = Math.max(0, PROGRESSIVE_GRAPH_COMMIT_INTERVAL_MS - elapsed);
     graphRenderInputTimerRef.current = window.setTimeout(commitPendingGraphRenderInput, delay);
-  }, [complete, edges, nodes, renderGeneration, renderLevel]);
+  }, [complete, edges, nodes, renderGeneration, renderLayoutIdentity, renderLevel]);
 
   useEffect(() => () => {
     if (graphRenderInputTimerRef.current !== null) {
@@ -625,6 +747,62 @@ export default function MapCanvas({
     return () => media.removeEventListener('change', update);
   }, []);
 
+  useLayoutEffect(() => {
+    const workspace = hostRef.current?.closest<HTMLElement>('[data-testid="neural-atlas-workspace"]');
+    const generation = Number(workspace?.dataset.visualViewportGeneration ?? 0);
+    const synchronizedGeneration = Number.isFinite(generation) && generation >= 0 ? generation : 0;
+    visualViewportGenerationRef.current = synchronizedGeneration;
+    setVisualViewportGeneration(synchronizedGeneration);
+    setVisualViewportSynchronized(true);
+  }, []);
+
+  useEffect(() => {
+    const eventGeneration = (event: Event) => {
+      const detail = (event as CustomEvent<{ generation?: unknown }>).detail;
+      return typeof detail?.generation === 'number' && Number.isFinite(detail.generation)
+        ? detail.generation
+        : null;
+    };
+    const handleViewportWillChange = (event: Event) => {
+      const generation = eventGeneration(event);
+      if (generation === null || generation <= visualViewportGenerationRef.current) return;
+      if (!runtimeRef.current) {
+        visualViewportGenerationRef.current = generation;
+        setVisualViewportGeneration(generation);
+        return;
+      }
+      flushSync(() => {
+        visualViewportGenerationRef.current = generation;
+        setVisualViewportGeneration(generation);
+        runtimeRef.current?.beginVisualViewportChange();
+      });
+    };
+    const handleViewportChange = (event: Event) => {
+      const generation = eventGeneration(event);
+      if (generation === null || generation !== visualViewportGenerationRef.current) return;
+      if (visualViewportFrameRef.current !== null) cancelAnimationFrame(visualViewportFrameRef.current);
+      visualViewportFrameRef.current = requestAnimationFrame(() => {
+        visualViewportFrameRef.current = null;
+        if (generation !== visualViewportGenerationRef.current) return;
+        runtimeRef.current?.completeVisualViewportChange();
+      });
+    };
+    window.addEventListener('thoth:visual-viewport-will-change', handleViewportWillChange);
+    window.addEventListener('thoth:visual-viewport-change', handleViewportChange);
+    const workspace = hostRef.current?.closest<HTMLElement>('[data-testid="neural-atlas-workspace"]');
+    const mountedGeneration = Number(workspace?.dataset.visualViewportGeneration ?? 0);
+    if (Number.isFinite(mountedGeneration) && mountedGeneration > visualViewportGenerationRef.current) {
+      visualViewportGenerationRef.current = mountedGeneration;
+      setVisualViewportGeneration(mountedGeneration);
+    }
+    return () => {
+      window.removeEventListener('thoth:visual-viewport-will-change', handleViewportWillChange);
+      window.removeEventListener('thoth:visual-viewport-change', handleViewportChange);
+      if (visualViewportFrameRef.current !== null) cancelAnimationFrame(visualViewportFrameRef.current);
+      visualViewportFrameRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -633,7 +811,15 @@ export default function MapCanvas({
     setSnapshot({ ...initialRuntimeSnapshot, paused, reducedMotion });
     setHover(null);
     setNodeOverlays([]);
-    setRegionScreenLayout({ width: host.clientWidth, height: host.clientHeight, regions: [] });
+    setRegionScreenLayout({
+      width: host.clientWidth,
+      height: host.clientHeight,
+      kind: null,
+      fitEpoch: -1,
+      visualViewportGeneration: visualViewportGenerationRef.current,
+      exclusions: [],
+      regions: [],
+    });
     setMotionProbe(null);
 
     CosmosGraphRuntime.create(
@@ -648,7 +834,33 @@ export default function MapCanvas({
           if (!cancelled && generation === lifecycleGenerationRef.current) setNodeOverlays(nextOverlays);
         },
         onRegionPoints: (nextLayout) => {
-          if (!cancelled && generation === lifecycleGenerationRef.current) setRegionScreenLayout(nextLayout);
+          if (!cancelled && generation === lifecycleGenerationRef.current) {
+            const hostBounds = host.getBoundingClientRect();
+            const scaleX = nextLayout.width / Math.max(1, hostBounds.width);
+            const scaleY = nextLayout.height / Math.max(1, hostBounds.height);
+            const exclusions = (nextLayout.kind === 'project'
+              ? [...document.querySelectorAll('.map-health-strip, .observatory-frontier-strip, .atlas-breadcrumbs')]
+              : []).flatMap((element) => {
+              const bounds = element.getBoundingClientRect();
+              const left = Math.max(hostBounds.left, bounds.left);
+              const top = Math.max(hostBounds.top, bounds.top);
+              const right = Math.min(hostBounds.right, bounds.right);
+              const bottom = Math.min(hostBounds.bottom, bounds.bottom);
+              return right > left && bottom > top
+                ? [{
+                    x: (left - hostBounds.left) * scaleX,
+                    y: (top - hostBounds.top) * scaleY,
+                    width: (right - left) * scaleX,
+                    height: (bottom - top) * scaleY,
+                  }]
+                : [];
+            });
+            setRegionScreenLayout({
+              ...nextLayout,
+              visualViewportGeneration: visualViewportGenerationRef.current,
+              exclusions,
+            });
+          }
         },
         onMotionProbe: (nextProbe) => {
           if (!cancelled && generation === lifecycleGenerationRef.current) setMotionProbe(nextProbe);
@@ -688,6 +900,7 @@ export default function MapCanvas({
           enqueueGraphData(graphDataRef.current, {
             level: graphRenderInputRef.current.level,
             generation: graphRenderInputRef.current.generation,
+            layoutIdentity: graphRenderInputRef.current.layoutIdentity,
           });
         }
         drainGraphData(runtime, generation);
@@ -716,6 +929,12 @@ export default function MapCanvas({
   }, [runtimeKey]);
 
   useEffect(() => {
+    const desired = desiredGraphInputRef.current;
+    if (
+      semanticLevelFromLayoutIdentity(graphData.layoutIdentity) !== desired.level
+      || graphData.pointIds.length !== desired.nodes.length
+      || graphData.pointIds.some((id, index) => id !== desired.nodes[index]?.id)
+    ) return;
     const direct = directlyAppliedGraphDataRef.current;
     if (direct?.base === preparedGraphData && direct.focusId === focusId && direct.regionId === regionId) return;
     directlyAppliedGraphDataRef.current = {
@@ -781,16 +1000,22 @@ export default function MapCanvas({
       data-point-shape="circle"
       data-curved-links="true"
       data-community-count={communityColors.length}
-      data-renderer-status={snapshot.status === 'ready' && !presentationReady ? 'loading' : snapshot.status}
+      data-renderer-status={snapshot.status === 'ready' && !runtimePresentationReady ? 'loading' : snapshot.status}
       data-renderer-error={snapshot.error ?? ''}
       data-motion-phase={snapshot.motionPhase}
       data-initial-settled={String(snapshot.initialSettled)}
-      data-final-fit-settled={String(snapshot.finalFitSettled)}
+      data-final-fit-settled={String(finalFitPresentationSettled)}
+      data-fit-epoch={snapshot.fitEpoch}
+      data-final-fit-epoch={snapshot.finalFitEpoch}
+      data-region-fit-epoch={regionScreenLayout.fitEpoch}
+      data-visual-viewport-generation={visualViewportGeneration}
+      data-visual-viewport-synchronized={String(visualViewportSynchronized)}
+      data-region-visual-viewport-generation={regionScreenLayout.visualViewportGeneration}
       data-motion-diagnostics-epoch={snapshot.motionDiagnosticsEpoch}
       data-dataset-version={snapshot.datasetVersion}
       data-last-transition={snapshot.lastTransition}
       data-last-command={snapshot.lastCommand ?? ''}
-      data-focus-id={(presentationReady ? snapshot.focusId : presentedFocusId) ?? ''}
+      data-focus-id={(runtimePresentationReady ? snapshot.focusId : presentedFocusId) ?? ''}
       data-paused={String(snapshot.paused)}
       data-reduced-motion={String(reducedMotion)}
       data-ambient-starts={snapshot.ambientStarts}
@@ -804,7 +1029,8 @@ export default function MapCanvas({
       data-link-count={presentationReady ? graphData.linkIds.length : presentedLinkCount}
       data-region-count={regions.length}
       data-region-bridge-count={regionBridges.length}
-      data-region-screen-ready={String(regionScreenLayout.regions.length === regions.length && regions.length > 0)}
+      data-region-kind={regionScreenLayout.kind ?? 'none'}
+      data-region-screen-ready={String(regionScreenReady)}
       data-region-host-width={regionScreenLayout.width}
       data-region-host-height={regionScreenLayout.height}
       data-rendered-internal-link-count={snapshot.zoomBand === 'exploration' ? graphData.linkIds.length : 0}
@@ -831,14 +1057,16 @@ export default function MapCanvas({
       data-semantic-state={semanticState}
       data-truncated={String(truncated)}
     >
-      <div className="cosmos-nebula-field" aria-hidden="true">
-        {communityColors.map((color, index) => (
-          <span
-            key={`${color}-${index}`}
-            style={{ '--nebula-color': color, '--nebula-index': index } as CSSProperties}
-          />
-        ))}
-      </div>
+      {!projectUniverse ? (
+        <div className="cosmos-nebula-field" aria-hidden="true">
+          {communityColors.map((color, index) => (
+            <span
+              key={`${color}-${index}`}
+              style={{ '--nebula-color': color, '--nebula-index': index } as CSSProperties}
+            />
+          ))}
+        </div>
+      ) : null}
       <div
         ref={hostRef}
         className="map-canvas cosmos-graph-host"
@@ -886,11 +1114,67 @@ export default function MapCanvas({
             );
           })}
           {regionOverlays.map((overlay) => (
-            <g key={overlay.id} data-region-id={overlay.id} data-focused={String(overlay.focused)} style={{ '--region-color': overlay.color } as CSSProperties}>
-              <path d={overlay.path} onPointerDown={() => onRegionSelect?.(overlay.id)} />
-              {visibleRegionLabelIds.has(overlay.id) ? (
-                <text x={overlay.labelAnchor.x} y={overlay.labelAnchor.y}>{overlay.label} · {overlay.memberCount}</text>
+            <g
+              key={overlay.id}
+              data-region-id={overlay.id}
+              data-region-kind={regionScreenLayout.kind ?? 'none'}
+              data-focused={String(overlay.focused)}
+              data-label-visible={String(overlay.labelVisible)}
+              data-source-point-count={overlay.sourcePointCount}
+              data-source-points={JSON.stringify(overlay.sourcePoints)}
+              data-region-bounds={JSON.stringify(overlay.bounds)}
+              data-label-bounds={JSON.stringify(overlay.labelBounds)}
+              style={{ '--region-color': overlay.color } as CSSProperties}
+            >
+              <path
+                d={overlay.path}
+                data-role="region-contour"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  onRegionSelect?.(overlay.id);
+                }}
+              />
+              {overlay.labelVisible ? (
+                <text
+                  x={overlay.labelAnchor.x}
+                  y={overlay.labelAnchor.y}
+                  data-role="region-label"
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    onRegionSelect?.(overlay.id);
+                  }}
+                >
+                  {overlay.label} · {overlay.memberCount}
+                </text>
               ) : null}
+              {overlay.sourcePoints.map((point) => {
+                const nodeId = point.id;
+                if (!nodeId) return null;
+                return (
+                  <circle
+                    key={nodeId}
+                    className="semantic-node-hit-target"
+                    cx={point.x}
+                    cy={point.y}
+                    r={12}
+                    data-node-id={nodeId}
+                    data-persistent-label={String(persistentLabelNodeIds.has(nodeId))}
+                    onPointerEnter={() => {
+                      const label = nodeLabelById.get(nodeId);
+                      if (!label) return;
+                      setHover({ id: nodeId, label, x: point.x, y: point.y });
+                      onIntentRef.current?.(nodeId);
+                    }}
+                    onPointerLeave={() => {
+                      setHover((current) => current?.id === nodeId ? null : current);
+                    }}
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      onSelectRef.current({ kind: 'node', id: nodeId });
+                    }}
+                  />
+                );
+              })}
             </g>
           ))}
         </svg>

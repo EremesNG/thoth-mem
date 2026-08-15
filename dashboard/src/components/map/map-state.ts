@@ -84,7 +84,10 @@ export function mergeSemanticAtlasPages(
   base: SemanticAtlasPageResponse,
   incoming: SemanticAtlasPageResponse,
 ): SemanticAtlasPageResponse {
-  if (base.level !== incoming.level || base.generation !== incoming.generation) {
+  if (base.hierarchy !== incoming.hierarchy
+    || base.level !== incoming.level
+    || base.navigation.project_id !== incoming.navigation.project_id
+    || base.generation !== incoming.generation) {
     throw new ApiError(409, 'Atlas generation changed', {
       code: 'VIZ_ATLAS_GENERATION_STALE',
       retryable: true,
@@ -123,7 +126,10 @@ export function semanticAtlasPageToVizSlice(
     seed_y: node.seed_y,
     semantic_level: page.level,
     community_id: node.community_id,
-    region_id: node.region_id ?? null,
+    owner_project_id: node.owner_project_id,
+    region_id: page.hierarchy === 'project' && page.level === 'universe'
+      ? node.owner_project_id
+      : node.region_id ?? null,
     representative_reason: explanationByNode.get(node.id)?.reason,
     representative_signals: explanationByNode.get(node.id)?.signals,
     representative_rank: explanationByNode.get(node.id)?.rank,
@@ -158,12 +164,15 @@ export function semanticAtlasPageToVizSlice(
     truncated: page.truncated,
     health: page.health,
     atlas: {
+      hierarchy: page.hierarchy,
       level: page.level,
       generation: page.generation,
       presentation_key: page.presentation_key,
       presentation: page.presentation,
       regions: page.regions,
       region_bridges: page.region_bridges,
+      project_regions: page.project_regions,
+      project_bridges: page.project_bridges,
       counts: page.counts,
       coverage: page.coverage,
       facets: page.facets,

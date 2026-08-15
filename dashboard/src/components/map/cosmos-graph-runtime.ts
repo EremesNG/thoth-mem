@@ -17,6 +17,8 @@ export interface CosmosRuntimeSnapshot {
   motionPhase: MotionPhase;
   initialSettled: boolean;
   finalFitSettled: boolean;
+  fitEpoch: number;
+  finalFitEpoch: number;
   motionDiagnosticsEpoch: number;
   datasetVersion: number;
   lastTransition: GraphTransition;
@@ -42,6 +44,63 @@ export interface CosmosRuntimeSnapshot {
   screenFieldHeight: number;
   screenFieldAspect: number;
   cameraZoom: number;
+}
+
+type SemanticCameraWorldExtent = Pick<
+  CosmosGraphData['worldExtent'],
+  'minX' | 'minY' | 'maxX' | 'maxY' | 'width' | 'height'
+>;
+
+export interface SemanticCameraSnapshot {
+  layoutIdentity: string;
+  centerX: number;
+  centerY: number;
+  zoom: number;
+  worldExtent: SemanticCameraWorldExtent;
+  userCameraInteracted: boolean;
+}
+
+export function isSemanticCameraSnapshotRestorable(
+  snapshot: SemanticCameraSnapshot,
+  layoutIdentity: string,
+  nextExtent: CosmosGraphData['worldExtent'],
+  viewport: { width: number; height: number },
+): boolean {
+  const values = [
+    snapshot.centerX, snapshot.centerY, snapshot.zoom,
+    snapshot.worldExtent.minX, snapshot.worldExtent.minY,
+    snapshot.worldExtent.maxX, snapshot.worldExtent.maxY,
+    snapshot.worldExtent.width, snapshot.worldExtent.height,
+    nextExtent.minX, nextExtent.minY, nextExtent.maxX, nextExtent.maxY,
+    nextExtent.width, nextExtent.height, viewport.width, viewport.height,
+  ];
+  if (
+    snapshot.layoutIdentity !== layoutIdentity
+    || values.some((value) => !Number.isFinite(value))
+    || snapshot.zoom <= 0
+    || viewport.width <= 0
+    || viewport.height <= 0
+    || snapshot.worldExtent.width < 0
+    || snapshot.worldExtent.height < 0
+    || nextExtent.width < 0
+    || nextExtent.height < 0
+  ) return false;
+
+  const halfWidth = viewport.width / snapshot.zoom / 2;
+  const halfHeight = viewport.height / snapshot.zoom / 2;
+  const camera = {
+    minX: snapshot.centerX - halfWidth,
+    minY: snapshot.centerY - halfHeight,
+    maxX: snapshot.centerX + halfWidth,
+    maxY: snapshot.centerY + halfHeight,
+  };
+  const intersects = (extent: SemanticCameraWorldExtent) => (
+    camera.maxX >= extent.minX
+    && camera.minX <= extent.maxX
+    && camera.maxY >= extent.minY
+    && camera.minY <= extent.maxY
+  );
+  return intersects(snapshot.worldExtent) && intersects(nextExtent);
 }
 
 export type SemanticZoomBand = 'overview' | 'exploration';
@@ -169,6 +228,18 @@ export interface CosmosMotionProbe {
   tick: number;
 }
 
+export interface CosmosRegionScreenPoint {
+  id: string;
+  x: number;
+  y: number;
+}
+
+export interface CosmosRegionScreenGroup {
+  id: string;
+  color: string;
+  points: CosmosRegionScreenPoint[];
+}
+
 type UnplacedCosmosNodeOverlay = Omit<
   CosmosNodeOverlay,
   'labelX' | 'labelY' | 'labelWidth' | 'labelHeight' | 'labelVisible'
@@ -185,7 +256,6 @@ const LABEL_VIEWPORT_INSET = 8;
 const LABEL_COLLISION_GAP = 6;
 const AMBIENT_START_ALPHA = 0.00135;
 const SEMANTIC_DATA_TRANSITION_MS = 96;
-const SEMANTIC_FINAL_FIT_MS = 64;
 const SEMANTIC_AMBIENT_MAX_DELTA_MS = 34;
 const AMBIENT_SIMULATION_CONFIG = {
   simulationDecay: 25_000_000,
@@ -482,7 +552,9 @@ export interface CosmosGraphRuntimeCallbacks {
   onRegionPoints: (layout: {
     width: number;
     height: number;
-    regions: Array<{ id: string; points: Array<{ x: number; y: number }> }>;
+    kind: CosmosGraphData['regionKind'];
+    fitEpoch: number;
+    regions: CosmosRegionScreenGroup[];
   }) => void;
   onMotionProbe: (probe: CosmosMotionProbe | null) => void;
   onSnapshot: (snapshot: CosmosRuntimeSnapshot) => void;
@@ -499,6 +571,8 @@ const INITIAL_SNAPSHOT: CosmosRuntimeSnapshot = {
   motionPhase: 'idle',
   initialSettled: false,
   finalFitSettled: false,
+  fitEpoch: 0,
+  finalFitEpoch: -1,
   motionDiagnosticsEpoch: 0,
   datasetVersion: 0,
   lastTransition: 'none',
@@ -537,6 +611,11 @@ export class CosmosGraphRuntime {
   private activationTimers = new Set<number>();
   private settleTimer: number | null = null;
   private finalFitTimer: number | null = null;
+  private fitEpoch = 0;
+  private publishedOverlayFitEpoch = -1;
+  private warmupFitEpoch: number | null = null;
+  private warmupFitFrames = 0;
+  private settleRequestedFitEpoch: number | null = null;
   private datasetCompleteRequested = false;
   private ambientActive = false;
   private semanticAmbientFrame: number | null = null;
@@ -560,6 +639,8 @@ export class CosmosGraphRuntime {
   private maximumStepPx = 0;
   private lastOverlayPublishAt = 0;
   private completedDatasetVersion = 0;
+  private semanticCameraPreservedForDataset = false;
+  private semanticCameraSnapshots = new Map<string, SemanticCameraSnapshot>();
   private simulationRunning = false;
   private motionProbePointIndex = 0;
   private readonly contextLostHandler = (event: Event) => {
@@ -702,7 +783,9 @@ export class CosmosGraphRuntime {
       data.pointIds.length === this.data.pointIds.length &&
       data.linkIds.length === this.data.linkIds.length &&
       data.pointIds.every((id, index) => this.data?.pointIds[index] === id) &&
-      data.linkIds.every((id, index) => this.data?.linkIds[index] === id);
+      data.linkIds.every((id, index) => this.data?.linkIds[index] === id) &&
+      data.pointPositions.every((value, index) => this.data?.pointPositions[index] === value) &&
+      data.pointSizes.every((value, index) => this.data?.pointSizes[index] === value);
     if (unchanged) {
       this.data = data;
       return;
@@ -712,8 +795,26 @@ export class CosmosGraphRuntime {
     this.cancelSemanticAmbientFrame();
     this.datasetCompleteRequested = false;
     const isInitial = this.data === null;
+    const previousSemantic = previousData ? this.isSemanticData(previousData) : false;
+    const semantic = this.isSemanticData(data);
+    if (previousData && previousSemantic !== semantic) {
+      this.graph.stop();
+      this.ambientActive = false;
+      this.simulationRunning = false;
+    }
+    const sameSemanticLocation = Boolean(previousData && data.layoutIdentity === previousData.layoutIdentity);
+    if (previousData && previousSemantic) this.captureSemanticCamera(previousData);
+    const savedCamera = semantic ? this.semanticCameraSnapshots.get(data.layoutIdentity) : undefined;
+    const restorableCamera = savedCamera && isSemanticCameraSnapshotRestorable(
+      savedCamera,
+      data.layoutIdentity,
+      data.worldExtent,
+      { width: this.host.clientWidth, height: this.host.clientHeight },
+    ) ? savedCamera : null;
+    this.semanticCameraPreservedForDataset = restorableCamera !== null;
     const isExpansion =
       !isInitial &&
+      (!semantic || sameSemanticLocation) &&
       [...this.previousPointIds].every((id) => pointIds.has(id)) &&
       [...this.previousLinkIds].every((id) => linkIds.has(id));
     const initialStillSettling = isExpansion && !this.snapshot.initialSettled;
@@ -721,13 +822,16 @@ export class CosmosGraphRuntime {
     this.cancelActivation();
     if (!initialStillSettling) this.cancelSettle();
     const transition: GraphTransition = isInitial ? 'initial' : isExpansion ? 'expansion' : 'filter';
-    const semantic = this.isSemanticData(data);
     const duration = this.snapshot.reducedMotion || this.snapshot.paused
       ? 0
       : semantic
         ? Math.min(SEMANTIC_DATA_TRANSITION_MS, this.motion.transitionDuration)
         : this.motion.transitionDuration;
-    const preserveReplacementPositions = data.preserveReplacementPositions;
+    const preserveReplacementPositions = data.preserveReplacementPositions && sameSemanticLocation;
+    this.host.dataset.semanticLocationIdentity = data.layoutIdentity;
+    if (semantic && !sameSemanticLocation) {
+      this.emit({ userCameraInteracted: restorableCamera?.userCameraInteracted ?? false });
+    }
     const pointPositions = preserveReplacementPositions && (isExpansion || (semantic && !isInitial)) && previousData
       ? preserveNeuralAtlasPositions(
           previousData.pointIds,
@@ -831,15 +935,29 @@ export class CosmosGraphRuntime {
     this.recordDataStage('unpause', stageStartedAt);
     stageStartedAt = performance.now();
     this.graph.render(semantic ? 0 : isInitial ? 0.22 : isExpansion ? 0.025 : 0.012, duration);
+    if (restorableCamera) {
+      this.graph.setZoomTransformByPointPositions(
+        new Float32Array([restorableCamera.centerX, restorableCamera.centerY]),
+        0,
+        restorableCamera.zoom,
+        0,
+        false,
+      );
+      this.graph.setZoomLevel(restorableCamera.zoom, 0, false);
+      this.updateSemanticZoomBand(restorableCamera.zoom);
+      this.host.dataset.semanticCameraRestored = 'true';
+    } else {
+      this.host.dataset.semanticCameraRestored = 'false';
+    }
     this.recordDataStage('graphRender', stageStartedAt);
     stageStartedAt = performance.now();
     if (!semantic && !this.snapshot.paused && !this.snapshot.reducedMotion) {
       if (isInitial) this.startSimulation(0.18);
-      else if (!isExpansion) this.startSimulation(0.006);
+      else if (!isExpansion && !previousSemantic) this.startSimulation(0.006);
     }
     this.recordDataStage('simulationStart', stageStartedAt);
     stageStartedAt = performance.now();
-    if (isInitial || !preserveReplacementPositions) {
+    if (!semantic && (isInitial || !preserveReplacementPositions)) {
       this.graph.fitViewByPointPositions(
         pointPositions,
         duration,
@@ -881,6 +999,16 @@ export class CosmosGraphRuntime {
         settleDelay,
       );
     }
+  }
+
+  beginVisualViewportChange(): void {
+    if (this.destroyed || this.data?.regionKind !== 'project') return;
+    this.beginFitPublication();
+  }
+
+  completeVisualViewportChange(): void {
+    if (this.destroyed || this.data?.regionKind !== 'project') return;
+    this.handleResize();
   }
 
   focus(focusId: string | null, focus: CosmosFocusNeighborhood | null): void {
@@ -958,11 +1086,8 @@ export class CosmosGraphRuntime {
     this.graph.render(undefined, duration);
     this.requestOverlayLayout();
     if (focusChanged) {
-      if (this.finalFitTimer !== null) {
-        this.cancelFinalFit();
-        this.settleFinalFit();
-      }
       this.fitFocusNeighborhood(focus, duration);
+      this.settleCurrentProjection(duration);
     }
     this.emit({
       focusId,
@@ -1004,12 +1129,17 @@ export class CosmosGraphRuntime {
     this.emit({ motionPhase: 'transitioning', finalFitSettled: false });
   }
 
+  getDataIdentity(): { layoutIdentity: string; pointIds: readonly string[] } | null {
+    if (!this.data) return null;
+    return {
+      layoutIdentity: this.data.layoutIdentity,
+      pointIds: this.data.pointIds,
+    };
+  }
+
   command(command: GraphViewportCommand): void {
     if (this.destroyed) return;
-    if (this.finalFitTimer !== null) {
-      this.cancelFinalFit();
-      this.settleFinalFit();
-    }
+    if (this.finalFitTimer !== null) this.cancelFinalFit();
     const duration = this.snapshot.reducedMotion || this.snapshot.paused ? 0 : this.motion.transitionDuration;
     const simulation = false;
     if (command === 'fit') this.fitAll(duration);
@@ -1029,6 +1159,7 @@ export class CosmosGraphRuntime {
       const positions = this.graph.getPointPositions().map((value, index) => value + shift[index % 2]);
       this.graph.setZoomTransformByPointPositions(new Float32Array(positions), duration, this.graph.getZoomLevel(), 0, simulation);
     }
+    if (command !== 'fit' && command !== 'reset') this.settleCurrentProjection(duration);
     this.requestOverlayLayout();
     this.emit({ lastCommand: command, userCameraInteracted: true });
   }
@@ -1044,36 +1175,33 @@ export class CosmosGraphRuntime {
     }
     if (
       this.completedDatasetVersion === this.snapshot.datasetVersion
-      && (this.snapshot.finalFitSettled || this.finalFitTimer !== null)
+      && (
+        this.snapshot.finalFitSettled
+        || this.finalFitTimer !== null
+        || this.settleRequestedFitEpoch !== null
+        || this.snapshot.fitEpoch > this.snapshot.finalFitEpoch
+      )
     ) return;
 
     this.completedDatasetVersion = this.snapshot.datasetVersion;
     this.cancelFinalFit();
     if (this.snapshot.userCameraInteracted) {
-      this.settleFinalFit();
+      this.settleCurrentProjection();
+      return;
+    }
+    if (this.isSemanticData() && this.semanticCameraPreservedForDataset) {
+      this.settleCurrentProjection();
       return;
     }
     if (this.isSemanticData()) {
-      this.emit({ finalFitSettled: false });
+      this.host.dataset.semanticAutoFitCount = String(Number(this.host.dataset.semanticAutoFitCount ?? '0') + 1);
       this.fitAll(0);
-      this.settleFinalFit();
       return;
     }
     const duration = this.snapshot.reducedMotion || this.snapshot.paused
       ? 0
-      : this.isSemanticData()
-        ? Math.min(SEMANTIC_FINAL_FIT_MS, this.motion.transitionDuration)
-        : this.motion.transitionDuration;
-    this.emit({ finalFitSettled: false });
+      : this.motion.transitionDuration;
     this.fitAll(duration);
-    if (duration === 0) {
-      this.settleFinalFit();
-    } else {
-      this.finalFitTimer = window.setTimeout(() => {
-        this.finalFitTimer = null;
-        this.settleFinalFit();
-      }, duration + 64);
-    }
   }
 
   setPaused(paused: boolean): void {
@@ -1081,7 +1209,6 @@ export class CosmosGraphRuntime {
     if (paused && this.finalFitTimer !== null) {
       this.cancelFinalFit();
       this.fitAll(0);
-      this.settleFinalFit();
     }
     this.emit({ paused });
     if (paused || this.snapshot.reducedMotion) {
@@ -1109,7 +1236,6 @@ export class CosmosGraphRuntime {
       if (this.finalFitTimer !== null) {
         this.cancelFinalFit();
         this.fitAll(0);
-        this.settleFinalFit();
       }
       this.graph.pause();
       this.cancelSemanticAmbientFrame();
@@ -1138,6 +1264,7 @@ export class CosmosGraphRuntime {
     this.callbacks.onHover(null);
     this.callbacks.onNodeOverlays([]);
     this.callbacks.onMotionProbe(null);
+    this.semanticCameraSnapshots.clear();
     this.graph.destroy();
     this.snapshot = { ...this.snapshot, status: 'disposed', motionPhase: 'idle' };
     this.callbacks.onSnapshot({ ...this.snapshot });
@@ -1181,7 +1308,24 @@ export class CosmosGraphRuntime {
     if (this.destroyed || this.overlayFrame !== null) return;
     this.overlayFrame = window.requestAnimationFrame(() => {
       this.overlayFrame = null;
-      this.publishOverlayLayout();
+      const fitEpoch = this.fitEpoch;
+      this.publishOverlayLayout(fitEpoch);
+      this.publishedOverlayFitEpoch = fitEpoch;
+      if (this.warmupFitEpoch === fitEpoch) {
+        if (this.warmupFitFrames > 0) {
+          this.warmupFitFrames -= 1;
+          this.requestOverlayLayout();
+          return;
+        }
+        this.warmupFitEpoch = null;
+        this.settleRequestedFitEpoch = fitEpoch;
+        this.requestOverlayLayout();
+        return;
+      }
+      if (this.settleRequestedFitEpoch === fitEpoch) {
+        this.settleRequestedFitEpoch = null;
+        this.settleFinalFit(fitEpoch);
+      }
     });
   }
 
@@ -1232,7 +1376,7 @@ export class CosmosGraphRuntime {
   }
 
   private handleSimulationEnd(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || !this.simulationRunning) return;
     this.simulationRunning = false;
     this.ambientActive = false;
     this.lastSimulationTickAt = 0;
@@ -1246,10 +1390,8 @@ export class CosmosGraphRuntime {
     this.requestOverlayLayout();
     if (this.data) this.emit(extent);
     if (userDriven) {
-      if (this.finalFitTimer !== null) {
-        this.cancelFinalFit();
-        this.settleFinalFit();
-      }
+      if (this.finalFitTimer !== null) this.cancelFinalFit();
+      this.settleCurrentProjection();
       if (!this.snapshot.userCameraInteracted) this.emit({ userCameraInteracted: true });
     }
   }
@@ -1289,14 +1431,94 @@ export class CosmosGraphRuntime {
   private handleResize(): void {
     if (this.destroyed) return;
     if (this.overlayFocus) this.fitFocusNeighborhood(this.overlayFocus, 0);
-    this.requestOverlayLayout();
+    if (this.data?.regionKind === 'project') this.fitAll(0);
+    else this.settleCurrentProjection();
     if (this.data) this.emit(this.measureLiveExtent(this.graph.getPointPositions()));
   }
 
   private fitAll(duration: number): void {
     if (!this.data) return;
-    const positions = Array.from(this.graph.getPointPositions());
-    this.graph.fitViewByPointPositions(positions, duration, 0.08, false);
+    const fitEpoch = this.beginFitPublication();
+    // A semantic frame belongs to its stable layout, not to one ambient-motion phase.
+    const positions = this.isSemanticData() && this.semanticAmbientBase
+      ? Array.from(this.semanticAmbientBase)
+      : Array.from(this.graph.getPointPositions());
+    const padding = this.data.regionKind === 'project'
+      ? clamp(58 / Math.max(1, Math.min(this.host.clientWidth, this.host.clientHeight)), 0.1, 0.22)
+      : 0.08;
+    this.host.dataset.semanticFitPadding = String(padding);
+    this.graph.fitViewByPointPositions(positions, duration, padding, false);
+    if (duration > 0) this.requestOverlayLayout();
+    this.scheduleFitPublication(fitEpoch, duration);
+  }
+
+  private beginFitPublication(): number {
+    this.cancelFinalFit();
+    this.cancelOverlayFrame();
+    this.warmupFitEpoch = null;
+    this.warmupFitFrames = 0;
+    this.settleRequestedFitEpoch = null;
+    this.fitEpoch += 1;
+    this.emit({ fitEpoch: this.fitEpoch, finalFitSettled: false });
+    return this.fitEpoch;
+  }
+
+  private settleCurrentProjection(duration = 0): void {
+    if (!this.data) return;
+    const fitEpoch = this.beginFitPublication();
+    this.scheduleFitPublication(fitEpoch, duration);
+  }
+
+  private scheduleFitPublication(fitEpoch: number, duration: number): void {
+    const request = () => {
+      if (this.destroyed || fitEpoch !== this.fitEpoch) return;
+      this.finalFitTimer = null;
+      this.cancelOverlayFrame();
+      this.warmupFitEpoch = fitEpoch;
+      this.warmupFitFrames = 1;
+      this.requestOverlayLayout();
+    };
+    if (duration === 0) {
+      request();
+      return;
+    }
+    this.finalFitTimer = window.setTimeout(request, duration + 32);
+  }
+
+  private captureSemanticCamera(data: CosmosGraphData): void {
+    const zoom = this.graph.getZoomLevel();
+    const [centerX, centerY] = this.graph.screenToSpacePosition([
+      this.host.clientWidth / 2,
+      this.host.clientHeight / 2,
+    ]);
+    const snapshot: SemanticCameraSnapshot = {
+      layoutIdentity: data.layoutIdentity,
+      centerX,
+      centerY,
+      zoom,
+      worldExtent: {
+        minX: data.worldExtent.minX,
+        minY: data.worldExtent.minY,
+        maxX: data.worldExtent.maxX,
+        maxY: data.worldExtent.maxY,
+        width: data.worldExtent.width,
+        height: data.worldExtent.height,
+      },
+      userCameraInteracted: this.snapshot.userCameraInteracted,
+    };
+    if (!isSemanticCameraSnapshotRestorable(
+      snapshot,
+      data.layoutIdentity,
+      data.worldExtent,
+      { width: this.host.clientWidth, height: this.host.clientHeight },
+    )) return;
+    this.semanticCameraSnapshots.delete(data.layoutIdentity);
+    this.semanticCameraSnapshots.set(data.layoutIdentity, snapshot);
+    while (this.semanticCameraSnapshots.size > 24) {
+      const oldest = this.semanticCameraSnapshots.keys().next().value;
+      if (typeof oldest !== 'string') break;
+      this.semanticCameraSnapshots.delete(oldest);
+    }
   }
 
   private fitFocusNeighborhood(focus: CosmosFocusNeighborhood, duration: number): void {
@@ -1314,17 +1536,19 @@ export class CosmosGraphRuntime {
     );
   }
 
-  private publishOverlayLayout(): void {
+  private publishOverlayLayout(fitEpoch: number): void {
     if (!this.data) {
       this.callbacks.onNodeOverlays([]);
-      this.callbacks.onRegionPoints({ width: this.host.clientWidth, height: this.host.clientHeight, regions: [] });
+      this.callbacks.onRegionPoints({ width: this.host.clientWidth, height: this.host.clientHeight, kind: null, fitEpoch, regions: [] });
       return;
     }
     const positions = this.graph.getPointPositions();
     this.callbacks.onRegionPoints({
       width: this.host.clientWidth,
       height: this.host.clientHeight,
-      regions: this.communityRegionPoints(positions),
+      kind: this.data.regionKind,
+      fitEpoch,
+      regions: this.semanticRegionPoints(positions),
     });
     if (!this.overlayFocus) {
       this.callbacks.onNodeOverlays(placeCosmosNodeLabels(
@@ -1366,26 +1590,28 @@ export class CosmosGraphRuntime {
     this.callbacks.onNodeOverlays(placeCosmosNodeLabels(overlays, this.host.clientWidth, this.host.clientHeight));
   }
 
-  private communityRegionPoints(positions: ArrayLike<number>): Array<{ id: string; points: Array<{ x: number; y: number }> }> {
-    if (!this.data || this.data.nodes[0]?.semantic_level !== 'community') return [];
-    const pointsByRegion = new Map<string, Array<{ x: number; y: number }>>();
-    for (const [pointIndex, id] of this.data.pointCommunityKeys.entries()) {
+  private semanticRegionPoints(positions: ArrayLike<number>): CosmosRegionScreenGroup[] {
+    if (!this.data?.regionKind) return [];
+    const pointsByRegion = new Map<string, CosmosRegionScreenGroup>();
+    for (const [pointIndex, regionId] of this.data.pointCommunityKeys.entries()) {
       const [x, y] = this.graph.spaceToScreenPosition([
         positions[pointIndex * 2],
         positions[pointIndex * 2 + 1],
       ]);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      const points = pointsByRegion.get(id) ?? [];
-      points.push({ x, y });
-      pointsByRegion.set(id, points);
+      const group = pointsByRegion.get(regionId) ?? {
+        id: regionId,
+        color: this.data.pointColors[pointIndex] ?? '#67e8f9',
+        points: [],
+      };
+      group.points.push({ id: this.data.pointIds[pointIndex]!, x, y });
+      pointsByRegion.set(regionId, group);
     }
-    return [...pointsByRegion.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, points]) => ({ id, points }));
+    return [...pointsByRegion.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
 
   private universeRegionOverlays(positions: ArrayLike<number>): UnplacedCosmosNodeOverlay[] {
-    if (!this.data || this.data.nodes[0]?.semantic_level !== 'universe') return [];
+    if (!this.data || this.data.nodes[0]?.semantic_level !== 'universe' || this.data.regionKind === 'project') return [];
     const limit = this.host.clientWidth <= 480 ? 6 : this.host.clientWidth <= 900 ? 9 : 14;
     return this.data.nodes
       .map((_node, index) => index)
@@ -1472,7 +1698,7 @@ export class CosmosGraphRuntime {
     this.graph.stop();
     this.cancelSemanticAmbientFrame();
     if (initial) {
-      if (fitInitial) this.fitAll(0);
+      if (fitInitial && !(this.isSemanticData() && this.datasetCompleteRequested)) this.fitAll(0);
       this.lastMotionProbeAt = 0;
       this.lastSimulationTickAt = 0;
       this.lastProbePosition = null;
@@ -1482,7 +1708,7 @@ export class CosmosGraphRuntime {
     this.requestOverlayLayout();
     this.emit({ motionPhase: 'idle', initialSettled: initial ? true : this.snapshot.initialSettled });
     this.startAmbientMotion();
-    if (initial && this.datasetCompleteRequested) this.completeDataset();
+    if (this.datasetCompleteRequested) this.completeDataset();
   }
 
   private startAmbientMotion(): void {
@@ -1632,8 +1858,14 @@ export class CosmosGraphRuntime {
     };
   }
 
-  private settleFinalFit(): void {
-    if (this.destroyed || !this.data || this.snapshot.finalFitSettled) return;
+  private settleFinalFit(fitEpoch: number): void {
+    if (
+      this.destroyed
+      || !this.data
+      || fitEpoch !== this.fitEpoch
+      || this.publishedOverlayFitEpoch !== fitEpoch
+      || (this.snapshot.finalFitSettled && this.snapshot.finalFitEpoch === fitEpoch)
+    ) return;
     this.maximumTickGapMs = 0;
     this.maximumStepPx = 0;
     this.lastMotionProbeAt = 0;
@@ -1642,6 +1874,7 @@ export class CosmosGraphRuntime {
     this.callbacks.onMotionProbe(null);
     this.emit({
       finalFitSettled: true,
+      finalFitEpoch: fitEpoch,
       motionDiagnosticsEpoch: this.snapshot.motionDiagnosticsEpoch + 1,
       maximumTickGapMs: 0,
       maximumStepPx: 0,

@@ -365,8 +365,8 @@ describe('observatory client routes', () => {
 
     try {
       await api.getObservatoryContext({ project_token: 'facet:project:p1', query: 'jwt' });
-      await api.getObservatoryRecall({ context_token: 'ctx', lanes: ['lexical', 'fact-kg'] });
-      await api.resolveObservatoryPivot({ pivot_token: 'tok', target: 'map' });
+      await api.getObservatoryRecall({ context_token: 'ctx', hierarchy: 'project', lanes: ['lexical', 'fact-kg'] });
+      await api.resolveObservatoryPivot({ pivot_token: 'tok', hierarchy: 'project', target: 'map' });
       await api.getObservatoryMapFrontier({ context_token: 'ctx', focus_node_id: 'obs:1', max_nodes: 10 });
       await api.getObservatoryLedger(1);
       await api.getObservatoryTimeline({ context_token: 'ctx', limit: 20 });
@@ -374,7 +374,9 @@ describe('observatory client routes', () => {
       await api.getVizSlice({ project: 'p1' });
       const abortController = new AbortController();
       const atlas = await api.getSemanticAtlasPage({
+        hierarchy: 'project',
         level: 'neighborhood',
+        project_id: 'project:opaque-1',
         project_token: 'facet:project:p1',
         community_id: 'community:1',
         focus_node_id: 'obs:1',
@@ -386,15 +388,19 @@ describe('observatory client routes', () => {
       expect(String(calls[0].input)).toContain('/observatory/context?project_token=facet%3Aproject%3Ap1');
       expect(String(calls[0].input)).not.toContain('project=p1');
       expect(String(calls[1].input)).toContain('/observatory/recall?context_token=ctx');
+      expect(String(calls[1].input)).toContain('hierarchy=project');
       expect(String(calls[1].input)).toContain('lanes=lexical%2Cfact-kg');
       expect(String(calls[2].input)).toBe('/observatory/pivot');
       expect(String(calls[2].init?.method)).toBe('POST');
+      expect(JSON.parse(String(calls[2].init?.body))).toMatchObject({ hierarchy: 'project' });
       expect(String(calls[3].input)).toBe('/observatory/map/frontier');
       expect(String(calls[4].input)).toContain('/observatory/ledger/1');
       expect(String(calls[5].input)).toContain('/observatory/timeline?context_token=ctx');
       expect(String(calls[6].input)).toContain('/observatory/health?project=p1');
       expect(String(calls[7].input)).toContain('/viz/slice?project=p1');
       expect(String(calls[8].input)).toContain('/viz/atlas?level=neighborhood');
+      expect(String(calls[8].input)).toContain('hierarchy=project');
+      expect(String(calls[8].input)).toContain('project_id=project%3Aopaque-1');
       expect(String(calls[8].input)).toContain('project_token=facet%3Aproject%3Ap1');
       expect(String(calls[8].input)).toContain('community_id=community%3A1');
       expect(String(calls[8].input)).toContain('focus_node_id=obs%3A1');

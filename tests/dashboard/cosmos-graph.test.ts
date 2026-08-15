@@ -5,12 +5,18 @@ import {
   buildCosmosGraphData,
   cosmosMotionConfig,
   focusCosmosGraphData,
+  focusRegionCosmosGraphData,
+  semanticLayoutIdentityFromPresentation,
 } from '../../dashboard/src/components/map/cosmos-graph-data.js';
 import {
   prepareCosmosGraphWorkerResponse,
   responseMatchesWorkerIdentity,
 } from '../../dashboard/src/components/map/cosmos-graph-worker.js';
-import { semanticZoomBand, visibleSemanticRelationshipIndices } from '../../dashboard/src/components/map/cosmos-graph-runtime.js';
+import {
+  isSemanticCameraSnapshotRestorable,
+  semanticZoomBand,
+  visibleSemanticRelationshipIndices,
+} from '../../dashboard/src/components/map/cosmos-graph-runtime.js';
 import { buildGraphNavigationIndex } from '../../dashboard/src/components/map/GraphNavigator.js';
 
 const nodes: VizNode[] = [
@@ -373,6 +379,75 @@ describe('Cosmos graph data boundary', () => {
     expect(first.pointCommunityKeys).toEqual(repeated.pointCommunityKeys);
     expect(first.pointSizes).toEqual(repeated.pointSizes);
     expect(first.linkWidths).toEqual(repeated.linkWidths);
+    expect(first.regionKind).toBeNull();
+  });
+
+  it('keys semantic camera preservation to the exact project-owned location', () => {
+    const projectUniverse = buildCosmosGraphData([
+      { ...nodes[0], id: 'community:a', kind: 'community', semantic_level: 'universe', community_id: 'community:a', owner_project_id: 'project:alpha' },
+      { ...nodes[0], id: 'community:b', kind: 'community', semantic_level: 'universe', community_id: 'community:b', owner_project_id: 'project:beta' },
+    ], [], null);
+    const pageAIdentity = semanticLayoutIdentityFromPresentation('project', JSON.stringify({
+      hierarchy: 'project', level: 'project', project: 'project:alpha', pageCursor: null,
+      generation: 'g1', region: null, focus: null,
+      request: JSON.stringify({ hierarchy: 'project', level: 'project', project_id: 'project:alpha', page_size: 150 }),
+    }));
+    const pageBIdentity = semanticLayoutIdentityFromPresentation('project', JSON.stringify({
+      hierarchy: 'project', level: 'project', project: 'project:alpha', pageCursor: 'cursor:b',
+      generation: 'g2', region: null, focus: null,
+      request: JSON.stringify({ hierarchy: 'project', level: 'project', project_id: 'project:alpha', page_size: 150, cursor: 'cursor:b' }),
+    }));
+    const regionIdentity = semanticLayoutIdentityFromPresentation('community', JSON.stringify({
+      hierarchy: 'project', level: 'community', project: 'project:alpha', pageCursor: null,
+      generation: 'g1', region: 'region:a', focus: null,
+      request: JSON.stringify({ hierarchy: 'project', level: 'community', project_id: 'project:alpha', community_id: 'community:a', region_id: 'region:a' }),
+    }));
+    const baseCommunityIdentity = semanticLayoutIdentityFromPresentation('community', JSON.stringify({
+      hierarchy: 'project', level: 'community', project: 'project:alpha', pageCursor: null,
+      generation: 'g2', region: null, focus: null,
+      request: JSON.stringify({ hierarchy: 'project', level: 'community', project_id: 'project:alpha', community_id: 'community:a' }),
+    }));
+    const alpha = buildCosmosGraphData([
+      { ...nodes[0], id: 'community:a', kind: 'community', semantic_level: 'project', community_id: 'community:a', owner_project_id: 'project:alpha' },
+    ], [], null, [], pageAIdentity);
+    const alphaPageB = buildCosmosGraphData([
+      { ...nodes[0], id: 'community:a2', kind: 'community', semantic_level: 'project', community_id: 'community:a2', owner_project_id: 'project:alpha' },
+    ], [], null, [], pageBIdentity);
+    const beta = buildCosmosGraphData([
+      { ...nodes[0], id: 'community:b', kind: 'community', semantic_level: 'project', community_id: 'community:b', owner_project_id: 'project:beta' },
+    ], [], null);
+    const focusedRegion = focusRegionCosmosGraphData(buildCosmosGraphData([
+      { ...nodes[0], id: 'obs:a', semantic_level: 'community', community_id: 'community:a', region_id: 'region:a' },
+      { ...nodes[0], id: 'obs:b', semantic_level: 'community', community_id: 'community:a', region_id: 'region:b' },
+    ], [], null, [], baseCommunityIdentity), 'region:a');
+
+    expect(projectUniverse.pointCommunityKeys).toEqual(['project:alpha', 'project:beta']);
+    expect(projectUniverse.regionKind).toBe('project');
+    expect(projectUniverse.pointColors[0]).not.toBe(projectUniverse.pointColors[1]);
+    expect(alpha.layoutIdentity).not.toBe(beta.layoutIdentity);
+    expect(decodeURIComponent(alpha.layoutIdentity)).toContain('project:alpha');
+    expect(alpha.layoutIdentity).not.toBe(alphaPageB.layoutIdentity);
+    expect(regionIdentity).toBe(baseCommunityIdentity);
+    expect(focusedRegion.layoutIdentity).toBe(baseCommunityIdentity);
+    expect(focusedRegion.preserveReplacementPositions).toBe(false);
+    expect(focusedRegion.regionKind).toBe('community');
+  });
+
+  it('restores only finite intersecting semantic camera snapshots owned by the exact location', () => {
+    const snapshot = {
+      layoutIdentity: 'community:location:a',
+      centerX: 0,
+      centerY: 0,
+      zoom: 2,
+      worldExtent: { minX: -100, minY: -100, maxX: 100, maxY: 100, width: 200, height: 200 },
+      userCameraInteracted: true,
+    };
+    const nextExtent = { ...snapshot.worldExtent, nodeCount: 2, communityCount: 1 };
+
+    expect(isSemanticCameraSnapshotRestorable(snapshot, 'community:location:a', nextExtent, { width: 100, height: 80 })).toBe(true);
+    expect(isSemanticCameraSnapshotRestorable(snapshot, 'community:location:b', nextExtent, { width: 100, height: 80 })).toBe(false);
+    expect(isSemanticCameraSnapshotRestorable({ ...snapshot, centerX: Number.NaN }, 'community:location:a', nextExtent, { width: 100, height: 80 })).toBe(false);
+    expect(isSemanticCameraSnapshotRestorable({ ...snapshot, centerX: 1_000 }, 'community:location:a', nextExtent, { width: 100, height: 80 })).toBe(false);
   });
 
   it('echoes semantic level generations through deterministic worker preparation', () => {
@@ -380,6 +455,7 @@ describe('Cosmos graph data boundary', () => {
       requestId: 12,
       level: 'universe' as const,
       generation: 'atlas-generation-a',
+      layoutIdentity: 'universe:page:a',
       nodes: [{
         ...nodes[0],
         id: 'community:one',
@@ -400,6 +476,7 @@ describe('Cosmos graph data boundary', () => {
       requestId: 12,
       level: 'universe',
       generation: 'atlas-generation-a',
+      layoutIdentity: 'universe:page:a',
       ok: true,
     });
     expect(responseMatchesWorkerIdentity(first, request)).toBe(true);
@@ -411,11 +488,16 @@ describe('Cosmos graph data boundary', () => {
       ...request,
       level: 'community',
     })).toBe(false);
+    expect(responseMatchesWorkerIdentity(first, {
+      ...request,
+      layoutIdentity: 'universe:page:b',
+    })).toBe(false);
   });
 
   it('carries Community region anchors and relationship tiers through the worker boundary', () => {
     const response = prepareCosmosGraphWorkerResponse({
       requestId: 13, level: 'community', generation: 'semantic-region-generation',
+      layoutIdentity: 'community:one',
       nodes: [
         { ...nodes[0], id: 'obs:1', semantic_level: 'community', community_id: 'community:one', region_id: 'region:a' },
         { ...nodes[0], id: 'obs:2', semantic_level: 'community', community_id: 'community:one', region_id: 'region:b' },

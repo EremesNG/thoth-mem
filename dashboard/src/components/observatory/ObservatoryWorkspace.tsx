@@ -35,6 +35,7 @@ import {
   navigateObservatoryTrail,
   observatoryScopeFromTokenScope,
   parseObservatorySearch,
+  returnObservatoryToUniverse,
   serializeObservatoryState,
   type ObservatoryLocation,
   type ObservatoryState,
@@ -88,17 +89,21 @@ function initialStateFromLocation(): ObservatoryState {
     ...parsed,
     scope: parsed.scope,
     locationTrail: [{
+      hierarchy: parsed.hierarchy,
       level: parsed.level,
+      projectId: parsed.projectId,
       communityId: parsed.communityId,
       regionId: parsed.regionId,
       focusNodeId: parsed.focusNodeId,
+      pageCursor: parsed.pageCursor,
     }],
     locationTrailIndex: 0,
   };
 }
 
-function pageSizeFor(level: AtlasLevel, density: ObservatoryState['density']): number {
-  if (level === 'universe') return 150;
+function pageSizeFor(level: AtlasLevel, density: ObservatoryState['density'], hierarchy: ObservatoryState['hierarchy']): number {
+  if (hierarchy === 'project') return level === 'universe' ? 24 : 150;
+  if (level === 'project') return 150;
   if (level === 'neighborhood') return 180;
   if (density === 'focus') return 120;
   if (density === 'wide') return 500;
@@ -108,21 +113,26 @@ function pageSizeFor(level: AtlasLevel, density: ObservatoryState['density']): n
 function semanticAtlasRequestForState(state: ObservatoryState): SemanticAtlasPageRequest {
   return {
     ...scopeToMapParams(state.scope),
+    hierarchy: state.hierarchy,
     level: state.level,
+    ...(state.projectId ? { project_id: state.projectId } : {}),
     ...(state.communityId ? { community_id: state.communityId } : {}),
     ...(state.level === 'community' ? { presentation: 'semantic-zoom' as const } : {}),
     ...(state.regionId ? { region_id: state.regionId } : {}),
     ...(state.focusNodeId ? { focus_node_id: state.focusNodeId } : {}),
     ...(state.level === 'neighborhood' ? { depth: 2 as const } : {}),
-    page_size: pageSizeFor(state.level, state.density),
+    page_size: pageSizeFor(state.level, state.density, state.hierarchy),
   };
 }
 
 function sameLocation(left: ObservatoryLocation, right: ObservatoryLocation): boolean {
-  return left.level === right.level
+  return left.hierarchy === right.hierarchy
+    && left.level === right.level
+    && left.projectId === right.projectId
     && left.communityId === right.communityId
     && left.regionId === right.regionId
-    && left.focusNodeId === right.focusNodeId;
+    && left.focusNodeId === right.focusNodeId
+    && left.pageCursor === right.pageCursor;
 }
 
 export default function ObservatoryWorkspace() {
@@ -176,7 +186,7 @@ export default function ObservatoryWorkspace() {
   } | null>(null);
   const semanticAtlasPrefetchRef = useRef(new Map<string, SemanticAtlasPrefetchEntry>());
   const semanticAtlasGenerationRef = useRef<string | null>(null);
-  const atlasRequestValueRef = useRef<SemanticAtlasPageRequest>({ level: 'universe', page_size: 150 });
+  const atlasRequestValueRef = useRef<SemanticAtlasPageRequest>({ hierarchy: 'project', level: 'universe', page_size: 24 });
   const stateRef = useRef(state);
   const presentedStateRef = useRef(presentedState);
   const mapDataRef = useRef(mapData);
@@ -198,6 +208,9 @@ export default function ObservatoryWorkspace() {
   const commandNodeId = rendererSelection?.kind === 'node' ? rendererSelection.id : selectedNodeId;
   const serializedState = useMemo(() => serializeObservatoryState(presentedState), [presentedState]);
   const atlasRequest = useMemo<SemanticAtlasPageRequest>(() => semanticAtlasRequestForState(state), [
+    state.hierarchy,
+    state.projectId,
+    state.pageCursor,
     state.communityId,
     state.regionId,
     state.density,
@@ -244,16 +257,17 @@ export default function ObservatoryWorkspace() {
     return api.getSemanticAtlasPage(request, signal);
   }, []);
 
-  const prefetchSemanticCommunity = useCallback((communityId: string) => {
+  const prefetchSemanticCommunity = useCallback((communityId: string, projectId?: string | null) => {
     const generation = semanticAtlasGenerationRef.current;
     const currentRequest = atlasRequestValueRef.current;
     if (!generation || currentRequest.level !== 'universe') return;
     const request: SemanticAtlasPageRequest = {
       ...currentRequest,
       level: 'community',
+      ...(projectId ? { project_id: projectId } : {}),
       community_id: communityId,
       presentation: 'semantic-zoom',
-      page_size: 250,
+      page_size: currentRequest.hierarchy === 'project' ? 150 : 250,
     };
     const requestKey = semanticAtlasRequestCacheKey(request);
     const current = semanticAtlasPrefetchRef.current.get(requestKey);
@@ -287,7 +301,8 @@ export default function ObservatoryWorkspace() {
   const prefetchSemanticIntent = useCallback((nodeId: string) => {
     const currentRequest = atlasRequestValueRef.current;
     if (currentRequest.level === 'universe') {
-      prefetchSemanticCommunity(nodeId);
+      const projectId = mapDataRef.current?.nodes.find((candidate) => candidate.id === nodeId)?.owner_project_id;
+      prefetchSemanticCommunity(nodeId, projectId);
       return;
     }
     if (!nodeId.startsWith('obs:') || !semanticAtlasGenerationRef.current) return;
@@ -302,7 +317,7 @@ export default function ObservatoryWorkspace() {
       region_id: undefined,
       presentation: undefined,
       depth: 2,
-      page_size: 250,
+      page_size: currentRequest.hierarchy === 'project' ? 150 : 250,
     };
     const requestKey = semanticAtlasRequestCacheKey(request);
     if (semanticAtlasPrefetchRef.current.has(requestKey)) return;
@@ -327,7 +342,7 @@ export default function ObservatoryWorkspace() {
     if (atlasLoad.phase !== 'complete' || atlasLoad.data?.level !== 'universe') return;
     const firstCommunity = atlasLoad.data.nodes.find((node) => node.kind === 'community');
     if (!firstCommunity) return;
-    const timer = window.setTimeout(() => prefetchSemanticCommunity(firstCommunity.id), 0);
+    const timer = window.setTimeout(() => prefetchSemanticCommunity(firstCommunity.id, firstCommunity.owner_project_id), 0);
     return () => window.clearTimeout(timer);
   }, [atlasLoad.data, atlasLoad.phase, prefetchSemanticCommunity]);
 
@@ -386,10 +401,13 @@ export default function ObservatoryWorkspace() {
       beginSemanticTransition();
       setState((current) => {
         const target: ObservatoryLocation = {
+          hierarchy: parsed.hierarchy,
           level: parsed.level,
+          projectId: parsed.projectId,
           communityId: parsed.communityId,
           regionId: parsed.regionId,
           focusNodeId: parsed.focusNodeId,
+          pageCursor: parsed.pageCursor,
         };
         const restoredIndex = current.locationTrail.findIndex((location) => sameLocation(location, target));
         return {
@@ -472,8 +490,10 @@ export default function ObservatoryWorkspace() {
         setLocalSelection(null);
         pendingLensOpenRef.current = false;
         setState((current) => applyObservatoryPivot(current, {
+          hierarchy: current.hierarchy,
           level,
-          communityId: level === 'universe' ? null : current.communityId,
+          projectId: level === 'universe' ? null : current.projectId,
+          communityId: level === 'universe' || level === 'project' ? null : current.communityId,
           focusNodeId: null,
         }));
         return;
@@ -488,7 +508,10 @@ export default function ObservatoryWorkspace() {
       }
 
       snapshot.data.presentation_key = JSON.stringify({
+        hierarchy: snapshot.data.hierarchy,
         level: snapshot.data.level,
+        project: snapshot.data.navigation.project_id,
+        pageCursor: stateRef.current.pageCursor,
         generation: snapshot.data.generation,
         region: snapshot.data.navigation.region_id,
         focus: snapshot.data.navigation.focus_node_id,
@@ -556,10 +579,13 @@ export default function ObservatoryWorkspace() {
 
     void loadSemanticAtlas({
       request: atlasRequest,
+      pageMode: state.hierarchy === 'project' && (state.level === 'universe' || state.level === 'project')
+        ? 'single-page'
+        : 'accumulate',
       signal: controller.signal,
       fetchPage: fetchSemanticAtlasPage,
       initialData: resume?.data,
-      initialCursor: resume?.continuation,
+      initialCursor: resume?.continuation ?? state.pageCursor,
       onSnapshot: publishSnapshot,
     }).catch((cause: Error) => {
       if (cause.name !== 'AbortError' && requestId === atlasRequestRef.current) {
@@ -571,7 +597,7 @@ export default function ObservatoryWorkspace() {
       controller.abort();
       atlasRequestRef.current += 1;
     };
-  }, [atlasRequest, atlasRequestKey, atlasRetryKey, fetchSemanticAtlasPage]);
+  }, [atlasRequest, atlasRequestKey, atlasRetryKey, fetchSemanticAtlasPage, state.hierarchy, state.level, state.pageCursor]);
 
   useEffect(() => () => {
     rawControllerRef.current?.abort();
@@ -581,7 +607,7 @@ export default function ObservatoryWorkspace() {
   const loadRecall = useCallback((contextToken: string, signal?: AbortSignal) => {
     const requestId = ++instrumentRequestRef.current.recall;
     setLoading((current) => ({ ...current, recall: true }));
-    api.getObservatoryRecall({ context_token: contextToken, lanes: state.lanes, limit: 8 }, signal)
+    api.getObservatoryRecall({ context_token: contextToken, hierarchy: state.hierarchy, lanes: state.lanes, limit: 8 }, signal)
       .then((value) => {
         if (requestId !== instrumentRequestRef.current.recall) return;
         setRecall(value);
@@ -597,7 +623,7 @@ export default function ObservatoryWorkspace() {
           setLoading((current) => ({ ...current, recall: false }));
         }
       });
-  }, [state.lanes]);
+  }, [state.hierarchy, state.lanes]);
 
   const loadTimeline = useCallback((contextToken: string, continuation: string | null, signal?: AbortSignal) => {
     const requestId = ++instrumentRequestRef.current.timeline;
@@ -689,10 +715,13 @@ export default function ObservatoryWorkspace() {
     setLocalSelection(null);
     setState((current) => ({
       ...applyObservatoryPivot(current, {
+        hierarchy: location.hierarchy,
         level: location.level,
+        projectId: location.projectId,
         communityId: location.communityId,
         regionId: location.regionId,
         focusNodeId: location.focusNodeId,
+        pageCursor: location.pageCursor,
       }),
       activeSurface: options.activeSurface ?? 'map',
       visibleNodeIds: [],
@@ -703,8 +732,16 @@ export default function ObservatoryWorkspace() {
   const activateNode = useCallback((nodeId: string, target: ObservatorySurface = 'map') => {
     const node = presentedMapData?.nodes.find((candidate) => candidate.id === nodeId);
     if (!node) return;
-    if (presentedState.level === 'universe' && node.kind === 'community') {
-      commitLocation({ level: 'community', communityId: node.community_id ?? node.id, regionId: null, focusNodeId: null });
+    if ((presentedState.level === 'universe' || presentedState.level === 'project') && node.kind === 'community') {
+      commitLocation({
+        hierarchy: presentedState.hierarchy,
+        level: 'community',
+        projectId: node.owner_project_id ?? presentedState.projectId,
+        communityId: node.community_id ?? node.id,
+        regionId: null,
+        focusNodeId: null,
+        pageCursor: null,
+      });
       return;
     }
     if (node.kind === 'observation') {
@@ -725,16 +762,40 @@ export default function ObservatoryWorkspace() {
         return;
       }
       commitLocation({
+        hierarchy: presentedState.hierarchy,
         level: 'neighborhood',
+        projectId: node.owner_project_id ?? presentedState.projectId,
         communityId,
         regionId: null,
         focusNodeId: node.id,
+        pageCursor: null,
       }, { activeSurface: target, lens: true });
       return;
     }
     setLocalSelection({ kind: 'node', id: node.id });
     setLensOpen(true);
-  }, [commitLocation, presentedMapData?.nodes, presentedState.communityId, presentedState.focusNodeId, presentedState.level]);
+  }, [commitLocation, presentedMapData?.nodes, presentedState.communityId, presentedState.focusNodeId, presentedState.hierarchy, presentedState.level, presentedState.projectId]);
+
+  const activateProject = useCallback((projectId: string) => {
+    commitLocation({
+      hierarchy: 'project',
+      level: 'project',
+      projectId,
+      communityId: null,
+      regionId: null,
+      focusNodeId: null,
+      pageCursor: null,
+    });
+  }, [commitLocation]);
+
+  const showNextProjectPage = useCallback(() => {
+    const cursor = presentedMapData?.atlas?.continuation;
+    if (!cursor || presentedState.level !== 'universe') return;
+    commitLocation({
+      hierarchy: 'project', level: 'universe', projectId: null, communityId: null,
+      regionId: null, focusNodeId: null, pageCursor: cursor,
+    });
+  }, [commitLocation, presentedMapData?.atlas?.continuation, presentedState.level]);
 
   const patchScope = (patch: ObservatoryScope) => {
     rawControllerRef.current?.abort();
@@ -747,13 +808,16 @@ export default function ObservatoryWorkspace() {
     setLocalSelection(null);
     setState((current) => ({
       ...applyObservatoryScope(current, patch),
+      hierarchy: 'project',
       level: 'universe',
+      projectId: null,
       communityId: null,
       regionId: null,
       focusNodeId: null,
+      pageCursor: null,
       visibleNodeIds: [],
       continuation: null,
-      locationTrail: [{ level: 'universe', communityId: null, regionId: null, focusNodeId: null }],
+      locationTrail: [{ hierarchy: 'project', level: 'universe', projectId: null, communityId: null, regionId: null, focusNodeId: null, pageCursor: null }],
       locationTrailIndex: 0,
     }));
   };
@@ -848,6 +912,17 @@ export default function ObservatoryWorkspace() {
     }
   };
 
+  const navigateUniverse = () => {
+    if (diagnosticMode === 'raw') {
+      exitRawDiagnostics();
+      return;
+    }
+    beginSemanticTransition();
+    pendingLensOpenRef.current = false;
+    setLocalSelection(null);
+    setState((current) => returnObservatoryToUniverse(current));
+  };
+
   const retryActiveInstrument = () => {
     if (state.activeSurface === 'recall' && state.contextToken) loadRecall(state.contextToken);
     if (state.activeSurface === 'timeline' && state.contextToken) loadTimeline(state.contextToken, null);
@@ -859,6 +934,7 @@ export default function ObservatoryWorkspace() {
     try {
       const response = await api.resolveObservatoryPivot({
         pivot_token: pivotToken,
+        hierarchy: state.hierarchy,
         target: target === 'health' ? 'map' : target,
       });
       beginSemanticTransition();
@@ -867,9 +943,12 @@ export default function ObservatoryWorkspace() {
       setState((current) => ({
         ...applyObservatoryPivot(current, {
           contextToken: response.context_token,
+          hierarchy: response.hierarchy,
           level: 'neighborhood',
+          projectId: response.project_id,
           communityId: response.community_id,
           focusNodeId: response.focus_node_id,
+          pageCursor: null,
           scope: observatoryScopeFromTokenScope(response.scope),
         }),
         activeSurface: target,
@@ -901,9 +980,13 @@ export default function ObservatoryWorkspace() {
     }
     if (command === 'clear') {
       if (presentedState.level === 'neighborhood') {
-        commitLocation({ level: 'community', communityId: presentedState.communityId, regionId: null, focusNodeId: null });
+        commitLocation({ hierarchy: presentedState.hierarchy, level: 'community', projectId: presentedState.projectId, communityId: presentedState.communityId, regionId: null, focusNodeId: null, pageCursor: null });
       } else if (presentedState.level === 'community') {
-        commitLocation({ level: 'universe', communityId: null, regionId: null, focusNodeId: null });
+        commitLocation(presentedState.hierarchy === 'project' && presentedState.projectId
+          ? { hierarchy: 'project', level: 'project', projectId: presentedState.projectId, communityId: null, regionId: null, focusNodeId: null, pageCursor: null }
+          : { hierarchy: presentedState.hierarchy, level: 'universe', projectId: null, communityId: null, regionId: null, focusNodeId: null, pageCursor: null });
+      } else if (presentedState.level === 'project') {
+        commitLocation({ hierarchy: presentedState.hierarchy, level: 'universe', projectId: null, communityId: null, regionId: null, focusNodeId: null, pageCursor: null });
       } else {
         setLocalSelection(null);
         setLensOpen(false);
@@ -928,7 +1011,7 @@ export default function ObservatoryWorkspace() {
       return;
     }
     setGraphCommand({ id: Date.now(), type: command });
-  }, [activateNode, commandNodeId, commitLocation, presentedMapData, presentedState.communityId, presentedState.focusNodeId, presentedState.level, selectedNodeId]);
+  }, [activateNode, commandNodeId, commitLocation, presentedMapData, presentedState.communityId, presentedState.focusNodeId, presentedState.hierarchy, presentedState.level, presentedState.projectId, selectedNodeId]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1006,6 +1089,9 @@ export default function ObservatoryWorkspace() {
   const projectLabel = presentedContext?.scope.project?.label
     ?? presentedMapData?.atlas?.navigation.scope.project?.label
     ?? 'all projects';
+  const activeProjectLabel = presentedState.projectId
+    ? presentStoredText(presentedMapData?.nodes.find((node) => node.owner_project_id === presentedState.projectId)?.project) || 'Project'
+    : null;
   const topicLabel = presentedContext?.scope.topic?.label
     ?? presentedMapData?.atlas?.navigation.scope.topic?.label
     ?? 'any topic';
@@ -1039,7 +1125,7 @@ export default function ObservatoryWorkspace() {
         <div>
           <span className="observatory-kicker"><Compass size={15} /> Neural Atlas</span>
           <h1>Memory universe</h1>
-          <p>Move from constellations to memories, then reveal the evidence around one remembered moment.</p>
+          <p>Move from projects to constellations and memories, then reveal the evidence around one remembered moment.</p>
         </div>
         <div className="observatory-toolbar">
           <label className="observatory-search">
@@ -1133,15 +1219,22 @@ export default function ObservatoryWorkspace() {
           paused={paused}
           onPausedChange={setPaused}
           level={diagnosticMode === 'raw' ? 'raw' : presentedState.level}
+          hierarchy={presentedState.hierarchy}
+          projectId={presentedState.projectId}
+          projectLabel={activeProjectLabel}
           communityId={presentedState.communityId}
           regionId={presentedState.regionId}
           onActivateRegion={(regionId) => commitLocation({
-            level: 'community', communityId: presentedState.communityId, regionId, focusNodeId: null,
+            hierarchy: presentedState.hierarchy, level: 'community', projectId: presentedState.projectId,
+            communityId: presentedState.communityId, regionId, focusNodeId: null, pageCursor: null,
           }, { lens: true })}
-          onNavigateUniverse={() => diagnosticMode === 'raw'
-            ? exitRawDiagnostics()
-            : commitLocation({ level: 'universe', communityId: null, regionId: null, focusNodeId: null })}
-          onNavigateCommunity={() => commitLocation({ level: 'community', communityId: presentedState.communityId, regionId: null, focusNodeId: null })}
+          onNavigateUniverse={navigateUniverse}
+          onNavigateProject={() => presentedState.projectId && commitLocation({ hierarchy: 'project', level: 'project', projectId: presentedState.projectId, communityId: null, regionId: null, focusNodeId: null, pageCursor: null })}
+          onNavigateCommunity={() => commitLocation({ hierarchy: presentedState.hierarchy, level: 'community', projectId: presentedState.projectId, communityId: presentedState.communityId, regionId: null, focusNodeId: null, pageCursor: null })}
+          onActivateProject={activateProject}
+          onPreviousProjectPage={() => navigateTrail(-1)}
+          onNextProjectPage={showNextProjectPage}
+          hasPreviousProjectPage={presentedState.level === 'universe' && presentedState.locationTrailIndex > 0 && presentedState.pageCursor !== null}
           rendererReady={semanticRendererReady}
           onRendererCommit={handleRendererCommit}
           onPrefetchNode={prefetchSemanticIntent}
@@ -1159,7 +1252,7 @@ export default function ObservatoryWorkspace() {
           overview={presentedState.regionId && presentedMapData?.atlas?.regions
             ? (() => {
                 const region = presentedMapData.atlas.regions?.find((candidate) => candidate.id === presentedState.regionId);
-                return region ? <RegionOverview region={region} bridges={presentedMapData.atlas?.region_bridges ?? []} nodes={presentedMapData.nodes} onClear={() => commitLocation({ level: 'community', communityId: presentedState.communityId, regionId: null, focusNodeId: null })} onOpenMemory={activateNode} /> : null;
+                return region ? <RegionOverview region={region} bridges={presentedMapData.atlas?.region_bridges ?? []} nodes={presentedMapData.nodes} onClear={() => commitLocation({ hierarchy: presentedState.hierarchy, level: 'community', projectId: presentedState.projectId, communityId: presentedState.communityId, regionId: null, focusNodeId: null, pageCursor: null })} onOpenMemory={activateNode} /> : null;
               })()
             : (
             <MemoryOverview

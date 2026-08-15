@@ -1,21 +1,27 @@
-import type { AtlasLevel, AtlasTokenScope, ObservatoryLane, ObservatoryScope } from '../../api/client.js';
+import type { AtlasHierarchy, AtlasLevel, AtlasTokenScope, ObservatoryLane, ObservatoryScope } from '../../api/client.js';
 
 export type ObservatorySurface = 'recall' | 'map' | 'timeline' | 'ledger' | 'health';
 
 export interface ObservatoryLocation {
+  hierarchy: AtlasHierarchy;
   level: AtlasLevel;
+  projectId: string | null;
   communityId: string | null;
   regionId: string | null;
   focusNodeId: string | null;
+  pageCursor: string | null;
 }
 
 export interface ObservatoryState {
   scope: ObservatoryScope;
   contextToken: string | null;
+  hierarchy: AtlasHierarchy;
   level: AtlasLevel;
+  projectId: string | null;
   communityId: string | null;
   regionId: string | null;
   focusNodeId: string | null;
+  pageCursor: string | null;
   activeSurface: ObservatorySurface;
   visibleNodeIds: string[];
   continuation: string | null;
@@ -34,10 +40,13 @@ export function createInitialObservatoryState(): ObservatoryState {
   return {
     scope: {},
     contextToken: null,
+    hierarchy: 'project',
     level: 'universe',
+    projectId: null,
     communityId: null,
     regionId: null,
     focusNodeId: null,
+    pageCursor: null,
     activeSurface: DEFAULT_OBSERVATORY_SURFACE,
     visibleNodeIds: [],
     continuation: null,
@@ -60,32 +69,45 @@ export function applyObservatoryScope(state: ObservatoryState, scope: Observator
 
 export function applyObservatoryPivot(state: ObservatoryState, input: {
   contextToken?: string | null;
+  hierarchy?: AtlasHierarchy;
   level: AtlasLevel;
+  projectId?: string | null;
   communityId: string | null;
   focusNodeId: string | null;
   regionId?: string | null;
+  pageCursor?: string | null;
   scope?: ObservatoryScope;
 }): ObservatoryState {
+  const hierarchy = input.hierarchy ?? state.hierarchy;
+  const projectId = hierarchy === 'project' ? input.projectId ?? null : null;
   const location: ObservatoryLocation = input.level === 'universe'
-    ? { level: 'universe', communityId: null, regionId: null, focusNodeId: null }
-    : input.level === 'community'
-      ? { level: 'community', communityId: input.communityId, regionId: input.regionId ?? null, focusNodeId: null }
-      : { level: 'neighborhood', communityId: input.communityId, regionId: null, focusNodeId: input.focusNodeId };
+    ? { hierarchy, level: 'universe', projectId: null, communityId: null, regionId: null, focusNodeId: null, pageCursor: input.pageCursor ?? null }
+    : input.level === 'project'
+      ? { hierarchy, level: 'project', projectId, communityId: null, regionId: null, focusNodeId: null, pageCursor: input.pageCursor ?? null }
+      : input.level === 'community'
+        ? { hierarchy, level: 'community', projectId, communityId: input.communityId, regionId: input.regionId ?? null, focusNodeId: null, pageCursor: input.pageCursor ?? null }
+        : { hierarchy, level: 'neighborhood', projectId, communityId: input.communityId, regionId: null, focusNodeId: input.focusNodeId, pageCursor: input.pageCursor ?? null };
   const currentLocation: ObservatoryLocation = {
+    hierarchy: state.hierarchy,
     level: state.level,
+    projectId: state.projectId,
     communityId: state.communityId,
     regionId: state.regionId,
     focusNodeId: state.focusNodeId,
+    pageCursor: state.pageCursor,
   };
   const priorLocations = state.locationTrail.length > 0
     ? state.locationTrail.slice(0, state.locationTrailIndex + 1)
     : [currentLocation];
   const last = priorLocations[priorLocations.length - 1];
   const appendLocation = !last
+    || last.hierarchy !== location.hierarchy
     || last.level !== location.level
+    || last.projectId !== location.projectId
     || last.communityId !== location.communityId
     || last.regionId !== location.regionId
-    || last.focusNodeId !== location.focusNodeId;
+    || last.focusNodeId !== location.focusNodeId
+    || last.pageCursor !== location.pageCursor;
   const locationTrail = (appendLocation ? [...priorLocations, location] : priorLocations).slice(-24);
   const nextFocusTrail = input.focusNodeId
     ? [...state.focusTrail.slice(0, state.focusTrailIndex + 1), input.focusNodeId].slice(-24)
@@ -93,10 +115,13 @@ export function applyObservatoryPivot(state: ObservatoryState, input: {
   return {
     ...state,
     contextToken: input.contextToken ?? state.contextToken,
+    hierarchy: location.hierarchy,
     level: location.level,
+    projectId: location.projectId,
     communityId: location.communityId,
     regionId: location.regionId,
     focusNodeId: location.focusNodeId,
+    pageCursor: location.pageCursor,
     scope: { ...state.scope, ...(input.scope ?? {}) },
     focusTrail: nextFocusTrail,
     focusTrailIndex: input.focusNodeId ? nextFocusTrail.length - 1 : state.focusTrailIndex,
@@ -129,6 +154,29 @@ export function navigateObservatoryTrail(state: ObservatoryState, delta: -1 | 1)
   };
 }
 
+export function returnObservatoryToUniverse(state: ObservatoryState): ObservatoryState {
+  const location: ObservatoryLocation = {
+    hierarchy: state.hierarchy,
+    level: 'universe',
+    projectId: null,
+    communityId: null,
+    regionId: null,
+    focusNodeId: null,
+    pageCursor: null,
+  };
+  return {
+    ...state,
+    ...location,
+    activeSurface: 'map',
+    visibleNodeIds: [],
+    continuation: null,
+    focusTrail: [],
+    focusTrailIndex: -1,
+    locationTrail: [location],
+    locationTrailIndex: 0,
+  };
+}
+
 export function mergeVisibleNodeIds(state: ObservatoryState, nodeIds: string[]): ObservatoryState {
   const ids = new Set(state.visibleNodeIds);
   for (const nodeId of nodeIds) {
@@ -140,7 +188,7 @@ export function mergeVisibleNodeIds(state: ObservatoryState, nodeIds: string[]):
   };
 }
 
-export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'level' | 'communityId' | 'regionId' | 'focusNodeId' | 'activeSurface' | 'continuation' | 'density'> {
+export function parseObservatorySearch(search: string): Pick<ObservatoryState, 'scope' | 'hierarchy' | 'level' | 'projectId' | 'communityId' | 'regionId' | 'focusNodeId' | 'pageCursor' | 'activeSurface' | 'continuation' | 'density'> {
   const params = new URLSearchParams(search);
   const surface = parseObservatorySurface(params.get('surface'));
   const scope: ObservatoryScope = {};
@@ -165,24 +213,32 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
   }
 
   const requestedLevel = params.get('level');
+  const hierarchy: AtlasHierarchy = params.get('hierarchy') === 'global' ? 'global' : 'project';
+  const requestedProject = params.get('project_id');
   const requestedCommunity = params.get('community');
   const requestedFocus = params.get('focus');
   const requestedRegion = params.get('region');
+  const validProject = typeof requestedProject === 'string' && requestedProject.startsWith('project:');
   const validCommunity = typeof requestedCommunity === 'string' && requestedCommunity.startsWith('community:');
   const validFocus = typeof requestedFocus === 'string' && /^obs:\d+$/.test(requestedFocus);
   const validRegion = typeof requestedRegion === 'string' && requestedRegion.startsWith('region:');
-  const level: AtlasLevel = !hasRawFacet && requestedLevel === 'community' && validCommunity
-    ? 'community'
-    : !hasRawFacet && requestedLevel === 'neighborhood' && validCommunity && validFocus
-      ? 'neighborhood'
-      : 'universe';
+  const level: AtlasLevel = !hasRawFacet && hierarchy === 'project' && requestedLevel === 'project' && validProject
+    ? 'project'
+    : !hasRawFacet && requestedLevel === 'community' && validCommunity && (hierarchy === 'global' || validProject)
+      ? 'community'
+      : !hasRawFacet && requestedLevel === 'neighborhood' && validCommunity && validFocus && (hierarchy === 'global' || validProject)
+        ? 'neighborhood'
+        : 'universe';
 
   return {
     scope,
+    hierarchy,
     level,
+    projectId: hierarchy === 'project' && level !== 'universe' ? requestedProject : null,
     communityId: level === 'universe' ? null : requestedCommunity,
     regionId: level === 'community' && validRegion ? requestedRegion : null,
     focusNodeId: level === 'neighborhood' ? requestedFocus : null,
+    pageCursor: params.get('page_cursor'),
     activeSurface: surface,
     continuation: params.get('continuation'),
     density: params.get('density') === 'focus' || params.get('density') === 'wide' ? params.get('density') as 'focus' | 'wide' : 'balanced',
@@ -191,11 +247,14 @@ export function parseObservatorySearch(search: string): Pick<ObservatoryState, '
 
 export function serializeObservatoryState(state: ObservatoryState): string {
   const params = new URLSearchParams();
+  params.set('hierarchy', state.hierarchy);
   if (state.activeSurface !== DEFAULT_OBSERVATORY_SURFACE) params.set('surface', state.activeSurface);
   if (state.level !== 'universe') params.set('level', state.level);
+  if (state.projectId) params.set('project_id', state.projectId);
   if (state.communityId) params.set('community', state.communityId);
   if (state.level === 'community' && state.regionId) params.set('region', state.regionId);
   if (state.level === 'neighborhood' && state.focusNodeId) params.set('focus', state.focusNodeId);
+  if (state.pageCursor) params.set('page_cursor', state.pageCursor);
   if (state.scope.project_token) params.set('project_token', state.scope.project_token);
   if (state.scope.session_token) params.set('session_token', state.scope.session_token);
   if (state.scope.topic_token) params.set('topic_token', state.scope.topic_token);
@@ -234,10 +293,12 @@ export function recoverObservatoryFocus(state: ObservatoryState, visibleNodeIds:
   if (!state.focusNodeId || visibleNodeIds.includes(state.focusNodeId)) return { ...state, visibleNodeIds };
   return {
     ...state,
+    projectId: null,
     level: 'universe',
     communityId: null,
     regionId: null,
     focusNodeId: null,
+    pageCursor: null,
     visibleNodeIds,
     focusTrail: [],
     focusTrailIndex: -1,
