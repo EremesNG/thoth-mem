@@ -933,71 +933,83 @@ The KG/community layer MUST retain enough latest job metadata for health readers
 
 ### Requirement: Complete legacy-safe representation
 
-Semantic projection MUST include every current scoped observation exactly once even when KG, embedding, topic, or community-summary coverage is absent, and MUST expose bounded coverage/degraded metadata instead of dropping or fabricating memory relationships.
+Every current scoped observation MUST belong to exactly one canonical project parent and one project-owned constellation even when KG, embeddings, topics, summaries, or a project value are absent; missing project values MUST use one deterministic synthetic Unassigned parent and missing semantic evidence MUST use bounded deterministic unclustered constellations without fabricated relationships.
 
-#### Scenario: US1 - Trust what the atlas counts and connects 1
+#### Scenario: US1 - Recognize the universe by project 1
 
-- **GIVEN** distinct canonical values with identical long prefixes
-- **WHEN** visualization identities are derived repeatedly
-- **THEN** every distinct value receives one distinct stable identity and equivalent values reuse the same identity
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
 
-#### Scenario: US1 - Trust what the atlas counts and connects 2
+#### Scenario: US1 - Recognize the universe by project 2
 
-- **GIVEN** an observation with project, session, type, topic, and content facts
-- **WHEN** raw diagnostic topology is assembled
-- **THEN** no unconnected topic helper or duplicate representation of the same project relationship is created
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
 
-#### Scenario: US1 - Trust what the atlas counts and connects 3
+#### Scenario: US1 - Recognize the universe by project 3
 
-- **GIVEN** a mixed visualization payload
+- **GIVEN** observations without a project
+- **WHEN** Universe loads
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
+
+#### Scenario: US1 - Recognize the universe by project 4
+
+- **GIVEN** more projects or constellations than the visual budget
+- **WHEN** Universe renders
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 1
+
+- **GIVEN** Universe overview
 - **WHEN** counts are presented
-- **THEN** observation memories, projects, communities, supporting entities, and relationships are counted by their actual semantic role
+- **THEN** source projects, visible project nebulae, source memories, source constellations, visible constellation cores, project bridges, and omitted identities remain distinct
 
-#### Scenario: US1 - Trust what the atlas counts and connects 4
+#### Scenario: US4 - Trust the hierarchy and its accounting 2
 
-- **GIVEN** legacy observations with incomplete KG or semantic coverage
-- **WHEN** the semantic projection is built
-- **THEN** every current observation remains represented and missing derived evidence is reported without inventing relationships
+- **GIVEN** Project overview
+- **WHEN** counts are presented
+- **THEN** source memories, source constellations, visible constellations, aggregate bridges, and omissions refer only to the selected project
 
-#### Scenario: US1 - Trust what the atlas counts and connects 5
+#### Scenario: US4 - Trust the hierarchy and its accounting 3
 
-- **GIVEN** two distinct project, session, or topic values whose private-safe labels are identical
-- **WHEN** facet choices and scoped reads are produced
-- **THEN** each retains one stable opaque token that resolves to exactly its own internal value while neither source value enters the DOM, URL, request metadata, or response text
+- **GIVEN** duplicate private-safe project labels
+- **WHEN** nebulae and navigation choices render
+- **THEN** stable opaque identities remain distinct and labels are deterministically disambiguated without exposing canonical values
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 4
+
+- **GIVEN** missing or degraded structural evidence
+- **WHEN** the hierarchy is built
+- **THEN** every current observation remains assigned exactly once and degraded state is reported without fabricated relationships
 
 ### Requirement: Observation-to-observation projection
 
-Atlas communities MUST be detected from a deterministic weighted projection whose primary nodes are current observations and whose eligible edges represent semantic or structural memory relationships; project, session, type, topic, and synthetic metadata relationships MUST remain facets/provenance and MUST NOT participate as community nodes or clustering edges.
+Atlas constellations MUST be partitioned independently within each canonical project parent from eligible weighted observation-to-observation evidence; project metadata MUST define the parent boundary but MUST NOT become a clustering node or edge, and eligible relationships crossing project boundaries MUST contribute only to aggregate project bridges.
 
-#### Scenario: US2 - Survey the complete memory universe 1
+#### Scenario: US1 - Recognize the universe by project 1
 
-- **GIVEN** a sufficiently large active scope
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
+
+#### Scenario: US1 - Recognize the universe by project 2
+
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
+
+#### Scenario: US1 - Recognize the universe by project 3
+
+- **GIVEN** observations without a project
 - **WHEN** Universe loads
-- **THEN** it shows between 30 and 150 deterministic community galaxies whose member counts sum to the exact current observation count
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
 
-#### Scenario: US2 - Survey the complete memory universe 2
+#### Scenario: US1 - Recognize the universe by project 4
 
-- **GIVEN** project, session, type, topic, and other high-degree metadata relationships
-- **WHEN** communities and layout forces are constructed
-- **THEN** those facets do not merge otherwise unrelated memories or act as physical superhubs
-
-#### Scenario: US2 - Survey the complete memory universe 3
-
-- **GIVEN** a natural community larger than the Community navigation budget
-- **WHEN** the Universe projection is committed
-- **THEN** it is deterministically subdivided until every navigable community respects the configured upper bound
-
-#### Scenario: US2 - Survey the complete memory universe 4
-
-- **GIVEN** relationships between memories in different communities
+- **GIVEN** more projects or constellations than the visual budget
 - **WHEN** Universe renders
-- **THEN** one weighted aggregate connection represents the bounded cross-community relationship strength instead of drawing every raw relationship
-
-#### Scenario: US2 - Survey the complete memory universe 5
-
-- **GIVEN** observations without eligible semantic relationships
-- **WHEN** Universe renders
-- **THEN** they are assigned deterministically to explicit unclustered groups rather than placed as unexplained distant stars
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
 
 ### Requirement: Superhub-resistant partitioning
 

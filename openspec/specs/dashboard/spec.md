@@ -408,68 +408,104 @@ Complete graph pages, loading progress, selector portals, semantic fallback, and
 
 ### Requirement: Truthful graph accounting
 
-Community responses and UI MUST distinguish `source memories`, `visible memories`, `semantic regions`, `aggregate bridges`, `visible relationships`, and `omitted memories/relationships`; region member counts MUST sum exactly to source membership and visual identities MUST NOT be presented as completeness of the raw graph.
+Store responses and UI MUST distinguish source and visible projects, source and visible project-owned constellations, source and visible memories, project/constellation/region aggregate bridges, visible relationships, and omitted identities at the active level; project and constellation membership counts MUST sum exactly to source membership and painted identities MUST NOT be presented as raw completeness.
 
-#### Scenario: US2 - Explore one constellation without a hairball 1
+#### Scenario: US1 - Recognize the universe by project 1
 
-- **GIVEN** a Community with more memories than the visual budget
-- **WHEN** it opens
-- **THEN** the response reports its exact source membership while the renderer prepares only a bounded representative working set
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
 
-#### Scenario: US2 - Explore one constellation without a hairball 2
+#### Scenario: US1 - Recognize the universe by project 2
 
-- **GIVEN** a sufficiently large Community
-- **WHEN** its internal projection is partitioned
-- **THEN** 6–12 deterministic semantic regions cover every member exactly once and oversized regions are recursively split
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
 
-#### Scenario: US2 - Explore one constellation without a hairball 3
+#### Scenario: US1 - Recognize the universe by project 3
 
-- **GIVEN** region evidence
-- **WHEN** region names are derived
-- **THEN** high-frequency excluded metadata cannot name every region identically and private-safe deterministic fallbacks distinguish regions that lack useful semantic evidence
+- **GIVEN** observations without a project
+- **WHEN** Universe loads
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
 
-#### Scenario: US2 - Explore one constellation without a hairball 4
+#### Scenario: US1 - Recognize the universe by project 4
 
-- **GIVEN** dense internal relationships
-- **WHEN** Community is in its overview band
-- **THEN** region contours and weighted region-to-region bridges communicate structure while the full internal edge set is not emitted or drawn
+- **GIVEN** more projects or constellations than the visual budget
+- **WHEN** Universe renders
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
 
-#### Scenario: US2 - Explore one constellation without a hairball 5
+#### Scenario: US4 - Trust the hierarchy and its accounting 1
 
-- **GIVEN** a small Community within the visual budget
-- **WHEN** it opens
-- **THEN** every assigned observation may be represented while link presentation still follows the level-aware relevance policy
+- **GIVEN** Universe overview
+- **WHEN** counts are presented
+- **THEN** source projects, visible project nebulae, source memories, source constellations, visible constellation cores, project bridges, and omitted identities remain distinct
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 2
+
+- **GIVEN** Project overview
+- **WHEN** counts are presented
+- **THEN** source memories, source constellations, visible constellations, aggregate bridges, and omissions refer only to the selected project
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 3
+
+- **GIVEN** duplicate private-safe project labels
+- **WHEN** nebulae and navigation choices render
+- **THEN** stable opaque identities remain distinct and labels are deterministically disambiguated without exposing canonical values
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 4
+
+- **GIVEN** missing or degraded structural evidence
+- **WHEN** the hierarchy is built
+- **THEN** every current observation remains assigned exactly once and degraded state is reported without fabricated relationships
 
 ### Requirement: Facets instead of metadata stars
 
-Project, session, and topic controls MUST use structured choices with one stable opaque token, private-safe label, and bounded count; each token MUST resolve server-side to exactly one internal canonical value even when multiple values have the same safe label. Type and relation controls MUST remain bounded canonical choices. All facets MUST refine or describe Universe and Community as guided controls, counts, labels, or boundaries and MUST NOT appear as equivalent memory stars outside an explicitly requested Neighborhood or Raw diagnostic explanation.
+Project navigation identity MUST be separate from optional project facet filtering: an opaque project parent selects the Project/Constellation hierarchy while project, session, topic, type, relation, and query facets refine the active scope. Canonical project values MUST remain server-resolved, and metadata MUST NOT appear as peer memory stars outside Neighborhood or Raw diagnostics.
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 1
+#### Scenario: US2 - Enter a project or constellation directly 1
 
-- **GIVEN** a Universe galaxy
-- **WHEN** the user activates it
-- **THEN** Community displays only its assigned observation memories, bounded to 1,000 or fewer, with project/session/topic/type available as facets rather than peer stars
+- **GIVEN** a project nebula in Universe
+- **WHEN** its contour or label is activated
+- **THEN** Project opens with every returned constellation owned by that project and with other projects removed from the active working set
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 2
+#### Scenario: US2 - Enter a project or constellation directly 2
 
-- **GIVEN** a Community memory
-- **WHEN** the user focuses it
-- **THEN** Neighborhood displays that memory plus the most relevant one- or two-hop observations and supporting facts within a 300-node cap
+- **GIVEN** a visible constellation core inside a project nebula
+- **WHEN** it is activated
+- **THEN** Constellation opens directly with the owning project and constellation encoded atomically
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 3
+#### Scenario: US2 - Enter a project or constellation directly 3
 
-- **GIVEN** a level transition
-- **WHEN** the user uses in-app Back/Forward or browser history
-- **THEN** level, community, scope, focused observation, semantic navigator, Lens, and usable camera restore coherently without appending duplicate trail entries
+- **GIVEN** Project overview
+- **WHEN** a constellation is activated
+- **THEN** the current bounded region-aware Constellation view opens without loading individual memories globally
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 4
+#### Scenario: US2 - Enter a project or constellation directly 4
 
-- **GIVEN** a search result outside the currently open Community
-- **WHEN** the user pivots to it through the token-safe Observatory Context/Recall/Pivot flow
-- **THEN** its owning community and bounded Neighborhood become visible with the same opaque-token scope and without loading the raw global graph or serializing canonical facet values
+- **GIVEN** pointer, keyboard, DOM navigator, bounded-page controls, breadcrumb, deep-link, or Back/Forward navigation
+- **WHEN** a semantic location changes
+- **THEN** URL, breadcrumb, painted view, navigator hierarchy, counts, and dock context publish one coherent location without duplicate trail entries
 
-#### Scenario: US3 - Move from galaxy to memory and its synapses 5
+#### Scenario: US5 - Retain bounded, accessible, private-safe operation 1
 
-- **GIVEN** different zoom levels or focus states
-- **WHEN** links render
-- **THEN** Universe shows aggregate links, Community shows relevant observation relationships, and Neighborhood shows complete local supporting relationships without changing the underlying membership of that level
+- **GIVEN** project nebulae and constellation cores
+- **WHEN** the GPU renderer is unavailable
+- **THEN** the DOM navigator exposes the same project-to-constellation hierarchy and activation outcomes
+
+#### Scenario: US5 - Retain bounded, accessible, private-safe operation 2
+
+- **GIVEN** stale project, constellation, region, or generation state
+- **WHEN** a request resolves
+- **THEN** typed recovery returns to the nearest current owning level without mixing datasets or cameras
+
+#### Scenario: US5 - Retain bounded, accessible, private-safe operation 3
+
+- **GIVEN** private-marked values or superseded asynchronous work
+- **WHEN** labels, overlays, errors, URLs, diagnostics, or callbacks resolve
+- **THEN** private content and stale state cannot enter presentation or external traffic
+
+#### Scenario: US5 - Retain bounded, accessible, private-safe operation 4
+
+- **GIVEN** explicit Raw diagnostic activation
+- **WHEN** it opens
+- **THEN** it remains a separate bounded diagnostic path and never replaces a semantic hierarchy failure automatically

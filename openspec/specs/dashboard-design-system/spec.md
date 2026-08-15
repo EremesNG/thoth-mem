@@ -8,31 +8,31 @@ Durable behavioral contract for `dashboard-design-system`.
 
 ### Requirement: Semantic celestial encoding
 
-Universe MUST render collision-managed private-safe constellation names for the major visible regions and expose every constellation through the semantic navigator; unchanged membership and evidence MUST produce stable identity, label, color, and initial seed.
+Project-hierarchy Universe MUST render every visible project as one organic nebula envelope derived from the current projected positions of its visible owned constellation cores; every painted private-safe project label and count MUST be collision-managed and anchored to its owning envelope, while any label suppressed by the responsive visual budget MUST remain available through the synchronized DOM navigator. A project MUST NOT be represented only by independently positioned text, a generic disk, or a decorative screen-space glow.
 
-#### Scenario: US1 - Recognize the memory universe 1
+#### Scenario: US1 - Read projects as containing nebulae 1
 
-- **GIVEN** a large active scope
-- **WHEN** Universe settles
-- **THEN** every current observation is accounted for through 30–150 named constellations and weighted aggregate bridges
+- **GIVEN** several visible projects with project-owned constellation cores
+- **WHEN** Universe becomes usable
+- **THEN** each project has one organic envelope derived from and enclosing its own visible cores, and no envelope contains cores owned by another project
 
-#### Scenario: US1 - Recognize the memory universe 2
+#### Scenario: US1 - Read projects as containing nebulae 2
 
-- **GIVEN** weakly connected or isolated constellations
-- **WHEN** the Universe layout is constructed
-- **THEN** they occupy deterministic organic positions and explicit unclustered regions instead of the four sides of the canvas
+- **GIVEN** one sparse or single-core project
+- **WHEN** Universe renders it
+- **THEN** the project still has a bounded organic envelope centered on its real core positions rather than on the viewport
 
-#### Scenario: US1 - Recognize the memory universe 3
+#### Scenario: US1 - Read projects as containing nebulae 3
 
-- **GIVEN** a wide application viewport
-- **WHEN** Universe fits
-- **THEN** the world keeps its natural aspect and uses the available field without being normalized to a square
+- **GIVEN** project labels and memory or constellation counts
+- **WHEN** the responsive visual budget presents them
+- **THEN** they are collision-managed anchors of their project envelope and not independently scattered screen text; projects whose painted label is suppressed remain named in the synchronized DOM navigator
 
-#### Scenario: US1 - Recognize the memory universe 4
+#### Scenario: US1 - Read projects as containing nebulae 4
 
-- **GIVEN** a constellation label
-- **WHEN** it is rendered on canvas or in the semantic navigator
-- **THEN** it is private-safe, human-readable, collision-managed, and stable for unchanged membership
+- **GIVEN** decorative background glow is enabled elsewhere in the atlas
+- **WHEN** project-hierarchy Universe renders
+- **THEN** decorative glow is not used as, or visually confused with, a project boundary
 
 ### Requirement: Accessible state communication
 
@@ -380,37 +380,55 @@ The Community client MUST stop after one bounded usable projection, MUST preserv
 
 ### Requirement: Level-aware relationship presentation
 
-Universe overview MUST show constellation bridges; Community overview MUST show region contours, region aggregate bridges, and a sparse representative backbone; Community exploration MUST reveal relevant representative observation links; Neighborhood MUST show complete bounded local supporting relationships. Camera bands MUST change presentation without downloading or rendering the complete Community edge set.
+Universe overview MUST show bounded project bridges and subdued within-project constellation structure; Project overview MUST show weighted cross-constellation bridges; Constellation overview and exploration MUST retain region contours, region bridges, sparse representative backbones, and relevant representative links; Neighborhood MUST retain complete bounded local support. Presentation bands MUST NOT alter semantic ownership or globally download lower-level identities.
 
-#### Scenario: US3 - Reveal detail through spatial intent 1
+#### Scenario: US2 - Enter a project or constellation directly 1
 
-- **GIVEN** Community overview
-- **WHEN** the user zooms into the exploration band
-- **THEN** relevant representative observation links and additional local labels appear without changing Community source membership or downloading every source relationship
+- **GIVEN** a project nebula in Universe
+- **WHEN** its contour or label is activated
+- **THEN** Project opens with every returned constellation owned by that project and with other projects removed from the active working set
 
-#### Scenario: US3 - Reveal detail through spatial intent 2
+#### Scenario: US2 - Enter a project or constellation directly 2
 
-- **GIVEN** a semantic region
-- **WHEN** the user activates it
-- **THEN** the atlas focuses that region, keeps surrounding regions as subdued context, restores the focus through URL/history, and retains a bounded working set
+- **GIVEN** a visible constellation core inside a project nebula
+- **WHEN** it is activated
+- **THEN** Constellation opens directly with the owning project and constellation encoded atomically
 
-#### Scenario: US3 - Reveal detail through spatial intent 3
+#### Scenario: US2 - Enter a project or constellation directly 3
 
-- **GIVEN** a representative memory
-- **WHEN** the user activates it
-- **THEN** Neighborhood displays the focused memory and its most relevant one- or two-hop support within the existing 300-node cap
+- **GIVEN** Project overview
+- **WHEN** a constellation is activated
+- **THEN** the current bounded region-aware Constellation view opens without loading individual memories globally
 
-#### Scenario: US3 - Reveal detail through spatial intent 4
+#### Scenario: US2 - Enter a project or constellation directly 4
 
-- **GIVEN** Back, Forward, deep-link, search pivot, or filter restoration
-- **WHEN** the level becomes usable
-- **THEN** URL, breadcrumb, region, focus, semantic navigator, Lens, camera, and painted renderer publish one coherent state
+- **GIVEN** pointer, keyboard, DOM navigator, bounded-page controls, breadcrumb, deep-link, or Back/Forward navigation
+- **WHEN** a semantic location changes
+- **THEN** URL, breadcrumb, painted view, navigator hierarchy, counts, and dock context publish one coherent location without duplicate trail entries
 
-#### Scenario: US3 - Reveal detail through spatial intent 5
+#### Scenario: US4 - Trust the hierarchy and its accounting 1
 
-- **GIVEN** a region or memory that is no longer current
-- **WHEN** a stored URL is restored
-- **THEN** the server returns a typed stale/gone outcome and the client recovers to the current owning Community without mixing generations
+- **GIVEN** Universe overview
+- **WHEN** counts are presented
+- **THEN** source projects, visible project nebulae, source memories, source constellations, visible constellation cores, project bridges, and omitted identities remain distinct
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 2
+
+- **GIVEN** Project overview
+- **WHEN** counts are presented
+- **THEN** source memories, source constellations, visible constellations, aggregate bridges, and omissions refer only to the selected project
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 3
+
+- **GIVEN** duplicate private-safe project labels
+- **WHEN** nebulae and navigation choices render
+- **THEN** stable opaque identities remain distinct and labels are deterministically disambiguated without exposing canonical values
+
+#### Scenario: US4 - Trust the hierarchy and its accounting 4
+
+- **GIVEN** missing or degraded structural evidence
+- **WHEN** the hierarchy is built
+- **THEN** every current observation remains assigned exactly once and degraded state is reported without fabricated relationships
 
 ### Requirement: Level-local legend
 

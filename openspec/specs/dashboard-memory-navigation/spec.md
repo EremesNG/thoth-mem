@@ -254,59 +254,83 @@ If rich graph rendering is unavailable, the dashboard MUST keep scope controls a
 
 ### Requirement: World-first graph geometry
 
-Universe MUST lay out aggregate constellations from their weighted semantic topology in unconstrained world coordinates, MUST deterministically place weak and isolated groups without perimeter rings, and MUST preserve natural aspect during fit and resize.
+Project nebula geometry MUST group the active Universe positions by stable opaque project ownership, MUST enclose each group's visible constellation cores with bounded padding for dense, sparse, collinear, and single-core groups, MUST exclude foreign cores, and MUST include the complete contour and required label extent in Fit without substituting a viewport-center fallback when owned cores are available.
 
-#### Scenario: US1 - Recognize the memory universe 1
+#### Scenario: US1 - Read projects as containing nebulae 1
 
-- **GIVEN** a large active scope
-- **WHEN** Universe settles
-- **THEN** every current observation is accounted for through 30–150 named constellations and weighted aggregate bridges
+- **GIVEN** several visible projects with project-owned constellation cores
+- **WHEN** Universe becomes usable
+- **THEN** each project has one organic envelope derived from and enclosing its own visible cores, and no envelope contains cores owned by another project
 
-#### Scenario: US1 - Recognize the memory universe 2
+#### Scenario: US1 - Read projects as containing nebulae 2
 
-- **GIVEN** weakly connected or isolated constellations
-- **WHEN** the Universe layout is constructed
-- **THEN** they occupy deterministic organic positions and explicit unclustered regions instead of the four sides of the canvas
+- **GIVEN** one sparse or single-core project
+- **WHEN** Universe renders it
+- **THEN** the project still has a bounded organic envelope centered on its real core positions rather than on the viewport
 
-#### Scenario: US1 - Recognize the memory universe 3
+#### Scenario: US1 - Read projects as containing nebulae 3
 
-- **GIVEN** a wide application viewport
-- **WHEN** Universe fits
-- **THEN** the world keeps its natural aspect and uses the available field without being normalized to a square
+- **GIVEN** project labels and memory or constellation counts
+- **WHEN** the responsive visual budget presents them
+- **THEN** they are collision-managed anchors of their project envelope and not independently scattered screen text; projects whose painted label is suppressed remain named in the synchronized DOM navigator
 
-#### Scenario: US1 - Recognize the memory universe 4
+#### Scenario: US1 - Read projects as containing nebulae 4
 
-- **GIVEN** a constellation label
-- **WHEN** it is rendered on canvas or in the semantic navigator
-- **THEN** it is private-safe, human-readable, collision-managed, and stable for unchanged membership
+- **GIVEN** decorative background glow is enabled elsewhere in the atlas
+- **WHEN** project-hierarchy Universe renders
+- **THEN** decorative glow is not used as, or visually confused with, a project boundary
+
+#### Scenario: US2 - Move the project hierarchy as one world 1
+
+- **GIVEN** a usable project-hierarchy Universe
+- **WHEN** the user pans or zooms
+- **THEN** each project contour, label, counts, contained core, and project bridge move or scale coherently in the same frame
+
+#### Scenario: US2 - Move the project hierarchy as one world 2
+
+- **GIVEN** Fit, resize, or bounded simulation updates projected core positions
+- **WHEN** the next overlay publication commits
+- **THEN** every project envelope and label is recomputed from those current positions without falling back to a fixed viewport coordinate
+
+#### Scenario: US2 - Move the project hierarchy as one world 3
+
+- **GIVEN** a superseded renderer generation or removed project page
+- **WHEN** a late overlay update resolves
+- **THEN** it cannot publish geometry into the current Universe
+
+#### Scenario: US2 - Move the project hierarchy as one world 4
+
+- **GIVEN** reduced motion, Pause, or renderer fallback
+- **WHEN** camera geometry changes
+- **THEN** the semantic hierarchy remains correctly aligned without requiring animation
 
 ### Requirement: Aspect-preserving fit and resize
 
-Initial fit, explicit fit, viewport resize, and drawer/sheet transitions MUST keep every included node reachable, preserve world aspect and focus, and avoid involuntary refits after ordinary manual pan or zoom.
+The first committed dataset for a new semantic location MUST receive exactly one automatic frame after point and contour geometry are available, equivalent to explicit Fit for that location and independent of the parent's user-camera state; same-location replacements MUST preserve a valid intentional camera, and history MUST restore a valid location-owned viewport or deterministically frame the location when none exists.
 
-#### Scenario: US1 - See the whole living memory field 1
+#### Scenario: US3 - Arrive at a correctly framed semantic location 1
 
-- **GIVEN** a populated memory store
-- **WHEN** the default dashboard opens
-- **THEN** the Neural Atlas occupies the remaining application width and height instead of appearing inside a bounded two-column card
+- **GIVEN** a parent semantic location with any camera transform
+- **WHEN** a different Project, Constellation, or Neighborhood location commits
+- **THEN** the new location receives exactly one post-commit frame that includes its bounded points and contours
 
-#### Scenario: US1 - See the whole living memory field 2
+#### Scenario: US3 - Arrive at a correctly framed semantic location 2
 
-- **GIVEN** a graph whose natural world extent is wide, tall, or irregular
-- **WHEN** it is laid out and fitted
-- **THEN** its geometry keeps that aspect and the camera/canvas adapts to show it without normalizing the constellation into a square
+- **GIVEN** the user has panned or zoomed inside one semantic location
+- **WHEN** that same location receives a generation-safe replacement
+- **THEN** unchanged anchors and the valid user camera are preserved without an involuntary fit
 
-#### Scenario: US1 - See the whole living memory field 3
+#### Scenario: US3 - Arrive at a correctly framed semantic location 3
 
-- **GIVEN** a dense graph
-- **WHEN** it settles at the whole-graph view
-- **THEN** normal memories read as small stars, hubs remain bounded, and no core node dominates the field as a giant bubble
+- **GIVEN** a semantic location previously visited in the current trail
+- **WHEN** Back or Forward restores it
+- **THEN** a valid saved viewport is restored; if none is valid, the deterministic first-entry frame is used
 
-#### Scenario: US1 - See the whole living memory field 4
+#### Scenario: US3 - Arrive at a correctly framed semantic location 4
 
-- **GIVEN** relationships of different classes
-- **WHEN** the graph is at rest
-- **THEN** curved synapses remain visibly traceable and focused relationships become substantially brighter without removing the surrounding graph
+- **GIVEN** reduced motion, Pause, or WebGL fallback
+- **WHEN** a new semantic location becomes usable
+- **THEN** framing is immediate and complete without nonessential animation
 
 ### Requirement: Living but bounded motion
 
@@ -366,31 +390,55 @@ Fit, zoom, pause/resume, reset, focus traversal, selection, expansion, and clear
 
 ### Requirement: Stable spatial interaction
 
-Pointer and keyboard pan, zoom, focus, drag, and traversal MUST preserve selection and camera continuity, use the current world projection, and never require a pointer-only prerequisite.
+Every accepted camera, resize, simulation, and dataset publication MUST derive project contours, labels, counts, and bridge anchors from the same current world projection as their constellation cores, so pan, zoom, Fit, settling, and history restoration move the hierarchy coherently and superseded generations cannot publish detached overlay state.
 
-#### Scenario: US2 - Navigate without losing the atlas 1
+#### Scenario: US2 - Move the project hierarchy as one world 1
 
-- **GIVEN** normal motion preferences
-- **WHEN** the graph finishes its initial entrance
-- **THEN** it retains subtle bounded ambient motion and visibly reheats when new memories are revealed
+- **GIVEN** a usable project-hierarchy Universe
+- **WHEN** the user pans or zooms
+- **THEN** each project contour, label, counts, contained core, and project bridge move or scale coherently in the same frame
 
-#### Scenario: US2 - Navigate without losing the atlas 2
+#### Scenario: US2 - Move the project hierarchy as one world 2
 
-- **GIVEN** the user pauses motion or requests reduced motion
-- **WHEN** data, focus, or camera state changes
-- **THEN** the semantic result remains visible without continuous drift or nonessential animation
+- **GIVEN** Fit, resize, or bounded simulation updates projected core positions
+- **WHEN** the next overlay publication commits
+- **THEN** every project envelope and label is recomputed from those current positions without falling back to a fixed viewport coordinate
 
-#### Scenario: US2 - Navigate without losing the atlas 3
+#### Scenario: US2 - Move the project hierarchy as one world 3
 
-- **GIVEN** any supported desktop or mobile viewport
-- **WHEN** the user is viewing any part of the graph
-- **THEN** one compact set of fit, zoom, pause, and reset controls remains visible inside the atlas
+- **GIVEN** a superseded renderer generation or removed project page
+- **WHEN** a late overlay update resolves
+- **THEN** it cannot publish geometry into the current Universe
 
-#### Scenario: US2 - Navigate without losing the atlas 4
+#### Scenario: US2 - Move the project hierarchy as one world 4
 
-- **GIVEN** a selected memory with unseen neighbors
-- **WHEN** the user reveals connections
-- **THEN** new nodes enter around their real frontier, the camera remains usable, and existing nodes are not abruptly replaced
+- **GIVEN** reduced motion, Pause, or renderer fallback
+- **WHEN** camera geometry changes
+- **THEN** the semantic hierarchy remains correctly aligned without requiring animation
+
+#### Scenario: US3 - Preserve distinct project and constellation actions 1
+
+- **GIVEN** a project nebula in Universe
+- **WHEN** its contour or anchored label is activated
+- **THEN** Project opens for that exact opaque project identity
+
+#### Scenario: US3 - Preserve distinct project and constellation actions 2
+
+- **GIVEN** a visible constellation core inside a project nebula
+- **WHEN** it is activated
+- **THEN** Constellation opens directly with the owning project and constellation encoded atomically
+
+#### Scenario: US3 - Preserve distinct project and constellation actions 3
+
+- **GIVEN** overlapping visual hit areas
+- **WHEN** a core receives pointer or keyboard activation
+- **THEN** the project contour does not steal the core action
+
+#### Scenario: US3 - Preserve distinct project and constellation actions 4
+
+- **GIVEN** global Universe, Project, Community, or Neighborhood outside the project-overview rendering case
+- **WHEN** it renders
+- **THEN** its existing semantic grouping and actions remain unchanged
 
 ### Requirement: In-place non-modal inspector
 
@@ -740,65 +788,83 @@ Progressive loading and continuous simulation MUST retain a stable world aspect 
 
 ### Requirement: Semantic completeness replaces raw completeness
 
-Universe MUST account for every current scoped observation through bounded deterministic constellations and aggregate bridges while keeping observation, metadata, fact, and helper identities out of the default Universe working set; Community MUST retain complete source accounting while preparing a bounded visual working set.
+Universe MUST account for every current scoped observation through exactly one project nebula and exactly one project-owned constellation while keeping observation, session, topic, fact, and helper identities out of the root working set; Project MUST account for the selected project's complete source membership while returning bounded constellation aggregates; Constellation MUST retain complete source accounting while preparing its bounded representative working set.
 
-#### Scenario: US1 - Recognize the memory universe 1
+#### Scenario: US1 - Recognize the universe by project 1
 
-- **GIVEN** a large active scope
-- **WHEN** Universe settles
-- **THEN** every current observation is accounted for through 30–150 named constellations and weighted aggregate bridges
+- **GIVEN** a multi-project memory store
+- **WHEN** Universe becomes usable
+- **THEN** every visible top-level contour is a private-safe project nebula and every star inside it is a project-owned constellation core rather than an individual memory, file, session, or topic
 
-#### Scenario: US1 - Recognize the memory universe 2
+#### Scenario: US1 - Recognize the universe by project 2
 
-- **GIVEN** weakly connected or isolated constellations
-- **WHEN** the Universe layout is constructed
-- **THEN** they occupy deterministic organic positions and explicit unclustered regions instead of the four sides of the canvas
+- **GIVEN** structural evidence connecting observations from different projects
+- **WHEN** project-owned constellations are partitioned
+- **THEN** no constellation spans projects and the cross-project evidence contributes only to bounded project bridges
 
-#### Scenario: US1 - Recognize the memory universe 3
+#### Scenario: US1 - Recognize the universe by project 3
 
-- **GIVEN** a wide application viewport
-- **WHEN** Universe fits
-- **THEN** the world keeps its natural aspect and uses the available field without being normalized to a square
+- **GIVEN** observations without a project
+- **WHEN** Universe loads
+- **THEN** one explicit Unassigned nebula accounts for them without inventing a canonical project
 
-#### Scenario: US1 - Recognize the memory universe 4
+#### Scenario: US1 - Recognize the universe by project 4
 
-- **GIVEN** a constellation label
-- **WHEN** it is rendered on canvas or in the semantic navigator
-- **THEN** it is private-safe, human-readable, collision-managed, and stable for unchanged membership
+- **GIVEN** more projects or constellations than the visual budget
+- **WHEN** Universe renders
+- **THEN** the response and UI distinguish source, visible, and omitted counts, paint only one bounded page, and provide Previous/Next project-page actions that can reach every omitted project without accumulating prior pages on the canvas
 
 ### Requirement: Restorable semantic drilldown
 
-URL and navigation state MUST encode semantic level, stable Community, optional stable region focus, opaque scope facets, and focused observation; Back/Forward, direct links, search pivots, semantic activation, Lens, and camera MUST restore atomically without duplicate trail entries.
+URL and navigation state MUST encode semantic level, stable opaque project, stable project-owned constellation, optional opaque bounded-page cursor, optional stable region, focused observation, active scope, and a semantic-location camera key; project contour activation, constellation-core activation, bounded-page controls, breadcrumbs, deep links, search pivots, DOM navigation, Back/Forward, Lens, and recovery MUST restore that tuple atomically without duplicate trail entries. A project-hierarchy search pivot MUST be resolved server-side to both its opaque owning project and project-owned constellation before the client commits Neighborhood.
 
-#### Scenario: US3 - Reveal detail through spatial intent 1
+#### Scenario: US2 - Enter a project or constellation directly 1
 
-- **GIVEN** Community overview
-- **WHEN** the user zooms into the exploration band
-- **THEN** relevant representative observation links and additional local labels appear without changing Community source membership or downloading every source relationship
+- **GIVEN** a project nebula in Universe
+- **WHEN** its contour or label is activated
+- **THEN** Project opens with every returned constellation owned by that project and with other projects removed from the active working set
 
-#### Scenario: US3 - Reveal detail through spatial intent 2
+#### Scenario: US2 - Enter a project or constellation directly 2
 
-- **GIVEN** a semantic region
-- **WHEN** the user activates it
-- **THEN** the atlas focuses that region, keeps surrounding regions as subdued context, restores the focus through URL/history, and retains a bounded working set
+- **GIVEN** a visible constellation core inside a project nebula
+- **WHEN** it is activated
+- **THEN** Constellation opens directly with the owning project and constellation encoded atomically
 
-#### Scenario: US3 - Reveal detail through spatial intent 3
+#### Scenario: US2 - Enter a project or constellation directly 3
 
-- **GIVEN** a representative memory
-- **WHEN** the user activates it
-- **THEN** Neighborhood displays the focused memory and its most relevant one- or two-hop support within the existing 300-node cap
+- **GIVEN** Project overview
+- **WHEN** a constellation is activated
+- **THEN** the current bounded region-aware Constellation view opens without loading individual memories globally
 
-#### Scenario: US3 - Reveal detail through spatial intent 4
+#### Scenario: US2 - Enter a project or constellation directly 4
 
-- **GIVEN** Back, Forward, deep-link, search pivot, or filter restoration
-- **WHEN** the level becomes usable
-- **THEN** URL, breadcrumb, region, focus, semantic navigator, Lens, camera, and painted renderer publish one coherent state
+- **GIVEN** pointer, keyboard, DOM navigator, bounded-page controls, breadcrumb, deep-link, or Back/Forward navigation
+- **WHEN** a semantic location changes
+- **THEN** URL, breadcrumb, painted view, navigator hierarchy, counts, and dock context publish one coherent location without duplicate trail entries
 
-#### Scenario: US3 - Reveal detail through spatial intent 5
+#### Scenario: US3 - Arrive at a correctly framed semantic location 1
 
-- **GIVEN** a region or memory that is no longer current
-- **WHEN** a stored URL is restored
-- **THEN** the server returns a typed stale/gone outcome and the client recovers to the current owning Community without mixing generations
+- **GIVEN** a parent semantic location with any camera transform
+- **WHEN** a different Project, Constellation, or Neighborhood location commits
+- **THEN** the new location receives exactly one post-commit frame that includes its bounded points and contours
+
+#### Scenario: US3 - Arrive at a correctly framed semantic location 2
+
+- **GIVEN** the user has panned or zoomed inside one semantic location
+- **WHEN** that same location receives a generation-safe replacement
+- **THEN** unchanged anchors and the valid user camera are preserved without an involuntary fit
+
+#### Scenario: US3 - Arrive at a correctly framed semantic location 3
+
+- **GIVEN** a semantic location previously visited in the current trail
+- **WHEN** Back or Forward restores it
+- **THEN** a valid saved viewport is restored; if none is valid, the deterministic first-entry frame is used
+
+#### Scenario: US3 - Arrive at a correctly framed semantic location 4
+
+- **GIVEN** reduced motion, Pause, or WebGL fallback
+- **WHEN** a new semantic location becomes usable
+- **THEN** framing is immediate and complete without nonessential animation
 
 ### Requirement: Explicit Raw diagnostic mode
 
@@ -836,37 +902,31 @@ Raw graph MUST remain opt-in, clearly diagnostic, excluded from semantic loading
 
 ### Requirement: Accessible private-safe level parity
 
-Regions, representative memories, zoom-band disclosures, counts, legend filters, dock actions, empty/degraded states, and renderer recovery MUST have keyboard-operable DOM equivalents synchronized with the painted view.
+Every painted project envelope and anchored label MUST have one synchronized keyboard-operable private-safe project action, every contained constellation core MUST retain a distinct synchronized Constellation action, and pointer or overlay hit testing MUST NOT replace a core activation with its owning project activation.
 
-#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 1
+#### Scenario: US3 - Preserve distinct project and constellation actions 1
 
-- **GIVEN** the normal observatory route
-- **WHEN** a large Community opens
-- **THEN** the client does not call `/viz/graph` and does not automatically follow Community continuation until every source member is rendered
+- **GIVEN** a project nebula in Universe
+- **WHEN** its contour or anchored label is activated
+- **THEN** Project opens for that exact opaque project identity
 
-#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 2
+#### Scenario: US3 - Preserve distinct project and constellation actions 2
 
-- **GIVEN** explicit Raw diagnostic confirmation
-- **WHEN** the source exceeds the safe renderer threshold
-- **THEN** the UI reports exact diagnostic totals and offers bounded inspection/export without silently turning Raw into the primary atlas
+- **GIVEN** a visible constellation core inside a project nebula
+- **WHEN** it is activated
+- **THEN** Constellation opens directly with the owning project and constellation encoded atomically
 
-#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 3
+#### Scenario: US3 - Preserve distinct project and constellation actions 3
 
-- **GIVEN** WebGL initialization or live-context failure
-- **WHEN** fallback activates
-- **THEN** region names, representative memories, counts, focus, navigation, and one Retry remain operable in the synchronized DOM surface
+- **GIVEN** overlapping visual hit areas
+- **WHEN** a core receives pointer or keyboard activation
+- **THEN** the project contour does not steal the core action
 
-#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 4
+#### Scenario: US3 - Preserve distinct project and constellation actions 4
 
-- **GIVEN** reduced motion or Pause
-- **WHEN** level, zoom band, or focus changes
-- **THEN** semantic results remain visible and stable without nonessential simulation or camera animation
-
-#### Scenario: US5 - Retain diagnostics, access, and lifecycle safety 5
-
-- **GIVEN** private-marked data or superseded asynchronous work
-- **WHEN** labels, errors, cursors, overlays, diagnostics, or callbacks resolve
-- **THEN** private content and stale state cannot enter the DOM, URL, canvas-adjacent labels, logs, or external network traffic
+- **GIVEN** global Universe, Project, Community, or Neighborhood outside the project-overview rendering case
+- **WHEN** it renders
+- **THEN** its existing semantic grouping and actions remain unchanged
 
 ### Requirement: Region-first Community geometry
 
