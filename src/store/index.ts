@@ -12,11 +12,17 @@ import {
   type SemanticAtlasProjection,
 } from './semantic-atlas.js';
 import { buildSemanticAtlasCommunityView } from './semantic-atlas-regions.js';
+import {
+  buildProjectAtlasProjection,
+  projectAtlasFingerprint,
+  type ProjectAtlasProjection,
+} from './project-atlas.js';
 import { PRAGMAS, SCHEMA_SQL } from './schema.js';
 import { runMigrationsWithSemantic } from './migrations.js';
 import { DEFAULT_COMMUNITY_SUMMARIES_CONFIG, DEFAULT_KNOWLEDGE_GRAPH_CONFIG, DEFAULT_MAINTENANCE_CONFIG, DEFAULT_OPERATION_TRACE_RETENTION_CONFIG, type ThothConfig } from '../config.js';
 import { loadSqliteVec } from '../retrieval/sqlite-vec.js';
 import type {
+  AtlasHierarchy,
   AtlasCoverageState,
   ContextInput,
   AtlasPivotLocation,
@@ -259,6 +265,16 @@ type SemanticAtlasCursor = {
   generation: string;
   community_id: string | null;
   focus_node_id: string | null;
+  offset: number;
+};
+
+type ProjectAtlasCursor = {
+  v: 2;
+  hierarchy: 'project';
+  level: 'universe' | 'project';
+  scope: string;
+  generation: string;
+  project_id: string | null;
   offset: number;
 };
 
@@ -702,6 +718,7 @@ export class Store {
     health: VizHealthResponse;
     lastUsed: number;
     semanticViews: Map<string, ReturnType<typeof buildSemanticAtlasCommunityView>>;
+    projectProjection?: ProjectAtlasProjection;
   }>();
   private semanticAtlasSourceCache: {
     revision: string;
@@ -5274,6 +5291,7 @@ export class Store {
   }
 
   async getSemanticObservatoryRecall(input: {
+    hierarchy?: AtlasHierarchy;
     context_token: string;
     lanes?: ObservatoryLane[];
     limit?: number;
@@ -5297,18 +5315,13 @@ export class Store {
     const response = await this.getObservatoryRecall(input);
     const mapHit = (hit: ObservatoryRecallHit): TokenSafeObservatoryRecallHit => {
       const focusNodeId = `obs:${hit.observation_id}` as const;
-      const owner = this.getSemanticAtlasPage({
-        level: 'neighborhood',
-        project_token: publicScope.project?.token,
-        session_token: publicScope.session?.token,
-        topic_token: publicScope.topic?.token,
-        type: publicScope.type ?? undefined,
-        relation: publicScope.relation ?? undefined,
-        query: publicScope.query ?? undefined,
-        focus_node_id: focusNodeId,
-        depth: 1,
-      }).navigation.community_id;
-      if (!owner) {
+      const hierarchy = input.hierarchy ?? 'global';
+      const projectOwner = hierarchy === 'project'
+        ? this.resolveProjectAtlasOwnerForObservation(publicScope, focusNodeId)
+        : null;
+      const communityId = projectOwner?.communityId
+        ?? this.resolveGlobalAtlasCommunityForObservation(publicScope, focusNodeId);
+      if (!communityId) {
         throw new SemanticAtlasError(
           'VIZ_ATLAS_FOCUS_INVALID',
           'A recalled memory is no longer available in this atlas scope.',
@@ -5324,14 +5337,17 @@ export class Store {
         project: hit.project ? catalog.refsByValue.project.get(hit.project) ?? null : null,
         session: catalog.refsByValue.session.get(hit.session_id) ?? null,
         topic: hit.topic_key ? catalog.refsByValue.topic.get(hit.topic_key) ?? null : null,
-        community_id: owner,
+        community_id: communityId,
+        project_id: projectOwner?.projectId ?? null,
         created_at: hit.created_at,
         lane: hit.lane,
         pivot_token: this.encodeScopedToken('pivot', {
           scope,
           target: 'recall' as ObservatoryPivotTarget,
           focus_node_id: focusNodeId,
-          community_id: owner,
+          hierarchy,
+          project_id: projectOwner?.projectId ?? null,
+          community_id: communityId,
         }, OBSERVATORY_PIVOT_TTL_MS),
       };
     };
@@ -5348,12 +5364,15 @@ export class Store {
   }
 
   resolveSemanticObservatoryPivot(input: {
+    hierarchy?: AtlasHierarchy;
     pivot_token: string;
     target: ObservatoryPivotTarget;
   }): AtlasPivotLocation {
     const parsed = this.decodeScopedToken<{
       scope: ObservatoryScope;
       focus_node_id: string;
+      hierarchy?: AtlasHierarchy;
+      project_id?: string | null;
       community_id?: string;
     }>('pivot', input.pivot_token);
     const match = parsed.focus_node_id.match(/^obs:(\d+)$/);
@@ -5367,18 +5386,38 @@ export class Store {
     const scope = this.normalizeObservatoryScope(parsed.scope);
     const publicScope = this.atlasTokenScopeFromInternal(scope);
     const focusNodeId = `obs:${Number.parseInt(match[1]!, 10)}` as const;
-    const atlas = this.getSemanticAtlasPage({
-      level: 'neighborhood',
-      project_token: publicScope.project?.token,
-      session_token: publicScope.session?.token,
-      topic_token: publicScope.topic?.token,
-      type: publicScope.type ?? undefined,
-      relation: publicScope.relation ?? undefined,
-      query: publicScope.query ?? undefined,
-      focus_node_id: focusNodeId,
-      depth: 1,
-    });
-    const currentCommunityId = atlas.navigation.community_id;
+    const hierarchy = input.hierarchy ?? 'global';
+    if ((parsed.hierarchy ?? 'global') !== hierarchy) {
+      throw new SemanticAtlasError(
+        'VIZ_ATLAS_HIERARCHY_INVALID',
+        'The selected search result belongs to a different atlas hierarchy.',
+        'universe',
+      );
+    }
+    if (hierarchy === 'project') {
+      const owner = this.resolveProjectAtlasOwnerForObservation(publicScope, focusNodeId);
+      if (
+        !owner
+        || (parsed.project_id && parsed.project_id !== owner.projectId)
+        || (parsed.community_id && parsed.community_id !== owner.communityId)
+      ) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_COMMUNITY_GONE',
+          'The recalled memory moved to a newer project constellation.',
+          owner ? 'project' : 'universe',
+        );
+      }
+      return {
+        hierarchy,
+        context_token: this.encodeScopedToken('context', { scope }, OBSERVATORY_CONTEXT_TTL_MS),
+        scope: publicScope,
+        project_id: owner.projectId,
+        focus_node_id: focusNodeId,
+        community_id: owner.communityId,
+        target: input.target,
+      };
+    }
+    const currentCommunityId = this.resolveGlobalAtlasCommunityForObservation(publicScope, focusNodeId);
     if (!currentCommunityId || (parsed.community_id && parsed.community_id !== currentCommunityId)) {
       throw new SemanticAtlasError(
         'VIZ_ATLAS_COMMUNITY_GONE',
@@ -5387,12 +5426,69 @@ export class Store {
       );
     }
     return {
+      hierarchy: 'global',
       context_token: this.encodeScopedToken('context', { scope }, OBSERVATORY_CONTEXT_TTL_MS),
       scope: publicScope,
+      project_id: null,
       focus_node_id: focusNodeId,
       community_id: currentCommunityId,
       target: input.target,
     };
+  }
+
+  private resolveProjectAtlasOwnerForObservation(
+    scope: AtlasTokenScope,
+    focusNodeId: `obs:${number}`,
+  ): { projectId: string; communityId: string } | null {
+    this.getSemanticAtlasPage({
+      hierarchy: 'project',
+      level: 'universe',
+      project_token: scope.project?.token,
+      session_token: scope.session?.token,
+      topic_token: scope.topic?.token,
+      type: scope.type ?? undefined,
+      relation: scope.relation ?? undefined,
+      query: scope.query ?? undefined,
+      page_size: 1,
+    });
+    const projectionCacheKey = this.semanticAtlasProjectionCacheKey(scope);
+    const cached = this.semanticAtlasProjectionCache.get(projectionCacheKey);
+    const projectProjection = cached?.projectProjection;
+    const projectId = projectProjection?.projectByObservationId.get(focusNodeId);
+    const communityId = projectProjection?.communityByObservationId.get(focusNodeId);
+    return projectId && communityId ? { projectId, communityId } : null;
+  }
+
+  private resolveGlobalAtlasCommunityForObservation(
+    scope: AtlasTokenScope,
+    focusNodeId: `obs:${number}`,
+  ): string | null {
+    this.getSemanticAtlasPage({
+      hierarchy: 'global',
+      level: 'universe',
+      project_token: scope.project?.token,
+      session_token: scope.session?.token,
+      topic_token: scope.topic?.token,
+      type: scope.type ?? undefined,
+      relation: scope.relation ?? undefined,
+      query: scope.query ?? undefined,
+      page_size: 1,
+    });
+    const projectionCacheKey = this.semanticAtlasProjectionCacheKey(scope);
+    return this.semanticAtlasProjectionCache.get(projectionCacheKey)
+      ?.projection.communityByObservationId.get(focusNodeId) ?? null;
+  }
+
+  private semanticAtlasProjectionCacheKey(scope: AtlasTokenScope): string {
+    return createHash('sha256').update(JSON.stringify({
+      revision: this.getSemanticAtlasRevision(),
+      project_token: scope.project?.token ?? null,
+      session_token: scope.session?.token ?? null,
+      topic_token: scope.topic?.token ?? null,
+      type: scope.type ?? null,
+      relation: scope.relation?.trim() || null,
+      query: stripPrivateTags(scope.query ?? '').trim().toLowerCase(),
+    })).digest('hex');
   }
 
   getObservatoryContext(input: ObservatoryScope = {}): ObservatoryContextResponse {
@@ -5821,8 +5917,45 @@ export class Store {
 
   getSemanticAtlasPage(input: SemanticAtlasPageRequest = {}): SemanticAtlasPageResponse {
     const readPage = this.db.transaction(() => {
+      const hierarchy = input.hierarchy ?? 'global';
       const level = input.level ?? 'universe';
       const presentation = input.presentation ?? 'complete';
+      const hasUnexpectedOwner = (
+        (level === 'universe' && Boolean(input.community_id || input.focus_node_id))
+        || (level === 'project' && Boolean(input.community_id || input.focus_node_id))
+        || (level === 'community' && Boolean(input.focus_node_id))
+      );
+      if (hasUnexpectedOwner) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'This semantic level received an owner identity that belongs to a deeper location.',
+          level === 'universe' ? 'universe' : level,
+        );
+      }
+      if (hierarchy === 'global' && (level === 'project' || input.project_id)) {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'Project locations require explicit project hierarchy negotiation.',
+          'universe',
+        );
+      }
+      if (hierarchy === 'project') {
+        const projectRequired = level === 'project' || level === 'community' || level === 'neighborhood';
+        if (projectRequired && !input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'This semantic location requires an opaque owning project.',
+            'universe',
+          );
+        }
+        if (level === 'universe' && input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'Universe project pages do not accept a selected project identity.',
+            'universe',
+          );
+        }
+      }
       if (
         (presentation === 'semantic-zoom' && level !== 'community')
         || (input.region_id && (level !== 'community' || presentation !== 'semantic-zoom'))
@@ -5841,10 +5974,10 @@ export class Store {
           'universe',
         );
       }
-      if (level === 'neighborhood' && !input.focus_node_id) {
+      if (level === 'neighborhood' && (!input.community_id || !input.focus_node_id)) {
         throw new SemanticAtlasError(
           'VIZ_ATLAS_LEVEL_INVALID',
-          'Neighborhood navigation requires a focused memory.',
+          'Neighborhood navigation requires a current community and focused memory.',
           'community',
         );
       }
@@ -6021,8 +6154,382 @@ export class Store {
         summaryState,
         health,
       } = cachedProjection;
+      let projectProjection: ProjectAtlasProjection | null = null;
+      let projectGeneration = generation;
+      if (hierarchy === 'project') {
+        projectProjection = cachedProjection.projectProjection ?? buildProjectAtlasProjection({
+          globalProjection: projection,
+          facetCatalog,
+        });
+        cachedProjection.projectProjection = projectProjection;
+        projectGeneration = createHash('sha256')
+          .update(generation)
+          .update(projectAtlasFingerprint(projectProjection))
+          .digest('hex');
+      }
+      if (hierarchy === 'project' && level === 'universe') {
+        const currentProjectProjection = projectProjection!;
+        const projectScopeFingerprint = createHash('sha256').update(JSON.stringify({
+          hierarchy,
+          level,
+          project_token: input.project_token ?? null,
+          session_token: input.session_token ?? null,
+          topic_token: input.topic_token ?? null,
+          type: observationType ?? null,
+          relation: input.relation?.trim() || null,
+          query,
+        })).digest('hex');
+        let start = 0;
+        if (input.cursor) {
+          let cursor: ProjectAtlasCursor;
+          try {
+            cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as ProjectAtlasCursor;
+          } catch {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid.', level);
+          }
+          if (
+            cursor.v !== 2
+            || cursor.hierarchy !== 'project'
+            || cursor.level !== 'universe'
+            || cursor.scope !== projectScopeFingerprint
+            || cursor.generation !== projectGeneration
+            || cursor.project_id !== null
+            || !Number.isInteger(cursor.offset)
+            || cursor.offset < 0
+            || cursor.offset > currentProjectProjection.projects.length
+          ) {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid or stale.', level);
+          }
+          start = cursor.offset;
+        }
+        const pageSize = Math.min(Math.max(Math.trunc(input.page_size ?? 24), 1), 150);
+        const end = Math.min(currentProjectProjection.projects.length, start + pageSize);
+        const pageProjects = currentProjectProjection.projects.slice(start, end);
+        const coreBudget = Math.min(150, pageSize * 3);
+        const visibleCommunities = new Map<string, typeof pageProjects[number]['communities'][number]>();
+        for (let round = 0; visibleCommunities.size < coreBudget; round += 1) {
+          let added = false;
+          for (const projectEntry of pageProjects) {
+            const community = projectEntry.communities[round];
+            if (!community || visibleCommunities.size >= coreBudget) continue;
+            visibleCommunities.set(community.id, community);
+            added = true;
+          }
+          if (!added) break;
+        }
+        const nodes = [...visibleCommunities.values()].map((community) => community.node);
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        const edges = pageProjects.flatMap((projectEntry) => projectEntry.projection.aggregateEdges)
+          .filter((edge) => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id));
+        const pageProjectIds = new Set(pageProjects.map((projectEntry) => projectEntry.id));
+        const projectBridges = currentProjectProjection.projectBridges.filter((bridge) => (
+          pageProjectIds.has(bridge.source_project_id) && pageProjectIds.has(bridge.target_project_id)
+        ));
+        const projectRegions = pageProjects.map((projectEntry) => {
+          const constellationIds = projectEntry.communities
+            .map((community) => community.id)
+            .filter((id) => visibleCommunities.has(id));
+          return {
+            ...projectEntry.region,
+            visible_constellation_count: constellationIds.length,
+            omitted_constellation_count: projectEntry.communities.length - constellationIds.length,
+            constellation_ids: constellationIds,
+          };
+        });
+        const sourceConstellationCount = currentProjectProjection.projects.reduce(
+          (total, projectEntry) => total + projectEntry.communities.length,
+          0,
+        );
+        const continuation = end < currentProjectProjection.projects.length
+          ? Buffer.from(JSON.stringify({
+              v: 2,
+              hierarchy: 'project',
+              level: 'universe',
+              scope: projectScopeFingerprint,
+              generation: projectGeneration,
+              project_id: null,
+              offset: end,
+            } satisfies ProjectAtlasCursor)).toString('base64url')
+          : null;
+        const missingKg = observations.length - projection.observationsWithKg;
+        const coverageState = observations.length === 0 || projection.observationsWithKg === 0
+          ? 'missing'
+          : missingKg > 0 ? 'degraded' : 'fresh';
+        return {
+          hierarchy,
+          level,
+          generation: projectGeneration,
+          presentation: 'complete',
+          nodes,
+          edges,
+          regions: [],
+          region_bridges: [],
+          project_regions: projectRegions,
+          project_bridges: projectBridges,
+          counts: {
+            memory_count: observations.length,
+            project_count: currentProjectProjection.projects.length,
+            community_count: sourceConstellationCount,
+            assigned_memory_count: observations.length,
+            unclustered_memory_count: currentProjectProjection.projects.flatMap((entry) => entry.communities)
+              .filter((community) => community.unclustered)
+              .reduce((total, community) => total + community.member_ids.length, 0),
+            supporting_entity_count: 0,
+            relationship_count: projectBridges.length + edges.length,
+            raw_entity_count: projection.rawEntityCount,
+            raw_relationship_count: projection.rawRelationshipCount,
+          },
+          coverage: {
+            state: coverageState,
+            projection_source: projection.evidenceLinks.length > 0
+              ? 'deterministic-kg'
+              : 'deterministic-unclustered',
+            summary_state: summaryState,
+            observations_with_kg: projection.observationsWithKg,
+            observations_without_kg: missingKg,
+            degraded_reasons: missingKg > 0
+              ? ['Some memories do not yet have structural graph evidence.']
+              : [],
+          },
+          facets: projection.facets,
+          navigation: {
+            project_id: null,
+            community_id: null,
+            focus_node_id: null,
+            depth: null,
+            region_id: null,
+            source_project_count: currentProjectProjection.projects.length,
+            visible_project_count: pageProjects.length,
+            omitted_projects: currentProjectProjection.projects.length - pageProjects.length,
+            source_constellation_count: sourceConstellationCount,
+            visible_constellation_count: nodes.length,
+            omitted_constellations: sourceConstellationCount - nodes.length,
+            source_memory_count: observations.length,
+            visible_memory_count: 0,
+            source_relationship_count: projection.evidenceLinks.length,
+            visible_relationship_count: edges.length + projectBridges.length,
+            represented_source_relationship_count: edges.length + projectBridges.length,
+            omitted_nodes: Math.max(0, sourceConstellationCount - nodes.length),
+            omitted_edges: Math.max(0, projection.evidenceLinks.length - edges.length - projectBridges.length),
+            raw_rich_render_safe: projection.rawEntityCount <= 5_000,
+            raw_rich_render_limit: 5_000,
+            scope: {
+              project: project ? facetCatalog.refsByValue.project.get(project) ?? null : null,
+              session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
+              topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
+              type: observationType ?? null,
+              relation: input.relation?.trim() || null,
+            },
+          },
+          continuation,
+          truncated: continuation !== null || sourceConstellationCount > nodes.length,
+          health,
+        } satisfies SemanticAtlasPageResponse;
+      }
+      if (hierarchy === 'project' && level === 'project') {
+        if (!input.project_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_HIERARCHY_INVALID',
+            'Project navigation requires an opaque project identity.',
+            'universe',
+          );
+        }
+        const projectEntry = projectProjection!.projectById.get(input.project_id);
+        if (!projectEntry) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_GONE',
+            'This project nebula is no longer current.',
+            'universe',
+          );
+        }
+        if (project && projectEntry.canonical_project !== project) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'The project navigation parent conflicts with the active project facet.',
+            'universe',
+          );
+        }
+        const projectScopeFingerprint = createHash('sha256').update(JSON.stringify({
+          hierarchy,
+          level,
+          project_id: projectEntry.id,
+          project_token: input.project_token ?? null,
+          session_token: input.session_token ?? null,
+          topic_token: input.topic_token ?? null,
+          type: observationType ?? null,
+          relation: input.relation?.trim() || null,
+          query,
+        })).digest('hex');
+        let start = 0;
+        if (input.cursor) {
+          let cursor: ProjectAtlasCursor;
+          try {
+            cursor = JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')) as ProjectAtlasCursor;
+          } catch {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid.', level);
+          }
+          if (
+            cursor.v !== 2
+            || cursor.hierarchy !== 'project'
+            || cursor.level !== 'project'
+            || cursor.scope !== projectScopeFingerprint
+            || cursor.generation !== projectGeneration
+            || cursor.project_id !== projectEntry.id
+            || !Number.isInteger(cursor.offset)
+            || cursor.offset < 0
+            || cursor.offset > projectEntry.communities.length
+          ) {
+            throw new SemanticAtlasError('VIZ_ATLAS_CURSOR_INVALID', 'The atlas continuation is invalid or stale.', level);
+          }
+          start = cursor.offset;
+        }
+        const pageSize = Math.min(Math.max(Math.trunc(input.page_size ?? 150), 1), 150);
+        const end = Math.min(projectEntry.communities.length, start + pageSize);
+        const nodes = projectEntry.communities.slice(start, end).map((community) => community.node);
+        const nodeIds = new Set(nodes.map((node) => node.id));
+        const edges = projectEntry.projection.aggregateEdges.filter((edge) => (
+          nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id)
+        ));
+        const continuation = end < projectEntry.communities.length
+          ? Buffer.from(JSON.stringify({
+              v: 2,
+              hierarchy: 'project',
+              level: 'project',
+              scope: projectScopeFingerprint,
+              generation: projectGeneration,
+              project_id: projectEntry.id,
+              offset: end,
+            } satisfies ProjectAtlasCursor)).toString('base64url')
+          : null;
+        const projectMemoryCount = projectEntry.projection.observations.length;
+        const missingKg = projectMemoryCount - projectEntry.projection.observationsWithKg;
+        return {
+          hierarchy,
+          level,
+          generation: projectGeneration,
+          presentation: 'complete',
+          nodes,
+          edges,
+          regions: [],
+          region_bridges: [],
+          project_regions: [],
+          project_bridges: [],
+          counts: {
+            memory_count: projectMemoryCount,
+            project_count: 1,
+            community_count: projectEntry.communities.length,
+            assigned_memory_count: projectMemoryCount,
+            unclustered_memory_count: projectEntry.communities
+              .filter((community) => community.unclustered)
+              .reduce((total, community) => total + community.member_ids.length, 0),
+            supporting_entity_count: 0,
+            relationship_count: projectEntry.projection.aggregateEdges.length,
+            raw_entity_count: projectEntry.projection.rawEntityCount,
+            raw_relationship_count: projectEntry.projection.rawRelationshipCount,
+          },
+          coverage: {
+            state: projectMemoryCount === 0 || projectEntry.projection.observationsWithKg === 0
+              ? 'missing'
+              : missingKg > 0 ? 'degraded' : 'fresh',
+            projection_source: projectEntry.projection.evidenceLinks.length > 0
+              ? 'deterministic-kg'
+              : 'deterministic-unclustered',
+            summary_state: summaryState,
+            observations_with_kg: projectEntry.projection.observationsWithKg,
+            observations_without_kg: missingKg,
+            degraded_reasons: missingKg > 0
+              ? ['Some memories do not yet have structural graph evidence.']
+              : [],
+          },
+          facets: projectEntry.projection.facets,
+          navigation: {
+            project_id: projectEntry.id,
+            community_id: null,
+            focus_node_id: null,
+            depth: null,
+            region_id: null,
+            source_project_count: 1,
+            visible_project_count: 1,
+            omitted_projects: 0,
+            source_constellation_count: projectEntry.communities.length,
+            visible_constellation_count: nodes.length,
+            omitted_constellations: projectEntry.communities.length - nodes.length,
+            source_memory_count: projectMemoryCount,
+            visible_memory_count: 0,
+            source_relationship_count: projectEntry.projection.aggregateEdges.length,
+            visible_relationship_count: edges.length,
+            represented_source_relationship_count: edges.length,
+            omitted_nodes: Math.max(0, projectEntry.communities.length - nodes.length),
+            omitted_edges: Math.max(0, projectEntry.projection.aggregateEdges.length - edges.length),
+            raw_rich_render_safe: projectEntry.projection.rawEntityCount <= 5_000,
+            raw_rich_render_limit: 5_000,
+            scope: {
+              project: projectEntry.canonical_project
+                ? facetCatalog.refsByValue.project.get(projectEntry.canonical_project) ?? null
+                : null,
+              session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
+              topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
+              type: observationType ?? null,
+              relation: input.relation?.trim() || null,
+            },
+          },
+          continuation,
+          truncated: continuation !== null,
+          health,
+        } satisfies SemanticAtlasPageResponse;
+      }
+      if (hierarchy === 'global' && level === 'project') {
+        throw new SemanticAtlasError(
+          'VIZ_ATLAS_HIERARCHY_INVALID',
+          'Project navigation requires explicit project hierarchy negotiation.',
+          'universe',
+        );
+      }
+      let activeProjection = projection;
+      let activeObservations = observations;
+      let activeProjectId: string | null = null;
+      let activeCanonicalProject: string | null = project ?? null;
+      if (hierarchy === 'project' && (level === 'community' || level === 'neighborhood')) {
+        if (!input.project_id || !input.community_id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_HIERARCHY_INVALID',
+            'Project-hierarchy detail requires opaque project and constellation ownership.',
+            input.project_id ? 'project' : 'universe',
+          );
+        }
+        const projectEntry = projectProjection!.projectById.get(input.project_id);
+        if (!projectEntry) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_GONE',
+            'This project nebula is no longer current.',
+            'universe',
+          );
+        }
+        if (project && projectEntry.canonical_project !== project) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_PROJECT_SCOPE_INVALID',
+            'The project navigation parent conflicts with the active project facet.',
+            'universe',
+          );
+        }
+        const community = projectProjection!.communityById.get(input.community_id);
+        if (!community || community.project_id !== projectEntry.id) {
+          throw new SemanticAtlasError(
+            'VIZ_ATLAS_COMMUNITY_GONE',
+            'This constellation does not belong to the selected project.',
+            'project',
+          );
+        }
+        activeProjection = projectEntry.projection;
+        activeObservations = projectEntry.projection.observations;
+        activeProjectId = projectEntry.id;
+        activeCanonicalProject = projectEntry.canonical_project;
+      }
+      const activeGeneration = hierarchy === 'project' ? projectGeneration : generation;
       const scopeFingerprint = createHash('sha256').update(JSON.stringify({
+        hierarchy,
         level,
+        project_id: activeProjectId,
         project_token: input.project_token ?? null,
         session_token: input.session_token ?? null,
         topic_token: input.topic_token ?? null,
@@ -6065,7 +6572,7 @@ export class Store {
             level,
           );
         }
-        if (cursor.generation !== generation) {
+        if (cursor.generation !== activeGeneration) {
           throw new SemanticAtlasError(
             'VIZ_ATLAS_GENERATION_STALE',
             'The memory atlas changed while it was loading.',
@@ -6074,8 +6581,8 @@ export class Store {
         }
       }
 
-      let sourceNodes = enrichSemanticAtlasCommunityNodes(projection, summaryCandidates);
-      let sourceEdges = projection.aggregateEdges;
+      let sourceNodes = enrichSemanticAtlasCommunityNodes(activeProjection, summaryCandidates);
+      let sourceEdges = activeProjection.aggregateEdges;
       let communityId: string | null = null;
       let focusNodeId: string | null = null;
       let omittedNodes = 0;
@@ -6088,7 +6595,7 @@ export class Store {
       let sourceRelationshipCount = sourceEdges.length;
 
       if (level === 'community') {
-        const community = projection.communities.find((candidate) => candidate.id === input.community_id);
+        const community = activeProjection.communities.find((candidate) => candidate.id === input.community_id);
         if (!community) {
           throw new SemanticAtlasError(
             'VIZ_ATLAS_COMMUNITY_GONE',
@@ -6097,9 +6604,9 @@ export class Store {
           );
         }
         communityId = community.id;
-        sourceNodes = community.member_ids.map((memberId) => projection.observationNodes.get(memberId)!);
+        sourceNodes = community.member_ids.map((memberId) => activeProjection.observationNodes.get(memberId)!);
         const memberIds = new Set(community.member_ids);
-        sourceEdges = projection.semanticEdges.filter((edge) => (
+        sourceEdges = activeProjection.semanticEdges.filter((edge) => (
           memberIds.has(edge.source_id) && memberIds.has(edge.target_id)
         ));
         sourceMemoryCount = sourceNodes.length;
@@ -6110,10 +6617,10 @@ export class Store {
           if (!workingSet) {
             workingSet = buildSemanticAtlasCommunityView({
               community,
-              observations: projection.observations,
-              observationNodes: projection.observationNodes,
-              evidenceLinks: projection.evidenceLinks,
-              presentationEvidence: projection.presentationEvidence,
+              observations: activeProjection.observations,
+              observationNodes: activeProjection.observationNodes,
+              evidenceLinks: activeProjection.evidenceLinks,
+              presentationEvidence: activeProjection.presentationEvidence,
               regionId: input.region_id,
             });
             cachedProjection.semanticViews.set(semanticViewKey, workingSet);
@@ -6140,14 +6647,14 @@ export class Store {
         }
       } else if (level === 'neighborhood') {
         focusNodeId = input.focus_node_id!;
-        if (!projection.observationNodes.has(focusNodeId)) {
+        if (!activeProjection.observationNodes.has(focusNodeId)) {
           throw new SemanticAtlasError(
             'VIZ_ATLAS_FOCUS_INVALID',
             'The focused memory is not available in this atlas scope.',
             'universe',
           );
         }
-        communityId = projection.communityByObservationId.get(focusNodeId) ?? null;
+        communityId = activeProjection.communityByObservationId.get(focusNodeId) ?? null;
         if (input.community_id && input.community_id !== communityId) {
           throw new SemanticAtlasError(
             'VIZ_ATLAS_COMMUNITY_GONE',
@@ -6156,7 +6663,7 @@ export class Store {
           );
         }
         const adjacency = new Map<string, Array<{ id: string; weight: number }>>();
-        for (const link of projection.evidenceLinks) {
+        for (const link of activeProjection.evidenceLinks) {
           const source = adjacency.get(link.source_id) ?? [];
           source.push({ id: link.target_id, weight: link.weight });
           adjacency.set(link.source_id, source);
@@ -6189,13 +6696,13 @@ export class Store {
         });
         const candidateSet = new Set(candidateIds);
         const allSupportingIds = [...new Set(candidateIds.flatMap(
-          (id) => projection.supportingNodeIdsByObservationId.get(id) ?? [],
+          (id) => activeProjection.supportingNodeIdsByObservationId.get(id) ?? [],
         ))];
         const neighborhoodNodeLimit = 180;
         const desiredSupportingCount = Math.min(48, allSupportingIds.length);
         const boundedIds = candidateIds.slice(0, Math.max(1, neighborhoodNodeLimit - desiredSupportingCount));
         const supportingIds = [...new Set(boundedIds.flatMap(
-          (id) => projection.supportingNodeIdsByObservationId.get(id) ?? [],
+          (id) => activeProjection.supportingNodeIdsByObservationId.get(id) ?? [],
         ))].slice(0, neighborhoodNodeLimit - boundedIds.length);
         if (boundedIds.length + supportingIds.length < neighborhoodNodeLimit) {
           boundedIds.push(...candidateIds.slice(
@@ -6208,23 +6715,23 @@ export class Store {
         const boundedSet = new Set(boundedIds);
         const supportingSet = new Set(supportingIds);
         sourceNodes = [
-          ...boundedIds.map((id) => projection.observationNodes.get(id)!),
-          ...supportingIds.map((id) => projection.supportingNodes.get(id)!),
+          ...boundedIds.map((id) => activeProjection.observationNodes.get(id)!),
+          ...supportingIds.map((id) => activeProjection.supportingNodes.get(id)!),
         ];
         const edgesFor = (ids: Set<string>): SemanticAtlasEdge[] => {
           const unique = new Map<string, SemanticAtlasEdge>();
           for (const id of ids) {
-            for (const edge of projection.semanticEdgesByNodeId.get(id) ?? []) {
+            for (const edge of activeProjection.semanticEdgesByNodeId.get(id) ?? []) {
               if (ids.has(edge.source_id) && ids.has(edge.target_id)) unique.set(edge.id, edge);
             }
           }
           return [...unique.values()];
         };
         const semanticNeighborhoodEdges = edgesFor(boundedSet);
-        const supportingNeighborhoodEdges = boundedIds.flatMap((id) => projection.supportingEdgesByObservationId.get(id) ?? [])
+        const supportingNeighborhoodEdges = boundedIds.flatMap((id) => activeProjection.supportingEdgesByObservationId.get(id) ?? [])
           .filter((edge) => supportingSet.has(edge.target_id));
         const candidateSemanticEdges = edgesFor(candidateSet);
-        const candidateSupportingEdges = candidateIds.flatMap((id) => projection.supportingEdgesByObservationId.get(id) ?? []);
+        const candidateSupportingEdges = candidateIds.flatMap((id) => activeProjection.supportingEdgesByObservationId.get(id) ?? []);
         sourceMemoryCount = candidateIds.length + allSupportingIds.length;
         sourceRelationshipCount = candidateSemanticEdges.length + candidateSupportingEdges.length;
         sourceEdges = [...semanticNeighborhoodEdges, ...supportingNeighborhoodEdges]
@@ -6239,9 +6746,10 @@ export class Store {
         omittedEdges = Math.max(0, sourceRelationshipCount - representedSourceRelationshipCount);
       }
 
+      const completePageLimit = hierarchy === 'project' ? 150 : 250;
       const pageSize = presentation === 'semantic-zoom'
         ? sourceNodes.length
-        : Math.min(Math.max(Math.trunc(input.page_size ?? 250), 1), 250);
+        : Math.min(Math.max(Math.trunc(input.page_size ?? completePageLimit), 1), completePageLimit);
       const start = cursor?.offset ?? 0;
       if (start > sourceNodes.length) {
         throw new SemanticAtlasError(
@@ -6264,49 +6772,53 @@ export class Store {
             v: 1,
             level,
             scope: scopeFingerprint,
-            generation,
+            generation: activeGeneration,
             community_id: communityId,
             focus_node_id: focusNodeId,
             offset: end,
           } satisfies SemanticAtlasCursor)).toString('base64url')
         : null;
       if (presentation !== 'semantic-zoom') representedSourceRelationshipCount = sourceEdges.length;
-      const unclusteredMemoryCount = projection.communities
+      const unclusteredMemoryCount = activeProjection.communities
         .filter((community) => community.unclustered)
         .reduce((sum, community) => sum + community.member_ids.length, 0);
-      const missingKg = observations.length - projection.observationsWithKg;
-      const coverageState = observations.length === 0 || projection.observationsWithKg === 0
+      const missingKg = activeObservations.length - activeProjection.observationsWithKg;
+      const coverageState = activeObservations.length === 0 || activeProjection.observationsWithKg === 0
         ? 'missing'
         : missingKg > 0
           ? 'degraded'
           : 'fresh';
+      const representedConstellationCount = level === 'universe' ? nodes.length : communityId ? 1 : 0;
 
       return {
+        hierarchy,
         level,
-        generation,
+        generation: activeGeneration,
         presentation,
         nodes,
         edges,
         regions,
         region_bridges: regionBridges,
+        project_regions: [],
+        project_bridges: [],
         counts: {
-          memory_count: observations.length,
-          project_count: projection.facets.projects.length,
-          community_count: projection.communities.length,
-          assigned_memory_count: observations.length,
+          memory_count: activeObservations.length,
+          project_count: hierarchy === 'project' ? 1 : activeProjection.facets.projects.length,
+          community_count: activeProjection.communities.length,
+          assigned_memory_count: activeObservations.length,
           unclustered_memory_count: unclusteredMemoryCount,
           supporting_entity_count: sourceNodes.filter((node) => node.kind === 'fact').length,
           relationship_count: sourceRelationshipCount,
-          raw_entity_count: projection.rawEntityCount,
-          raw_relationship_count: projection.rawRelationshipCount,
+          raw_entity_count: activeProjection.rawEntityCount,
+          raw_relationship_count: activeProjection.rawRelationshipCount,
         },
         coverage: {
           state: coverageState,
-          projection_source: projection.evidenceLinks.length > 0
+          projection_source: activeProjection.evidenceLinks.length > 0
             ? 'deterministic-kg'
             : 'deterministic-unclustered',
           summary_state: summaryState,
-          observations_with_kg: projection.observationsWithKg,
+          observations_with_kg: activeProjection.observationsWithKg,
           observations_without_kg: missingKg,
           degraded_reasons: [
             ...(missingKg > 0 ? ['Some memories do not yet have structural graph evidence.'] : []),
@@ -6315,12 +6827,22 @@ export class Store {
               : []),
           ],
         },
-        facets: projection.facets,
+        facets: activeProjection.facets,
         navigation: {
+          project_id: activeProjectId,
           community_id: communityId,
           focus_node_id: focusNodeId,
           depth: level === 'neighborhood' ? depth : null,
           region_id: regionId,
+          source_project_count: hierarchy === 'project' ? 1 : activeProjection.facets.projects.length,
+          visible_project_count: hierarchy === 'project' ? 1 : 0,
+          omitted_projects: hierarchy === 'project' ? 0 : activeProjection.facets.projects.length,
+          source_constellation_count: activeProjection.communities.length,
+          visible_constellation_count: representedConstellationCount,
+          omitted_constellations: Math.max(
+            0,
+            activeProjection.communities.length - representedConstellationCount,
+          ),
           source_memory_count: sourceMemoryCount,
           visible_memory_count: nodes.length,
           source_relationship_count: sourceRelationshipCount,
@@ -6328,10 +6850,12 @@ export class Store {
           represented_source_relationship_count: representedSourceRelationshipCount,
           omitted_nodes: omittedNodes,
           omitted_edges: omittedEdges,
-          raw_rich_render_safe: projection.rawEntityCount <= 5_000,
+          raw_rich_render_safe: activeProjection.rawEntityCount <= 5_000,
           raw_rich_render_limit: 5_000,
           scope: {
-            project: project ? facetCatalog.refsByValue.project.get(project) ?? null : null,
+            project: activeCanonicalProject
+              ? facetCatalog.refsByValue.project.get(activeCanonicalProject) ?? null
+              : null,
             session: sessionId ? facetCatalog.refsByValue.session.get(sessionId) ?? null : null,
             topic: topicKey ? facetCatalog.refsByValue.topic.get(topicKey) ?? null : null,
             type: observationType ?? null,

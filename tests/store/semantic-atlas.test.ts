@@ -341,6 +341,7 @@ describe('Store semantic atlas', () => {
       ))).toBe(true);
 
       const accumulatedMemberIds = new Set<string>();
+      const communityByMemberId = new Map<string, string>();
       for (const communityId of communityIds) {
         let cursor: string | undefined;
         do {
@@ -353,7 +354,10 @@ describe('Store semantic atlas', () => {
           expect(page.nodes.every((node) => node.kind === 'observation')).toBe(true);
           expect(page.presentation).toBe('complete');
           expect(page.regions).toEqual([]);
-          page.nodes.forEach((node) => accumulatedMemberIds.add(node.id));
+          page.nodes.forEach((node) => {
+            accumulatedMemberIds.add(node.id);
+            communityByMemberId.set(node.id, communityId);
+          });
           expect(page.edges.every((edge) => (
             accumulatedMemberIds.has(edge.source_id) && accumulatedMemberIds.has(edge.target_id)
           ))).toBe(true);
@@ -365,6 +369,7 @@ describe('Store semantic atlas', () => {
       const focusNodeId = `obs:${observationIds[1]}`;
       const neighborhood = store.getSemanticAtlasPage({
         level: 'neighborhood',
+        community_id: communityByMemberId.get(focusNodeId),
         focus_node_id: focusNodeId,
         depth: 2,
         page_size: 250,
@@ -628,6 +633,7 @@ describe('Store semantic atlas', () => {
       })).toThrow(expect.objectContaining({ code: 'VIZ_ATLAS_COMMUNITY_GONE' }));
       expect(() => store.getSemanticAtlasPage({
         level: 'neighborhood',
+        community_id: store.getSemanticAtlasPage({ level: 'universe' }).nodes[0]?.id,
         focus_node_id: 'obs:1',
       })).toThrow(expect.objectContaining({ code: 'VIZ_ATLAS_FOCUS_INVALID' }));
     } finally {

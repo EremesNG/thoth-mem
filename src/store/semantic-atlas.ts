@@ -195,7 +195,7 @@ export function enrichSemanticAtlasCommunityNodes(
   });
 }
 
-function seedPoint(id: string): { x: number; y: number } {
+export function seedSemanticAtlasPoint(id: string): { x: number; y: number } {
   const digest = createHash('sha256').update(id).digest();
   const x = digest.readUInt32BE(0) / 0xffffffff;
   const y = digest.readUInt32BE(4) / 0xffffffff;
@@ -431,7 +431,7 @@ function connectedComponents(observationIds: string[], links: AtlasEvidenceLink[
   return linked;
 }
 
-function partitionObservationCommunities(observationIds: string[], links: AtlasEvidenceLink[]): string[][] {
+export function partitionObservationCommunities(observationIds: string[], links: AtlasEvidenceLink[]): string[][] {
   const degrees = new Map(observationIds.map((id) => [id, 0]));
   for (const link of links) {
     degrees.set(link.source_id, (degrees.get(link.source_id) ?? 0) + 1);
@@ -543,7 +543,7 @@ function partitionObservationCommunities(observationIds: string[], links: AtlasE
   return groups;
 }
 
-function boundCommunities(components: string[][], observationCount: number): string[][] {
+export function boundSemanticAtlasCommunities(components: string[][], observationCount: number): string[][] {
   const maximumSize = observationCount >= 150
     ? Math.max(1, Math.min(1_000, Math.floor(observationCount * 0.25)))
     : 1_000;
@@ -581,7 +581,7 @@ function observationNode(
   catalog: AtlasFacetCatalog,
 ): SemanticAtlasNode {
   const id = `obs:${observation.id}`;
-  const point = seedPoint(id);
+  const point = seedSemanticAtlasPoint(id);
   return {
     id,
     kind: 'observation',
@@ -592,6 +592,7 @@ function observationNode(
     topic: facetRef(catalog, 'topic', observation.topic_key),
     type: observation.type,
     community_id: communityId,
+    owner_project_id: null,
     member_count: null,
     project_count: null,
     unclustered: false,
@@ -612,7 +613,7 @@ export function buildSemanticAtlasProjection(input: {
   const supportingFacts = input.facts.filter((fact) => (
     SUPPORT_RELATIONS.has(fact.relation) && fact.superseded !== true
   ));
-  const components = boundCommunities(
+  const components = boundSemanticAtlasCommunities(
     partitionObservationCommunities(observations.map((observation) => `obs:${observation.id}`), evidence.links),
     observations.length,
   );
@@ -629,7 +630,7 @@ export function buildSemanticAtlasProjection(input: {
     const members = memberIds.map((memberId) => observationById.get(memberId)!);
     const projectCount = new Set(members.map((member) => member.project).filter(Boolean)).size;
     const unclustered = memberIds.every((memberId) => (adjacency.get(memberId) ?? 0) === 0);
-    const point = seedPoint(id);
+    const point = seedSemanticAtlasPoint(id);
     const presentation = fallbackCommunityPresentation(memberIds, observationById, evidence.presentationEvidence);
     return {
       id,
@@ -645,6 +646,7 @@ export function buildSemanticAtlasProjection(input: {
         topic: null,
         type: null,
         community_id: id,
+        owner_project_id: null,
         member_count: memberIds.length,
         project_count: projectCount,
         unclustered,
@@ -671,7 +673,7 @@ export function buildSemanticAtlasProjection(input: {
     const canonical = `${fact.relation}\0${fact.object.normalize('NFC')}`;
     const nodeId = deriveVisualizationId('fact', canonical);
     if (!supportingNodes.has(nodeId)) {
-      const point = seedPoint(nodeId);
+      const point = seedSemanticAtlasPoint(nodeId);
       supportingNodes.set(nodeId, {
         id: nodeId,
         kind: 'fact',
@@ -682,6 +684,7 @@ export function buildSemanticAtlasProjection(input: {
         topic: null,
         type: null,
         community_id: null,
+        owner_project_id: null,
         member_count: null,
         project_count: null,
         unclustered: false,

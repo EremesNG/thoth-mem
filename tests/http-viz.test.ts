@@ -41,6 +41,40 @@ function seedVizSupersededFact(store: Store, input: {
   );
 }
 
+function seedDenseAtlasCommunity(store: Store, input: {
+  project: string;
+  connectedCount: number;
+  totalCount: number;
+}): void {
+  const observationIds = Array.from({ length: input.totalCount }, (_, index) => store.saveObservation({
+    title: `Detail default ${index + 1}`,
+    content: `Public detail default evidence ${index + 1}`,
+    project: input.project,
+  }).observation.id);
+  const db = store.getDb();
+  const insertEntity = db.prepare(
+    `INSERT INTO kg_entities (entity_key, entity_type, canonical_name)
+     VALUES (?, 'concept', ?) RETURNING id`
+  );
+  const sharedObject = insertEntity.get('detail-default:shared-object', 'Shared detail object') as { id: number };
+  const insertTriple = db.prepare(
+    `INSERT INTO kg_triples (
+       subject_entity_id, relation, object_entity_id, source_type, source_id,
+       project, provenance, confidence, triple_hash, extractor_version
+     ) VALUES (?, 'USES', ?, 'observation', ?, ?, 'test', 0.9, ?, 'detail-default-test')`
+  );
+  db.transaction(() => {
+    for (let left = 0; left < input.connectedCount; left += 1) {
+      for (let right = left + 1; right < input.connectedCount; right += 1) {
+        const pairKey = `detail-default:${left}:${right}`;
+        const subject = insertEntity.get(pairKey, pairKey) as { id: number };
+        insertTriple.run(subject.id, sharedObject.id, observationIds[left], input.project, `${pairKey}:left`);
+        insertTriple.run(subject.id, sharedObject.id, observationIds[right], input.project, `${pairKey}:right`);
+      }
+    }
+  })();
+}
+
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = createServer();
@@ -202,7 +236,7 @@ describe('viz routes', () => {
     expect(JSON.stringify(semantic)).not.toMatch(/ALPHA_HTTP_SECRET|BETA_HTTP_SECRET|<private>|\[private\]/i);
     const focusNodeId = community.nodes[0].id as string;
     const neighborhoodResponse = await fetch(
-      `http://127.0.0.1:${port}/viz/atlas?level=neighborhood&focus_node_id=${encodeURIComponent(focusNodeId)}&depth=2`,
+      `http://127.0.0.1:${port}/viz/atlas?level=neighborhood&community_id=${encodeURIComponent(communityId)}&focus_node_id=${encodeURIComponent(focusNodeId)}&depth=2`,
     );
     expect(neighborhoodResponse.status).toBe(200);
     const neighborhood = await neighborhoodResponse.json();
@@ -272,10 +306,149 @@ describe('viz routes', () => {
       'evidence_count', 'relations', 'confidence', 'representative_edge_ids', 'provenance',
     ]);
     expect(openApi.components.schemas.SemanticAtlasNavigation.required).toEqual([
-      'community_id', 'focus_node_id', 'depth', 'region_id', 'source_memory_count', 'visible_memory_count',
+      'project_id', 'community_id', 'focus_node_id', 'depth', 'region_id',
+      'source_project_count', 'visible_project_count', 'omitted_projects',
+      'source_constellation_count', 'visible_constellation_count', 'omitted_constellations',
+      'source_memory_count', 'visible_memory_count',
       'source_relationship_count', 'visible_relationship_count', 'represented_source_relationship_count',
       'omitted_nodes', 'omitted_edges', 'raw_rich_render_safe', 'raw_rich_render_limit', 'scope',
     ]);
+  });
+
+  it('negotiates project hierarchy and opaque pivot ownership through HTTP and OpenAPI', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:', { dedupeWindowMinutes: 0 });
+    const saved = store.saveObservation({
+      title: 'HTTP project pivot',
+      content: 'Public HTTP project pivot evidence',
+      project: 'HTTP project <private>HTTP_OWNER_SECRET</private>',
+    }).observation;
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const universeResponse = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=project&level=universe&page_size=24`,
+    );
+    expect(universeResponse.status).toBe(200);
+    const universe = await universeResponse.json();
+    expect(universe).toMatchObject({ hierarchy: 'project', level: 'universe' });
+    expect(universe.project_regions).toHaveLength(1);
+    const projectId = universe.project_regions[0].id as string;
+    const projectResponse = await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=project&level=project&project_id=${encodeURIComponent(projectId)}`,
+    );
+    expect(projectResponse.status).toBe(200);
+    const project = await projectResponse.json();
+    expect(project.navigation.project_id).toBe(projectId);
+
+    for (const query of [
+      `hierarchy=global&level=universe&community_id=${encodeURIComponent(project.nodes[0].community_id)}`,
+      `hierarchy=project&level=universe&community_id=${encodeURIComponent(project.nodes[0].community_id)}`,
+      `hierarchy=project&level=project&project_id=${encodeURIComponent(projectId)}&community_id=${encodeURIComponent(project.nodes[0].community_id)}`,
+      `hierarchy=project&level=community&project_id=${encodeURIComponent(projectId)}&community_id=${encodeURIComponent(project.nodes[0].community_id)}&focus_node_id=obs%3A${saved.id}`,
+    ]) {
+      const invalidOwner = await fetch(`http://127.0.0.1:${port}/viz/atlas?${query}`);
+      expect(invalidOwner.status).toBe(400);
+      await expect(invalidOwner.json()).resolves.toMatchObject({ code: 'VIZ_ATLAS_HIERARCHY_INVALID' });
+    }
+
+    const context = await (await fetch(
+      `http://127.0.0.1:${port}/observatory/context?query=HTTP%20project%20pivot`,
+    )).json();
+    const recallResponse = await fetch(
+      `http://127.0.0.1:${port}/observatory/recall?hierarchy=project&context_token=${encodeURIComponent(context.context_token)}&lanes=lexical&limit=1`,
+    );
+    expect(recallResponse.status).toBe(200);
+    const recall = await recallResponse.json();
+    const hit = recall.lanes.lexical[0];
+    expect(hit).toMatchObject({ project_id: projectId });
+    const pivotResponse = await fetch(`http://127.0.0.1:${port}/observatory/pivot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hierarchy: 'project', pivot_token: hit.pivot_token, target: 'map' }),
+    });
+    expect(pivotResponse.status).toBe(200);
+    await expect(pivotResponse.json()).resolves.toMatchObject({
+      hierarchy: 'project',
+      project_id: projectId,
+      community_id: hit.community_id,
+      focus_node_id: `obs:${saved.id}`,
+    });
+
+    const openApi = await (await fetch(`http://127.0.0.1:${port}/openapi.json`)).json();
+    expect(openApi.paths['/viz/atlas'].get.parameters.map((parameter: { name: string }) => parameter.name))
+      .toEqual(expect.arrayContaining(['hierarchy', 'level', 'project_id', 'page_size', 'cursor']));
+    const atlasOperation = openApi.paths['/viz/atlas'].get;
+    expect(atlasOperation.description).toMatch(/canonical owner-field matrix/i);
+    expect(atlasOperation['x-valid-owner-matrix']).toEqual([
+      { hierarchy: 'global', level: 'universe', valid: true, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+      { hierarchy: 'global', level: 'project', valid: false, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+      { hierarchy: 'global', level: 'community', valid: true, required_owner_fields: ['community_id'], forbidden_owner_fields: ['project_id', 'focus_node_id'] },
+      { hierarchy: 'global', level: 'neighborhood', valid: true, required_owner_fields: ['community_id', 'focus_node_id'], forbidden_owner_fields: ['project_id'] },
+      { hierarchy: 'project', level: 'universe', valid: true, required_owner_fields: [], forbidden_owner_fields: ['project_id', 'community_id', 'focus_node_id'] },
+      { hierarchy: 'project', level: 'project', valid: true, required_owner_fields: ['project_id'], forbidden_owner_fields: ['community_id', 'focus_node_id'] },
+      { hierarchy: 'project', level: 'community', valid: true, required_owner_fields: ['project_id', 'community_id'], forbidden_owner_fields: ['focus_node_id'] },
+      { hierarchy: 'project', level: 'neighborhood', valid: true, required_owner_fields: ['project_id', 'community_id', 'focus_node_id'], forbidden_owner_fields: [] },
+    ]);
+    expect(atlasOperation['x-page-size-by-hierarchy']).toEqual({
+      global: { minimum: 1, maximum: 250, default: 250 },
+      project: { minimum: 1, maximum: 150, universe_default: 24, detail_default: 150 },
+    });
+    const atlasPageSize = atlasOperation.parameters
+      .find((parameter: { name: string }) => parameter.name === 'page_size');
+    expect(atlasPageSize.description).toMatch(/151\.\.250.*only.*global/i);
+    expect(atlasPageSize.schema).toEqual({
+      type: 'integer',
+      minimum: 1,
+      maximum: 250,
+      default: 250,
+      'x-project-hierarchy-maximum': 150,
+    });
+    expect(openApi.components.schemas.SemanticAtlasPageResponse.required)
+      .toEqual(expect.arrayContaining(['hierarchy', 'project_regions', 'project_bridges']));
+    expect(openApi.components.schemas.AtlasPivotLocation.required)
+      .toEqual(expect.arrayContaining(['hierarchy', 'project_id', 'community_id', 'focus_node_id']));
+    expect(JSON.stringify({ universe, project, recall })).not.toMatch(/HTTP_OWNER_SECRET|<private>/);
+  });
+
+  it('uses hierarchy-specific defaults for complete Community pages through HTTP', async () => {
+    const port = await getAvailablePort();
+    const store = new Store(':memory:', { dedupeWindowMinutes: 0 });
+    seedDenseAtlasCommunity(store, {
+      project: 'Detail defaults project',
+      connectedCount: 151,
+      totalCount: 604,
+    });
+    const bridge = createHttpBridge(store, { ...getConfig(), httpPort: port });
+    await bridge.start();
+    active.push({ store, port, stop: () => bridge.stop() });
+
+    const projectUniverse = await (await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=project&level=universe`,
+    )).json();
+    const projectId = projectUniverse.project_regions[0].id as string;
+    const projectPage = await (await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=project&level=project&project_id=${encodeURIComponent(projectId)}`,
+    )).json();
+    const projectCommunityId = projectPage.nodes
+      .find((node: { member_count: number }) => node.member_count === 151).community_id as string;
+    const projectCommunity = await (await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=project&level=community&project_id=${encodeURIComponent(projectId)}&community_id=${encodeURIComponent(projectCommunityId)}`,
+    )).json();
+    expect(projectCommunity.nodes).toHaveLength(150);
+    expect(projectCommunity.continuation).toEqual(expect.any(String));
+
+    const globalUniverse = await (await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=global&level=universe&page_size=250`,
+    )).json();
+    const globalCommunityId = globalUniverse.nodes
+      .find((node: { member_count: number }) => node.member_count === 151).community_id as string;
+    const globalCommunity = await (await fetch(
+      `http://127.0.0.1:${port}/viz/atlas?hierarchy=global&level=community&community_id=${encodeURIComponent(globalCommunityId)}`,
+    )).json();
+    expect(globalCommunity.nodes).toHaveLength(151);
+    expect(globalCommunity.continuation).toBeNull();
   });
 
   it('serves complete scoped graph pages and rejects invalidated generations through the real bridge', async () => {

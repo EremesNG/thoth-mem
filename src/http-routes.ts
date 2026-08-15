@@ -1118,7 +1118,10 @@ export async function handleVizGraph(store: Store, request: HttpRouteRequest): P
 }
 
 function toSemanticAtlasHttpError(error: SemanticAtlasError): HttpRouteError {
-  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE' || error.code === 'VIZ_ATLAS_COMMUNITY_GONE' || error.code === 'VIZ_ATLAS_REGION_GONE'
+  const status = error.code === 'VIZ_ATLAS_GENERATION_STALE'
+    || error.code === 'VIZ_ATLAS_PROJECT_GONE'
+    || error.code === 'VIZ_ATLAS_COMMUNITY_GONE'
+    || error.code === 'VIZ_ATLAS_REGION_GONE'
     ? 409
     : error.code === 'VIZ_ATLAS_FOCUS_INVALID'
       ? 404
@@ -1140,8 +1143,17 @@ export async function handleVizAtlas(store: Store, request: HttpRouteRequest): P
       recover_to_level: 'universe',
     });
   }
+  const hierarchy = request.query.get('hierarchy') ?? 'global';
+  if (!['global', 'project'].includes(hierarchy)) {
+    throw new HttpRouteError(400, 'Invalid field: hierarchy', {
+      error: 'Invalid field: hierarchy',
+      code: 'VIZ_ATLAS_HIERARCHY_INVALID',
+      retryable: false,
+      recover_to_level: 'universe',
+    });
+  }
   const level = request.query.get('level') ?? 'universe';
-  if (!['universe', 'community', 'neighborhood'].includes(level)) {
+  if (!['universe', 'project', 'community', 'neighborhood'].includes(level)) {
     throw new HttpRouteError(400, 'Invalid field: level', {
       error: 'Invalid field: level',
       code: 'VIZ_ATLAS_LEVEL_INVALID',
@@ -1150,7 +1162,7 @@ export async function handleVizAtlas(store: Store, request: HttpRouteRequest): P
     });
   }
   const pageSize = parseOptionalInteger(request.query.get('page_size'), 'page_size', 1);
-  if (pageSize !== undefined && pageSize > 250) {
+  if (pageSize !== undefined && pageSize > (hierarchy === 'project' ? 150 : 250)) {
     throw new HttpRouteError(400, 'Invalid integer field: page_size');
   }
   const parsedDepth = parseOptionalInteger(request.query.get('depth'), 'depth', 1);
@@ -1167,7 +1179,9 @@ export async function handleVizAtlas(store: Store, request: HttpRouteRequest): P
     return {
       status: 200,
       body: store.getSemanticAtlasPage({
-        level: level as 'universe' | 'community' | 'neighborhood',
+        hierarchy: hierarchy as 'global' | 'project',
+        level: level as 'universe' | 'project' | 'community' | 'neighborhood',
+        project_id: request.query.get('project_id') ?? undefined,
         project_token: request.query.get('project_token') ?? undefined,
         session_token: request.query.get('session_token') ?? undefined,
         topic_token: request.query.get('topic_token') ?? undefined,
@@ -1274,9 +1288,14 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
   const contextToken = request.query.get('context_token');
   if (!contextToken) throw new HttpRouteError(400, 'Missing required field: context_token');
   try {
+    const hierarchy = request.query.get('hierarchy') ?? 'global';
+    if (hierarchy !== 'global' && hierarchy !== 'project') {
+      throw new HttpRouteError(400, 'Invalid field: hierarchy');
+    }
     return {
       status: 200,
       body: await store.getSemanticObservatoryRecall({
+        hierarchy,
         context_token: contextToken,
         lanes: parseObservatoryLanes(request.query.get('lanes')),
         limit: parseOptionalInteger(request.query.get('limit'), 'limit', 1),
@@ -1295,6 +1314,10 @@ export async function handleObservatoryRecall(store: Store, request: HttpRouteRe
 
 export async function handleObservatoryPivot(store: Store, request: HttpRouteRequest): Promise<HttpRouteResponse> {
   const body = request.body as Record<string, unknown> | undefined;
+  const hierarchy = body?.hierarchy === undefined ? 'global' : requireString(body.hierarchy, 'hierarchy');
+  if (hierarchy !== 'global' && hierarchy !== 'project') {
+    throw new HttpRouteError(400, 'Invalid field: hierarchy');
+  }
   const target = requireString(body?.target, 'target');
   if (!['map', 'timeline', 'ledger', 'recall'].includes(target)) {
     throw new HttpRouteError(400, 'Invalid field: target');
@@ -1303,6 +1326,7 @@ export async function handleObservatoryPivot(store: Store, request: HttpRouteReq
     return {
       status: 200,
       body: store.resolveSemanticObservatoryPivot({
+        hierarchy,
         pivot_token: requireString(body?.pivot_token, 'pivot_token'),
         target: target as 'map' | 'timeline' | 'ledger' | 'recall',
       }),

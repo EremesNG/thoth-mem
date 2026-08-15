@@ -932,7 +932,8 @@ export interface VizSliceResponse {
 
 export type VizGraphPageResponse = VizSliceResponse;
 
-export type AtlasLevel = 'universe' | 'community' | 'neighborhood';
+export type AtlasHierarchy = 'global' | 'project';
+export type AtlasLevel = 'universe' | 'project' | 'community' | 'neighborhood';
 export type AtlasCoverageState = 'fresh' | 'stale' | 'missing' | 'rebuilding' | 'failed' | 'degraded';
 export type AtlasFacetKind = 'project' | 'session' | 'topic';
 
@@ -988,6 +989,7 @@ export interface TokenSafeObservatoryRecallHit {
   session: AtlasFacetRef | null;
   topic: AtlasFacetRef | null;
   community_id: string;
+  project_id: string | null;
   created_at: string;
   lane: ObservatoryLane;
   pivot_token: string;
@@ -1003,15 +1005,19 @@ export interface TokenSafeObservatoryRecallResponse {
 }
 
 export interface AtlasPivotLocation {
+  hierarchy: AtlasHierarchy;
   context_token: string;
   scope: AtlasTokenScope;
+  project_id: string | null;
   focus_node_id: `obs:${number}`;
   community_id: string;
   target: ObservatoryPivotTarget;
 }
 
 export interface SemanticAtlasPageRequest {
+  hierarchy?: AtlasHierarchy;
   level?: AtlasLevel;
+  project_id?: string;
   project_token?: string;
   session_token?: string;
   topic_token?: string;
@@ -1046,6 +1052,7 @@ export interface SemanticAtlasNode {
   topic: AtlasFacetRef | null;
   type: ObservationType | null;
   community_id: string | null;
+  owner_project_id: string | null;
   region_id?: string | null;
   member_count: number | null;
   project_count: number | null;
@@ -1134,6 +1141,35 @@ export interface SemanticAtlasRegionBridge {
   provenance: SemanticAtlasRelationshipProvenance[];
 }
 
+export interface SemanticAtlasProjectRegion {
+  id: string;
+  label: string;
+  summary: string;
+  memory_count: number;
+  constellation_count: number;
+  visible_constellation_count: number;
+  omitted_constellation_count: number;
+  constellation_ids: string[];
+  seed_x: number;
+  seed_y: number;
+  unassigned: boolean;
+}
+
+export interface SemanticAtlasProjectBridge {
+  id: string;
+  source_project_id: string;
+  target_project_id: string;
+  tier: 'project-aggregate';
+  relationship_class: 'aggregate';
+  direction: SemanticAtlasRelationshipDirection;
+  weight: number;
+  evidence_count: number;
+  relations: string[];
+  confidence: SemanticAtlasRelationshipConfidence;
+  representative_edge_ids: string[];
+  provenance: SemanticAtlasRelationshipProvenance[];
+}
+
 export interface SemanticAtlasCounts {
   memory_count: number;
   project_count: number;
@@ -1147,6 +1183,7 @@ export interface SemanticAtlasCounts {
 }
 
 export interface SemanticAtlasPageResponse {
+  hierarchy: AtlasHierarchy;
   level: AtlasLevel;
   generation: string;
   presentation: 'complete' | 'semantic-zoom';
@@ -1154,6 +1191,8 @@ export interface SemanticAtlasPageResponse {
   edges: SemanticAtlasEdge[];
   regions: SemanticAtlasRegion[];
   region_bridges: SemanticAtlasRegionBridge[];
+  project_regions: SemanticAtlasProjectRegion[];
+  project_bridges: SemanticAtlasProjectBridge[];
   counts: SemanticAtlasCounts;
   coverage: {
     state: AtlasCoverageState;
@@ -1171,10 +1210,17 @@ export interface SemanticAtlasPageResponse {
     relations: string[];
   };
   navigation: {
+    project_id: string | null;
     community_id: string | null;
     focus_node_id: string | null;
     depth: 1 | 2 | null;
     region_id: string | null;
+    source_project_count: number;
+    visible_project_count: number;
+    omitted_projects: number;
+    source_constellation_count: number;
+    visible_constellation_count: number;
+    omitted_constellations: number;
     source_memory_count: number;
     visible_memory_count: number;
     source_relationship_count: number;
@@ -1198,6 +1244,9 @@ export interface SemanticAtlasPageResponse {
 }
 
 export type SemanticAtlasErrorCode =
+  | 'VIZ_ATLAS_HIERARCHY_INVALID'
+  | 'VIZ_ATLAS_PROJECT_SCOPE_INVALID'
+  | 'VIZ_ATLAS_PROJECT_GONE'
   | 'VIZ_ATLAS_CURSOR_INVALID'
   | 'VIZ_ATLAS_GENERATION_STALE'
   | 'VIZ_ATLAS_LEVEL_INVALID'
