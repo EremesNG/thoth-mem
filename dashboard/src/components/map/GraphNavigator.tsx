@@ -163,32 +163,34 @@ function GraphNavigator({ nodes, edges, focusNodeId, onFocus, onExpand, onIntent
           : 'Nearby graph entities';
 
   useEffect(() => {
-    if (denseRenderState.datasetKey !== datasetKey) {
-      setDenseRenderState({ datasetKey, limit: DENSE_NAVIGATOR_THRESHOLD });
-      return;
-    }
+    setDenseRenderState((current) => (
+      current.datasetKey === datasetKey && current.limit === DENSE_NAVIGATOR_THRESHOLD
+        ? current
+        : { datasetKey, limit: DENSE_NAVIGATOR_THRESHOLD }
+    ));
     if (!retainsCompleteList) {
-      if (denseRenderLimit !== DENSE_NAVIGATOR_THRESHOLD) {
-        setDenseRenderState({ datasetKey, limit: DENSE_NAVIGATOR_THRESHOLD });
+      return;
+    }
+    // Keep one producer per dataset so progress does not wait for another passive-effect cycle after every chunk.
+    let cancelled = false;
+    let nextLimit = DENSE_NAVIGATOR_THRESHOLD;
+    let task: number | undefined;
+    const publishNextChunk = () => {
+      if (cancelled) return;
+      nextLimit = Math.min(index.nodeIds.length, nextLimit + DENSE_NAVIGATOR_CHUNK_SIZE);
+      setDenseRenderState({ datasetKey, limit: nextLimit });
+      if (nextLimit < index.nodeIds.length) {
+        task = window.setTimeout(publishNextChunk, DENSE_NAVIGATOR_TASK_DELAY_MS);
       }
-      return;
+    };
+    if (nextLimit < index.nodeIds.length) {
+      task = window.setTimeout(publishNextChunk, DENSE_NAVIGATOR_TASK_DELAY_MS);
     }
-    if (index.nodeIds.length < denseRenderLimit) {
-      setDenseRenderState({ datasetKey, limit: index.nodeIds.length });
-      return;
-    }
-    if (denseRenderLimit >= index.nodeIds.length) return;
-    const task = window.setTimeout(() => {
-      setDenseRenderState((current) => ({
-        datasetKey,
-        limit: Math.min(
-          index.nodeIds.length,
-          current.datasetKey === datasetKey ? current.limit + DENSE_NAVIGATOR_CHUNK_SIZE : DENSE_NAVIGATOR_THRESHOLD,
-        ),
-      }));
-    }, DENSE_NAVIGATOR_TASK_DELAY_MS);
-    return () => window.clearTimeout(task);
-  }, [datasetKey, denseRenderLimit, denseRenderState.datasetKey, index.nodeIds.length, retainsCompleteList]);
+    return () => {
+      cancelled = true;
+      if (task !== undefined) window.clearTimeout(task);
+    };
+  }, [datasetKey, index.nodeIds.length, retainsCompleteList]);
 
   const completeRows = useMemo(() => {
     if (!retainsCompleteList) return null;

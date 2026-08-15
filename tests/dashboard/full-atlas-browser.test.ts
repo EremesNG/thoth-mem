@@ -305,6 +305,12 @@ describe('complete Neural Atlas', () => {
 
       expect(await browser.count('.graph-navigator li')).toBe(TOTAL_NODES);
       expect(await browser.attribute('.graph-navigator', 'data-list-mode')).toBe('complete');
+      expect(await browser.evaluate<boolean>(`(() => {
+        const target = document.querySelector('.graph-navigator li:last-child > button:first-child');
+        if (!(target instanceof HTMLElement)) return false;
+        target.focus();
+        return document.activeElement === target;
+      })()`)).toBe(true);
       await browser.clearRoutes();
     }, { observations: 12, faultInjection: { deadlineMs: 30_000 } });
   }, 40_000);
