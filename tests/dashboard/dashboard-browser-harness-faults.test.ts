@@ -144,6 +144,18 @@ describe('dashboard browser harness faults', () => {
     })).toBe('/usr/bin/google-chrome');
   });
 
+  it('launches headless browsers with deterministic scheduling and Linux shared-memory isolation', () => {
+    const linuxArguments = harnessFaultTestApi.browserLaunchArguments('/tmp/browser-profile', 'linux');
+
+    expect(linuxArguments).toContain('--user-data-dir=/tmp/browser-profile');
+    expect(linuxArguments).toContain('--disable-background-timer-throttling');
+    expect(linuxArguments).toContain('--disable-backgrounding-occluded-windows');
+    expect(linuxArguments).toContain('--disable-renderer-backgrounding');
+    expect(linuxArguments).toContain('--disable-dev-shm-usage');
+    expect(harnessFaultTestApi.browserLaunchArguments('C:\\browser-profile', 'win32'))
+      .not.toContain('--disable-dev-shm-usage');
+  });
+
   it('accepts only owned browser profiles inside the platform temp directory', () => {
     expect(harnessFaultTestApi.isOwnedBrowserProfilePath(
       resolve(tmpdir(), 'thoth-dashboard-browser-owned'),

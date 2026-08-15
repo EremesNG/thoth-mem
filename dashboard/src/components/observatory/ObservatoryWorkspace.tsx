@@ -196,10 +196,13 @@ export default function ObservatoryWorkspace() {
   const frontierRef = useRef(frontier);
   const pendingLensOpenRef = useRef<boolean | null>(null);
 
-  const rendererSelection = useMemo<MapSelection>(
-    () => localSelection ?? (state.focusNodeId ? { kind: 'node', id: state.focusNodeId } : null),
-    [localSelection, state.focusNodeId],
-  );
+  const rendererSelection = useMemo<MapSelection>(() => {
+    const rendererFocusNodeId = mapData?.atlas?.level === state.level
+      && mapData.atlas.navigation.focus_node_id === state.focusNodeId
+      ? state.focusNodeId
+      : null;
+    return localSelection ?? (rendererFocusNodeId ? { kind: 'node', id: rendererFocusNodeId } : null);
+  }, [localSelection, mapData?.atlas?.level, mapData?.atlas?.navigation.focus_node_id, state.focusNodeId, state.level]);
   const presentedSelection = useMemo<MapSelection>(
     () => localSelection ?? (presentedState.focusNodeId ? { kind: 'node', id: presentedState.focusNodeId } : null),
     [localSelection, presentedState.focusNodeId],

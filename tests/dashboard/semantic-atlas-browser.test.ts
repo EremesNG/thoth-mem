@@ -414,7 +414,8 @@ describe('semantic atlas production navigation', () => {
       const communityZoomBefore = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom'));
       await browser.click('button[aria-label="Zoom in"]');
       await browser.waitFor(`Number(document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-camera-zoom') ?? 0) > ${communityZoomBefore}`);
-      await browser.evaluate(`new Promise((resolve) => setTimeout(resolve, 750))`);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-final-fit-settled') === 'false'`);
+      await browser.waitFor(`document.querySelector('[data-testid="map-canvas-shell"]')?.getAttribute('data-final-fit-settled') === 'true'`);
       const savedCommunityZoom = Number(await browser.attribute('[data-testid="map-canvas-shell"]', 'data-camera-zoom'));
 
       await browser.evaluate(`document.querySelector('.graph-navigator li > button:first-child')?.click()`);

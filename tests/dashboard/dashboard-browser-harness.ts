@@ -432,7 +432,7 @@ export async function withDashboardBrowser<T>(run:(browser:DashboardBrowser)=>Pr
     const bridgeStart=await startBridge(store,ownerObservationId,ownerToken,controller.signal,fault);bridge=bridgeStart.bridge;fault?.onResource?.('port',bridgeStart.port);await faultPoint('bridge',fault,controller.signal);
     const viteStart=await startVite(bridgeStart.port,controller.signal,fault);vite=viteStart.vite;fault?.onResource?.('port',viteStart.port);await faultPoint('vite',fault,controller.signal);
     const chromePath=resolveBrowserExecutable();if(!chromePath)throw new Error('Real browser unavailable: Chrome or Edge executable is required');
-    profile=mkdtempSync(resolve(tmpdir(),'thoth-dashboard-browser-'));fault?.onResource?.('profile',profile);chrome=spawn(chromePath,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-component-update','--disable-sync','--disable-default-apps','--disable-breakpad','--disable-crash-reporter','about:blank'],{stdio:'ignore',windowsHide:true});if(chrome.pid)fault?.onResource?.('pid',chrome.pid);await faultPoint('browser',fault,controller.signal);
+    profile=mkdtempSync(resolve(tmpdir(),'thoth-dashboard-browser-'));fault?.onResource?.('profile',profile);chrome=spawn(chromePath,browserLaunchArguments(profile),{stdio:'ignore',windowsHide:true});if(chrome.pid)fault?.onResource?.('pid',chrome.pid);await faultPoint('browser',fault,controller.signal);
     const debugPort=await readDevToolsPort(resolve(profile,'DevToolsActivePort'),controller.signal);await faultPoint('target',fault,controller.signal);
     const response=await bounded(fetch(`http://127.0.0.1:${debugPort}/json/list`,{signal:controller.signal}),5_000,'Chrome target discovery',controller.signal);if(!response.ok)throw new Error(`Chrome target discovery failed: ${response.status}`);const targets=await bounded(response.json() as Promise<Array<{type:string;webSocketDebuggerUrl:string}>>,5_000,'Chrome target JSON',controller.signal);const pageTarget=targets.find((target)=>target.type==='page');if(!pageTarget)throw new Error('Real browser opened without a page target');
     cdp=await CdpConnection.connect(pageTarget.webSocketDebuggerUrl,5_000,DEFAULT_CDP_TIMEOUT_MS,controller.signal);await faultPoint('cdp',fault,controller.signal);const browser=new DashboardBrowser(cdp,`http://127.0.0.1:${viteStart.port}`);await browser.initialize();if(options.webglDisabled)await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`(()=>{const original=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(type,...args){if(type==='webgl2')return null;return original.call(this,type,...args)};globalThis.__THOTH_RESTORE_WEBGL__=()=>{HTMLCanvasElement.prototype.getContext=original}})();`});await faultPoint('init',fault,controller.signal);await faultPoint('work',fault,controller.signal);result=await bounded(run(browser),deadlineMs,'dashboard browser acceptance',controller.signal);
@@ -488,6 +488,26 @@ function resolveBrowserExecutable(options:BrowserExecutableResolutionOptions={})
     typeof candidate==='string'&&candidate.length>0&&pathExists(candidate)
   )??null;
 }
+function browserLaunchArguments(profile:string,platform:NodeJS.Platform=process.platform):string[]{
+  return [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    ...(platform==='linux'?['--disable-dev-shm-usage']:[]),
+    '--disable-component-update',
+    '--disable-sync',
+    '--disable-default-apps',
+    '--disable-breakpad',
+    '--disable-crash-reporter',
+    'about:blank',
+  ];
+}
 function throwIfAborted(signal:AbortSignal):void{if(signal.aborted)throw(signal.reason instanceof Error?signal.reason:abortError('Harness lifecycle aborted'));}
 function abortError(message:string):Error{const error=new Error(message);error.name='AbortError';return error;}
 function asError(error:unknown):Error{return error instanceof Error?error:new Error(String(error));}
@@ -497,6 +517,7 @@ export const harnessFaultTestApi={
   async connectCdp(url:string,options:{connectTimeoutMs?:number;sendTimeoutMs?:number;signal?:AbortSignal}={}){const connection=await CdpConnection.connect(url,options.connectTimeoutMs??500,options.sendTimeoutMs??100,options.signal);return{send:(method:string,params:JsonObject={})=>connection.send(method,params),pendingCount:()=>connection.pendingCount(),close:()=>connection.close()};},
   pathExists:(path:string)=>existsSync(path),
   browserHasExited,
+  browserLaunchArguments,
   browserProcessHasExited,
   isOwnedBrowserProfilePath,
   processExists,
