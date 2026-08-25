@@ -1,0 +1,272 @@
+{
+  "schema": "thoth-mem.benchmark-report.v1",
+  "created_at": "1970-01-01T00:00:00.000Z",
+  "dataset": {
+    "name": "committed-fixture",
+    "version": "1",
+    "license": "committed-fixture",
+    "availability": "committed",
+    "corpus_hash": "515198eb6c02d617dc0d67224ef08568a86351891b5698c6a4102fbf3f964cdf",
+    "query_hash": "521179b84f4c19d8022a981a3fc7c101ff50641b32e86e882aa3716b76a3cf42"
+  },
+  "candidate": {
+    "id": "fixture-lexical",
+    "config_hash": "708be68be3370505e47bebaef8bcdbb87953a9d34320114f69f47be4ce5111cc",
+    "config": {
+      "lexical": true
+    }
+  },
+  "conditions": {
+    "run_config_hash": "7c71f49401977757837f1d0ba30bd08d7dc970ce038b656dbfeb1d94dfedc370",
+    "query_order_hash": "8d2d7ac5a1fad29cd9421c5a5d36b24f65388512e1ce57b2e2755e5f10f37cec",
+    "reader": {
+      "id": "fixture-reader@1",
+      "settings_hash": "f99af363b3af5aaa5aa871a7ad601986c18adf30f630503a9d1f8b4d0775b968"
+    },
+    "scorer": {
+      "id": "deterministic-exact@1",
+      "settings_hash": "da5fef92dbeb24a39d8ec046b85f159d529ed49c386c7941ff6bcb752ffa1070"
+    },
+    "seed": 7,
+    "timeout_ms": 10000,
+    "retries": 0
+  },
+  "environment": {
+    "runtime": "node",
+    "runtime_version": "24.11.1",
+    "platform": "win32",
+    "arch": "x64"
+  },
+  "budgets": {
+    "candidate_k": 5,
+    "context_tokens": 1000
+  },
+  "primary_metrics": [
+    {
+      "namespace": "retrieval",
+      "metric": "mrr",
+      "gate": "relative_gain",
+      "threshold": 0.05
+    },
+    {
+      "namespace": "retrieval",
+      "metric": "recall_at_1",
+      "gate": "non_regression"
+    },
+    {
+      "namespace": "retrieval",
+      "metric": "recall_at_5",
+      "gate": "non_regression"
+    },
+    {
+      "namespace": "retrieval",
+      "metric": "hit_at_k",
+      "gate": "non_regression"
+    },
+    {
+      "namespace": "answer",
+      "metric": "exact_match",
+      "gate": "non_regression"
+    },
+    {
+      "namespace": "agent",
+      "metric": "hidden_test_success",
+      "gate": "non_regression"
+    }
+  ],
+  "promotion_gate": {
+    "provenance_coverage": 1,
+    "resource_ceilings": {
+      "latency_p95_ms": 1.25,
+      "peak_memory_bytes": 1.1,
+      "database_bytes": 1.25,
+      "model_bytes": 1,
+      "network_calls": 1,
+      "llm_calls": 1,
+      "injected_tokens": 1
+    }
+  },
+  "metrics": {
+    "retrieval": {
+      "mrr": 1,
+      "recall_at_1": 1,
+      "recall_at_5": 1,
+      "hit_at_k": 1
+    },
+    "evidence": {
+      "recall": 1,
+      "provenance_coverage": 1
+    },
+    "answer": {
+      "exact_match": 1
+    },
+    "agent": {
+      "hidden_test_success": null
+    },
+    "progressive": {
+      "compact_returned_chars": 23,
+      "context_returned_chars": 23,
+      "source_chars": 23,
+      "evidence_chars": 23,
+      "full_chars": 23,
+      "truncated_chars": 0,
+      "full_fetches": 1,
+      "avoided_full_fetches": 0,
+      "escalation_rate": 1,
+      "compression_ratio": 1
+    },
+    "compaction": {
+      "checkpoints": 1,
+      "recoveries": 1,
+      "recovery_success": 1,
+      "delivered_sources": 4
+    },
+    "resources": {
+      "latency_p50_ms": 0.34540000000001214,
+      "latency_p95_ms": 1.9009999999999962,
+      "ingestion_ms": 1.3573999999999984,
+      "startup_ms": 95.9252,
+      "peak_memory_bytes": 78299136,
+      "database_bytes": 143360,
+      "model_bytes": 0,
+      "network_calls": 0,
+      "llm_calls": 0,
+      "injected_tokens": 6,
+      "returned_chars": 23,
+      "truncated_chars": 0,
+      "samples": {
+        "latency_ms": [
+          1.9009999999999962,
+          0.36070000000000846,
+          0.32620000000000005,
+          0.3359999999999985,
+          0.3131000000000057,
+          0.34540000000001214,
+          0.39689999999998804
+        ],
+        "memory_bytes": [
+          78094336,
+          78094336,
+          78094336,
+          78180352,
+          78184448,
+          78209024,
+          78299136
+        ]
+      }
+    }
+  },
+  "provenance": {
+    "coverage": 1,
+    "source_ids": [
+      "f879eb2b-7920-5efb-a921-de8e99202659",
+      "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+    ]
+  },
+  "fallback_controls": [
+    {
+      "scenario": "disabled",
+      "observed_state": "disabled",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    },
+    {
+      "scenario": "missing",
+      "observed_state": "missing",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    },
+    {
+      "scenario": "stale",
+      "observed_state": "stale",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    },
+    {
+      "scenario": "rebuilding",
+      "observed_state": "rebuilding",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    },
+    {
+      "scenario": "failed",
+      "observed_state": "degraded",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    },
+    {
+      "scenario": "source_mismatched",
+      "observed_state": "stale",
+      "control_lexical_hits": 1,
+      "fallback_lexical_hits": 1,
+      "source_ids": [
+        "f879eb2b-7920-5efb-a921-de8e99202659",
+        "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      ]
+    }
+  ],
+  "operational_errors": [
+    {
+      "operation": "optional_projection",
+      "code": "projection_failed",
+      "message": "Optional projection unavailable; lexical fallback remained active.",
+      "retryable": true
+    }
+  ],
+  "unavailable": [
+    {
+      "id": "longmemeval-s",
+      "reason": "dataset_not_prepared"
+    },
+    {
+      "id": "locomo",
+      "reason": "dataset_not_prepared"
+    },
+    {
+      "id": "amb-beam-100k",
+      "reason": "runner_not_prepared"
+    },
+    {
+      "id": "amb-beam-1m",
+      "reason": "runner_not_prepared"
+    },
+    {
+      "id": "amb-personamem-32k",
+      "reason": "runner_not_prepared"
+    },
+    {
+      "id": "amb-personamem-1m",
+      "reason": "runner_not_prepared"
+    },
+    {
+      "id": "sdebench",
+      "reason": "hidden_runner_not_prepared"
+    }
+  ],
+  "promotion": {
+    "decision": "incomplete",
+    "reasons": [
+      "fixture_only_external_lanes_unavailable"
+    ]
+  }
+}

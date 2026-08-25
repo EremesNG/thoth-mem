@@ -39,7 +39,7 @@
       "computedHash": "82fb11a63fb1e35ee2469516ed02d54695f783115b1540c0e783197af4240a3a"
     },
     "ide-index-mcp": {
-      "source": "C:\\Users\\EremesNG\\Downloads\\ide-index-mcp",
+      "source": "../../../../Users/EremesNG/Downloads/ide-index-mcp",
       "sourceType": "local",
       "computedHash": "86d31fe3ce06415c004ed37e659d56b71f7f9a81be6237a2e863f4737104d88d"
     },
@@ -47,13 +47,13 @@
       "source": "dammyjay93/interface-design",
       "sourceType": "github",
       "skillPath": ".claude/skills/interface-design/SKILL.md",
-      "computedHash": "4d5fe1dacfebc0c1b3837b061405150ed2e4971c096543afc46c23161c5a4f7a"
+      "computedHash": "55a83a96d1e3d161b8c3630dab8ae2dd4547d92636d3d9b4b447d7d59163e084"
     },
     "make-interfaces-feel-better": {
       "source": "jakubkrehel/make-interfaces-feel-better",
       "sourceType": "github",
       "skillPath": "skills/make-interfaces-feel-better/SKILL.md",
-      "computedHash": "2c3576e63d8c39d75ed327f1dcf6aab7aec0edf293a55f6cb3f7b8571974a01c"
+      "computedHash": "ee95073d274bd8f792f917a2b2c2963d46c1b31c81723e6ef3c63ffe33bd681c"
     },
     "nodejs-backend-patterns": {
       "source": "wshobson/agents",

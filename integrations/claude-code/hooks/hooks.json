@@ -1,0 +1,1 @@
+{"version":2,"hooks":{"SessionStart":[{"command":"node runner.mjs"}],"UserPromptSubmit":[{"command":"node runner.mjs"}],"PreCompact":[{"command":"node runner.mjs"}],"PostCompact":[{"command":"node runner.mjs"}],"SessionEnd":[{"command":"node runner.mjs"}]}}

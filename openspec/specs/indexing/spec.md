@@ -2,13 +2,21 @@
 
 ## ADDED Requirements
 
-### Requirement: Indexing MUST Run Asynchronously and Preserve Save Responsiveness
-Chunk/sentence semantic indexing and KG extraction MUST execute in background jobs so save/ingest flows remain responsive.
+### Requirement: Optional Projection Indexing MUST Be Asynchronous and Non-Blocking
 
-#### Scenario: Save completes before deep indexing
-- GIVEN a new observation is persisted
-- WHEN semantic/KG indexing work is required
-- THEN persistence MUST complete independently of background indexing completion
+Dense, entity, graph, reranking, summarization, and other optional projection work MUST run outside the authoritative save transaction and MUST NOT be required for save success or immediate core recall.
+
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Chunk Vector Indexing SHOULD Precede Sentence Vector Indexing for the Same Source
 When chunk and sentence indexing jobs are split for the same source content, the background workflow SHOULD process chunk vectors before sentence vectors so coarse semantic context becomes available before high-precision sentence recall. This ordering MUST NOT block save responsiveness.
@@ -18,101 +26,37 @@ When chunk and sentence indexing jobs are split for the same source content, the
 - WHEN the worker chooses executable jobs
 - THEN chunk vector indexing SHOULD be attempted before sentence vector indexing for that source
 
-### Requirement: Sentence and Chunk Vectors MUST Be Indexed into sqlite-vec
-Background indexers MUST insert embeddings into sentence/chunk vec0 tables and maintain deterministic rowid mapping plus lineage metadata.
+### Requirement: Enabled Projections MUST Rebuild From Authoritative SQLite State
 
-#### Scenario: Vector index write includes rowid + lineage
-- GIVEN embeddings are produced for chunk/sentence units
-- WHEN indexer persists them
-- THEN vec0 rows MUST be inserted/upserted with deterministic rowid mapping and provenance lineage
+An enabled optional projection MUST detect source or configuration mismatch, mark itself non-current, and rebuild idempotently from authoritative SQLite records without mutating those records.
 
-### Requirement: Automatic Rebuild MUST Trigger on Embedding Config Hash Mismatch
-When active embedding hash differs from persisted semantic index hash, a rebuild MUST be auto-enqueued.
+#### Scenario: US3 - Rely on a small offline core 1
 
-#### Scenario: Hash mismatch enqueues rebuild
-- GIVEN active hash and persisted hash differ
-- WHEN staleness evaluation runs
-- THEN rebuild MUST be enqueued idempotently
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Jobs MUST Be Idempotent and Retryable
 
-Indexing and rebuild jobs MUST remain restart-safe and converge without duplicate side effects: repeated store or MCP initialization with unchanged effective embedding configuration and valid terminal coverage, including normalized content that legitimately produces zero semantic units, MUST NOT enqueue, reactivate, or retry a rebuild; a genuine lineage mismatch or missing required nonblank coverage MUST request exactly one active rebuild across repeated or concurrent initialization.
+Optional projection jobs MUST use stable source identities and checkpoints so duplicate delivery, interruption, and restart converge without duplicate authoritative memory or false readiness.
 
-#### Scenario: US2 - Restart the MCP without another rebuild 1
+#### Scenario: US3 - Rely on a small offline core 1
 
-- **GIVEN** all active observations have reached a valid terminal semantic representation and the effective embedding configuration is unchanged
-- **WHEN** the store or MCP starts repeatedly
-- **THEN** no semantic rebuild is requested and ready lanes remain ready
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-#### Scenario: US2 - Restart the MCP without another rebuild 2
+#### Scenario: US3 - Rely on a small offline core 2
 
-- **GIVEN** the same LM Studio embedding settings are materialized repeatedly, including `device: "auto"`
-- **WHEN** configuration lineage is compared
-- **THEN** the rebuild identity remains stable because execution-device selection is not index lineage
-
-#### Scenario: US3 - Preserve automatic repair for real mismatches 1
-
-- **GIVEN** a stored embedding lineage hash that differs from the current effective configuration
-- **WHEN** the MCP starts
-- **THEN** exactly one deduplicated semantic rebuild is requested
-
-#### Scenario: US3 - Preserve automatic repair for real mismatches 2
-
-- **GIVEN** an active observation that should produce semantic units but lacks valid coverage
-- **WHEN** the MCP starts
-- **THEN** exactly one deduplicated semantic rebuild is requested
-
-### Requirement: Deterministic KG Facts MUST Be Written Synchronously on Save
-The indexing/extraction path MUST perform a SYNCHRONOUS, deterministic
-KG-fact write on observation save/update/upsert, reusing the deterministic
-extractor (`extractKnowledgeTriples`, `src/indexing/kg-extractor.ts:364`) that
-already runs first in `processKgJob` (`src/indexing/jobs.ts:441`). This write MUST
-persist `kg_entities`/`kg_triples` for the saved observation before the save
-returns, MUST NOT require an embedding model or remote service (constitution
-**P2**), and MUST be idempotent and update-safe (replace prior deterministic
-triples for the observation; deduplicate by `triple_hash`). This preserves the
-immediate graph-fact availability previously provided by the synchronous
-`observation_facts` writer.
-
-> Implementation note (non-normative): the deterministic entity-upsert + triple
-> insert/replace logic currently lives inline in `processKgJob`
-> (`src/indexing/jobs.ts:462-513`). Delivering a synchronous write that the save
-> path can call will require factoring that deterministic write into a reusable,
-> no-LLM helper shared by save and the background job. The design phase owns this
-> factoring.
-
-#### Scenario: Save synchronously persists deterministic KG facts
-- GIVEN a new or updated observation whose content yields deterministic triples
-- WHEN the save/update/upsert operation returns
-- THEN the deterministic `kg_entities`/`kg_triples` for that observation MUST
-  already be persisted
-- AND this MUST occur without invoking any LLM or remote embedding service
-
-#### Scenario: Synchronous write is idempotent on re-save
-- GIVEN an observation already written synchronously
-- WHEN it is saved again
-- THEN its deterministic triples MUST be replaced/deduplicated (by `triple_hash`)
-  rather than duplicated
-
-### Requirement: `extract_kg` Background Job MUST Be Retained for Optional LLM Enrichment
-The `extract_kg` background job MUST be retained, but its role is OPTIONAL LLM
-enrichment on top of the synchronously written deterministic facts, not the
-primary source of graph-fact availability. The deterministic extractor MUST
-continue to run first in the job (`src/indexing/jobs.ts:441`), and LLM enrichment
-MUST remain conditional (only when recommended and an extractor is configured) and
-non-blocking to save. Enrichment failure MUST NOT remove or invalidate the
-deterministic facts.
-
-#### Scenario: Background job enriches without being required
-- GIVEN deterministic facts were written synchronously on save
-- WHEN the `extract_kg` job later runs
-- THEN it MUST only add/upgrade triples (LLM enrichment) for that observation
-- AND deterministic graph-fact availability MUST NOT depend on the job completing
-
-#### Scenario: Enrichment failure preserves deterministic facts
-- GIVEN the synchronous deterministic facts exist for an observation
-- WHEN LLM enrichment in the background job fails
-- THEN the deterministic facts MUST remain persisted and queryable
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: `rebuild-graph` MUST Repoint to the Consolidated KG-Backed Path
 The `rebuild-graph` operator entry points MUST rebuild the consolidated KG-backed
@@ -149,54 +93,21 @@ mechanism for legacy observations (CL-2), reusing the existing rebuild job path
 
 ## MODIFIED Requirements
 
-### Requirement: Post-Save Semantic Consistency MUST Be Eventual and Explicit
-The system MUST treat SEMANTIC recall (sentence/chunk vectors) for newly saved or
-updated content as eventual until background indexing finishes. Graph/KG facts,
-however, MUST NOT be eventual on save: the deterministic KG write is synchronous
-(see "Deterministic KG Facts MUST Be Written Synchronously on Save"), so
-graph-fact availability is immediate while semantic-vector coverage remains
-eventual. Primary persistence and FTS5-compatible text MUST continue to be
-immediately preserved.
+### Requirement: Optional Projection Consistency MUST Be Eventual and Explicit
 
-#### Scenario: Save returns with semantic indexing pending but graph facts present
-- GIVEN a save enqueues semantic (sentence/chunk) indexing work
-- WHEN the save response is returned
-- THEN the system MUST NOT claim sentence/chunk semantic coverage is fresh until
-  the relevant background jobs complete
-- AND the observation's deterministic graph facts MUST already be present
-  (written synchronously)
+Each enabled optional projection MAY converge after save but MUST publish a source watermark and readiness state; authoritative and FTS5 retrieval MUST be immediate.
 
-#### Scenario: Retrieval can observe pending semantic coverage
-- GIVEN semantic indexing is pending for a saved item
-- WHEN retrieval checks index state
-- THEN the system MUST expose pending/degraded semantic coverage so callers can
-  distinguish eventual semantic recall from missing data
+#### Scenario: US3 - Rely on a small offline core 1
 
-## Assumptions
-- **CL-1 (RESOLVED):** Graph facts become synchronous-on-save via the
-  deterministic extractor; the `extract_kg` job is enrichment-only. The "eventual
-  graph facts" alternative is not adopted.
-- **CL-2 (RESOLVED):** Backfill is operator-triggered through the repointed
-  `rebuild-graph` path, not an automatic startup migration; readers degrade
-  gracefully until it runs (see the knowledge-graph and store deltas).
-- **Reused rebuild path:** `processRebuildJob` (`src/indexing/jobs.ts:359-416`)
-  already enqueues `extract_kg` per observation and `processKgJob` writes KG facts
-  deterministically first; the consolidated rebuild reuses this rather than
-  inventing a new path.
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-## Delta from kg-superseded-pruning
+#### Scenario: US3 - Rely on a small offline core 2
 
-# Delta for Indexing
-
-> Change **C1** (`kg-superseded-pruning`). Adds a manual `prune-graph` admin
-> operation as a SIBLING of the existing `rebuild-graph` op: a CLI command and an
-> HTTP `POST /graph/prune` route, both delegating to the shared store method
-> `pruneSupersededTriples` (see the store delta). Following the admin-ops-are-not-
-> MCP boundary (constitution **P1**; documented at `src/evals/retrieval.ts:284-286`),
-> `prune-graph` MUST NOT be exposed as an MCP tool. It MUST support a dry-run
-> preview and report before/after counts.
-
-## ADDED Requirements
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: `prune-graph` MUST Be a CLI + HTTP Admin Op, Not an MCP Tool
 The system MUST expose a `prune-graph` admin operation that bounds superseded KG

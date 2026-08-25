@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "candidateK": 5,
+  "contextTokenBudget": 1000,
+  "thresholds": {"relativePrimaryQuality": 0.05, "maxPrimaryRegression": 0, "provenanceCoverage": 1},
+  "lanes": [
+    {"id":"fixture-lexical","dataset":"committed-fixture","available":true},
+    {"id":"longmemeval-s","dataset":"LongMemEval-S","available":false,"reason":"dataset_not_prepared"},
+    {"id":"locomo","dataset":"LoCoMo deterministic","available":false,"reason":"dataset_not_prepared"},
+    {"id":"amb-beam-100k","dataset":"AMB BEAM 100K","available":false,"reason":"runner_not_prepared"},
+    {"id":"amb-beam-1m","dataset":"AMB BEAM 1M","available":false,"reason":"runner_not_prepared"},
+    {"id":"amb-personamem-32k","dataset":"AMB PersonaMem 32K","available":false,"reason":"runner_not_prepared"},
+    {"id":"amb-personamem-1m","dataset":"AMB PersonaMem 1M","available":false,"reason":"runner_not_prepared"},
+    {"id":"sdebench","dataset":"SDEBench","available":false,"reason":"hidden_runner_not_prepared"}
+  ]
+}

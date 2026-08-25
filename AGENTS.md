@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is `thoth-mem`, a TypeScript/ESM persistent-memory service for coding agents. It stores prompts, observations, sessions, retrieval indexes, and derived graph data in SQLite; exposes a six-tool MCP server plus CLI and optional HTTP/dashboard surfaces; and packages opt-in native lifecycle integrations for OpenCode, Codex, and Claude Code.
+This repository is `thoth-mem`, a TypeScript/ESM persistent-memory service for coding agents. V2 stores immutable evidence, promoted temporal memories, sessions, and rebuildable FTS state in SQLite; exposes an exact six-tool MCP server plus scoped CLI; and packages native OpenCode, Codex, and Claude Code lifecycle bundles.
 
 This file is the canonical repository-wide agent guide for `C:\DEV\Proyectos\Webstorm\thoth-mem`. Load task-specific detail from [`docs/agent/index.md`](docs/agent/index.md); do not read every linked document by default.
 
@@ -18,19 +18,18 @@ The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoin
 
 ## Repository map
 
-- `src/store/`, `src/retrieval/`, `src/indexing/`, `src/sync/`: durable memory, recall, derived indexes, maintenance, and synchronization.
-- `src/tools/`, `src/index.ts`, `src/server.ts`, `src/cli.ts`, `src/http-*.ts`: MCP, process, CLI, and HTTP surfaces.
-- `src/integration/` and `integrations/`: host-neutral lifecycle logic and published native harness assets.
-- `src/setup/`, `scripts/`, package/plugin manifests: managed setup, packaging, verification, and release preparation.
-- `dashboard/`: React/Vite operations console consumed by the HTTP bridge.
-- `tests/`: Vitest suites organized by behavior; `docs/agent/`: on-demand agent context.
+- `src/memory-core/`: authoritative SQLite ledger, FTS5 retrieval, identity, projections, and the shared `MemoryService`.
+- `src/tools/`, `src/index.ts`, `src/server.ts`, `src/cli.ts`: the exact six MCP tools, process entrypoint, scoped setup, and one-way importer command.
+- `src/integration/` and `integrations/`: host-neutral lifecycle mapping and canonical OpenCode, Codex, and Claude Code bundles.
+- `src/setup/`, `scripts/`, `benchmarks/`, and package manifests: managed receipts, packed verification, and equal-budget evaluation contracts.
+- `tests/`: retained v2 unit, integration, setup, tool, importer, and benchmark suites; `docs/agent/`: on-demand agent context.
 - `dist/`: generated output; never edit directly.
 
 ## Verified baseline
 
 - Package manager: pnpm `11.20.0`, pinned by `package.json#packageManager`; Node.js runtime floor: `>=22.12.0`.
-- Stack: strict TypeScript, Node16 ESM, Vitest, SQLite via `better-sqlite3`, zod; dashboard uses React and Vite.
-- Common scripts from `package.json`: `pnpm install`, `pnpm run dev`, `pnpm run build`, `pnpm test`, `pnpm run test:watch`, and `pnpm run prepublishOnly`.
+- Stack: strict TypeScript, Node16 ESM, Vitest, SQLite/FTS5 via `better-sqlite3`, zod, and the MCP SDK.
+- Common scripts from `package.json`: `pnpm install --frozen-lockfile`, `pnpm run dev`, `pnpm run build`, `pnpm test`, `pnpm run integration:verify`, `pnpm run integration:smoke`, `pnpm run benchmark:fixture`, and `pnpm run prepublishOnly`.
 - There is no root lint script. Do not invent or claim `pnpm run lint`; use only checks verified in manifests or CI.
 - Detailed test selection and verification rules are owned by [`docs/agent/testing.md`](docs/agent/testing.md).
 

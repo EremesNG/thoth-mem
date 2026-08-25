@@ -1,17 +1,17 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "thoth-mem",
-  "description": "Persistent project memory for coding agents through the compact six-tool MCP surface.",
+  "description": "SQLite-first persistent memory for coding agents.",
   "owner": {
-    "name": "thoth-mem maintainers"
+    "name": "thoth-mem contributors"
   },
   "plugins": [
     {
       "name": "thoth-mem",
-      "description": "Root-session memory lifecycle, bounded recall, compaction recovery, and privacy-safe prompt capture.",
+      "description": "Persistent memory, bounded recovery, and compaction-safe lifecycle for coding sessions.",
       "version": "0.4.13",
       "author": {
-        "name": "thoth-mem maintainers"
+        "name": "thoth-mem contributors"
       },
       "source": "./plugin",
       "category": "productivity",

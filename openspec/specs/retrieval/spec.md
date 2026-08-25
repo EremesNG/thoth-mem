@@ -2,65 +2,37 @@
 
 ## ADDED Requirements
 
-### Requirement: Hybrid Retrieval MUST Fuse Four Lanes
-The retrieval engine MUST execute sentence-semantic, chunk-semantic, lexical FTS5, and graph/KG lanes and fuse them into one ranked result set.
+### Requirement: Core Retrieval MUST Be Lexical-First and Projection-Aware
 
-#### Scenario: Fused output contains all available lanes
-- GIVEN sentence vectors, chunk vectors, FTS5, and graph/KG retrieval are available
-- WHEN a retrieval query executes
-- THEN final ranked results MUST include fused evidence from all four lanes
+The default retrieval path MUST rank FTS5/BM25 and structured SQLite candidates first and MAY fuse only optional lanes that are enabled, healthy, source-current, source-attributed, and admitted by the benchmark promotion gate.
 
-### Requirement: Semantic Retrieval MUST Use sqlite-vec KNN Defaults
-Sentence and chunk semantic retrieval lanes MUST execute KNN via sqlite-vec `vec0` virtual tables using `MATCH`, `distance`, and bounded top-k queries. Unless explicitly reconfigured, sentence top-k MUST be `100`, chunk top-k MUST be `20`, and semantic evidence below score `0.30` MUST be filtered out.
+#### Scenario: US3 - Rely on a small offline core 1
 
-#### Scenario: Sentence lane uses vec0 MATCH query with default k
-- GIVEN sentence vectors are indexed in sqlite-vec
-- WHEN sentence semantic retrieval runs
-- THEN the query MUST use sqlite-vec `MATCH`, rank by `distance`, and request default top-k `100`
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-#### Scenario: Chunk lane uses vec0 MATCH query with default k
-- GIVEN chunk vectors are indexed in sqlite-vec
-- WHEN chunk semantic retrieval runs
-- THEN the query MUST use sqlite-vec `MATCH`, rank by `distance`, and request default top-k `20`
+#### Scenario: US3 - Rely on a small offline core 2
 
-#### Scenario: Low-score semantic evidence is filtered
-- GIVEN semantic evidence has converted score below `0.30`
-- WHEN retrieval candidates are filtered
-- THEN that evidence MUST NOT contribute to final ranked output
-
-### Requirement: sqlite-vec Distance MUST Be Converted to Comparable Scores
-The retrieval engine MUST convert sqlite-vec semantic distance into normalized scores before thresholding/fusion. For default L2 distance, conversion MUST be `score = exp(-distance / 20)` unless a future metric explicitly defines and tests another conversion.
-
-#### Scenario: L2 distance is converted consistently
-- GIVEN sqlite-vec returns an L2 distance for semantic evidence
-- WHEN the score is computed
-- THEN the default conversion MUST use `exp(-distance / 20)` and produce monotonically lower scores for larger distances
-
-### Requirement: HyDE MUST Use Raw Query and Hypothetical Answer Embeddings
-HyDE retrieval MUST always embed the raw query. When HyDE is enabled and generation succeeds, the system MUST also embed the generated hypothetical answer as a separate semantic input and fuse raw-query and HyDE semantic candidates. HyDE failure, timeout, or disablement MUST leave raw-query semantic retrieval available.
-
-#### Scenario: Raw query and HyDE answer both contribute
-- GIVEN HyDE is enabled and returns a hypothetical answer
-- WHEN semantic retrieval executes
-- THEN sentence and chunk semantic lanes MUST consider both raw-query embedding results and hypothetical-answer embedding results during fusion
-
-#### Scenario: HyDE failure falls back to raw query only
-- GIVEN HyDE is enabled and generation fails or times out
-- WHEN retrieval proceeds
-- THEN semantic lanes MUST continue using the raw-query embedding without failing overall retrieval
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: FTS5 Lexical Retrieval MUST Use Sanitized Prefix Matching
-The lexical lane MUST build a sanitized FTS5 prefix query from eligible query tokens, using `token*` terms joined by `OR`, and MUST use a default lexical limit of `20` unless explicitly reconfigured.
 
-#### Scenario: Prefix query catches lexical variants
-- GIVEN a query token such as `encrypt`
-- WHEN the FTS5 lexical query is built
-- THEN the query MUST include a sanitized prefix term like `encrypt*` so variants such as `encryption` can be recalled
+Lexical retrieval MUST sanitize untrusted FTS syntax and combine exact identifiers or topic keys, phrase-capable BM25 search, and bounded prefix expansion without allowing punctuation-only input or query operators to fail global recall.
 
-#### Scenario: FTS5 tokenization avoids unsafe or low-value terms
-- GIVEN a query contains punctuation or very short tokens
-- WHEN the FTS5 prefix query is built
-- THEN punctuation MUST be stripped and ineligible short tokens MUST be omitted before joining prefix terms with `OR`
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Sentence-Level Precision MUST Use Surgical Trimming Under Clear Conditions
 When one or more sentence semantic evidence items for a result meet or exceed the sentence score threshold (`0.30` by default), the primary returned evidence for that result MUST be the matching sentence text rather than the full parent chunk. Parent chunk/observation context MAY be promoted separately by small-to-big retrieval when broader context is required.
@@ -75,25 +47,37 @@ When one or more sentence semantic evidence items for a result meet or exceed th
 - WHEN small-to-big promotion is triggered
 - THEN parent chunk or observation context MUST be attached with lineage while preserving the trimmed sentence as sentence evidence
 
-### Requirement: Retrieval MUST Degrade by Lane, Not Globally
-If sqlite-vec cannot load, vec tables are unavailable, semantic index state is stale/rebuilding, or semantic providers time out, semantic lanes MUST be degraded while lexical FTS5 + graph/KG lanes continue.
+### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 
-#### Scenario: Semantic degraded, lexical and graph/KG remain available
-- GIVEN semantic retrieval cannot execute due to sqlite-vec or index state issues
-- WHEN retrieval is requested
-- THEN the system MUST return lexical + graph/KG results with explicit degraded-state signaling and no global hard-failure
+Missing, stale, rebuilding, disabled, or failed optional projections MUST NOT prevent lexical and structured recall; responses MUST identify each requested optional lane as ready, pending, stale, degraded, or disabled without overstating participation.
 
-### Requirement: Recent Saves MUST Have Explicit Eventual Semantic Consistency
-A newly saved or updated memory item MUST be available through primary persistence and lexical/graph-compatible paths immediately, while sentence/chunk semantic recall MAY remain pending until background indexing completes. Retrieval output MUST be able to signal that semantic coverage is pending or degraded for such content.
+#### Scenario: US3 - Rely on a small offline core 1
 
-#### Scenario: Newly saved content is lexical before semantic indexing completes
-- GIVEN content has just been saved and semantic background jobs are still pending
-- WHEN retrieval is requested for that content
-- THEN lexical FTS5 and graph/KG-compatible results MUST remain available and semantic state MUST indicate pending or degraded coverage
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-## MODIFIED Requirements
+#### Scenario: US3 - Rely on a small offline core 2
 
-## ADDED Requirements (kg-multi-hop-recall, B2)
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
+
+### Requirement: Recent Saves MUST Be Immediately Searchable by Core Retrieval
+
+A confirmed save MUST be queryable through authoritative lookup and FTS5 before success is returned, while optional projections MAY converge asynchronously and MUST expose their coverage state.
+
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Multi-Hop KG Evidence MUST Fuse as a Lower-Weighted Sub-Source of the KG Lane
 Entity-anchored multi-hop traversal evidence MUST be emitted as `LaneCandidate` entries with `lane: 'kg'` and `source: 'kg_multi_hop'`, then fused through existing `fuseCandidates` so multi-hop observations can be introduced into final output. Their effective contribution MUST be strictly below direct KG (default `0.7` vs `0.9`) via sub-source weighting or score pre-scaling; four-lane fusion remains unchanged.
@@ -523,63 +507,52 @@ Community-summary read-path enrichment MUST remain bounded by configured communi
 ## ADDED Requirements
 
 ### Requirement: Recall and Context Paths MUST Emit Token-Savings Measurement Metadata
-Retrieval and context-producing paths MUST expose measurement metadata sufficient to compare full source size, retained evidence size, returned payload size, and token savings. Metrics MUST distinguish character counts from exact token counts and deterministic token estimates. When exact tokenizer accounting is unavailable, estimates MUST be labeled as estimates and computed deterministically.
 
-#### Scenario: Retrieval result reports size bases
-- GIVEN a recall request returns ranked evidence
-- WHEN output metadata or eval instrumentation is inspected
-- THEN full source size, evidence size, and returned payload size MUST be available
-- AND the basis MUST indicate whether the measurements are characters, exact tokens, or estimated tokens
+Recall and context responses MUST report privacy-safe source, evidence, returned, truncated, and budget measurements sufficient to compute payload savings without claiming that characters equal model tokens.
 
-#### Scenario: Token estimates are labeled
-- GIVEN exact tokenizer support is unavailable
-- WHEN token-savings metadata is emitted
-- THEN estimated token counts MUST be present only as estimates
-- AND the output MUST NOT imply billing-exact token accounting
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Retrieval MUST Measure Compact/Context Answers Versus mem_get Escalation
-The retrieval funnel MUST support telemetry that counts when compact/context evidence is sufficient and when the caller escalates to `mem_get` for full content. The measurement MUST avoid claiming `mem_get` avoidance when a later full fetch is required for the same answer path.
 
-#### Scenario: Compact recall answers without escalation
-- GIVEN compact or context recall evidence contains enough source-attributed information for an answer path
-- AND no correlated full `mem_get` call follows for the same path
-- WHEN telemetry is summarized
-- THEN the path MAY count as `mem_get` avoided
+The retrieval funnel MUST correlate bounded recall/context with later full fetches so an avoided `mem_get` is credited only when no full fetch was required for the same answer path.
 
-#### Scenario: Later full fetch prevents avoidance credit
-- GIVEN compact or context recall runs for an answer path
-- AND a correlated `mem_get` full fetch follows because full content is required
-- WHEN telemetry is summarized
-- THEN the path MUST count as escalated
-- AND it MUST NOT count as avoided
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Recall-After-Compaction Evidence MUST Be Measurable
-Retrieval instrumentation and evals MUST include evidence that after a compaction-like context loss, the recall funnel can recover source material using compact recall, context expansion, and optional `mem_get` escalation. The evidence MUST report quality and payload savings without storing raw sensitive content.
 
-#### Scenario: Compaction recovery uses the recall funnel
-- GIVEN a task requires recovering prior source material after only a compact summary remains
-- WHEN the recall-after-compaction scenario runs
-- THEN compact recall, context expansion, and any full-fetch escalation MUST be measured separately
-- AND the report MUST include recovered evidence quality and payload-size metrics
+Lifecycle and eval instrumentation MUST measure whether compact handoff plus bounded recall recover source-attributed evidence after context loss and MUST report payload, quality, and full-fetch escalation separately.
 
-#### Scenario: Compaction telemetry is privacy-safe
-- GIVEN recovered memories contain private or secret-like content
-- WHEN recall-after-compaction telemetry is recorded
-- THEN the telemetry MUST include only sanitized bounded metadata, counts, hashes, or signatures
-- AND raw sensitive content MUST NOT be persisted in telemetry
+#### Scenario: US3 - Rely on a small offline core 1
 
-## MODIFIED Requirements
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-## REMOVED Requirements
+#### Scenario: US3 - Rely on a small offline core 2
 
-## Assumptions
-- This change measures the existing four-lane retrieval and recall funnel; it does not add a fifth lane, global answer synthesis, or query-time subquery planning.
-- Correlation between recall and `mem_get` may use trace ids, request ids, or a deterministic bounded time/window heuristic selected during design.
-
-## Handoff Hints
-- Design should reuse existing retrieval eval envelope fields where possible and add only the missing escalation/token fields.
-- Design must keep lane attribution unchanged: `sentence`, `chunk`, `lexical`, and `kg`.
-- Verification should include compact-only, context-expanded, and full-fetch-escalated paths.
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Deterministic profile resolution
 
@@ -900,3 +873,51 @@ The system MUST NOT silently replace an explicitly selected device when Transfor
 - **GIVEN** `auto`
 - **WHEN** the local executor loads
 - **THEN** Transformers.js owns platform-specific provider ordering and fallback behavior
+
+### Requirement: Progressive Retrieval MUST Use Stable IDs and Bounded Escalation
+
+Recall MUST return compact ranked evidence with stable IDs and source attribution, context expansion MUST remain within a caller-visible budget, and full record content MUST require explicit `mem_get` escalation.
+
+#### Scenario: US3 - Rely on a small offline core 1
+
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
+
+#### Scenario: US3 - Rely on a small offline core 2
+
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
+
+### Requirement: Current Recall MUST Prefer Valid Guidance Without Hiding History
+
+Default ranking MUST prefer currently valid memory over otherwise comparable superseded, retracted, or failed guidance, while an explicit historical mode MUST be able to return the complete linked lineage.
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten
+
+### Requirement: Project Briefing MUST Be Deterministic and Bounded
+
+Project context MUST assemble a deterministic bounded briefing from durable decisions, conventions, project structure, unresolved outcomes, and recent session handoffs without synthesizing unsupported facts.
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten

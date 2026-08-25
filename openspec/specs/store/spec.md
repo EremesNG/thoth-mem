@@ -2,34 +2,21 @@
 
 ## ADDED Requirements
 
-### Requirement: sqlite-vec MUST Be a Required Semantic Dependency
-The store runtime MUST attempt to load sqlite-vec into the active better-sqlite3 connection and treat semantic lane availability as dependent on successful extension/table readiness.
+### Requirement: Optional Projection Lineage MUST Be Rebuildable and Traceable
 
-#### Scenario: sqlite-vec load succeeds
-- GIVEN a supported runtime with sqlite-vec installed
-- WHEN store initializes semantic retrieval capabilities
-- THEN sqlite-vec MUST be loaded against the active database connection
+Every enabled optional projection MUST map its records deterministically to stable source IDs, record its configuration and source watermark, and be safe to discard and rebuild without changing authoritative memory.
 
-#### Scenario: sqlite-vec load fails
-- GIVEN sqlite-vec cannot be loaded
-- WHEN store initializes
-- THEN semantic lanes MUST be marked degraded while lexical and graph/KG paths remain available
+#### Scenario: US3 - Rely on a small offline core 1
 
-### Requirement: vec0 Virtual Tables MUST Store Sentence and Chunk Embeddings
-The schema MUST include sqlite-vec `vec0` virtual tables for sentence embeddings and chunk embeddings with dimensions aligned to active embedding metadata.
+- **GIVEN** a clean installation with no optional retrieval provider
+- **WHEN** a memory is saved and immediately queried
+- **THEN** lexical and structured retrieval returns it without waiting for background work
 
-#### Scenario: vec0 tables exist for both lanes
-- GIVEN semantic schema migrations run
-- WHEN table existence is verified
-- THEN both sentence and chunk vec0 tables MUST exist for KNN queries
+#### Scenario: US3 - Rely on a small offline core 2
 
-### Requirement: Deterministic Rowid Mapping and Lineage MUST Be Persisted
-The store MUST persist deterministic mapping between logical sentence/chunk identities and vec0 `rowid`, including provenance lineage metadata.
-
-#### Scenario: Rowid mapping is reproducible
-- GIVEN the same source sentence/chunk lineage
-- WHEN indexing runs repeatedly or after restart
-- THEN the mapped rowid and lineage association MUST converge deterministically
+- **GIVEN** an enabled optional projection that is missing, stale, or failing
+- **WHEN** recall runs
+- **THEN** the lexical core remains available and the response truthfully identifies the optional projection state
 
 ### Requirement: Semantic Index Staleness MUST Be Detectable
 The store MUST detect stale semantic indexes by comparing persisted index metadata hash with active embedding config hash.
@@ -1045,17 +1032,20 @@ The system MUST persist create, update, and delete mutations in `sync_mutations`
 - THEN a deletion mutation MUST be recorded so downstream sync can propagate a tombstone
 
 ### Requirement: Startup Migrations MUST Be Structured and Idempotent
-The system MUST run migrations through explicit schema-aware helpers and repeated startup runs SHALL converge to the same schema state without error.
 
-#### Scenario: Fresh database startup
-- GIVEN a fresh database
-- WHEN startup initialization runs
-- THEN required tables, indexes, triggers, and sync state structures MUST exist
+Startup MUST apply only ordered migrations for the clean v2 schema and repeated runs SHALL converge; startup MUST NOT inspect, mutate, dual-read, or silently upgrade a legacy database.
 
-#### Scenario: Partially migrated database startup
-- GIVEN a database missing only some required columns or sync tables
-- WHEN startup initialization runs repeatedly
-- THEN missing elements MUST be added without duplicating existing elements or failing the process
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 1
+
+- **GIVEN** a readable legacy database
+- **WHEN** the importer runs
+- **THEN** it creates or populates a separate v2 target, leaves the source byte-for-byte unchanged, and reports imported, skipped, quarantined, and failed records
+
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 2
+
+- **GIVEN** legacy rows with placeholder or missing identity
+- **WHEN** they cannot be mapped safely
+- **THEN** the importer applies a documented deterministic disposition and reports it rather than presenting fabricated identity as trusted fact
 
 ### Requirement: FTS Rebuild MUST Preserve Search Integrity
 When schema evolution requires FTS rebuild, the system MUST rebuild indexes so searchable observation coverage remains complete for non-deleted records.
@@ -1092,20 +1082,21 @@ Store session creation and enrichment paths MUST preserve explicit `session_id` 
 - WHEN a later Store call omits project or supplies a placeholder project
 - THEN the Store MUST NOT replace the stable project with the placeholder
 
-### Requirement: Store Save Paths MUST Retain Nullable Prompt and Observation Project Compatibility
-Store prompt and observation persistence MUST remain backward-compatible with the existing schema where `sessions.project` is non-null while `user_prompts.project` and `observations.project` are nullable. The Store MUST NOT require destructive schema changes that make prompt or observation project fields non-null, and MUST make missing or placeholder identity query-stable.
+### Requirement: V2 Save Paths MUST Use One Explicit Identity Contract
 
-#### Scenario: Prompt project may remain null
-- GIVEN a prompt save request omits project identity
-- WHEN the Store persists the prompt under compatibility behavior
-- THEN the prompt record MAY retain a null project where the schema permits it
-- AND any auto-created session MUST still satisfy the non-null `sessions.project` constraint using deterministic compatibility identity
+All v2 save paths MUST preserve a supplied stable root session and project identity or apply one shared deterministic resolver whose degraded result is explicit; v2 MUST NOT retain nullable legacy behavior solely for compatibility.
 
-#### Scenario: Observation project may remain null
-- GIVEN an observation save request omits project identity
-- WHEN the Store persists the observation
-- THEN the observation record MAY retain a null project where the schema permits it
-- AND project-scoped queries MUST continue to distinguish null, placeholder, and explicit projects predictably
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten
 
 ### Requirement: Store Fallback Identity MUST Be Deterministic and Reportable
 When Store paths synthesize fallback session or project identity for compatibility, the synthesized value MUST be deterministic for equivalent input and MUST be available to calling surfaces for fallback/degraded-state reporting. Store behavior MUST distinguish explicit identity from fallback identity so MCP, HTTP, CLI, and tests can observe the difference.
@@ -1121,65 +1112,37 @@ When Store paths synthesize fallback session or project identity for compatibili
 - WHEN the Store persists both records
 - THEN the Store result available to callers MUST indicate fallback use only for the request that omitted identity
 
-### Requirement: Import and ApplyV2Chunk MUST Preserve or Degrade Identity Explicitly
-Store import paths, including legacy import and `applyV2Chunk`, MUST preserve session and project identity present in imported sessions, observations, prompts, and mutations. When imported data lacks identity required by the target schema or query contract, the Store MUST apply deterministic compatibility handling and report missing/degraded identity in import results rather than silently treating `unknown` as stable caller identity.
+### Requirement: Legacy Import MUST Be One-Way and Non-Destructive
 
-#### Scenario: Import preserves explicit identity
-- GIVEN an import payload contains explicit session id and project identity
-- WHEN the Store imports sessions, observations, and prompts from that payload
-- THEN the persisted records MUST preserve the imported identity values
-- AND no degraded identity warning MUST be emitted for those values
+The supported legacy migration MUST read a declared old database, write a distinct clean v2 target, preserve the source unchanged, and emit deterministic imported, skipped, quarantined, and failed counts plus bounded reasons.
 
-#### Scenario: Legacy import reports degraded identity
-- GIVEN a legacy import payload omits project or session identity for some records
-- WHEN the Store imports the payload
-- THEN import MUST remain backward-compatible and successful when the data is otherwise valid
-- AND the result MUST report which identity fields were missing or degraded
-- AND any placeholder used to satisfy storage constraints MUST be deterministic
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 1
 
-#### Scenario: applyV2Chunk preserves mutation identity
-- GIVEN a v2 sync chunk contains mutation records with explicit session and project identity
-- WHEN `applyV2Chunk` applies the chunk
-- THEN the resulting records and sync state MUST preserve those explicit identity values
-- AND placeholder identity MUST NOT be substituted for present identity
+- **GIVEN** a readable legacy database
+- **WHEN** the importer runs
+- **THEN** it creates or populates a separate v2 target, leaves the source byte-for-byte unchanged, and reports imported, skipped, quarantined, and failed records
 
-### Requirement: Historical Placeholder Records MUST Not Be Silently Rewritten
-This change MUST NOT silently rewrite existing historical records that already contain placeholder identity such as `manual-save-*` or `unknown`. Any future repair of historical identity MUST be opt-in and separately specified; current reads, imports, and saves MUST keep historical placeholders query-stable.
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 2
 
-#### Scenario: Existing placeholder session remains query-stable
-- GIVEN a database already contains a session id beginning with `manual-save-`
-- WHEN the Store initializes or new identity-bootstrap behavior runs
-- THEN the historical session id MUST remain unchanged
-- AND queries filtering that exact session id MUST continue to find the same records
+- **GIVEN** legacy rows with placeholder or missing identity
+- **WHEN** they cannot be mapped safely
+- **THEN** the importer applies a documented deterministic disposition and reports it rather than presenting fabricated identity as trusted fact
 
-#### Scenario: Existing unknown project is not repaired implicitly
-- GIVEN a database already contains records with project `unknown`
-- WHEN import, search, timeline, recall, or context operations run
-- THEN those records MUST NOT be silently reassigned to a different project
-- AND callers MUST be able to continue filtering or inspecting them as degraded historical identity
+### Requirement: Legacy Identity Defects MUST Be Reported Without Source Mutation
 
-## MODIFIED Requirements
+The importer MUST map, quarantine, or reject missing and placeholder legacy identities by documented deterministic rules, MUST report each disposition class, and MUST NOT repair the source database or present an invented identity as verified.
 
-## REMOVED Requirements
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 1
 
-## Assumptions
-- `sessions.project` remains non-null; `observations.project` and `user_prompts.project` remain nullable for compatibility.
-- Deterministic fallback values may keep existing placeholder vocabulary where needed, but callers can tell that the value was synthesized.
-- Deterministic fallback means a repeatable value derived from stable inputs such as save category and effective project; it MUST NOT depend on timestamps, randomness, process id, or host-specific transient state.
-- Placeholder project values for this change are the existing compatibility vocabulary such as `unknown`; stable explicit project values are non-empty caller/import/config values that are not placeholder values.
-- No retroactive repair or migration of historical placeholder records is included in this change.
+- **GIVEN** a readable legacy database
+- **WHEN** the importer runs
+- **THEN** it creates or populates a separate v2 target, leaves the source byte-for-byte unchanged, and reports imported, skipped, quarantined, and failed records
 
-## Handoff Hints
-- Design should centralize identity normalization/reporting at Store boundaries enough to avoid divergent MCP/HTTP/CLI behavior.
-- Preserve idempotent session enrichment without destructive schema changes.
-- Tests should include direct Store save/import/applyV2Chunk cases for explicit identity, null-compatible records, deterministic fallback, and historical placeholder stability.
+#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 2
 
-
-## Merged change: pre-multiharness-foundations (store)
-
-# Delta for Store
-
-## ADDED Requirements
+- **GIVEN** legacy rows with placeholder or missing identity
+- **WHEN** they cannot be mapped safely
+- **THEN** the importer applies a documented deterministic disposition and reports it rather than presenting fabricated identity as trusted fact
 
 ### Requirement: Store Identity Boundaries MUST Consume a Shared Resolver v2 Contract
 Store save, session, import, sync, and mirrored HTTP/CLI persistence paths MUST consume one shared identity-resolution contract for project and session identity. The Store MUST preserve explicit identity, apply deterministic fallback only when required for compatibility, and expose degraded metadata for callers without silently diverging per surface.
@@ -1429,3 +1392,51 @@ Compaction MUST report exact page, freelist, physical-size, logical-size, sideca
 - **GIVEN** a custom data directory
 - **WHEN** preview or apply runs
 - **THEN** every database, sidecar, free-space check, and result path remains confined to that directory
+
+### Requirement: SQLite Memory Ledger MUST Be the Sole Source of Truth
+
+The system MUST persist authoritative evidence, promoted memories, lifecycle state, and source relationships in one local SQLite database; every optional index or projection MUST be disposable and derivable from that database.
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten
+
+### Requirement: Raw Evidence and Promoted Memory MUST Remain Distinct
+
+The system MUST distinguish immutable captured evidence from curated memory records and MUST link every promoted memory to its supporting evidence instead of rewriting the evidence into a new untraceable fact.
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten
+
+### Requirement: Memory Records MUST Preserve Provenance and Temporal State
+
+The system MUST store stable identity, project and session provenance, creation time, validity state, outcome, and supersession or retraction links so that current guidance and historical mistakes are both queryable without destructive overwrite.
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 1
+
+- **GIVEN** a memory whose conclusion is later corrected
+- **WHEN** current-state recall runs
+- **THEN** the correction ranks as current and the original remains reachable as superseded history
+
+#### Scenario: US2 - Preserve decisions, mistakes, and their outcomes 2
+
+- **GIVEN** a failed implementation attempt with source-session evidence
+- **WHEN** a related task is recalled later
+- **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten

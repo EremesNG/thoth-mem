@@ -1,0 +1,1 @@
+{"mcpServers":{"thoth-mem":{"command":"node","args":["${THOTH_MEM_PACKAGE_ROOT}/dist/index.js","mcp"]}}}

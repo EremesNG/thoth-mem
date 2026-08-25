@@ -26,37 +26,69 @@ Evaluation suites MUST verify lexical prefix matching behavior for eligible toke
 - WHEN lexical retrieval runs
 - THEN FTS5 prefix matching MUST be measured as part of lexical and hybrid recall
 
-### Requirement: Evals MUST Compare Hybrid Against Lexical Baseline
-Evaluation suites MUST compare fused four-lane retrieval quality against lexical-only baseline.
+### Requirement: Evals MUST Compare Equal-Budget Retrieval Lanes Against the Lexical Baseline
 
-#### Scenario: Hybrid and lexical baselines are measured
-- GIVEN a stable evaluation corpus
-- WHEN retrieval evals run
-- THEN metrics MUST include both hybrid and lexical-only outcomes
+Evaluation MUST compare lexical, dense, hybrid, entity, graph, reranking, and query-expansion candidates only when they use the same corpus, query order, candidate budget, final context-token budget, reader or coding agent, and scoring procedure.
 
-### Requirement: Citation and Lineage MUST Be Verified Across Lanes
-Evaluation outputs MUST verify source lineage and citations for sentence, chunk, lexical, and graph/KG evidence.
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
 
-#### Scenario: Fused outputs retain source lineage
-- GIVEN multi-lane fused results
-- WHEN eval logic inspects outputs
-- THEN each retained evidence item MUST include source-linkable lineage
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
 
-### Requirement: Context Compression Quality MUST Be Measured
-Evaluations MUST measure surgical sentence trimming and small-to-big promotion so mandatory trimming does not hide necessary parent context.
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
 
-#### Scenario: Trimmed sentence and promoted parent metrics are reported
-- GIVEN sentence evidence and parent promotion both appear in retrieval output
-- WHEN eval scoring executes
-- THEN metrics MUST report trimmed evidence quality and promoted-parent contribution separately
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
 
-### Requirement: Degraded and Pending Semantic Fallback MUST Be Measured
-Evals MUST include sqlite-vec load failure, vec table unavailability, stale/rebuilding index states, and post-save pending indexing states to verify lexical + graph/KG fallback quality.
+### Requirement: Provenance MUST Be Verified Across Every Enabled Lane
 
-#### Scenario: Semantic unavailable still yields useful fallback
-- GIVEN semantic lanes are degraded or pending
-- WHEN retrieval evals execute
-- THEN fallback availability/quality metrics MUST be produced without global retrieval failure
+Every evaluated result MUST retain stable source IDs and evidence lineage, and a lane MUST fail its gate when relevant output cannot be traced to authoritative SQLite evidence.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
+
+### Requirement: Bounded Progressive Context Quality MUST Be Measured
+
+Evals MUST measure compact recall, context expansion, and full-fetch escalation at fixed budgets so a smaller payload is not credited when it removes evidence required for a correct answer or task.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
+
+### Requirement: Optional Projection Fallback MUST Be Measured
+
+Evals MUST cover disabled, missing, stale, rebuilding, failed, and source-mismatched optional projections and MUST prove that the lexical baseline remains non-empty whenever its control run is non-empty.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
 
 ### Requirement: Facts-Source Eval MUST Assert on `kg_triples`
 The facts-source eval check (`factsSourceChecks`, `src/evals/retrieval.ts:699`,
@@ -527,61 +559,52 @@ Rollout evals MUST NOT require or imply multi-harness support, G3 harness parity
 ## ADDED Requirements
 
 ### Requirement: Evals MUST Report Runtime Token-Savings Telemetry
-Retrieval eval reporting MUST include average payload per tool, full/evidence/returned sizes, saved size, compression ratio, exact-or-estimated token counts, and whether token counts are exact or estimated. The report MUST make the metric basis explicit and MUST preserve existing recall/rank quality gates.
 
-#### Scenario: Token-savings report includes payload averages
-- GIVEN retrieval evals run over the standard fixture corpus
-- WHEN the report is produced
-- THEN it MUST include average payload per relevant tool or tool class
-- AND it MUST include full, evidence, and returned sizes with saved-size/compression metrics
+Eval reports MUST distinguish source, evidence, returned, truncated, and injected model-token payloads and MUST compare them with answer or task quality under the same budget.
 
-#### Scenario: Token metric basis is explicit
-- GIVEN evals cannot use an exact tokenizer
-- WHEN token-savings metrics are reported
-- THEN the report MUST identify token counts as deterministic estimates
-- AND exact-token fields MUST NOT be populated or labeled as exact
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
 
 ### Requirement: Evals MUST Measure mem_get Avoided and Escalated Paths
-Evals MUST include scenarios where compact/context recall is sufficient without full fetch and scenarios where full `mem_get` escalation remains necessary. Reports MUST include avoided and escalated counts and MUST verify that avoided counts are not credited when a full fetch is required later in the same answer path.
 
-#### Scenario: Avoided path is counted
-- GIVEN an eval case is answered from compact or context evidence without full fetch
-- WHEN the token-savings envelope is computed
-- THEN the `mem_get` avoided count MUST increase
-- AND recall quality metrics MUST still pass
+Evals MUST report compact/context paths that finish without full fetch separately from paths that require `mem_get`, and MUST not credit an avoided fetch when later escalation occurs for the same answer path.
 
-#### Scenario: Escalated path is counted
-- GIVEN an eval case requires full observation content after compact/context recall
-- WHEN the token-savings envelope is computed
-- THEN the `mem_get` escalated count MUST increase
-- AND the same case MUST NOT also increase the avoided count
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
 
 ### Requirement: Evals MUST Include Recall-After-Compaction Evidence
-Evals MUST simulate or fixture a compaction-like state where only compact handoff/context remains, then verify that the recall funnel recovers relevant source material. The eval report MUST include recovered-evidence quality, payload savings, and any full-fetch escalation.
 
-#### Scenario: Recall after compaction recovers evidence
-- GIVEN only compact summary/context is available for an eval scenario
-- WHEN compact recall and context expansion run
-- THEN the expected source material MUST be recovered with source attribution
-- AND the report MUST include returned/evidence/full size metrics
+Evals MUST simulate context loss and report recovered source evidence, answer or task quality, injected payload, and full-fetch escalation for each compared retrieval configuration.
 
-#### Scenario: Compaction recovery failure is visible
-- GIVEN the recall funnel cannot recover expected evidence after compaction
-- WHEN the eval report is produced
-- THEN the failure MUST be visible as a failed quality gate or scenario
-- AND it MUST NOT be hidden inside aggregate compression metrics
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
 
-## MODIFIED Requirements
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
 
-## REMOVED Requirements
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
 
-## Assumptions
-- Existing retrieval eval gates remain authoritative for recall/rank quality; token savings do not pass a run that breaks retrieval correctness.
-- Exact tokenizer support is optional and portable estimates are acceptable when clearly labeled.
-
-## Handoff Hints
-- Design should extend `RetrievalTokenSavingsMetricsEnvelope` rather than create an unrelated report format unless the existing shape cannot express per-tool and escalation metrics.
-- Verification should run focused retrieval eval tests plus the broader build/test gate in later phases.
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
 
 ### Requirement: Reproducible durable model comparison
 
@@ -650,3 +673,67 @@ The default-change gate MUST pass only when all three model runs and the durable
 - **GIVEN** a live benchmark finishes
 - **WHEN** its human-readable report is rendered
 - **THEN** the complete machine-readable report is also written to `openspec/changes/embedding-profiles-embeddinggemma/benchmark-result.json` before the process exits
+
+### Requirement: External Benchmark Metrics MUST Retain Their Published Meaning
+
+Benchmark adapters MUST keep retrieval metrics such as MRR, Recall@1, Recall@5, and Hit@K separate from evidence recall, answer F1 or accuracy, judge scores, and agent task outcomes, and MUST label Top-K as a retrieval budget rather than a score.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
+
+### Requirement: Benchmark Reports MUST Include Quality and Resource Envelopes
+
+Durable reports MUST include dataset/version and corpus hashes, candidate configuration, quality metrics, p50/p95 query latency, ingestion/index time, startup time, peak memory, database and model bytes, injected context tokens, truncation, errors, and unavailable evidence.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
+
+### Requirement: Optional Lanes MUST Pass a Fail-Closed Promotion Gate
+
+A candidate MAY become a default only when a complete same-budget report meets predeclared quality, token, latency, memory, footprint, and provenance thresholds; incomplete, incomparable, or regressing evidence MUST leave it disabled by default.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline
+
+### Requirement: Coding-Agent Evaluation MUST Measure Hidden-Test Outcomes
+
+The benchmark suite MUST include coding tasks whose success is measured by hidden-test or equivalent task outcomes in addition to retrieval and answer metrics, so improved recall alone cannot establish product value.
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 1
+
+- **GIVEN** two retrieval candidates
+- **WHEN** they are benchmarked
+- **THEN** they receive the same corpus, query order, candidate limit, final context-token budget, reader or agent, and scoring procedure
+
+#### Scenario: US6 - Promote complexity only with reproducible evidence 2
+
+- **GIVEN** an optional candidate that fails the declared quality/resource promotion gate or has incomplete evidence
+- **WHEN** defaults are selected
+- **THEN** the candidate remains off by default and the lexical core remains the product baseline

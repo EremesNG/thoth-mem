@@ -3,193 +3,156 @@
 ## Requirements
 
 ### Requirement: Published Package MUST Contain Native Assets for All Three Harnesses
-The published thoth-mem package MUST contain complete, host-discoverable integration assets for OpenCode, Codex, and Claude Code. OpenCode assets MUST support `thoth-mem setup opencode`; Codex assets MUST provide the marketplace/plugin identity and runtime content required by Codex plugin-manager installation and the packaged content required by the explicit legacy fallback; and Claude Code assets MUST support repository marketplace registration followed by `claude plugin install thoth-mem`. Modern Codex setup MUST make Codex consume and own its manager-installed content, while only the legacy strategy MAY direct-copy the packaged fallback content.
 
-#### Scenario: OpenCode assets are discoverable
-- GIVEN the published package is installed without a repository checkout
-- WHEN OpenCode setup resolves its packaged integration
-- THEN every required OpenCode manifest, hook, adapter asset, runner, and instruction MUST be present
-- AND setup MUST resolve them from the installed package
+The published project MUST include repository-discoverable Codex and Claude Code marketplace catalogs plus a shared public plugin root containing each host's supported manifest, hooks, MCP registration, portable launcher, Skill, and references for the same v2 core version.
 
-#### Scenario: Modern Codex plugin identity is discoverable
-- GIVEN the published package or controlled marketplace fixture is available without the development checkout
-- WHEN a compatible Codex plugin manager resolves thoth-mem
-- THEN the expected marketplace, plugin manifest, hook, skill, runner, and MCP declaration MUST be discoverable under the exact thoth-mem identity
-- AND the Codex MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `npx` and args `["--yes", "thoth-mem@<package-version>", "mcp", "--no-http"]`
-- AND thoth-mem setup MUST NOT need to copy that manager-installed content into the legacy direct-install target
+#### Scenario: US1 - Install thoth-mem publicly in Codex 1
 
-#### Scenario: Legacy Codex fallback assets are discoverable
-- GIVEN plugin management is unavailable for the selected Codex version or scope
-- WHEN `thoth-mem setup codex` selects the legacy strategy from an installed package
-- THEN every asset required by the legacy installation MUST be present in the package
-- AND setup MUST resolve those assets without a development checkout
+- **GIVEN** a clean supported Codex installation
+- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
+- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
 
-#### Scenario: Claude marketplace and plugin assets are discoverable
-- GIVEN the repository or a packed repository fixture is registered as a Claude Code marketplace
-- WHEN `claude plugin install thoth-mem` resolves the plugin
-- THEN the marketplace and plugin manifests MUST identify a valid thoth-mem plugin
-- AND the Claude MCP descriptor MUST contain exactly one `mcpServers.thoth-mem` entry with command `npx` and args `["--yes", "thoth-mem@<package-version>", "mcp", "--no-http"]`
-- AND every declared hook, runner, skill, and adapter asset MUST be present at its declared packaged path
+#### Scenario: US1 - Install thoth-mem publicly in Codex 2
 
-#### Scenario: Modern and legacy identities cannot diverge
-- GIVEN the packed manager-facing descriptors and legacy fallback assets identify thoth-mem
-- WHEN package integrity verification compares their version and stable content identity
-- THEN the identities MUST be compatible with the packed package version
-- AND integration asset synchronization MUST update both MCP package pins to that exact version
-- AND verification MUST fail if the strategies would install conflicting plugin identities or runtime content
+- **GIVEN** the installed public Codex plugin and an unrelated current working directory
+- **WHEN** Codex invokes a lifecycle hook or starts MCP
+- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+
+- **GIVEN** a clean supported Claude Code installation
+- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
+- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+
+- **GIVEN** the installed public Claude Code plugin
+- **WHEN** a supported session lifecycle event occurs
+- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
 
 ### Requirement: Hook Execution MUST Use Portable Node Runners
-Every packaged harness hook MUST invoke a Node.js runner compatible with the package runtime floor and MUST NOT require Bash, PowerShell, a repository checkout, or the caller's current working directory. Runner resolution MUST work from global and project installations on Windows and POSIX systems, including paths containing spaces.
 
-#### Scenario: Runner works from an unrelated working directory
-- GIVEN a packed artifact is installed and the caller's current working directory is outside the package and target project
-- WHEN a harness invokes a declared hook
-- THEN the Node runner MUST resolve all required packaged assets
-- AND it MUST NOT read a repository-relative runtime dependency
+Public plugin hooks MUST resolve the pinned published v2 runtime without a managed setup receipt, private environment override, source checkout, shell-specific wrapper, or caller working-directory assumption; receipt/local-runtime resolution MAY take precedence only inside explicitly managed canary installations.
 
-#### Scenario: Windows path with spaces is supported
-- GIVEN the package or harness home is installed at a Windows path containing spaces
-- WHEN a packaged hook invokes its runner
-- THEN the intended Node runner MUST execute with intact arguments
-- AND no PowerShell- or command-shell-specific wrapper MUST be required
+#### Scenario: US1 - Install thoth-mem publicly in Codex 1
 
-#### Scenario: POSIX path with spaces is supported
-- GIVEN the package or harness home is installed at a POSIX path containing spaces
-- WHEN a packaged hook invokes its runner
-- THEN the intended Node runner MUST execute with intact arguments
-- AND no Bash-specific wrapper MUST be required
+- **GIVEN** a clean supported Codex installation
+- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
+- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
+
+#### Scenario: US1 - Install thoth-mem publicly in Codex 2
+
+- **GIVEN** the installed public Codex plugin and an unrelated current working directory
+- **WHEN** Codex invokes a lifecycle hook or starts MCP
+- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+
+- **GIVEN** a clean supported Claude Code installation
+- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
+- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+
+- **GIVEN** the installed public Claude Code plugin
+- **WHEN** a supported session lifecycle event occurs
+- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
 
 ### Requirement: NPM Tarball MUST Include the Complete Integration Inventory
-The npm tarball MUST include every manifest, marketplace descriptor, plugin descriptor, hook declaration, skill, adapter entry point, Node runner, setup asset, and packaged instruction required by the three native integrations. Package-content verification MUST evaluate one canonical inventory whose entries each contain exactly one harness owner (`opencode`, `codex`, `claude`), one role, and one unique package-relative path. Every runtime-declared asset MUST appear exactly once in that inventory, and every inventory entry MUST exist in the tarball. Codex MCP verification MUST require a top-level `mcpServers` object containing exactly one `thoth-mem` server and MUST reject flat root declarations. Verification MUST fail for a missing, duplicate, undeclared, or extra required runtime asset or when a declared runtime path resolves outside the tarball.
 
-#### Scenario: Complete tarball passes inventory verification
-- GIVEN the package is packed using the release packaging flow
-- WHEN package-content verification inspects the tarball
-- THEN every required integration inventory item for OpenCode, Codex, and Claude Code MUST be present
-- AND every declared runtime path MUST resolve to an item inside the unpacked artifact
+Packed-artifact verification MUST prove that every declared native hook, MCP registration, Skill/reference, adapter, runner, and setup receipt path exists exactly once under one harness owner and resolves inside the tarball.
 
-#### Scenario: Missing asset fails packaging verification
-- GIVEN a required hook runner or manifest is omitted from the tarball
-- WHEN package-content verification runs
-- THEN verification MUST fail
-- AND it MUST identify the missing harness, asset, and declared path
+#### Scenario: US1 - Resume useful project context in any supported coding agent 1
 
-#### Scenario: Source-tree-only asset is rejected
-- GIVEN a manifest references a file that exists in the repository but is excluded from the tarball
-- WHEN package-content verification runs against the packed artifact
-- THEN verification MUST fail
-- AND source-tree presence MUST NOT satisfy the packed-artifact requirement
+- **GIVEN** a project with prior durable memories and a supported host version
+- **WHEN** a root session starts or resumes
+- **THEN** the plugin supplies bounded, source-attributed recovery context through the shared lifecycle contract
 
-#### Scenario: Canonical inventory rejects duplicate or undeclared runtime assets
-- GIVEN two inventory entries use the same package-relative path or a manifest declares a runtime asset absent from the inventory
-- WHEN package-content verification runs
-- THEN verification MUST fail
-- AND it MUST identify the duplicate or undeclared path and owning harness
+#### Scenario: US1 - Resume useful project context in any supported coding agent 2
+
+- **GIVEN** a host event that cannot be mapped safely
+- **WHEN** the event is received
+- **THEN** the plugin reports that capability as degraded without inventing success or disabling explicit MCP memory operations
+
+#### Scenario: US7 - Ship only the first product boundary 1
+
+- **GIVEN** the packed first-product artifact
+- **WHEN** its required runtime inventory is validated
+- **THEN** each of the three harnesses has hooks, MCP registration, and Skills that resolve to the same core
+
+#### Scenario: US7 - Ship only the first product boundary 2
+
+- **GIVEN** the installed first product
+- **WHEN** it starts and serves MCP lifecycle operations
+- **THEN** deferred dashboard, observatory, HTTP, and graph surfaces are neither required nor started
 
 ### Requirement: Manifest Versions and Paths MUST Be Internally Consistent
-Every version-bearing native manifest MUST equal the packed `package.json` version exactly, and every manifest path MUST resolve to the intended asset within the package or marketplace root. Both normalized lexical paths and resolved real paths after following links MUST remain within the applicable root. Packaging verification MUST reject version ranges, stale versions, missing targets, absolute checkout paths, lexical traversal, link-based escapes, and harness declarations that disagree about the installed plugin identity.
 
-#### Scenario: Versions and plugin identity agree
-- GIVEN a thoth-mem package tarball and its native manifests
-- WHEN integrity verification runs
-- THEN every version-bearing manifest MUST match or explicitly declare compatibility with the package version
-- AND every harness MUST identify the integration as thoth-mem
+Codex and Claude Code marketplace entries, plugin manifests, component paths, and public runtime metadata MUST use current host contracts, remain contained within the distributed plugin root, and synchronize with the package version.
 
-#### Scenario: Stale version is rejected
-- GIVEN a native manifest declares an incompatible or stale thoth-mem version
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND it MUST identify the manifest and conflicting versions
+#### Scenario: US1 - Install thoth-mem publicly in Codex 1
 
-#### Scenario: Escaping or absolute checkout path is rejected
-- GIVEN a native manifest declares an absolute repository path or a relative path that escapes the package or marketplace root
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND the unsafe path MUST NOT be executed during smoke testing
+- **GIVEN** a clean supported Codex installation
+- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
+- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
 
-#### Scenario: Link-based path escape is rejected
-- GIVEN a declared package-relative asset resolves through a link to a target outside the package or marketplace root
-- WHEN integrity verification runs
-- THEN verification MUST fail
-- AND the external target MUST NOT be executed or accepted as packaged content
+#### Scenario: US1 - Install thoth-mem publicly in Codex 2
+
+- **GIVEN** the installed public Codex plugin and an unrelated current working directory
+- **WHEN** Codex invokes a lifecycle hook or starts MCP
+- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+
+- **GIVEN** a clean supported Claude Code installation
+- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
+- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+
+#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+
+- **GIVEN** the installed public Claude Code plugin
+- **WHEN** a supported session lifecycle event occurs
+- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
+
+#### Scenario: US4 - Publish coherent marketplace artifacts 1
+
+- **GIVEN** a release version change
+- **WHEN** integration assets are synchronized
+- **THEN** plugin manifests, marketplace metadata, and pinned runtime metadata agree with `package.json`
+
+#### Scenario: US4 - Publish coherent marketplace artifacts 2
+
+- **GIVEN** a packed release with a missing, escaped, stale, or undeclared public plugin asset
+- **WHEN** release verification runs
+- **THEN** it fails with a bounded diagnostic before publication
 
 ### Requirement: Installation Smoke Tests MUST Execute From the Packed Artifact
-Release verification MUST install and exercise the actual npm tarball in isolated harness homes and project directories. Automated smoke tests MUST use controlled filesystem and command-executor fixtures for Codex and MUST NOT mutate a real personal/global Codex installation. They MUST prove OpenCode global and project setup, modern and legacy Codex ownership behavior, dual-state migration and idempotency, Codex global/project scope confinement, and Claude Code marketplace/plugin installation without resolving runtime files from the source checkout. A real Codex smoke mutation MAY run only after separate explicit user authorization and MUST use disposable controlled homes/projects.
 
-#### Scenario: OpenCode installs globally from the tarball
-- GIVEN an isolated clean OpenCode home and an installed thoth-mem tarball
-- WHEN `thoth-mem setup opencode` runs
-- THEN setup MUST verify a global installation using only packed assets
-- AND an identical second run MUST be a verified no-op
+Release verification MUST exercise repository marketplace discovery, plugin installation, native lifecycle execution, and MCP startup for Codex and Claude Code in isolated homes without reading or mutating real user configuration or resolving runtime files from the development checkout; it MUST also prove that receipt-owned `setup-v2` canary installation changes only its explicit local target and leaves committed public marketplace assets unchanged.
 
-#### Scenario: OpenCode installs only in explicit project scope
-- GIVEN an isolated project and clean global OpenCode home
-- WHEN OpenCode setup runs for that explicit project scope from the tarball
-- THEN all managed installation state MUST remain inside the project scope
-- AND the global OpenCode home MUST remain unchanged
+#### Scenario: US3 - Keep public and canary installations separate 1
 
-#### Scenario: Controlled modern Codex setup uses manager ownership
-- GIVEN an isolated Codex home, a controlled modern Codex capability fixture, and an installed thoth-mem tarball
-- WHEN global or supported project-scoped Codex setup runs
-- THEN it MUST verify the manager-owned marketplace and installed-and-enabled plugin state
-- AND it MUST create no legacy direct-copy directory or legacy activation block
-- AND an identical second run MUST be a verified no-op
+- **GIVEN** the repository marketplaces and a local v2 build
+- **WHEN** `setup-v2` installs a Codex or Claude canary target
+- **THEN** only the explicit target receives receipt-owned local assets and the committed public catalogs remain unchanged
 
-#### Scenario: Controlled legacy Codex setup uses packaged fallback assets
-- GIVEN an isolated Codex home, a controlled fixture without safe plugin management for the selected scope, and an installed thoth-mem tarball
-- WHEN Codex setup runs
-- THEN it MUST install and verify only the explicit legacy-owned state using packed assets
-- AND an identical second run MUST be a verified no-op
+#### Scenario: US3 - Keep public and canary installations separate 2
 
-#### Scenario: Controlled dual-owned fixture migrates safely
-- GIVEN an isolated usable dual-owned Codex fixture with verified manager state and provably thoth-owned legacy state
-- WHEN Codex setup runs without force
-- THEN it MUST preserve manager-owned and unrelated state
-- AND it MUST remove only proven legacy state after the required checkpoint
-- AND a repeated run MUST verify a modern no-op
+- **GIVEN** both public and canary configurations
+- **WHEN** their runtime resolution is inspected
+- **THEN** public installation resolves the pinned published package while canary installation resolves the explicit local build
 
-#### Scenario: Controlled ambiguous migration performs zero mutation
-- GIVEN an isolated Codex fixture contains a legacy lookalike whose ownership cannot be proven
-- WHEN Codex setup runs with or without `--force`
-- THEN it MUST return `requires_user_action` before migration mutation
-- AND the complete controlled filesystem and manager state MUST remain unchanged
+#### Scenario: US4 - Publish coherent marketplace artifacts 1
 
-#### Scenario: Project-scoped Codex verification leaves global state unchanged
-- GIVEN an isolated project and isolated global Codex home
-- WHEN a controlled project-scoped modern or legacy setup runs
-- THEN every direct filesystem mutation MUST remain within the project scope
-- AND global Codex state MUST remain unchanged except for an explicitly selected and supported project-scoped manager operation
+- **GIVEN** a release version change
+- **WHEN** integration assets are synchronized
+- **THEN** plugin manifests, marketplace metadata, and pinned runtime metadata agree with `package.json`
 
-#### Scenario: Executable-path variation does not create false legacy drift
-- GIVEN a packed legacy installation is verified through one executable path
-- AND the repeat setup uses a different controlled shim path with the same package/content identity
-- WHEN the packed setup is repeated
-- THEN it MUST return a verified no-op
-- AND it MUST not rewrite the installation solely because the executable path changed
+#### Scenario: US4 - Publish coherent marketplace artifacts 2
 
-#### Scenario: Claude plugin installs from repository marketplace assets
-- GIVEN an isolated Claude Code home and the packaged marketplace repository fixture
-- WHEN the marketplace is added and `claude plugin install thoth-mem` runs
-- THEN Claude Code MUST validate and install the thoth-mem plugin
-- AND its declared hooks MUST resolve portable Node runners without the development checkout
-
-#### Scenario: Packed installation detects external checkout dependency
-- GIVEN a smoke environment cannot access the development repository
-- WHEN any integration attempts to load a non-packed runtime file
-- THEN the smoke test MUST fail
-- AND it MUST identify the referencing harness and unresolved path
-
-#### Scenario: Automated Codex verification never mutates a real home
-- GIVEN automated package verification runs in a developer or CI environment
-- WHEN Codex ownership and migration scenarios execute
-- THEN they MUST use isolated controlled homes and injected or controlled command behavior
-- AND they MUST NOT read credentials from or mutate a real personal/global Codex installation
-
-#### Scenario: Real Codex smoke requires explicit authorization
-- GIVEN deterministic controlled verification has passed
-- WHEN a real Codex mutation smoke test is considered
-- THEN it MUST NOT run without separate explicit user authorization
-- AND any authorized run MUST target disposable controlled global and project homes
+- **GIVEN** a packed release with a missing, escaped, stale, or undeclared public plugin asset
+- **WHEN** release verification runs
+- **THEN** it fails with a bounded diagnostic before publication
 
 ### Requirement: Disposable Per-Harness Verification MUST Prove Runtime Activation
 Release verification MUST exercise the packed OpenCode, Codex, and Claude Code
@@ -395,3 +358,31 @@ Packed-artifact verification MUST exercise global and project OpenCode convergen
 - **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
 - **WHEN** setup runs again
 - **THEN** it returns `complete` with `changed=false` and performs zero mutation
+
+### Requirement: First Product Package MUST Exclude Deferred Runtime Surfaces
+
+The default package and startup path MUST NOT require or automatically start a dashboard, observatory, HTTP service, graph engine, external database, embedding model, reranker, or LLM; experimental packages MAY be added later without becoming core dependencies.
+
+#### Scenario: US1 - Resume useful project context in any supported coding agent 1
+
+- **GIVEN** a project with prior durable memories and a supported host version
+- **WHEN** a root session starts or resumes
+- **THEN** the plugin supplies bounded, source-attributed recovery context through the shared lifecycle contract
+
+#### Scenario: US1 - Resume useful project context in any supported coding agent 2
+
+- **GIVEN** a host event that cannot be mapped safely
+- **WHEN** the event is received
+- **THEN** the plugin reports that capability as degraded without inventing success or disabling explicit MCP memory operations
+
+#### Scenario: US7 - Ship only the first product boundary 1
+
+- **GIVEN** the packed first-product artifact
+- **WHEN** its required runtime inventory is validated
+- **THEN** each of the three harnesses has hooks, MCP registration, and Skills that resolve to the same core
+
+#### Scenario: US7 - Ship only the first product boundary 2
+
+- **GIVEN** the installed first product
+- **WHEN** it starts and serves MCP lifecycle operations
+- **THEN** deferred dashboard, observatory, HTTP, and graph surfaces are neither required nor started

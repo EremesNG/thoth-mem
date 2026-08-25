@@ -1,0 +1,17 @@
+{
+  "name": "thoth-mem",
+  "displayName": "thoth-mem Persistent Memory",
+  "version": "0.4.13",
+  "description": "Local-first persistent memory for Codex coding sessions.",
+  "author": {
+    "name": "thoth-mem contributors"
+  },
+  "homepage": "https://github.com/EremesNG/thoth-mem",
+  "repository": "https://github.com/EremesNG/thoth-mem",
+  "license": "MIT",
+  "category": "Productivity",
+  "keywords": ["memory", "sqlite", "coding-agent"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./mcp.json"
+}

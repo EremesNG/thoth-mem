@@ -1,0 +1,51 @@
+{
+  "description": "thoth-mem persistent lifecycle memory for Claude Code",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "timeout": 15,
+            "statusMessage": "Loading thoth-mem context"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
