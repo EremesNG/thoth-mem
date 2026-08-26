@@ -14,13 +14,31 @@ The system MUST persist authoritative projects, sessions, immutable evidence, pr
 
 ### Requirement: Raw Evidence and Promoted Memory MUST Remain Distinct
 
-Captured evidence MUST be immutable, and each promoted memory MUST link to supporting evidence instead of replacing it with an untraceable assertion.
+Automatic lifecycle capture MUST append immutable source-attributed evidence only; promoted memories MUST remain separately typed, linked to supporting evidence, and limited to facts that materially change future coding work. Root prompts MUST NOT become promoted memory merely because they were captured.
 
-#### Scenario: Promote a decision
+#### Scenario: US1 - Preserve evidence without promoting noise 1
 
-- **GIVEN** durable evidence and a promoted decision
-- **WHEN** the transaction commits
-- **THEN** both records retain stable identities and an explicit support link
+- **GIVEN** a verified root user prompt
+- **WHEN** a native capture hook runs
+- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+
+#### Scenario: US1 - Preserve evidence without promoting noise 2
+
+- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
+- **WHEN** the root agent saves at a semantic boundary
+- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+
+#### Scenario: US1 - Preserve evidence without promoting noise 3
+
+- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
+- **WHEN** native capture is considered
+- **THEN** it is excluded or fails closed without being presented as verified root memory
+
+#### Scenario: US1 - Preserve evidence without promoting noise 4
+
+- **GIVEN** a bounded host-provided pre-compaction continuation payload
+- **WHEN** checkpoint capture runs
+- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
 
 ### Requirement: Memory Records MUST Preserve Provenance and Temporal State
 
@@ -44,13 +62,31 @@ Service and SQLite write boundaries MUST enforce the same closed evidence kinds,
 
 ### Requirement: Save Paths MUST Use One Explicit Identity Contract
 
-Session-attributed writes MUST preserve a verified stable root-session key, harness, and project identity. Project-only writes MAY remain unattributed, but missing or delegated identity MUST NOT be presented as verified root continuity.
+Durable writes and lifecycle receipts MUST scope by verified project identity and, when session-attributed, harness plus verified root-session key; topic keys MUST identify evolving memory lineage. Branch, worktree, file, and commit data MAY be metadata but MUST NOT partition the authoritative project ledger by default.
 
-#### Scenario: Save from a delegated caller
+#### Scenario: US1 - Preserve evidence without promoting noise 1
 
-- **GIVEN** a caller whose root authority cannot be verified
-- **WHEN** it requests a root-session-attributed write
-- **THEN** the write fails closed or remains explicitly project-only
+- **GIVEN** a verified root user prompt
+- **WHEN** a native capture hook runs
+- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+
+#### Scenario: US1 - Preserve evidence without promoting noise 2
+
+- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
+- **WHEN** the root agent saves at a semantic boundary
+- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+
+#### Scenario: US1 - Preserve evidence without promoting noise 3
+
+- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
+- **WHEN** native capture is considered
+- **THEN** it is excluded or fails closed without being presented as verified root memory
+
+#### Scenario: US1 - Preserve evidence without promoting noise 4
+
+- **GIVEN** a bounded host-provided pre-compaction continuation payload
+- **WHEN** checkpoint capture runs
+- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
 
 ### Requirement: Startup Migrations MUST Be Structured and Idempotent
 

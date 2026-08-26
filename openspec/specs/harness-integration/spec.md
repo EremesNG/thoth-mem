@@ -58,33 +58,111 @@ OpenCode MUST resolve bounded current-session metadata through its native identi
 
 ### Requirement: Automatic Capture MUST Remain Privacy-Safe and Minimal
 
-Native hooks MAY capture privacy-filtered root-user prompts and explicit lifecycle checkpoints, but MUST NOT auto-persist assistant traffic, tool streams, subagent output, secrets, or private blocks.
+Native integrations MAY automatically capture only verified non-synthetic root prompts, bounded pre-compaction checkpoints, authoritative handoff/finalization payloads, and lifecycle receipts. They MUST NOT automatically persist assistant reasoning, arbitrary tool streams or filesystem content, delegated/subagent output, secrets, complete transcripts, or explicit private blocks. Explicit private blocks and deterministically recognizable credential forms MUST be removed or replaced before persisted content and idempotency hashes are derived.
 
-#### Scenario: Prompt contains a private block
+#### Scenario: US1 - Preserve evidence without promoting noise 1
 
-- **GIVEN** a root prompt containing public text and a private block
-- **WHEN** capture runs
-- **THEN** only the allowed bounded public portion can become immutable evidence
+- **GIVEN** a verified root user prompt
+- **WHEN** a native capture hook runs
+- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+
+#### Scenario: US1 - Preserve evidence without promoting noise 2
+
+- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
+- **WHEN** the root agent saves at a semantic boundary
+- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+
+#### Scenario: US1 - Preserve evidence without promoting noise 3
+
+- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
+- **WHEN** native capture is considered
+- **THEN** it is excluded or fails closed without being presented as verified root memory
+
+#### Scenario: US1 - Preserve evidence without promoting noise 4
+
+- **GIVEN** a bounded host-provided pre-compaction continuation payload
+- **WHEN** checkpoint capture runs
+- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
 
 ### Requirement: Model-Visible Recovery Context MUST Be Bounded and Source-Attributed
 
-Confirmed recovery MUST inject at most one tagged bounded block containing complete source-attributed items and verified root identity where supported. Hook execution or delivery MUST NOT be reported as model consumption without real evidence.
+Confirmed recovery MUST inject at most one tagged block within the host cap, preserve complete fixed metadata, allocate non-trivial useful content before optional headings/metadata, include only complete selected memory IDs for progressive fetch, omit supporting evidence IDs even when they appear inside selected title/content data, and delimit recovered memory as untrusted data that cannot override current system, developer, or user instructions. A metadata-heavy candidate MUST be omitted when abundant source content exists but the complete metadata would make the 50% useful-content threshold impossible.
 
-#### Scenario: Recovered items exceed the host budget
+#### Scenario: US2 - Resume from actionable context 1
 
-- **GIVEN** several selected memories larger than the host output budget
-- **WHEN** recovery renders
-- **THEN** complete item boundaries are retained within the cap and truncation cannot fabricate partial metadata
+- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
+- **WHEN** session-start or post-compaction recovery runs
+- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+
+#### Scenario: US2 - Resume from actionable context 2
+
+- **GIVEN** more candidate memories than fit the host cap
+- **WHEN** the continuation capsule is assembled
+- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
+
+#### Scenario: US2 - Resume from actionable context 3
+
+- **GIVEN** a selected memory with provenance
+- **WHEN** host-visible context renders
+- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
+
+#### Scenario: US2 - Resume from actionable context 4
+
+- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **WHEN** recovery runs
+- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 
-Stable event keys MUST prevent duplicate capture or checkpoints across retry and restart. Receipts MUST distinguish hook execution, persistence confirmation, recovery delivery, and observed model consumption.
+Stable event keys MUST make capture, checkpoint promotion, start recovery, and post-compaction recovery idempotent across retry/restart. Results MUST report hook execution, memory confirmation, context delivery, and model consumption separately; delivery MUST be false when only identity or an unusable empty capsule is produced.
 
-#### Scenario: Session-start hook is delivered twice
+#### Scenario: US1 - Preserve evidence without promoting noise 1
 
-- **GIVEN** the same verified event key
-- **WHEN** lifecycle processes it twice
-- **THEN** authoritative state changes once and both responses report duplicate truth consistently
+- **GIVEN** a verified root user prompt
+- **WHEN** a native capture hook runs
+- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+
+#### Scenario: US1 - Preserve evidence without promoting noise 2
+
+- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
+- **WHEN** the root agent saves at a semantic boundary
+- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+
+#### Scenario: US1 - Preserve evidence without promoting noise 3
+
+- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
+- **WHEN** native capture is considered
+- **THEN** it is excluded or fails closed without being presented as verified root memory
+
+#### Scenario: US1 - Preserve evidence without promoting noise 4
+
+- **GIVEN** a bounded host-provided pre-compaction continuation payload
+- **WHEN** checkpoint capture runs
+- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
+
+#### Scenario: US2 - Resume from actionable context 1
+
+- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
+- **WHEN** session-start or post-compaction recovery runs
+- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+
+#### Scenario: US2 - Resume from actionable context 2
+
+- **GIVEN** more candidate memories than fit the host cap
+- **WHEN** the continuation capsule is assembled
+- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
+
+#### Scenario: US2 - Resume from actionable context 3
+
+- **GIVEN** a selected memory with provenance
+- **WHEN** host-visible context renders
+- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
+
+#### Scenario: US2 - Resume from actionable context 4
+
+- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **WHEN** recovery runs
+- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
@@ -98,10 +176,28 @@ Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unve
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 
-The packaged Skill MUST teach progressive recall, root identity ownership, privacy exclusions, and explicit durable handoff persistence at meaningful semantic boundaries using only the six MCP tools.
+The shared Skill MUST define the durable promotion test, the content required for each current memory kind, explicit failure/outcome preservation, topic supersession, privacy exclusions, progressive recall, and a root-owned handoff containing objective, completed work, first pending action, blockers, and key files/checks.
 
-#### Scenario: Work reaches a reusable completion boundary
+#### Scenario: US1 - Preserve evidence without promoting noise 1
 
-- **GIVEN** a verified durable decision or completed change
-- **WHEN** the root agent follows the Skill before final response
-- **THEN** it saves one concise evidence-backed handoff or truthfully reports that persistence was not confirmed
+- **GIVEN** a verified root user prompt
+- **WHEN** a native capture hook runs
+- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+
+#### Scenario: US1 - Preserve evidence without promoting noise 2
+
+- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
+- **WHEN** the root agent saves at a semantic boundary
+- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+
+#### Scenario: US1 - Preserve evidence without promoting noise 3
+
+- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
+- **WHEN** native capture is considered
+- **THEN** it is excluded or fails closed without being presented as verified root memory
+
+#### Scenario: US1 - Preserve evidence without promoting noise 4
+
+- **GIVEN** a bounded host-provided pre-compaction continuation payload
+- **WHEN** checkpoint capture runs
+- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model

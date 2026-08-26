@@ -4,13 +4,25 @@
 
 ### Requirement: Evals MUST Compare Equal-Budget Retrieval Lanes Against the Lexical Baseline
 
-Lexical, dense, hybrid, entity, graph, reranking, and query-expansion candidates MAY be compared only with the same corpus, query order, candidate limit, final context-token budget, reader or coding agent, and scoring procedure.
+LongMemEval-S, LoCoMo, BEAM/PersonaMem, SDEBench, Agent Memory Benchmark, and any product fixture MUST compare BM25, dense, hybrid, and each additional module with the same dataset/version, query order, candidate Top-K, final context budget, reader/coding agent, scoring procedure, and resource/provenance reporting; incomparable or incomplete evidence MUST NOT promote complexity.
 
-#### Scenario: Candidate receives a larger final budget
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 1
 
-- **GIVEN** a candidate and lexical control with unequal final context budgets
-- **WHEN** report validation runs
-- **THEN** the comparison is marked incomparable and cannot promote the candidate
+- **GIVEN** BM25 and an optional dense, hybrid, rerank, entity, graph, or consolidation lane
+- **WHEN** they are compared
+- **THEN** corpus, query order, Top-K, final token budget, reader/agent, scoring procedure, provenance, and resource envelope are equal or the comparison is rejected
+
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 2
+
+- **GIVEN** an improved retrieval metric without recovered actionable fields or coding-task improvement
+- **WHEN** promotion is assessed
+- **THEN** the optional module remains disabled
+
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 3
+
+- **GIVEN** no prepared external dataset
+- **WHEN** the offline fixture runs
+- **THEN** it validates schema and product regressions without claiming LongMemEval-S, LoCoMo, BEAM/PersonaMem, SDEBench, or Agent Memory Benchmark quality
 
 ### Requirement: External Metrics MUST Retain Their Published Meaning
 
@@ -64,10 +76,22 @@ An optional module MAY become a default only when complete same-budget external 
 
 ### Requirement: Evals MUST Measure Compaction Recovery and Coding Outcomes
 
-The suite MUST measure source-attributed recovery after context loss, injected tokens, compression, avoided/escalated full fetches, and hidden-test or equivalent coding-task success in addition to retrieval quality.
+Product evaluation MUST include hidden actionable handoff fields, restart and post-compaction recovery, correction/history, irrelevant-query abstention, poisoned-memory rendering, project isolation, delegated-write rejection, injected characters/tokens, useful-content ratio, latency, full-fetch avoidance, and coding-task outcomes in addition to retrieval metrics.
 
-#### Scenario: Recall improves without task success
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 1
 
-- **GIVEN** a candidate with better retrieval metrics but unchanged or worse hidden-task outcomes
-- **WHEN** product value is assessed
-- **THEN** retrieval improvement alone is insufficient to promote the module
+- **GIVEN** BM25 and an optional dense, hybrid, rerank, entity, graph, or consolidation lane
+- **WHEN** they are compared
+- **THEN** corpus, query order, Top-K, final token budget, reader/agent, scoring procedure, provenance, and resource envelope are equal or the comparison is rejected
+
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 2
+
+- **GIVEN** an improved retrieval metric without recovered actionable fields or coding-task improvement
+- **WHEN** promotion is assessed
+- **THEN** the optional module remains disabled
+
+#### Scenario: US4 - Justify complexity with equal-budget outcomes 3
+
+- **GIVEN** no prepared external dataset
+- **WHEN** the offline fixture runs
+- **THEN** it validates schema and product regressions without claiming LongMemEval-S, LoCoMo, BEAM/PersonaMem, SDEBench, or Agent Memory Benchmark quality

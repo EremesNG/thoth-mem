@@ -34,13 +34,49 @@ A confirmed save MUST be visible through authoritative lookup and FTS5 before su
 
 ### Requirement: Progressive Retrieval MUST Use Stable IDs and Bounded Escalation
 
-Recall MUST begin with compact ranked items, context expansion MUST obey a caller-visible character budget, and full record content MUST require explicit `mem_get` escalation using stable IDs.
+Briefing and compact recall MUST expose stable memory IDs; context expansion MUST remain bounded; and full content, evidence IDs, and lineage MUST require explicit selection through `mem_get` or history. Raw evidence MUST NOT enter automatic recovery.
 
-#### Scenario: Expand a compact result
+#### Scenario: US2 - Resume from actionable context 1
 
-- **GIVEN** a compact result with a stable memory ID
-- **WHEN** the caller requests context and then a selected full record
-- **THEN** each stage is source-attributed, bounded until `mem_get`, and refers to the same record
+- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
+- **WHEN** session-start or post-compaction recovery runs
+- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+
+#### Scenario: US2 - Resume from actionable context 2
+
+- **GIVEN** more candidate memories than fit the host cap
+- **WHEN** the continuation capsule is assembled
+- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
+
+#### Scenario: US2 - Resume from actionable context 3
+
+- **GIVEN** a selected memory with provenance
+- **WHEN** host-visible context renders
+- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
+
+#### Scenario: US2 - Resume from actionable context 4
+
+- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **WHEN** recovery runs
+- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
+
+#### Scenario: US3 - Explore memory progressively 1
+
+- **GIVEN** a project with a current handoff and multiple durable memories
+- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
+- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+
+#### Scenario: US3 - Explore memory progressively 2
+
+- **GIVEN** a specific coding question
+- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
+- **THEN** only the selected context/full-record path pays the additional content cost
+
+#### Scenario: US3 - Explore memory progressively 3
+
+- **GIVEN** similarly named memories in another project or historical superseded guidance
+- **WHEN** current project retrieval runs
+- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
 
 ### Requirement: Current Recall MUST Prefer Valid Guidance Without Hiding History
 
@@ -54,13 +90,49 @@ Default current retrieval MUST prefer valid guidance over comparable superseded,
 
 ### Requirement: Project Briefing MUST Be Deterministic and Bounded
 
-Project context MUST assemble a deterministic bounded briefing from durable decisions, conventions, project structure, unresolved outcomes, and recent handoffs without synthesizing unsupported facts.
+`mem_context`, `mem_project action=briefing`, and native recovery MUST use one host-neutral continuation policy that prioritizes the newest eligible current handoff, then current relevant decisions/conventions, failed or mixed lessons, and project structure. Selection MUST be deterministic, project-scoped, source-attributed, content-first, and bounded without synthesizing unsupported facts.
 
-#### Scenario: Brief a project with more evidence than the budget
+#### Scenario: US2 - Resume from actionable context 1
 
-- **GIVEN** a project whose current memories exceed the requested budget
-- **WHEN** a briefing is generated
-- **THEN** deterministic trimming and truncation metadata keep output within the budget
+- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
+- **WHEN** session-start or post-compaction recovery runs
+- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+
+#### Scenario: US2 - Resume from actionable context 2
+
+- **GIVEN** more candidate memories than fit the host cap
+- **WHEN** the continuation capsule is assembled
+- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
+
+#### Scenario: US2 - Resume from actionable context 3
+
+- **GIVEN** a selected memory with provenance
+- **WHEN** host-visible context renders
+- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
+
+#### Scenario: US2 - Resume from actionable context 4
+
+- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **WHEN** recovery runs
+- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
+
+#### Scenario: US3 - Explore memory progressively 1
+
+- **GIVEN** a project with a current handoff and multiple durable memories
+- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
+- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+
+#### Scenario: US3 - Explore memory progressively 2
+
+- **GIVEN** a specific coding question
+- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
+- **THEN** only the selected context/full-record path pays the additional content cost
+
+#### Scenario: US3 - Explore memory progressively 3
+
+- **GIVEN** similarly named memories in another project or historical superseded guidance
+- **WHEN** current project retrieval runs
+- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
 
 ### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 

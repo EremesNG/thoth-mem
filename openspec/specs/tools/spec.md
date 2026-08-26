@@ -40,23 +40,47 @@ All tool inputs and outputs MUST use closed validated schemas under `thoth-mem.m
 
 ### Requirement: mem_recall, mem_context, and mem_get MUST Form a Progressive Funnel
 
-`mem_recall` MUST support compact and context modes, `mem_context` MUST provide a bounded project briefing, and `mem_get` MUST fetch only a selected full record or lineage.
+`mem_context` MUST expose the same continuation selection used by native recovery, `mem_recall` MUST remain query-specific and compact-first, and `mem_get` MUST return only the selected full record and provenance without widening the six-tool surface.
 
-#### Scenario: Recall progressively
+#### Scenario: US3 - Explore memory progressively 1
 
-- **GIVEN** durable relevant memory
-- **WHEN** a client performs compact recall, context expansion, and one selected get
-- **THEN** earlier stages remain bounded and only the selected final fetch returns full content
+- **GIVEN** a project with a current handoff and multiple durable memories
+- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
+- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+
+#### Scenario: US3 - Explore memory progressively 2
+
+- **GIVEN** a specific coding question
+- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
+- **THEN** only the selected context/full-record path pays the additional content cost
+
+#### Scenario: US3 - Explore memory progressively 3
+
+- **GIVEN** similarly named memories in another project or historical superseded guidance
+- **WHEN** current project retrieval runs
+- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
 
 ### Requirement: mem_project MUST Keep Project Operations Bounded
 
-`mem_project` MUST support listing, briefing, and history over the authoritative ledger without requiring a graph projection.
+`mem_project action=briefing` MUST delegate to the shared continuation selector, `history` MUST preserve explicit temporal lineage, and neither action MAY require or expose a graph/vector projection or add another MCP tool.
 
-#### Scenario: Request project history
+#### Scenario: US3 - Explore memory progressively 1
 
-- **GIVEN** a project with current and superseded memories
-- **WHEN** `mem_project action=history` runs
-- **THEN** it returns a deterministic bounded ledger history with stable IDs and temporal status
+- **GIVEN** a project with a current handoff and multiple durable memories
+- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
+- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+
+#### Scenario: US3 - Explore memory progressively 2
+
+- **GIVEN** a specific coding question
+- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
+- **THEN** only the selected context/full-record path pays the additional content cost
+
+#### Scenario: US3 - Explore memory progressively 3
+
+- **GIVEN** similarly named memories in another project or historical superseded guidance
+- **WHEN** current project retrieval runs
+- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
 
 ### Requirement: mem_session MUST Handle Only Verified Root Lifecycle
 
