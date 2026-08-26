@@ -36,7 +36,28 @@ describe('benchmark fixture runner', () => {
         answer: { exact_match: 1 },
         agent: { hidden_test_success: null },
         progressive: { source_chars: expect.any(Number), evidence_chars: expect.any(Number), full_chars: expect.any(Number), truncated_chars: expect.any(Number), full_fetches: 1, avoided_full_fetches: 0, escalation_rate: 1 },
-        compaction: { checkpoints: 1, recoveries: 1, recovery_success: 1 },
+        compaction: { checkpoints: 1, recoveries: 2, recovery_success: 2 },
+        continuity: {
+          actionable_field_names: ['Objective', 'Completed', 'First pending action', 'Blockers', 'Key files/checks'],
+          actionable_fields_expected: 5,
+          actionable_fields_recovered: 5,
+          hidden_markers_expected: 3,
+          hidden_markers_recovered: 3,
+          restart_recovery_success: 1,
+          post_compaction_recovery_success: 1,
+          abstention_success: 1,
+          project_isolation_success: 1,
+          delegated_rejection_success: 1,
+          trust_boundary_present: 1,
+          poisoned_memory_safe: 1,
+          host_cap_compliance: 1,
+          evidence_ids_exposed: 0,
+          injected_code_points: expect.any(Number),
+          injected_tokens: expect.any(Number),
+          useful_content_code_points: expect.any(Number),
+          useful_content_ratio: expect.any(Number),
+          selected_memory_ids: expect.arrayContaining([expect.any(String)]),
+        },
       },
       promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
     });
@@ -49,6 +70,11 @@ describe('benchmark fixture runner', () => {
     expect(report.metrics.progressive.context_returned_chars).toBeGreaterThanOrEqual(report.metrics.progressive.compact_returned_chars);
     expect(report.metrics.progressive.compression_ratio).toBeGreaterThan(0);
     expect(report.metrics.compaction.delivered_sources).toBeGreaterThan(0);
+    expect(report.metrics.continuity.injected_code_points).toBeLessThanOrEqual(report.budgets.final_context_code_points);
+    expect(report.metrics.continuity.useful_content_ratio).toBeGreaterThanOrEqual(0.5);
+    expect(report.metrics.continuity.selected_memory_ids.length).toBeGreaterThanOrEqual(1);
+    expect(report.metrics.continuity.selected_memory_ids.length).toBeLessThanOrEqual(3);
+    expect(report.metrics.resources.injected_tokens).toBe(report.metrics.continuity.injected_tokens);
     expect(report.provenance).toMatchObject({ coverage: 1, source_ids: expect.arrayContaining([expect.any(String)]) });
     expect(report.primary_metrics).toEqual(expect.arrayContaining([
       expect.objectContaining({ namespace: 'retrieval', metric: 'mrr', gate: 'relative_gain' }),

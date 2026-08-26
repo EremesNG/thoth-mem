@@ -21,6 +21,7 @@ const RESOURCE_CEILING_REASONS = new Map([
 ]);
 const HASH = /^[a-f0-9]{64}$/;
 const isNonNegative = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const ACTIONABLE_FIELDS = ['Objective', 'Completed', 'First pending action', 'Blockers', 'Key files/checks'];
 
 function percentile(samples, percentileValue) {
   const ordered = [...samples].sort((left, right) => left - right);
@@ -34,7 +35,7 @@ export function validateReport(report) {
   if (!report?.candidate?.id || !HASH.test(report?.candidate?.config_hash) || !report?.candidate?.config || typeof report.candidate.config !== 'object') errors.push('candidate_identity');
   if (!HASH.test(report?.conditions?.run_config_hash) || !HASH.test(report?.conditions?.query_order_hash) || !report?.conditions?.reader?.id || !HASH.test(report?.conditions?.reader?.settings_hash) || !report?.conditions?.scorer?.id || !HASH.test(report?.conditions?.scorer?.settings_hash) || !Number.isInteger(report?.conditions?.seed) || !Number.isInteger(report?.conditions?.timeout_ms) || report.conditions.timeout_ms <= 0 || !Number.isInteger(report?.conditions?.retries) || report.conditions.retries < 0) errors.push('conditions');
   if (!report?.environment?.runtime || !report?.environment?.runtime_version || !report?.environment?.platform || !report?.environment?.arch) errors.push('environment');
-  if (!report?.budgets || !Number.isInteger(report.budgets.candidate_k) || report.budgets.candidate_k <= 0 || !Number.isInteger(report.budgets.context_tokens) || report.budgets.context_tokens <= 0) errors.push('budgets');
+  if (!report?.budgets || !Number.isInteger(report.budgets.candidate_k) || report.budgets.candidate_k <= 0 || !Number.isInteger(report.budgets.context_tokens) || report.budgets.context_tokens <= 0 || !Number.isInteger(report.budgets.final_context_code_points) || report.budgets.final_context_code_points <= 0) errors.push('budgets');
   const primaryMetrics = report?.primary_metrics;
   const primaryKeys = new Set();
   const validPrimaryMetrics = Array.isArray(primaryMetrics) && primaryMetrics.length >= 3 && primaryMetrics.every((item) => {
@@ -61,6 +62,15 @@ export function validateReport(report) {
   else if (report.metrics.resources.latency_p50_ms !== percentile(samples.latency_ms, 50) || report.metrics.resources.latency_p95_ms !== percentile(samples.latency_ms, 95) || report.metrics.resources.peak_memory_bytes !== Math.max(...samples.memory_bytes)) errors.push('resource_summaries');
   const progressive = report?.metrics?.progressive; if (!progressive || ['compact_returned_chars','context_returned_chars','source_chars','evidence_chars','full_chars','truncated_chars','full_fetches','avoided_full_fetches','escalation_rate','compression_ratio'].some((key) => !isNonNegative(progressive[key])) || progressive.escalation_rate > 1 || progressive.compression_ratio > 1 || progressive.full_chars !== progressive.source_chars || progressive.truncated_chars !== Math.max(0, progressive.source_chars - progressive.compact_returned_chars)) errors.push('progressive');
   const compaction = report?.metrics?.compaction; if (!compaction || ['checkpoints','recoveries','recovery_success','delivered_sources'].some((key) => !Number.isInteger(compaction[key]) || compaction[key] < 0) || compaction.recovery_success > compaction.recoveries) errors.push('compaction');
+  const continuity = report?.metrics?.continuity;
+  if (!continuity || JSON.stringify(continuity.actionable_field_names) !== JSON.stringify(ACTIONABLE_FIELDS) || continuity.actionable_fields_expected !== ACTIONABLE_FIELDS.length || continuity.actionable_fields_recovered !== ACTIONABLE_FIELDS.length || continuity.hidden_markers_expected !== 3 || continuity.hidden_markers_recovered !== 3) errors.push('continuity.actionable_fields');
+  if (!continuity || continuity.restart_recovery_success !== 1 || continuity.post_compaction_recovery_success !== 1 || continuity.delegated_rejection_success !== 1 || !Array.isArray(continuity.selected_memory_ids) || continuity.selected_memory_ids.length < 1 || continuity.selected_memory_ids.length > 3 || continuity.selected_memory_ids.some((id) => typeof id !== 'string' || !id)) errors.push('continuity.recovery');
+  if (!continuity || continuity.abstention_success !== 1) errors.push('continuity.abstention');
+  if (!continuity || continuity.project_isolation_success !== 1) errors.push('continuity.project_isolation');
+  if (!continuity || continuity.trust_boundary_present !== 1 || continuity.poisoned_memory_safe !== 1) errors.push('continuity.trust_boundary');
+  if (!continuity || continuity.evidence_ids_exposed !== 0) errors.push('continuity.evidence_leakage');
+  if (!continuity || !Number.isInteger(continuity.injected_code_points) || continuity.injected_code_points <= 0 || continuity.injected_code_points > report?.budgets?.final_context_code_points || continuity.host_cap_compliance !== 1 || !Number.isInteger(continuity.injected_tokens) || continuity.injected_tokens !== Math.ceil(continuity.injected_code_points / 4) || report?.metrics?.resources?.injected_tokens !== continuity.injected_tokens) errors.push('continuity.host_cap');
+  if (!continuity || !Number.isInteger(continuity.useful_content_code_points) || continuity.useful_content_code_points <= 0 || continuity.useful_content_code_points > continuity.injected_code_points || typeof continuity.useful_content_ratio !== 'number' || !Number.isFinite(continuity.useful_content_ratio) || continuity.useful_content_ratio < 0.5 || continuity.useful_content_ratio > 1) errors.push('continuity.useful_content');
   if (!isNonNegative(report?.provenance?.coverage) || report.provenance.coverage > 1 || !Array.isArray(report?.provenance?.source_ids) || report.provenance.source_ids.some((id) => typeof id !== 'string' || !id) || (report.provenance.coverage > 0 && report.provenance.source_ids.length === 0)) errors.push('provenance');
   const fallbackControls = report?.fallback_controls;
   const fallbackScenarios = new Set(Array.isArray(fallbackControls) ? fallbackControls.map((item) => item?.scenario) : []);
@@ -70,6 +80,7 @@ export function validateReport(report) {
   if (!Array.isArray(operationalErrors) || operationalErrors.length < 1 || operationalErrors.length > 32 || operationalErrors.some((item) => typeof item?.operation !== 'string' || !/^[a-z_]{3,64}$/.test(item.operation) || typeof item?.code !== 'string' || !/^[a-z_]{3,64}$/.test(item.code) || typeof item?.message !== 'string' || item.message.length < 1 || item.message.length > 200 || typeof item?.retryable !== 'boolean')) errors.push('operational_errors');
   if (!Array.isArray(report?.unavailable) || report.unavailable.some((item) => typeof item?.id !== 'string' || !/^[a-z0-9-]{3,64}$/.test(item.id) || !/^[a-z_]{3,64}$/.test(item.reason))) errors.push('unavailable');
   if (!['promoted','rejected','incomplete'].includes(report?.promotion?.decision) || !Array.isArray(report?.promotion?.reasons)) errors.push('promotion');
+  if (report?.promotion?.decision === 'promoted' && Array.isArray(report?.unavailable) && report.unavailable.length > 0) errors.push('external_quality_claim');
   return { valid: errors.length === 0, errors };
 }
 
@@ -83,7 +94,7 @@ export function evaluatePromotion(control, candidate) {
   if (JSON.stringify(control.conditions.reader) !== JSON.stringify(candidate.conditions.reader)) incomparable.push('reader_mismatch');
   if (JSON.stringify(control.conditions.scorer) !== JSON.stringify(candidate.conditions.scorer)) incomparable.push('scorer_mismatch');
   if (control.conditions.seed !== candidate.conditions.seed || control.conditions.timeout_ms !== candidate.conditions.timeout_ms || control.conditions.retries !== candidate.conditions.retries) incomparable.push('execution_condition_mismatch');
-  if (control.budgets.candidate_k !== candidate.budgets.candidate_k || control.budgets.context_tokens !== candidate.budgets.context_tokens) incomparable.push('unequal_budget');
+  if (control.budgets.candidate_k !== candidate.budgets.candidate_k || control.budgets.context_tokens !== candidate.budgets.context_tokens || control.budgets.final_context_code_points !== candidate.budgets.final_context_code_points) incomparable.push('unequal_budget');
   if (JSON.stringify(control.primary_metrics) !== JSON.stringify(candidate.primary_metrics)) incomparable.push('primary_metric_mismatch');
   if (JSON.stringify(control.promotion_gate) !== JSON.stringify(candidate.promotion_gate)) incomparable.push('promotion_gate_mismatch');
   if (incomparable.length) return { decision: 'incomplete', reasons: incomparable };

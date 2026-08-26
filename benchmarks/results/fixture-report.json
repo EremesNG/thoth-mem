@@ -17,7 +17,7 @@
     }
   },
   "conditions": {
-    "run_config_hash": "7c71f49401977757837f1d0ba30bd08d7dc970ce038b656dbfeb1d94dfedc370",
+    "run_config_hash": "2e75eca360cdf3425f443c8013a67bd1dee51a513683b242dc19bc52ed7bee31",
     "query_order_hash": "8d2d7ac5a1fad29cd9421c5a5d36b24f65388512e1ce57b2e2755e5f10f37cec",
     "reader": {
       "id": "fixture-reader@1",
@@ -39,7 +39,8 @@
   },
   "budgets": {
     "candidate_k": 5,
-    "context_tokens": 1000
+    "context_tokens": 1000,
+    "final_context_code_points": 1000
   },
   "primary_metrics": [
     {
@@ -117,41 +118,72 @@
     },
     "compaction": {
       "checkpoints": 1,
-      "recoveries": 1,
-      "recovery_success": 1,
-      "delivered_sources": 4
+      "recoveries": 2,
+      "recovery_success": 2,
+      "delivered_sources": 6
+    },
+    "continuity": {
+      "actionable_field_names": [
+        "Objective",
+        "Completed",
+        "First pending action",
+        "Blockers",
+        "Key files/checks"
+      ],
+      "actionable_fields_expected": 5,
+      "actionable_fields_recovered": 5,
+      "hidden_markers_expected": 3,
+      "hidden_markers_recovered": 3,
+      "restart_recovery_success": 1,
+      "post_compaction_recovery_success": 1,
+      "abstention_success": 1,
+      "project_isolation_success": 1,
+      "delegated_rejection_success": 1,
+      "trust_boundary_present": 1,
+      "poisoned_memory_safe": 1,
+      "host_cap_compliance": 1,
+      "evidence_ids_exposed": 0,
+      "injected_code_points": 1000,
+      "injected_tokens": 250,
+      "useful_content_code_points": 549,
+      "useful_content_ratio": 0.6189402480270575,
+      "selected_memory_ids": [
+        "c2c5fdf5-d9c3-54f8-a8eb-d400cbcf6228",
+        "d22a3ea5-3add-5961-aad2-c39cc1d41033",
+        "f879eb2b-7920-5efb-a921-de8e99202659"
+      ]
     },
     "resources": {
-      "latency_p50_ms": 0.3728999999999587,
-      "latency_p95_ms": 1.6601,
-      "ingestion_ms": 1.365000000000009,
-      "startup_ms": 259.6791,
-      "peak_memory_bytes": 82247680,
+      "latency_p50_ms": 0.43590000000000373,
+      "latency_p95_ms": 2.7906000000000404,
+      "ingestion_ms": 2.1323999999999614,
+      "startup_ms": 239.92899999999997,
+      "peak_memory_bytes": 81793024,
       "database_bytes": 143360,
       "model_bytes": 0,
       "network_calls": 0,
       "llm_calls": 0,
-      "injected_tokens": 6,
+      "injected_tokens": 250,
       "returned_chars": 23,
       "truncated_chars": 0,
       "samples": {
         "latency_ms": [
-          1.6601,
-          0.3919999999999959,
-          0.3728999999999587,
-          0.3369000000000142,
-          0.33229999999997517,
-          0.36350000000004457,
-          0.41550000000000864
+          2.7906000000000404,
+          0.5704999999999814,
+          0.3464999999999918,
+          0.43590000000000373,
+          0.6884000000000015,
+          0.42349999999999,
+          0.39549999999997
         ],
         "memory_bytes": [
-          82120704,
-          82120704,
-          82137088,
-          82169856,
-          82227200,
-          82227200,
-          82247680
+          81686528,
+          81690624,
+          81707008,
+          81727488,
+          81756160,
+          81772544,
+          81793024
         ]
       }
     }
@@ -160,7 +192,11 @@
     "coverage": 1,
     "source_ids": [
       "f879eb2b-7920-5efb-a921-de8e99202659",
-      "414edb10-f3cd-5d25-a8ad-66d42ff4e67d"
+      "414edb10-f3cd-5d25-a8ad-66d42ff4e67d",
+      "c2c5fdf5-d9c3-54f8-a8eb-d400cbcf6228",
+      "5267a981-13c2-557a-a27a-9c46c23eef9c",
+      "d22a3ea5-3add-5961-aad2-c39cc1d41033",
+      "4a09dd71-c1da-5997-a93c-b0898c2a7365"
     ]
   },
   "fallback_controls": [

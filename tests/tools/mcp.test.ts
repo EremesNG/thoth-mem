@@ -91,6 +91,43 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('keeps evidence lineage behind get/history while sharing one isolated briefing selector', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const old = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'explicit_save', content: 'Old decision evidence.' }, memory: { kind: 'decision', title: 'Runtime', content: 'Use the old runtime.', topic_key: 'runtime' } });
+      const current = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'explicit_save', content: 'Current decision evidence.' }, memory: { kind: 'decision', title: 'Runtime', content: 'Use the current runtime.', topic_key: 'runtime' } });
+      const handoff = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'handoff', content: 'Handoff evidence.' }, memory: { kind: 'handoff', title: 'Continuation', content: 'First pending action: finish the MCP boundary.', topic_key: 'handoff/current' } });
+      await handlers.mem_save({ project_key: 'repo:foreign', project_name: 'foreign', evidence: { kind: 'handoff', content: 'Foreign evidence.' }, memory: { kind: 'handoff', title: 'Foreign', content: 'FOREIGN-PROJECT-CONTEXT' } });
+      const oldMemory = (old.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
+      const currentMemory = (current.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
+      const handoffMemory = (handoff.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
+
+      const compact = await handlers.mem_recall({ project_key: 'repo:progressive', query: 'current runtime', mode: 'compact', temporal: 'history' });
+      const context = await handlers.mem_context({ project_key: 'repo:progressive', budget_chars: 1_000 });
+      const briefing = await handlers.mem_project({ action: 'briefing', project_key: 'repo:progressive', budget_chars: 1_000 });
+      const contextItems = (context.structuredContent.data as { items: Array<{ id: string }> }).items;
+      const briefingItems = (briefing.structuredContent.data as { items: Array<{ id: string }> }).items;
+
+      expect((compact.structuredContent.data as { items: unknown[] }).items.every((item) => !Object.hasOwn(item as object, 'evidenceIds'))).toBe(true);
+      expect((context.structuredContent.data as { items: unknown[] }).items.every((item) => !Object.hasOwn(item as object, 'evidenceIds'))).toBe(true);
+      expect((briefing.structuredContent.data as { items: unknown[] }).items.every((item) => !Object.hasOwn(item as object, 'evidenceIds'))).toBe(true);
+      expect(contextItems.map((item) => item.id)).toEqual(briefingItems.map((item) => item.id));
+      expect(contextItems[0]?.id).toBe(handoffMemory.id);
+      expect(JSON.stringify(context.structuredContent)).not.toContain('FOREIGN-PROJECT-CONTEXT');
+      expect(context.structuredContent.sources).toEqual(contextItems.map((item) => item.id));
+      expect(JSON.stringify(compact.structuredContent)).not.toContain(currentMemory.evidenceIds[0]);
+      expect(JSON.stringify(context.structuredContent)).not.toContain(handoffMemory.evidenceIds[0]);
+
+      const full = await handlers.mem_get({ id: currentMemory.id, history: true });
+      const history = await handlers.mem_project({ action: 'history', id: currentMemory.id });
+      expect(full.structuredContent.sources).toEqual(expect.arrayContaining([currentMemory.id, currentMemory.evidenceIds[0], oldMemory.id, oldMemory.evidenceIds[0]]));
+      expect(history.structuredContent.sources).toEqual(expect.arrayContaining([currentMemory.id, currentMemory.evidenceIds[0], oldMemory.id, oldMemory.evidenceIds[0]]));
+      expect(JSON.stringify(history.structuredContent)).toContain(currentMemory.evidenceIds[0]);
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
   it('finalizes and reconciles one correlated bounded-to-full answer path', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -103,7 +140,7 @@ describe('MCP boundary', () => {
 
       expect(context.structuredContent).toMatchObject({
         correlation_id: 'context-trace-1',
-        sources: expect.arrayContaining([memory.id, ...memory.evidenceIds]),
+        sources: [memory.id],
         budget: {
           requested_chars: 100,
           returned_chars: expect.any(Number),
@@ -117,6 +154,7 @@ describe('MCP boundary', () => {
       });
       expect((context.structuredContent.budget as { returned_chars: number }).returned_chars).toBeLessThanOrEqual(100);
       expect(JSON.stringify(context.structuredContent)).not.toContain('secret');
+      expect(JSON.stringify(context.structuredContent)).not.toContain(memory.evidenceIds[0]);
       expect(full.structuredContent).toMatchObject({
         correlation_id: 'context-trace-1',
         sources: expect.arrayContaining([memory.id, ...memory.evidenceIds]),
