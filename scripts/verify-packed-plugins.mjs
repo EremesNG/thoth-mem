@@ -139,7 +139,7 @@ process.stdout.write('native-open-code-ok');
       env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
     });
     const hostOutput = JSON.parse(runner.stdout);
-    assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`thoth-mem verified identity: root_session_id=${harness}-root; project=project with spaces`), `Packed ${harness} runner omitted verified identity.`);
+    assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=${harness}-root; project=project with spaces`), `Packed ${harness} runner omitted verified identity.`);
     if (harness === 'claude') {
       run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
         cwd: tmpdir(),
@@ -152,7 +152,7 @@ process.stdout.write('native-open-code-ok');
         env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
       });
       const compactOutput = JSON.parse(compactRunner.stdout).hookSpecificOutput?.additionalContext;
-      assert(compactOutput?.startsWith('thoth-mem verified identity: root_session_id=claude-root; project=project with spaces\n\n'), 'Packed Claude compact recovery omitted verified identity.');
+      assert(compactOutput?.startsWith('<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-root; project=project with spaces\n\n'), 'Packed Claude compact recovery omitted verified identity.');
       assert(compactOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude compact recovery omitted the pre-compaction checkpoint.');
     }
   }

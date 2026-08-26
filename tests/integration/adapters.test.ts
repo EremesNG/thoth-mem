@@ -69,6 +69,12 @@ describe('native adapters', () => {
     expect(first.identityConfidence).toBe('confirmed');
     expect(degraded).toMatchObject({ operation: 'capture_root', identityConfidence: 'degraded' });
     expect(degraded.eventKey).toMatch(/^codex:degraded:/);
+
+    const firstCredential = normalizeNativePayload('codex', { ...base, prompt: `same request github_pat_${'a'.repeat(40)}` });
+    const rotatedCredential = normalizeNativePayload('codex', { ...base, prompt: `same request github_pat_${'b'.repeat(40)}` });
+    expect(rotatedCredential.eventKey).toBe(firstCredential.eventKey);
+    expect(firstCredential.content).toBe('same request [REDACTED]');
+    expect(rotatedCredential.content).toBe(firstCredential.content);
   });
 
   it('degrades unsupported capabilities and rejects delegated or inconsistent native identity', () => {

@@ -8,6 +8,8 @@ const runnerDirectory = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = join(runnerDirectory, '..');
 const MAX_DIAGNOSTIC_LENGTH = 560;
 const MAX_HOST_OUTPUT_CODE_POINTS = 1_000;
+const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
+const RECOVERY_TAG_END = '<!-- thoth-mem:recovery:end -->';
 const WINDOWS_SHELL_META_CHARACTERS = /([()\][%!^"`<>&|;, *?])/g;
 const UNSAFE_IDENTITY_HEADER_CHARACTERS = /[;=\p{Cc}\p{Zl}\p{Zp}]/u;
 
@@ -85,14 +87,6 @@ function runtimeInvocation(runtime, runtimeArguments) {
     : { command, arguments: arguments_ };
 }
 
-function recoveredContext(items) {
-  if (!Array.isArray(items) || items.length === 0) return undefined;
-  const lines = items
-    .filter((item) => item && typeof item === 'object')
-    .map((item) => `- [${item.kind ?? 'memory'}] ${item.title ?? 'Memory'}: ${item.content ?? item.snippet ?? ''}`);
-  return lines.length > 0 ? ['## thoth-mem recovered context', ...lines].join('\n') : undefined;
-}
-
 function isSafeIdentityValue(value) {
   return typeof value === 'string'
     && value.length > 0
@@ -106,17 +100,45 @@ function verifiedIdentity(identity) {
   return Array.from(header).length <= MAX_HOST_OUTPUT_CODE_POINTS ? header : undefined;
 }
 
-function identityAwareContext(identity, context) {
+function identityOnlyContext(identity) {
   if (!identity) return undefined;
-  const remaining = MAX_HOST_OUTPUT_CODE_POINTS - Array.from(identity).length;
-  if (!context || remaining <= 2) return identity;
-  return `${identity}\n\n${Array.from(context).slice(0, remaining - 2).join('')}`;
+  const context = `${RECOVERY_TAG_START}\n${identity}\n${RECOVERY_TAG_END}`;
+  return Array.from(context).length <= MAX_HOST_OUTPUT_CODE_POINTS ? context : undefined;
+}
+
+function verifiedRecovery(lifecycle, identity) {
+  const fallback = identityOnlyContext(identity);
+  const data = lifecycle?.data;
+  const recovery = data?.recovery;
+  if (!fallback || !recovery || typeof recovery.context !== 'string') return fallback;
+  const context = recovery.context;
+  const items = Array.isArray(recovery.items) ? recovery.items : [];
+  const selectedIds = items.map((item) => item?.id);
+  const rendering = recovery.rendering;
+  const totalCodePoints = Array.from(context).length;
+  if (
+    !context.startsWith(`${RECOVERY_TAG_START}\n`) ||
+    !context.endsWith(`\n${RECOVERY_TAG_END}`) ||
+    context.split(RECOVERY_TAG_START).length !== 2 ||
+    context.split(RECOVERY_TAG_END).length !== 2 ||
+    context.split('\n')[1] !== identity ||
+    totalCodePoints > MAX_HOST_OUTPUT_CODE_POINTS ||
+    rendering?.maxCodePoints !== MAX_HOST_OUTPUT_CODE_POINTS ||
+    rendering?.totalCodePoints !== totalCodePoints ||
+    items.length > 3 ||
+    selectedIds.some((id) => typeof id !== 'string') ||
+    !Array.isArray(recovery.selectedMemoryIds) ||
+    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
+    data?.capability?.contextDelivered !== (selectedIds.length > 0) ||
+    selectedIds.some((id) => !context.includes(`(memory:${id})`)) ||
+    items.some((item) => Array.isArray(item?.evidenceIds) && item.evidenceIds.some((id) => typeof id === 'string' && context.includes(id)))
+  ) return fallback;
+  return context;
 }
 
 function renderHostOutput(payload, lifecycle) {
   const identity = verifiedIdentity(lifecycle?.identity);
-  const context = recoveredContext(lifecycle?.data?.recovery?.items);
-  const additionalContext = identityAwareContext(identity, context);
+  const additionalContext = verifiedRecovery(lifecycle, identity);
   return payload?.hook_event_name === 'SessionStart' && additionalContext
     ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } }
     : {};

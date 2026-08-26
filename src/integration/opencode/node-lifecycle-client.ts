@@ -68,6 +68,22 @@ function budget(value: unknown): boolean {
     && item.tokenBasis === 'estimated_chars_div_4');
 }
 
+function rendering(value: unknown): boolean {
+  const item = record(value);
+  return Boolean(item
+    && finiteNumber(item.maxCodePoints)
+    && item.maxCodePoints === 1_000
+    && finiteNumber(item.totalCodePoints)
+    && item.totalCodePoints >= 0
+    && item.totalCodePoints <= item.maxCodePoints
+    && finiteNumber(item.contentCodePoints)
+    && item.contentCodePoints >= 0
+    && item.contentCodePoints <= item.totalCodePoints
+    && finiteNumber(item.usefulContentRatio)
+    && item.usefulContentRatio >= 0
+    && item.usefulContentRatio <= 1);
+}
+
 function recallItem(value: unknown): value is RecallItem {
   const item = record(value);
   const score = record(item?.scoreComponents);
@@ -105,10 +121,18 @@ function lifecycleResult(value: unknown): value is LifecycleResult {
     && typeof capability.contextDelivered === 'boolean'
     && typeof capability.modelConsumed === 'boolean'
     && (recovery === undefined
-      || (Array.isArray(recovery.items)
+      ? capability.contextDelivered === false
+      : (typeof recovery.context === 'string'
+        && Array.from(recovery.context).length === record(recovery.rendering)?.totalCodePoints
+        && Array.isArray(recovery.items)
+        && recovery.items.length <= 3
         && recovery.items.every(recallItem)
+        && stringArray(recovery.selectedMemoryIds)
+        && JSON.stringify(recovery.selectedMemoryIds) === JSON.stringify(recovery.items.map((item) => record(item)?.id))
+        && capability.contextDelivered === (recovery.items.length > 0)
         && stringArray(recovery.sources)
-        && budget(recovery.budget))));
+        && budget(recovery.budget)
+        && rendering(recovery.rendering))));
 }
 
 function hasInvalidRecoveryTaxonomy(value: unknown): boolean {

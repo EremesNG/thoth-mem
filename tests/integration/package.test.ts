@@ -25,10 +25,10 @@ describe('canonical integration package inventory', () => {
     expect(skill).toMatch(/before (?:the )?final response[\s\S]*semantic boundary[\s\S]*future sessions benefit/iu);
     expect(skill).toMatch(/architecture[\s\S]*root\s+cause|root\s+cause[\s\S]*architecture/iu);
     expect(skill).toMatch(/reusable convention[\s\S]*completed change[\s\S]*continuation-critical/iu);
-    expect(skill).toMatch(/goal[\s\S]*decisions[\s\S]*discoveries[\s\S]*completed work[\s\S]*next steps[\s\S]*relevant files/iu);
+    expect(skill).toMatch(/Objective[\s\S]*Completed[\s\S]*First pending action[\s\S]*Blockers[\s\S]*Key files\/checks/u);
     expect(skill).toMatch(/evidence\.kind="handoff"[\s\S]*memory\.kind="handoff"/u);
     expect(skill).toMatch(/transient status[\s\S]*speculation[\s\S]*raw logs[\s\S]*canonical artifacts/iu);
-    expect(skill).toMatch(/<private>[\s\S]*secrets[\s\S]*transcripts[\s\S]*assistant\/tool traffic[\s\S]*generated prompts/iu);
+    expect(skill).toMatch(/<private>[\s\S]*secrets[\s\S]*transcripts[\s\S]*generated prompts[\s\S]*assistant\s+reasoning[\s\S]*tool\s+streams[\s\S]*subagent\s+output/iu);
     expect(skill).toMatch(/root_session_key[\s\S]*(?:together|paired)[\s\S]*harness/iu);
     expect(skill).toMatch(/project-only[\s\S]*(?:unattributed|without claiming session continuity)/iu);
     expect(skill).toMatch(/do not report[\s\S]*until[\s\S]*confirm/iu);
@@ -46,6 +46,12 @@ describe('canonical integration package inventory', () => {
       for (const asset of assets) expect(existsSync(join('integrations', harness, asset)), `${harness}:${asset}`).toBe(true);
       const combined = assets.map((asset) => readFileSync(join('integrations', harness, asset), 'utf8')).join('\n');
       expect(combined).not.toMatch(/dashboard|observatory|sqlite-vec|hyde/i);
+    }
+
+    for (const harness of ['codex', 'claude-code']) {
+      const runner = readFileSync(join('integrations', harness, 'runner.mjs'), 'utf8');
+      expect(runner).toContain("plugin', 'runners', 'public-runner.mjs");
+      expect(runner).not.toMatch(/recovery\?\.items|items\.map|recovered context/iu);
     }
 
     const opencode = readFileSync(join('integrations', 'opencode', 'skills', 'thoth-mem', 'references', 'opencode.md'), 'utf8');

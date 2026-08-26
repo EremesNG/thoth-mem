@@ -7,16 +7,21 @@ import { tool, type Hooks, type Plugin } from '@opencode-ai/plugin';
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
 import type { LifecycleResult } from '../../memory-core/contracts.js';
 import {
+  MAX_HOST_OUTPUT_CODE_POINTS,
+  RECOVERY_TAG_END,
+  RECOVERY_TAG_START,
+  renderContinuation,
+} from '../../memory-core/continuation.js';
+import { sanitizePrivateContent } from '../../memory-core/privacy.js';
+import {
   dispatchOpenCodeLifecycleThroughNode,
   type OpenCodeLifecycleDispatchInput,
 } from './node-lifecycle-client.js';
 
-export const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
-export const RECOVERY_TAG_END = '<!-- thoth-mem:recovery:end -->';
+export { RECOVERY_TAG_END, RECOVERY_TAG_START };
 const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v1';
 const MAX_IDENTITY_CODE_POINTS = 128;
 const MAX_IDENTITY_PARENT_DEPTH = 16;
-const MAX_HOST_OUTPUT_CODE_POINTS = 1_000;
 const UNSAFE_IDENTITY_HEADER_CHARACTERS = /[;=\p{Cc}\p{Zl}\p{Zp}]/u;
 
 interface SessionState {
@@ -74,58 +79,40 @@ function stableLifecycleEventKey(parts: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
 
-function renderRecovery(result: LifecycleResult | undefined, rootSessionKey: string, directory: string): string | undefined {
+function identityOnlyRecovery(rootSessionKey: string, directory: string): string | undefined {
   const project = projectName(directory);
   if (!isBoundedIdentifier(rootSessionKey) || !project) return undefined;
+  try {
+    return renderContinuation({ rootSessionKey, projectName: project, items: [] }).context;
+  } catch {
+    return undefined;
+  }
+}
+
+function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: string, directory: string): string | undefined {
+  const fallback = identityOnlyRecovery(rootSessionKey, directory);
+  const project = projectName(directory);
+  const recovery = result?.recovery;
+  if (!fallback || !project || !recovery) return fallback;
+  const context = recovery.context;
+  const codePointLength = Array.from(context).length;
+  const selectedIds = recovery.items.map((item) => item.id);
   const identity = `thoth-mem verified identity: root_session_id=${rootSessionKey}; project=${project}`;
-  const items = result?.recovery?.items ?? [];
-  const prefix = `${RECOVERY_TAG_START}\n${identity}`;
-  const suffix = `\n${RECOVERY_TAG_END}`;
-  const required = `${prefix}${suffix}`;
-  if (Array.from(required).length > MAX_HOST_OUTPUT_CODE_POINTS) return undefined;
-  if (items.length === 0) return required;
-  const contextBudget = MAX_HOST_OUTPUT_CODE_POINTS - Array.from(required).length - 2;
-  if (contextBudget <= 0) return required;
-  const heading = Array.from('## thoth-mem recovered context');
-  const candidates = items.map((item) => ({
-    prefix: Array.from(`- [${item.kind}] ${item.title}: `),
-    content: Array.from(item.content ?? item.snippet),
-    suffix: Array.from(` (memory:${item.id}; evidence:${item.evidenceIds.join(',') || 'none'})`),
-  }));
-  const selected: typeof candidates = [];
-  let reservedCodePoints = heading.length;
-  for (const candidate of candidates) {
-    const fixedItemCodePoints = 1 + candidate.prefix.length + candidate.suffix.length;
-    const minimumContentCodePoints = Math.min(1, candidate.content.length);
-    if (reservedCodePoints + fixedItemCodePoints + minimumContentCodePoints > contextBudget) continue;
-    selected.push(candidate);
-    reservedCodePoints += fixedItemCodePoints + minimumContentCodePoints;
-  }
-  if (selected.length === 0) return required;
-
-  const allocations = selected.map(() => 0);
-  const fixedCodePoints = heading.length + selected.reduce((sum, item) => sum + 1 + item.prefix.length + item.suffix.length, 0);
-  let remainingCodePoints = contextBudget - fixedCodePoints;
-  while (remainingCodePoints > 0) {
-    let allocated = false;
-    for (const [index, item] of selected.entries()) {
-      if (allocations[index]! >= item.content.length) continue;
-      allocations[index]! += 1;
-      remainingCodePoints -= 1;
-      allocated = true;
-      if (remainingCodePoints === 0) break;
-    }
-    if (!allocated) break;
-  }
-
-  const lines = selected.map((item, index) => {
-    const allowance = allocations[index]!;
-    const content = item.content.slice(0, allowance);
-    if (allowance > 0 && allowance < item.content.length) content[allowance - 1] = '…';
-    return [...item.prefix, ...content, ...item.suffix].join('');
-  });
-  const context = [heading.join(''), ...lines].join('\n');
-  return `${prefix}\n\n${context}${suffix}`;
+  if (
+    !isOwnedRecoveryBlock(context) ||
+    context.split(RECOVERY_TAG_START).length !== 2 ||
+    context.split(RECOVERY_TAG_END).length !== 2 ||
+    context.split('\n')[1] !== identity ||
+    codePointLength > MAX_HOST_OUTPUT_CODE_POINTS ||
+    recovery.rendering.maxCodePoints !== MAX_HOST_OUTPUT_CODE_POINTS ||
+    recovery.rendering.totalCodePoints !== codePointLength ||
+    selectedIds.length > 3 ||
+    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
+    result.capability.contextDelivered !== (selectedIds.length > 0) ||
+    selectedIds.some((id) => !context.includes(`(memory:${id})`)) ||
+    recovery.items.some((item) => item.evidenceIds.some((id) => context.includes(id)))
+  ) return fallback;
+  return context;
 }
 
 function isOwnedRecoveryBlock(value: string): boolean {
@@ -231,18 +218,18 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
       'chat.message': async (_input, output) => {
         const state = sessions.get(output.message.sessionID);
         if (!state?.root || output.message.role !== 'user') return;
-        const content = output.parts
+        const content = sanitizePrivateContent(output.parts
           .filter((part): part is Extract<(typeof output.parts)[number], { type: 'text' }> => part.type === 'text' && !part.synthetic && !part.ignored)
           .map((part) => part.text)
           .join('\n')
-          .trim();
+          .trim());
         if (!content) return;
         await dispatch({ operation: 'capture_root', directory: state.directory, rootSessionKey: output.message.sessionID, eventKey: `message:${output.message.id}`, content });
       },
       'experimental.session.compacting': async ({ sessionID }, output) => {
         const state = sessions.get(sessionID);
         if (!state?.root) return;
-        const content = output.context.join('\n').trim();
+        const content = sanitizePrivateContent(output.context.join('\n').trim());
         await dispatch({
           operation: 'checkpoint_pre_compact',
           directory: state.directory,
@@ -257,7 +244,7 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
         if (!state?.root) return;
         const stablePrefix = output.system.filter((entry) => !isOwnedRecoveryBlock(entry));
         const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `system-recovery:${sessionID}` });
-        const recovery = renderRecovery(result, sessionID, state.directory);
+        const recovery = verifiedRecovery(result, sessionID, state.directory);
         output.system.splice(0, output.system.length, ...stablePrefix, ...(recovery ? [recovery] : []));
       },
     };
