@@ -43,5 +43,6 @@ export interface ProjectionRecord { projectionId: string; configHash: string; so
 
 export interface LifecycleInput { operation: LifecycleOperation; harness: Harness; project: ProjectIdentityInput; rootSessionKey: string; eventKey: string; identityConfidence?: 'confirmed' | 'degraded'; content?: string; capability?: { nativeEvent: string; contextInjection: boolean; modelConsumption: boolean } }
 export interface LifecycleCapability { hookExecuted: boolean; memoryConfirmed: boolean; contextDelivered: boolean; modelConsumed: boolean }
-export interface LifecycleRecovery { items: RecallItem[]; sources: string[]; budget: BudgetMeasurement }
+export interface LifecycleRendering { maxCodePoints: number; totalCodePoints: number; contentCodePoints: number; usefulContentRatio: number }
+export interface LifecycleRecovery { context: string; items: RecallItem[]; selectedMemoryIds: string[]; sources: string[]; budget: BudgetMeasurement; rendering: LifecycleRendering }
 export interface LifecycleResult { outcome: 'confirmed' | 'degraded' | 'failed'; duplicate: boolean; projectId: string; sessionId: string; evidenceId: string | null; recovery?: LifecycleRecovery; capability: LifecycleCapability }

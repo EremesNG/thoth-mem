@@ -19,6 +19,8 @@ import {
   type SaveMemoryInput,
   type SaveMemoryResult,
 } from './contracts.js';
+import { renderContinuation } from './continuation.js';
+import { sanitizePrivateContent } from './privacy.js';
 import { buildFtsQuery, surgicalSnippet } from './sqlite/fts.js';
 import { ensureProject, ensureSession, evidenceFromRow, hashContent, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
@@ -33,7 +35,6 @@ const MAX_CORRELATION_STATES = 1_024;
 function measure(requested: number, source: number, evidence: number, returned: number): BudgetMeasurement {
   return { requestedChars: requested, returnedChars: returned, truncatedChars: Math.max(0, source - returned), sourceChars: source, evidenceChars: evidence, fullChars: source, compressionRatio: source === 0 ? 1 : returned / source, tokenBasis: 'estimated_chars_div_4' };
 }
-function privacySafe(value: string): string { return value.replace(/<private>[\s\S]*?<\/private>/gi, '').replace(/\[private\][\s\S]*?\[\/private\]/gi, ''); }
 function validateEvidenceKind(value: unknown): void { requireCanonicalValue('evidence.kind', EVIDENCE_KIND_VALUES, value); }
 function validateSaveTaxonomy(input: SaveMemoryInput): void {
   validateEvidenceKind(input.evidence.kind);
@@ -82,7 +83,16 @@ export class MemoryService {
     validateSaveTaxonomy(input);
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project);
-      const payloadHash = hashContent(JSON.stringify({ evidence: input.evidence, memory: input.memory ?? null }));
+      const evidenceContent = sanitizePrivateContent(input.evidence.content);
+      const filteredMemory = input.memory ? {
+        ...input.memory,
+        title: sanitizePrivateContent(input.memory.title),
+        content: sanitizePrivateContent(input.memory.content),
+      } : null;
+      const payloadHash = hashContent(JSON.stringify({
+        evidence: { ...input.evidence, content: evidenceContent },
+        memory: filteredMemory,
+      }));
       if (input.eventKey) {
         const receipt = this.database.prepare('SELECT payload_hash,evidence_id,memory_id FROM save_receipts WHERE project_id=? AND event_key=?').get(projectId, input.eventKey) as { payload_hash: string; evidence_id: string; memory_id: string | null } | undefined;
         if (receipt) {
@@ -93,23 +103,23 @@ export class MemoryService {
         }
       }
       const sessionId = input.session ? ensureSession(this.database, projectId, input.session) : null;
-      const at = input.evidence.capturedAt ?? now(); const evidenceContent = privacySafe(input.evidence.content);
+      const at = input.evidence.capturedAt ?? now();
       if (!evidenceContent.trim()) throw new Error('Evidence content is required after privacy filtering');
       const evidenceId = input.eventKey ? stableUuid(`evidence:${projectId}:${input.eventKey}`) : randomUUID();
       this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceId, projectId, sessionId, input.evidence.kind, evidenceContent, hashContent(evidenceContent), input.evidence.sourceRef ?? null, at, JSON.stringify(input.evidence.metadata ?? {}));
       const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
-      if (!input.memory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, projectId, sessionId, duplicate: false }; }
-      const memoryContent = privacySafe(input.memory.content); if (!input.memory.title.trim() || !memoryContent.trim()) throw new Error('Promoted memory title and content are required');
-      let supersedesId = input.memory.supersedesId ?? null;
-      if (!supersedesId && input.memory.topicKey) {
-        supersedesId = (this.database.prepare("SELECT id FROM memories WHERE project_id=? AND topic_key=? AND status='current'").get(projectId, input.memory.topicKey) as { id: string } | undefined)?.id ?? null;
+      if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, projectId, sessionId, duplicate: false }; }
+      if (!filteredMemory.title.trim() || !filteredMemory.content.trim()) throw new Error('Promoted memory title and content are required');
+      let supersedesId = filteredMemory.supersedesId ?? null;
+      if (!supersedesId && filteredMemory.topicKey) {
+        supersedesId = (this.database.prepare("SELECT id FROM memories WHERE project_id=? AND topic_key=? AND status='current'").get(projectId, filteredMemory.topicKey) as { id: string } | undefined)?.id ?? null;
       }
       if (supersedesId) {
         const changed = this.database.prepare("UPDATE memories SET status='superseded',invalid_at=? WHERE id=? AND project_id=? AND status='current'").run(at, supersedesId, projectId);
         if (changed.changes !== 1) throw new Error('Superseded memory is not current in this project');
       }
       const memoryId = input.eventKey ? stableUuid(`memory:${projectId}:${input.eventKey}`) : randomUUID();
-      this.database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(memoryId, projectId, input.memory.topicKey ?? null, input.memory.kind, input.memory.title, memoryContent, input.memory.outcome ?? 'unknown', 'current', at, null, supersedesId, at);
+      this.database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(memoryId, projectId, filteredMemory.topicKey ?? null, filteredMemory.kind, filteredMemory.title, filteredMemory.content, filteredMemory.outcome ?? 'unknown', 'current', at, null, supersedesId, at);
       this.database.prepare("INSERT INTO memory_evidence VALUES(?,?,'supports')").run(memoryId, evidenceId);
       if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,?)').run(projectId, input.eventKey, payloadHash, evidenceId, memoryId);
       const memory = memoryFromRow(this.database, this.database.prepare('SELECT * FROM memories WHERE id=?').get(memoryId) as Record<string, unknown>);
@@ -122,7 +132,7 @@ export class MemoryService {
     return this.database.transaction(() => {
       const row = this.database.prepare('SELECT * FROM memories WHERE id=?').get(input.id) as Record<string, unknown> | undefined;
       if (!row || row.status !== 'current') throw new Error('Memory is not current');
-      const at = input.evidence.capturedAt ?? now(); const content = privacySafe(input.evidence.content); if (!content.trim()) throw new Error('Evidence content is required after privacy filtering'); const evidenceId = randomUUID();
+      const at = input.evidence.capturedAt ?? now(); const content = sanitizePrivateContent(input.evidence.content); if (!content.trim()) throw new Error('Evidence content is required after privacy filtering'); const evidenceId = randomUUID();
       this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceId, row.project_id, null, input.evidence.kind, content, hashContent(content), input.evidence.sourceRef ?? null, at, JSON.stringify(input.evidence.metadata ?? {}));
       this.database.prepare("INSERT INTO memory_evidence VALUES(?,?,'contradicts')").run(input.id, evidenceId);
       this.database.prepare("UPDATE memories SET status='retracted',invalid_at=? WHERE id=?").run(at, input.id);
@@ -170,18 +180,59 @@ export class MemoryService {
   }
 
   context(input: { projectKey: string; budgetChars?: number; correlationId?: string }): Pick<RecallResult, 'items' | 'budget' | 'lanes' | 'warnings' | 'correlationId'> {
-    const result = this.recall({ projectKey: input.projectKey, query: '', mode: 'context', budgetChars: input.budgetChars, history: false, correlationId: input.correlationId });
-    if (result.items.length === 0) {
-      const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
-      if (project) {
-        const rows = this.database.prepare("SELECT *,'structured' AS lane,1 AS raw_score FROM memories WHERE project_id=? AND status='current' ORDER BY CASE kind WHEN 'decision' THEN 0 WHEN 'convention' THEN 1 WHEN 'project_structure' THEN 2 ELSE 3 END,created_at DESC,id LIMIT 20").all(project.id) as Array<Record<string, unknown>>;
-        const budget = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000)); const sourceChars = rows.reduce((sum, row) => sum + String(row.content).length, 0); let remaining = budget; const items: RecallItem[] = [];
-        for (const row of rows) { if (remaining < 32) break; const record = memoryFromRow(this.database, row); const snippet = surgicalSnippet(record.content, '', Math.min(500, remaining)); remaining -= snippet.length; items.push({ id: record.id, title: record.title, kind: record.kind, topicKey: record.topicKey, outcome: record.outcome, status: record.status, snippet, content: snippet, score: 1, scoreComponents: { exact: 0, lexical: 0, temporal: 1 }, lane: 'structured', evidenceIds: record.evidenceIds }); }
-        const returned = items.reduce((sum, item) => sum + item.snippet.length, 0); const evidenceChars = items.reduce((sum, item) => sum + Number((this.database.prepare('SELECT coalesce(sum(length(content)),0) AS value FROM evidence WHERE id IN (SELECT evidence_id FROM memory_evidence WHERE memory_id=?)').get(item.id) as { value: number }).value), 0);
-        return { items, budget: measure(budget, sourceChars, evidenceChars, returned), lanes: { lexical: 'ready', ...this.projections.effectiveStates() }, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId: result.correlationId };
-      }
+    const requested = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000));
+    const correlationId = input.correlationId ?? randomUUID();
+    const lanes = { lexical: 'ready' as const, ...this.projections.effectiveStates() };
+    const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+    if (!project) return { items: [], budget: measure(requested, 0, 0, 0), lanes, warnings: [], correlationId };
+
+    const rows = this.database.prepare(`
+      SELECT m.*,
+        CASE
+          WHEN kind='handoff' THEN 0
+          WHEN kind IN ('decision','convention') THEN 1
+          WHEN kind='failure' AND outcome IN ('failed','mixed') THEN 2
+          WHEN kind='failure' THEN 3
+          WHEN kind='project_structure' THEN 4
+          ELSE 5
+        END AS continuation_priority
+      FROM memories m
+      WHERE project_id=? AND status='current'
+      ORDER BY continuation_priority,created_at DESC,id ASC
+      LIMIT 20
+    `).all(project.id) as Array<Record<string, unknown>>;
+    const sourceChars = rows.reduce((sum, row) => sum + String(row.content).length, 0);
+    let remaining = requested;
+    const items: RecallItem[] = [];
+    for (const row of rows) {
+      if (remaining < 32) break;
+      const record = memoryFromRow(this.database, row);
+      const perItemLimit = record.kind === 'handoff'
+        ? 1_200
+        : record.kind === 'decision' || record.kind === 'convention' || record.kind === 'failure'
+          ? 700
+          : record.kind === 'project_structure' ? 500 : 400;
+      const snippet = surgicalSnippet(record.content, '', Math.min(perItemLimit, remaining));
+      remaining -= snippet.length;
+      const priority = Number(row.continuation_priority);
+      items.push({
+        id: record.id,
+        title: record.title,
+        kind: record.kind,
+        topicKey: record.topicKey,
+        outcome: record.outcome,
+        status: record.status,
+        snippet,
+        content: snippet,
+        score: 100 - priority,
+        scoreComponents: { exact: 0, lexical: 0, temporal: 1 },
+        lane: 'structured',
+        evidenceIds: record.evidenceIds,
+      });
     }
-    return { items: result.items, budget: result.budget, lanes: result.lanes, warnings: result.warnings, correlationId: result.correlationId };
+    const returned = items.reduce((sum, item) => sum + item.snippet.length, 0);
+    const evidenceChars = items.reduce((sum, item) => sum + Number((this.database.prepare('SELECT coalesce(sum(length(content)),0) AS value FROM evidence WHERE id IN (SELECT evidence_id FROM memory_evidence WHERE memory_id=?)').get(item.id) as { value: number }).value), 0);
+    return { items, budget: measure(requested, sourceChars, evidenceChars, returned), lanes, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId };
   }
 
   lifecycle(input: LifecycleInput): LifecycleResult {
@@ -189,20 +240,48 @@ export class MemoryService {
     requireCanonicalValue('harness', HARNESS_VALUES, input.harness);
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
+      const lifecycleContent = sanitizePrivateContent(input.content ?? '');
       const found = this.database.prepare('SELECT outcome,evidence_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { outcome: LifecycleResult['outcome']; evidence_id: string | null } | undefined;
-      const recovery = (): LifecycleResult['recovery'] => { const context = this.context({ projectKey: input.project.key }); return { items: context.items, sources: [...new Set(context.items.flatMap((item) => [item.id, ...item.evidenceIds]))], budget: context.budget }; };
-      const result = (outcome: LifecycleResult['outcome'], duplicate: boolean, evidenceId: string | null): LifecycleResult => { const delivered = input.operation === 'recover' || input.operation === 'guide_post_compact' ? recovery() : undefined; return { outcome, duplicate, projectId, sessionId, evidenceId, ...(delivered ? { recovery: delivered } : {}), capability: { hookExecuted: true, memoryConfirmed: outcome === 'confirmed', contextDelivered: Boolean(delivered?.items.length), modelConsumed: false } }; };
+      const recovery = (outcome: LifecycleResult['outcome']): NonNullable<LifecycleResult['recovery']> => {
+        const briefing = this.context({ projectKey: input.project.key });
+        const rendered = renderContinuation({
+          rootSessionKey: input.rootSessionKey,
+          projectName: input.project.name,
+          items: outcome === 'confirmed' ? briefing.items : [],
+        });
+        const items = rendered.selectedItems;
+        return {
+          context: rendered.context,
+          items,
+          selectedMemoryIds: rendered.selectedMemoryIds,
+          sources: [...new Set(items.flatMap((item) => [item.id, ...item.evidenceIds]))],
+          budget: briefing.budget,
+          rendering: rendered.measurements,
+        };
+      };
+      const result = (outcome: LifecycleResult['outcome'], duplicate: boolean, evidenceId: string | null): LifecycleResult => {
+        const delivered = input.operation === 'recover' || input.operation === 'guide_post_compact' ? recovery(outcome) : undefined;
+        return {
+          outcome,
+          duplicate,
+          projectId,
+          sessionId,
+          evidenceId,
+          ...(delivered ? { recovery: delivered } : {}),
+          capability: { hookExecuted: true, memoryConfirmed: outcome === 'confirmed', contextDelivered: Boolean(delivered?.selectedMemoryIds.length), modelConsumed: false },
+        };
+      };
       if (found) return result(found.outcome, true, found.evidence_id);
       if (input.operation === 'guide_post_compact') {
         const state = (this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string }).state;
         if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(''), 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null); }
       }
+      const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
       let evidenceId: string | null = null;
-      if ((input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact') && input.content?.trim()) { const checkpoint = input.operation === 'checkpoint_pre_compact'; const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: input.content }, ...(checkpoint ? { memory: { kind: 'handoff', title: 'Pre-compaction checkpoint', content: input.content, topicKey: `session/${sessionId}/checkpoint` } } : {}) }); evidenceId = saved.evidence.id; }
+      if (outcome === 'confirmed' && (input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact') && lifecycleContent.trim()) { const checkpoint = input.operation === 'checkpoint_pre_compact'; const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent }, ...(checkpoint ? { memory: { kind: 'handoff', title: 'Pre-compaction checkpoint', content: lifecycleContent, topicKey: `session/${sessionId}/checkpoint` } } : {}) }); evidenceId = saved.evidence.id; }
       if (input.operation === 'finalize') this.database.prepare("UPDATE sessions SET state='ended',ended_at=? WHERE id=?").run(now(), sessionId);
       if (input.operation === 'checkpoint_pre_compact') this.database.prepare("UPDATE sessions SET state='compacted' WHERE id=?").run(sessionId);
-      const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
-      this.database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(input.content ?? ''), outcome, outcome === 'confirmed' ? now() : null, outcome === 'degraded' ? 'identity_unconfirmed' : null, evidenceId);
+      this.database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(lifecycleContent), outcome, outcome === 'confirmed' ? now() : null, outcome === 'degraded' ? 'identity_unconfirmed' : null, evidenceId);
       return result(outcome, false, evidenceId);
     })();
   }
