@@ -5,13 +5,13 @@
     ".claude-plugin/marketplace.json": "b2a0e8894f52964e96cb6c365522cae1ba40051c57dabda89c3e9f7a9826ed91",
     "plugin/.claude-plugin/plugin.json": "a3ad7c5e13c4d84f2192adab45d9c94c18371257af56ba82bf08981361773a2a",
     "plugin/.codex-plugin/plugin.json": "6d3d0bfaf80de8497554d88a4993fa1be902dd5653a136c5b5b48a7196863d04",
-    "plugin/.mcp.json": "e8d97a2e341dd2a8b4fc5a2dac056912b7b817e91eee3c979eb9fdc959e9d27c",
+    "plugin/.mcp.json": "cfc3916b1d3533c1512a16d0d1b28e44bed188cdbae18c28eeea2271d13a0487",
     "plugin/hooks/claude-hooks.json": "64be3a6925e282453a1970b8738e2ef7023707821f5f423ccab651e58c7ed1fb",
     "plugin/hooks/hooks.json": "4e66dbbb674fce3e40c4ccf968503b247be25cc8c06d8678430e2daee1f19dcb",
-    "plugin/runners/public-runner.mjs": "16c8cf23b1788e0b4605e5c0ac76663612482c2139d62b143c56814254c6d410",
+    "plugin/runners/public-runner.mjs": "fc70e00fe5ddb56d701abd650e5fe9832d5ef888955a643dfa78fb2614307eba",
     "plugin/runtime.json": "8b70d2768a82ffe6ce7669bbdc8dfb0707fdbb59b42a6cc0247e75adad3a8ad1",
     "plugin/skills/thoth-mem/SKILL.md": "c105738d1684c6d663d9fe726441c92884c64e4423fa213a8ca87d26a0fdb59b",
-    "plugin/skills/thoth-mem/references/claude-code.md": "1fd8021533a9a39021c1a2f934e6aaa739762a1237a6cd593eba422be8eb87ef",
-    "plugin/skills/thoth-mem/references/codex.md": "777824dbefc5f71be378526b3b66ad58bd95329e223bb3affffa96ad7e73b480"
+    "plugin/skills/thoth-mem/references/claude-code.md": "dd052ffca7bec88fa3bbccd5cc6e48314cb91c6fe6fcc99593cd57de0231dfbc",
+    "plugin/skills/thoth-mem/references/codex.md": "71cabe5e44d83fe027060fbe8f466e77406ff7befc8332d889be37c673fdd9e1"
   }
 }

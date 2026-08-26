@@ -3,7 +3,7 @@ export interface PublicDistributionInventory { marketplaces: Record<'codex' | 'c
 export interface IntegrationInventory { schemaVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
 
 export const CANONICAL_PLUGIN_INVENTORY: Record<PackageHarness, string[]> = {
-  opencode: ['manifest.json','plugin.mjs','mcp.json','hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/opencode.md'],
+  opencode: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/opencode.md'],
   codex: ['manifest.json','.codex-plugin/plugin.json','mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/codex.md'],
   'claude-code': ['manifest.json','.claude-plugin/plugin.json','.mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/claude-code.md'],
 };

@@ -12,7 +12,7 @@ export { ALL_TOOLS, createToolHandlers } from './tools/index.js';
 
 export function shouldRunCli(args: string[]): boolean {
   const command = args[0];
-  return args.includes('--help') || (command !== undefined && !command.startsWith('-') && command !== 'mcp');
+  return args.includes('--help') || args.includes('-h') || (command !== undefined && !command.startsWith('-') && command !== 'mcp');
 }
 
 export async function startMcpServer(argv: string[] = process.argv.slice(2)): Promise<void> {

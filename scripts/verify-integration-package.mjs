@@ -15,9 +15,10 @@ const versioned = [
   ['.claude-plugin/marketplace.json', JSON.parse(readFileSync(resolve(root, '.claude-plugin/marketplace.json'), 'utf8')).plugins?.[0]?.version],
 ];
 for (const [path, version] of versioned) if (version !== packageManifest.version) errors.push(`stale-version:${path}:${version ?? 'missing'}`);
-const expectedRuntime = `${packageManifest.name}@${packageManifest.version}`;
-const publicMcpArgs = JSON.parse(readFileSync(resolve(root, 'plugin/.mcp.json'), 'utf8')).mcpServers?.['thoth-mem']?.args ?? [];
-if (!publicMcpArgs.includes(expectedRuntime)) errors.push('stale-runtime:plugin/.mcp.json');
+const publicMcp = JSON.parse(readFileSync(resolve(root, 'plugin/.mcp.json'), 'utf8')).mcpServers?.['thoth-mem'];
+if (publicMcp?.cwd !== '.' || publicMcp?.command !== 'node' || JSON.stringify(publicMcp?.args) !== JSON.stringify(['./runners/public-runner.mjs', '--mcp'])) {
+  errors.push('stale-runtime:plugin/.mcp.json');
+}
 const lock = JSON.parse(readFileSync(resolve(root, 'plugin/distribution-lock.json'), 'utf8'));
 const expectedLockedPaths = [
   ...Object.values(inventory.publicDistribution.marketplaces),

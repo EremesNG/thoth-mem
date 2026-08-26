@@ -49,6 +49,11 @@ describe('native v2 adapters', () => {
     expect(() => codex('Stop', { turn_id: 'turn-1', stop_hook_active: false })).toThrow(/unsupported/i);
 
     expect(normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: 'root', cwd: '/repo', prompt: 'root request', event_id: 'claude:prompt' })).toMatchObject({ operation: 'capture_root', harness: 'claude', content: 'root request' });
+    expect(normalizeNativePayload('claude', { hook_event_name: 'SessionStart', session_id: 'root', cwd: '/repo', source: 'compact', event_id: 'claude:compact' })).toMatchObject({
+      operation: 'guide_post_compact',
+      harness: 'claude',
+      capability: { contextInjection: true },
+    });
     expect(normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'open:prompt', project: { key: 'repo:open', name: 'open' }, properties: { info: { id: 'root' }, message: { role: 'user', sessionID: 'root', content: 'root request' } } })).toMatchObject({ operation: 'capture_root', harness: 'opencode', content: 'root request' });
   });
 
@@ -70,5 +75,6 @@ describe('native v2 adapters', () => {
     expect(() => normalizeNativePayload('codex', { hook_event_name: 'Unknown', session_id: 'root', cwd: '/repo' })).toThrow(/unsupported/i);
     expect(() => normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'child', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'child', parentID: 'root' }, message: { role: 'user', sessionID: 'child', content: 'child' } } })).toThrow(/delegated/i);
     expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: '', cwd: '/repo', prompt: 'x', event_id: 'bad' })).toThrow(/identity/i);
+    expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: 'root\ninjected', cwd: '/repo', prompt: 'x', event_id: 'bad-line' })).toThrow(/identity/i);
   });
 });

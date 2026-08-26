@@ -1,148 +1,192 @@
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
-import Database from 'better-sqlite3';
+import { parse as parseJsonc } from 'jsonc-parser';
 
-import { MemoryService } from '../dist/index.js';
+const repository = resolve(import.meta.dirname, '..');
+const scratch = mkdtempSync(join(tmpdir(), 'thoth-packed-native-'));
+const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
 
-const repository = resolve(import.meta.dirname, '..'); const scratch = mkdtempSync(join(tmpdir(), 'thoth-packed-v2-'));
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${result.error?.message ?? result.stderr ?? result.stdout}`);
+  return result;
+}
+
+function json(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function isolatedEnvironment(name) {
+  const root = join(scratch, 'homes', name);
+  return {
+    root,
+    env: {
+      ...process.env,
+      OPENCODE_CONFIG_DIR: join(root, 'opencode'),
+      XDG_CONFIG_HOME: join(root, 'config'),
+      THOTH_MEM_DATA_DIR: '',
+    },
+  };
+}
+
 try {
-  const npmCommand = 'npm'; const windowsShell = process.platform === 'win32';
-  const packed = spawnSync(npmCommand, ['pack', '--json', '--ignore-scripts', '--pack-destination', scratch], { cwd: repository, encoding: 'utf8', shell: windowsShell, windowsHide: true });
-  if (packed.status !== 0) throw new Error(packed.error?.message || packed.stderr || packed.stdout);
+  assert(existsSync(npmCli), `npm CLI was not found beside Node at ${npmCli}.`);
+  const packed = run(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', scratch], { cwd: repository });
   const tarball = join(scratch, JSON.parse(packed.stdout)[0].filename);
-  const install = spawnSync(npmCommand, ['install', '--no-audit', '--no-fund', tarball], { cwd: scratch, encoding: 'utf8', shell: windowsShell, windowsHide: true }); if (install.status !== 0) throw new Error(install.error?.message || install.stderr || install.stdout);
-  const packageRoot = join(scratch, 'node_modules', 'thoth-mem'); const inventory = JSON.parse(readFileSync(join(packageRoot, 'integrations', 'inventory.json'), 'utf8'));
-  const cold = spawnSync(process.execPath, [join(packageRoot, 'dist', 'index.js'), '--help'], { encoding: 'utf8', env: { ...process.env, THOTH_MEM_DATA_DIR: join(scratch, 'data') }, windowsHide: true });
-  if (cold.status !== 0 || !cold.stdout.includes('import-v2')) throw new Error(`Packed cold start failed: ${cold.stderr}`);
+  run(process.execPath, [npmCli, 'install', '--no-audit', '--no-fund', tarball], { cwd: scratch });
+  const packageRoot = join(scratch, 'node_modules', 'thoth-mem');
+  const cli = join(packageRoot, 'dist', 'index.js');
+  const nativeMain = join(packageRoot, 'dist', 'opencode.js');
+  const manifest = json(join(packageRoot, 'package.json'));
+  assert(manifest.main === 'dist/opencode.js', 'Packed package main is not the native OpenCode entry.');
+  assert(manifest.bin?.['thoth-mem'] === 'dist/index.js', 'Packed package bin is not the standalone CLI/MCP entry.');
+  const nativeSource = readFileSync(nativeMain, 'utf8');
+  assert(!nativeSource.includes('better-sqlite3') && !nativeSource.includes('class MemoryService'), 'Packed Bun entry contains the Node-native persistence graph.');
+
+  const help = run(process.execPath, [cli, '--help'], { cwd: tmpdir() });
+  assert(help.stdout.includes('setup <opencode|codex|claude>') && !help.stdout.includes('setup-v2'), 'Packed CLI exposes the wrong setup contract.');
+
+  const publicHome = isolatedEnvironment('opencode-public');
+  const publicData = join(publicHome.root, 'shared data');
+  const publicSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'opencode', '--json', '--data-dir', publicData], { cwd: tmpdir(), env: publicHome.env }));
+  assert(publicSetup.status === 'complete' && publicSetup.plugin === `thoth-mem@${manifest.version}`, 'Packed public OpenCode setup did not converge exact npm provenance.');
+  const publicConfigBefore = readFileSync(publicSetup.configPath, 'utf8');
+  const publicReceiptBefore = readFileSync(publicSetup.receiptPath, 'utf8');
+  const publicRepeat = jsonOutput(run(process.execPath, [cli, 'setup', 'opencode', '--json', '--data-dir', publicData], { cwd: tmpdir(), env: publicHome.env }));
+  assert(publicRepeat.changed === false, 'Repeated packed public OpenCode setup was not a no-op.');
+  assert(readFileSync(publicSetup.configPath, 'utf8') === publicConfigBefore && readFileSync(publicSetup.receiptPath, 'utf8') === publicReceiptBefore, 'Repeated packed public setup changed bytes.');
+
+  const localHome = isolatedEnvironment('opencode-local');
+  const localData = join(localHome.root, 'shared data');
+  const localSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'opencode', '--json', '--local-package-root', packageRoot, '--data-dir', localData], { cwd: tmpdir(), env: localHome.env }));
+  assert(localSetup.status === 'complete' && localSetup.plugin === pathToFileURL(nativeMain).href, 'Packed local OpenCode setup did not converge canonical file provenance.');
+  const localConfig = jsoncPlugins(readFileSync(localSetup.configPath, 'utf8'));
+  assert(localConfig.length === 1 && localConfig[0] === localSetup.plugin, 'Packed local OpenCode configuration contains duplicate activation.');
+  assert(existsSync(join(localHome.env.OPENCODE_CONFIG_DIR, 'skills', 'thoth-mem', 'SKILL.md')), 'Packed OpenCode Skill was not synchronized.');
+
+  const nativeSmokePath = join(scratch, 'native-open-code-smoke.mjs');
+  writeFileSync(nativeSmokePath, `
+const pluginModule = await import(${JSON.stringify(pathToFileURL(nativeMain).href)});
+if (typeof pluginModule.default !== 'function') throw new Error('missing default Plugin export');
+if (Object.keys(pluginModule).join(',') !== 'default') throw new Error('native entry exports non-plugin runtime values');
+const hooks = await pluginModule.default({ directory: ${JSON.stringify(join(scratch, 'project with spaces'))} });
+if (Object.keys(hooks.tool ?? {}).join(',') !== 'thoth_mem_root_identity') throw new Error('missing native OpenCode identity tool');
+const resolvedConfig = { skills: { paths: ['user-path'] }, mcp: { user: { type: 'remote', url: 'https://example.test' } } };
+await hooks.config(resolvedConfig);
+if (JSON.stringify(resolvedConfig.skills.paths) !== '["user-path"]') throw new Error('changed user skill paths');
+if (resolvedConfig.mcp['thoth-mem'].command[0] !== 'node' || resolvedConfig.mcp['thoth-mem'].command[1] !== ${JSON.stringify(cli)}) throw new Error('wrong package-relative MCP entry');
+await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'packed-root', directory: ${JSON.stringify(join(scratch, 'project with spaces'))} } } } });
+await hooks['experimental.session.compacting']({ sessionID: 'packed-root' }, { context: ['Packed lifecycle checkpoint.'], prompt: undefined });
+await hooks.event({ event: { type: 'session.compacted', properties: { sessionID: 'packed-root' } } });
+const transformed = { system: ['stable-prefix'] };
+await hooks['experimental.chat.system.transform']({ sessionID: 'packed-root' }, transformed);
+if (transformed.system[0] !== 'stable-prefix') throw new Error('changed stable system prefix');
+const recovery = transformed.system.at(-1) ?? '';
+if (!recovery.includes('root_session_id=packed-root')) throw new Error('missing verified OpenCode identity');
+if (!recovery.includes('Packed lifecycle checkpoint.')) throw new Error('missing Node-backed lifecycle recovery');
+process.stdout.write('native-open-code-ok');
+`);
+  const nativeSmoke = run(process.env.BUN_BINARY ?? 'bun', [nativeSmokePath], { cwd: tmpdir(), env: { ...process.env, THOTH_MEM_DATA_DIR: join(scratch, 'native hook data') } });
+  assert(nativeSmoke.stdout === 'native-open-code-ok', 'Packed native OpenCode hook smoke failed.');
+
   const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'thoth-packed-smoke', version: '1.0.0' } } };
-  const mcpData = join(scratch, 'data', 'mcp');
-  const mcp = spawnSync(process.execPath, [join(packageRoot, 'dist', 'index.js'), 'mcp', '--no-http', '--data-dir', mcpData], { input: `${JSON.stringify(initialize)}\n`, encoding: 'utf8', windowsHide: true });
-  if (mcp.status !== 0 || !mcp.stdout.includes('"serverInfo"')) throw new Error(`Packed MCP handshake with explicit data directory failed: ${mcp.stderr || mcp.stdout}`);
-  const nativePayload = (harness, operation, eventKey, root = 'fixture-root') => {
-    if (harness === 'opencode') {
-      const events = { enroll: 'session.created', recover: 'session.resumed', prompt: 'chat.message', pre: 'experimental.session.compacting', post: 'experimental.session.compacted', finalize: 'session.deleted', unsupported: 'unknown.event' }; const event = events[operation];
-      return { event, eventId: eventKey, project: { key: `fixture:${harness}`, name: harness, directory: `C:/fixture/${harness}` }, properties: { info: { id: root, directory: `C:/fixture/${harness}` }, ...(operation === 'prompt' ? { message: { role: 'user', sessionID: root, content: 'Verified root prompt.' } } : {}), ...(operation === 'pre' ? { summary: 'Resume from the verified checkpoint.' } : {}) } };
+  const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
+  const listTools = { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} };
+  const mcp = run(process.execPath, [cli, 'mcp', '--no-http'], { cwd: tmpdir(), env: localHome.env, input: `${JSON.stringify(initialize)}\n${JSON.stringify(initialized)}\n${JSON.stringify(listTools)}\n` });
+  const messages = mcp.stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
+  const toolResult = messages.find((message) => message.id === 2);
+  assert(toolResult?.result?.tools?.length === 6, `Packed MCP exposed ${toolResult?.result?.tools?.length ?? 0} tools instead of six.`);
+  assert(existsSync(join(localData, 'memory-v2.sqlite')), 'Packed MCP did not use the persisted provider data directory.');
+
+  const publicPluginRoot = join(packageRoot, 'plugin');
+  for (const path of [
+    '.codex-plugin/plugin.json',
+    '.claude-plugin/plugin.json',
+    '.mcp.json',
+    'hooks/hooks.json',
+    'hooks/claude-hooks.json',
+    'skills/thoth-mem/SKILL.md',
+    'runners/public-runner.mjs',
+  ]) assert(existsSync(join(publicPluginRoot, path)), `Packed native manager bundle is missing ${path}.`);
+  assert(json(join(packageRoot, '.agents', 'plugins', 'marketplace.json')).name === 'thoth-mem', 'Packed Codex marketplace is invalid.');
+  assert(json(join(packageRoot, '.claude-plugin', 'marketplace.json')).name === 'thoth-mem', 'Packed Claude marketplace is invalid.');
+
+  const installedPlugin = join(scratch, 'installed plugin with spaces');
+  cpSync(publicPluginRoot, installedPlugin, { recursive: true });
+  const localProvider = json(localSetup.providerConfigPath);
+  writeFileSync(localSetup.providerConfigPath, `${JSON.stringify({ ...localProvider, runtimeEntry: cli }, null, 2)}\n`);
+  const managerMcp = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--mcp'], {
+    cwd: tmpdir(),
+    input: `${JSON.stringify(initialize)}\n${JSON.stringify(initialized)}\n${JSON.stringify(listTools)}\n`,
+    env: localHome.env,
+  });
+  const managerMessages = managerMcp.stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
+  const managerTools = managerMessages.find((message) => message.id === 2)?.result?.tools;
+  assert(managerTools?.length === 6, `Packed manager runner exposed ${managerTools?.length ?? 0} tools instead of six.`);
+  const npxShim = createNpxShim(scratch, cli);
+  for (const harness of ['codex', 'claude']) {
+    const runner = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
+      cwd: tmpdir(),
+      input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: `${harness}-root`, event_id: `packed-${harness}-start`, cwd: join(scratch, 'project with spaces'), source: 'startup' }),
+      env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+    });
+    const hostOutput = JSON.parse(runner.stdout);
+    assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`thoth-mem verified identity: root_session_id=${harness}-root; project=project with spaces`), `Packed ${harness} runner omitted verified identity.`);
+    if (harness === 'claude') {
+      run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
+        cwd: tmpdir(),
+        input: JSON.stringify({ hook_event_name: 'PreCompact', session_id: 'claude-root', event_id: 'packed-claude-pre-compact', cwd: join(scratch, 'project with spaces'), summary: 'Keep packed Claude compact recovery.' }),
+        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+      });
+      const compactRunner = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
+        cwd: tmpdir(),
+        input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'claude-root', event_id: 'packed-claude-compact-start', cwd: join(scratch, 'project with spaces'), source: 'compact' }),
+        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+      });
+      const compactOutput = JSON.parse(compactRunner.stdout).hookSpecificOutput?.additionalContext;
+      assert(compactOutput?.startsWith('thoth-mem verified identity: root_session_id=claude-root; project=project with spaces\n\n'), 'Packed Claude compact recovery omitted verified identity.');
+      assert(compactOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude compact recovery omitted the pre-compaction checkpoint.');
     }
-    if (harness === 'codex') {
-      const events = { enroll: 'SessionStart', recover: 'SessionStart', clear: 'SessionStart', compact: 'SessionStart', prompt: 'UserPromptSubmit', pre: 'PreCompact', post: 'PostCompact', finalize: 'SessionEnd', unsupported: 'Unknown' }; const hookEvent = events[operation];
-      const sources = { enroll: 'startup', recover: 'resume', clear: 'clear', compact: 'compact' };
-      const payload = { hook_event_name: hookEvent, session_id: root, cwd: 'C:/fixture/codex', ...(sources[operation] ? { source: sources[operation] } : {}), ...(['prompt', 'pre', 'post'].includes(operation) ? { turn_id: eventKey } : {}), ...(operation === 'prompt' ? { prompt: 'Verified root prompt.' } : {}), ...(operation === 'pre' ? { trigger: 'manual' } : {}), ...(operation === 'finalize' ? { reason: 'other' } : {}) };
-      if ('event_id' in payload || payload.hook_event_name === 'Stop') throw new Error('Packed Codex fixture is not an official host payload');
-      return payload;
-    }
-    const events = { enroll: 'SessionStart', recover: 'SessionStart', prompt: 'UserPromptSubmit', pre: 'PreCompact', post: 'PostCompact', finalize: 'SessionEnd', unsupported: 'Unknown' };
-    return { hook_event_name: events[operation], session_id: root, cwd: `C:/fixture/${harness}`, event_id: eventKey, ...(operation === 'recover' ? { source: 'resume' } : {}), ...(operation === 'prompt' ? { prompt: 'Verified root prompt.' } : {}), ...(operation === 'pre' ? { summary: 'Resume from the verified checkpoint.' } : {}) };
-  };
-  for (const [harness, assets] of Object.entries(inventory.harnesses)) {
-    const home = join(scratch, 'homes', harness); const setup = spawnSync(process.execPath, [join(packageRoot, 'dist', 'index.js'), 'setup-v2', '--harness', harness, '--target', home], { encoding: 'utf8', windowsHide: true });
-    if (setup.status !== 0) throw new Error(`Packed ${harness} managed setup failed: ${setup.stderr}`);
-    for (const asset of assets) if (!existsSync(join(home, 'thoth-mem', asset))) throw new Error(`Packed ${harness} asset missing: ${asset}`);
-    if (harness === 'codex') {
-      const mcp = JSON.parse(readFileSync(join(home, 'thoth-mem', 'mcp.json'), 'utf8'));
-      if ('mcpServers' in mcp || 'mcp_servers' in mcp) throw new Error('Packed Codex MCP configuration used a wrapped server map');
-      if (Object.keys(mcp).join(',') !== 'thoth_mem') throw new Error('Packed Codex MCP configuration did not contain the exact direct server map');
-      const server = mcp.thoth_mem;
-      if (server?.command !== 'node' || JSON.stringify(server.args) !== JSON.stringify(['runner.mjs', '--mcp']) || server.cwd !== '.') throw new Error('Packed Codex MCP configuration was not loader-compatible');
-    }
-    const runner = join(home, 'thoth-mem', 'runner.mjs'); const data = join(scratch, 'data', harness);
-    const run = (operation, eventKey, root) => { const execution = spawnSync(process.execPath, [runner], { input: `${JSON.stringify(nativePayload(harness, operation, eventKey, root))}\n`, encoding: 'utf8', env: { ...process.env, THOTH_MEM_DATA_DIR: data }, windowsHide: true }); if (execution.status !== 0) throw new Error(`Packed ${harness} ${operation} failed: ${execution.stderr}`); return JSON.parse(execution.stdout); };
-    if (harness === 'codex') {
-      const early = run('post', 'early-turn', 'early-root'); if (Object.keys(early).length !== 0) throw new Error('Packed Codex early hook leaked internal output');
-      const enroll = run('enroll', 'startup'); const prompt = run('prompt', 'turn-prompt'); const retry = run('prompt', 'turn-prompt'); const pre = run('pre', 'turn-compact'); const post = run('post', 'turn-compact');
-      const service = new MemoryService({ databasePath: join(data, 'memory-v2.sqlite') });
-      try { service.save({ project: { key: 'path:C:/fixture/codex', name: 'codex' }, eventKey: 'packed:codex:recovery', evidence: { kind: 'explicit_save', content: 'Resume from the verified checkpoint.' }, memory: { kind: 'handoff', title: 'Packed recovery decision', content: 'Resume from the verified checkpoint.', topicKey: 'packed/codex/recovery' } }); } finally { service.close(); }
-      const recover = run('recover', 'resume'); const clear = run('clear', 'clear'); const compact = run('compact', 'compact'); const finalize = run('finalize', 'other');
-      if ([enroll, prompt, retry, pre, post, finalize].some((result) => Object.keys(result).length !== 0)) throw new Error('Packed Codex hook output was not host-native');
-      for (const contextResult of [recover, clear, compact]) { const context = contextResult.hookSpecificOutput; if (context?.hookEventName !== 'SessionStart' || !context.additionalContext?.includes('Resume from the verified checkpoint.')) throw new Error('Packed Codex recovery did not inject bounded SessionStart context'); }
-      const database = new Database(join(data, 'memory-v2.sqlite'), { readonly: true, fileMustExist: true });
-      try {
-        const rootReceipts = database.prepare('SELECT operation,outcome,count(*) AS count FROM lifecycle_receipts WHERE harness=? AND root_session_key=? GROUP BY operation,outcome ORDER BY operation').all('codex', 'fixture-root');
-        if (rootReceipts.some((receipt) => receipt.outcome !== 'confirmed') || rootReceipts.reduce((sum, receipt) => sum + Number(receipt.count), 0) !== 8) throw new Error('Packed Codex lifecycle receipts were not confirmed and idempotent');
-        const earlyReceipt = database.prepare('SELECT outcome FROM lifecycle_receipts WHERE harness=? AND root_session_key=?').get('codex', 'early-root');
-        if (earlyReceipt?.outcome !== 'degraded') throw new Error('Packed Codex degraded receipt was not persisted truthfully');
-      } finally { database.close(); }
-      const unsupported = spawnSync(process.execPath, [runner], { input: JSON.stringify(nativePayload(harness, 'unsupported', 'unsupported')), encoding: 'utf8', env: { ...process.env, THOTH_MEM_DATA_DIR: data }, windowsHide: true });
-      if (unsupported.status === 0 || unsupported.stderr.length > 600 || !/unsupported/i.test(unsupported.stderr)) throw new Error('Packed Codex unsupported path was not bounded');
-      continue;
-    }
-    const early = run('post', `${harness}:early`, 'early-root'); if (early.data?.outcome !== 'degraded' || early.data?.capability?.contextDelivered !== false) throw new Error(`Packed ${harness} degraded capability was untruthful`);
-    const enroll = run('enroll', `${harness}:enroll`); const prompt = run('prompt', `${harness}:prompt`); const retry = run('prompt', `${harness}:prompt`); const pre = run('pre', `${harness}:pre`); const post = run('post', `${harness}:post`); const recover = run('recover', `${harness}:recover`); const finalize = run('finalize', `${harness}:finalize`);
-    if ([enroll,prompt,pre,post,recover,finalize].some((result) => result.schema !== 'thoth-mem.lifecycle.v2' || result.data?.outcome !== 'confirmed')) throw new Error(`Packed ${harness} lifecycle was not confirmed`);
-    if (retry.data?.duplicate !== true) throw new Error(`Packed ${harness} retry was not idempotent`);
-    if (!post.data?.recovery?.sources?.includes(pre.data?.evidenceId) || recover.data?.recovery?.items?.length < 1) throw new Error(`Packed ${harness} recovery did not deliver checkpoint evidence`);
-    if (post.data?.capability?.contextDelivered !== true || post.data?.capability?.modelConsumed !== false) throw new Error(`Packed ${harness} capability truth was invalid`);
-    const unsupported = spawnSync(process.execPath, [runner], { input: JSON.stringify(nativePayload(harness, 'unsupported', `${harness}:unsupported`)), encoding: 'utf8', env: { ...process.env, THOTH_MEM_DATA_DIR: data }, windowsHide: true });
-    if (unsupported.status === 0 || unsupported.stderr.length > 600 || !/unsupported/i.test(unsupported.stderr)) throw new Error(`Packed ${harness} unsupported path was not bounded`);
   }
-  const codexMarketplace = JSON.parse(readFileSync(join(packageRoot, '.agents', 'plugins', 'marketplace.json'), 'utf8'));
-  const claudeMarketplace = JSON.parse(readFileSync(join(packageRoot, '.claude-plugin', 'marketplace.json'), 'utf8'));
-  const codexPublicRoot = resolve(packageRoot, codexMarketplace.plugins?.[0]?.source?.path ?? 'missing');
-  const claudePublicRoot = resolve(packageRoot, claudeMarketplace.plugins?.[0]?.source ?? 'missing');
-  if (codexPublicRoot !== claudePublicRoot || codexPublicRoot !== join(packageRoot, 'plugin')) throw new Error('Packed marketplaces did not resolve one shared public plugin root');
-  const publicPluginRoot = codexPublicRoot;
-  for (const path of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', 'runners/public-runner.mjs', 'runtime.json']) {
-    if (!existsSync(join(publicPluginRoot, path))) throw new Error(`Packed public plugin asset missing: ${path}`);
-  }
-  const isWithin = (parent, child) => {
-    const path = relative(parent, child);
-    return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
-  };
-  const publicInstallRoots = {};
-  for (const harness of ['codex', 'claude-code']) {
-    const installedRoot = join(scratch, 'public-homes', harness, 'plugin-cache', `thoth-mem@${JSON.parse(readFileSync(join(publicPluginRoot, 'runtime.json'), 'utf8')).version}`);
-    cpSync(publicPluginRoot, installedRoot, { recursive: true });
-    if (isWithin(packageRoot, installedRoot) || !isWithin(join(scratch, 'public-homes', harness), installedRoot)) throw new Error(`Packed public ${harness} install cache escaped its isolated home`);
-    publicInstallRoots[harness] = installedRoot;
-  }
-  renameSync(publicPluginRoot, join(packageRoot, 'plugin-unavailable-during-installed-smoke'));
-  const publicNpxRuntime = join(scratch, 'public-npx-runtime.mjs');
-  writeFileSync(publicNpxRuntime, `
+
+  process.stdout.write('Packed smoke passed for opencode, codex, claude-code.\n');
+  process.stdout.write('Activated lifecycle fixtures for opencode, codex, claude-code.\n');
+} finally {
+  rmSync(scratch, { recursive: true, force: true });
+}
+
+function jsonOutput(result) {
+  return JSON.parse(result.stdout);
+}
+
+function jsoncPlugins(text) {
+  return parseJsonc(text).plugin ?? [];
+}
+
+function createNpxShim(root, cli) {
+  const runtime = join(root, 'packed-npx-runtime.mjs');
+  writeFileSync(runtime, `
 import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
-if (args[0] !== '--yes' || !/^thoth-mem@\\d+\\.\\d+\\.\\d+$/.test(args[1] ?? '')) process.exit(64);
-const child = spawnSync(process.execPath, [process.env.THOTH_MEM_PACKED_RUNTIME, ...args.slice(2)], { stdio: 'inherit', env: process.env, windowsHide: true });
+const lifecycle = args.indexOf('lifecycle-v2');
+const child = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...args.slice(lifecycle)], { stdio: 'inherit', env: process.env, windowsHide: true });
 process.exit(child.status ?? 1);
 `);
-  let publicNpxCommand;
   if (process.platform === 'win32') {
-    publicNpxCommand = join(scratch, 'public npx.cmd');
-    writeFileSync(publicNpxCommand, `@echo off\r\n"${process.execPath}" "${publicNpxRuntime}" %*\r\n`);
-  } else {
-    publicNpxCommand = join(scratch, 'public npx');
-    writeFileSync(publicNpxCommand, `#!/bin/sh\n"${process.execPath}" "${publicNpxRuntime}" "$@"\n`);
-    chmodSync(publicNpxCommand, 0o755);
+    const command = join(root, 'packed npx.cmd');
+    writeFileSync(command, `@echo off\r\n"${process.execPath}" "${runtime}" %*\r\n`);
+    return command;
   }
-  const publicEnvironment = {
-    ...process.env,
-    THOTH_MEM_PUBLIC_NPX_COMMAND: publicNpxCommand,
-    THOTH_MEM_PACKED_RUNTIME: join(packageRoot, 'dist', 'index.js'),
-    THOTH_MEM_DATA_DIR: join(scratch, 'data', 'public'),
-  };
-  for (const harness of ['codex', 'claude-code']) {
-    const installedRoot = publicInstallRoots[harness];
-    const runnerHarness = harness === 'codex' ? 'codex' : 'claude';
-    const lifecycle = spawnSync(process.execPath, [join(installedRoot, 'runners', 'public-runner.mjs'), '--harness', runnerHarness], {
-      cwd: scratch,
-      input: JSON.stringify(nativePayload(harness, 'enroll', `public:${harness}:enroll`, `public-${harness}-root`)),
-      encoding: 'utf8',
-      env: publicEnvironment,
-      windowsHide: true,
-    });
-    if (lifecycle.status !== 0 || typeof JSON.parse(lifecycle.stdout) !== 'object') throw new Error(`Packed public ${harness} lifecycle failed: ${lifecycle.stderr || lifecycle.stdout}`);
-    const descriptor = JSON.parse(readFileSync(join(installedRoot, '.mcp.json'), 'utf8')).mcpServers['thoth-mem'];
-    const handshake = spawnSync(process.execPath, [publicNpxRuntime, ...descriptor.args], {
-      input: `${JSON.stringify(initialize)}\n`,
-      encoding: 'utf8',
-      env: publicEnvironment,
-      windowsHide: true,
-    });
-    if (handshake.status !== 0 || !handshake.stdout.includes('"serverInfo"')) throw new Error(`Packed public ${harness} MCP handshake failed: ${handshake.stderr || handshake.stdout}`);
-  }
-  process.stdout.write(`Packed smoke passed for ${Object.keys(inventory.harnesses).join(', ')}.\n`);
-  process.stdout.write(`Activated lifecycle fixtures for ${Object.keys(inventory.harnesses).join(', ')}.\n`);
-  process.stdout.write('Public marketplace smoke passed for codex, claude-code.\n');
-  process.stdout.write('Installed public plugin roots were isolated from the unpacked npm package.\n');
-} finally { rmSync(scratch, { recursive: true, force: true }); }
+  const command = join(root, 'packed npx');
+  writeFileSync(command, `#!/bin/sh\n"${process.execPath}" "${runtime}" "$@"\n`);
+  chmodSync(command, 0o755);
+  return command;
+}

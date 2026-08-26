@@ -9,7 +9,7 @@ export interface AdapterEvent { version: 2; harness: Harness; intent: LifecycleI
 
 type NativeHarness = 'opencode' | 'codex' | 'claude';
 function object(value: unknown, label: string): Record<string, unknown> { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} payload is unsupported`); return value as Record<string, unknown>; }
-function required(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`Stable native ${label} identity is required`); return value.trim(); }
+function required(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim() || /[\r\n\0]/u.test(value)) throw new Error(`Stable native ${label} identity is required`); return value.trim(); }
 function optional(value: unknown): string | undefined { return typeof value === 'string' && value.trim() ? value.trim() : undefined; }
 function projectFrom(directory: string, explicit?: Record<string, unknown>): { key: string; name: string } { const normalized = directory.replaceAll('\\', '/').replace(/\/$/, ''); return { key: optional(explicit?.key) ?? `path:${normalized}`, name: optional(explicit?.name) ?? normalized.split('/').at(-1) ?? normalized }; }
 function codexEventKey(confidence: 'confirmed' | 'degraded', parts: unknown[]): string { return `codex:${confidence}:${createHash('sha256').update(JSON.stringify(parts)).digest('hex')}`; }
@@ -60,8 +60,11 @@ export function normalizeNativePayload(harness: NativeHarness, value: unknown): 
     return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, identityConfidence, ...(content ? { content: content.slice(0, 20_000) } : {}), capability: { nativeEvent: event, contextInjection: event === 'SessionStart', modelConsumption: false } };
   }
   const eventKey = required(payload.event_id, 'event key');
-  const operations: Record<string, LifecycleInput['operation']> = { SessionStart: payload.source === 'resume' ? 'recover' : 'enroll', UserPromptSubmit: 'capture_root', PreCompact: 'checkpoint_pre_compact', PostCompact: 'guide_post_compact', Stop: 'finalize', SessionEnd: 'finalize' };
+  const sessionStartOperation: LifecycleInput['operation'] = payload.source === 'compact'
+    ? 'guide_post_compact'
+    : payload.source === 'resume' ? 'recover' : 'enroll';
+  const operations: Record<string, LifecycleInput['operation']> = { SessionStart: sessionStartOperation, UserPromptSubmit: 'capture_root', PreCompact: 'checkpoint_pre_compact', PostCompact: 'guide_post_compact', Stop: 'finalize', SessionEnd: 'finalize' };
   const operation = operations[event]; if (!operation) throw new Error(`Unsupported ${harness} lifecycle event`);
   const content = operation === 'capture_root' ? optional(payload.prompt) : optional(payload.summary ?? payload.content);
-  return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), capability: { nativeEvent: event, contextInjection: event === 'PostCompact' || (event === 'SessionStart' && payload.source === 'resume'), modelConsumption: false } };
+  return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), capability: { nativeEvent: event, contextInjection: event === 'PostCompact' || (event === 'SessionStart' && operation !== 'enroll'), modelConsumption: false } };
 }

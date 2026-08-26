@@ -89,11 +89,12 @@ describe('public plugin marketplace distribution', () => {
       expect(hook.command).toContain('${PLUGIN_ROOT}/runners/public-runner.mjs');
     }
 
-    const mcp = readJson<{ mcpServers: Record<string, { command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
+    const mcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
     expect(Object.keys(mcp.mcpServers)).toEqual(['thoth-mem']);
     expect(mcp.mcpServers['thoth-mem']).toEqual({
-      command: 'npx',
-      args: ['--yes', 'thoth-mem@0.4.13', 'mcp', '--no-http'],
+      cwd: '.',
+      command: 'node',
+      args: ['./runners/public-runner.mjs', '--mcp'],
     });
   });
 
@@ -133,10 +134,11 @@ describe('public plugin marketplace distribution', () => {
       expect(hook.command).toContain('${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs');
     }
 
-    const mcp = readJson<{ mcpServers: Record<string, { command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
+    const mcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
     expect(mcp.mcpServers['thoth-mem']).toEqual({
-      command: 'npx',
-      args: ['--yes', 'thoth-mem@0.4.13', 'mcp', '--no-http'],
+      cwd: '.',
+      command: 'node',
+      args: ['./runners/public-runner.mjs', '--mcp'],
     });
   });
 });

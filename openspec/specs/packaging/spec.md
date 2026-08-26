@@ -4,87 +4,141 @@
 
 ### Requirement: Published Package MUST Contain Native Assets for All Three Harnesses
 
-The published project MUST include repository-discoverable Codex and Claude Code marketplace catalogs plus a shared public plugin root containing each host's supported manifest, hooks, MCP registration, portable launcher, Skill, and references for the same v2 core version.
+The packed release MUST expose a native OpenCode npm plugin entry plus repository-discoverable Codex and Claude Code marketplaces; each host path MUST provide one lifecycle-hook path, one registration path for the shared exact six-tool MCP server, and the v2 memory Skill over the same core version without requiring another host's loader topology.
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a clean supported Codex installation
-- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
-- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** the installed public Codex plugin and an unrelated current working directory
-- **WHEN** Codex invokes a lifecycle hook or starts MCP
-- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a clean supported Claude Code installation
-- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
-- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** the installed public Claude Code plugin
-- **WHEN** a supported session lifecycle event occurs
-- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
 
 ### Requirement: Hook Execution MUST Use Portable Node Runners
 
-Public plugin hooks MUST resolve the pinned published v2 runtime without a managed setup receipt, private environment override, source checkout, shell-specific wrapper, or caller working-directory assumption; receipt/local-runtime resolution MAY take precedence only inside explicitly managed canary installations.
+OpenCode hook adapters MUST execute inside the Bun-loaded native package, but every SQLite-backed lifecycle operation MUST cross a bounded JSON-stdio boundary to the package-relative `node dist/index.js lifecycle-v2` entry without a receipt, CWD assumption, or child `npx`; Codex and Claude hooks plus MCP registration MUST enter through their root-relative portable runner, which resolves the exact pinned npm runtime for public installs or a verified absolute checkout build for explicit local development. The MCP descriptor MUST NOT bypass that provenance decision with a direct public-package command.
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a clean supported Codex installation
-- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
-- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** the installed public Codex plugin and an unrelated current working directory
-- **WHEN** Codex invokes a lifecycle hook or starts MCP
-- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a clean supported Claude Code installation
-- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
-- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** the installed public Claude Code plugin
-- **WHEN** a supported session lifecycle event occurs
-- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
 
 ### Requirement: NPM Tarball MUST Include the Complete Integration Inventory
 
-Packed-artifact verification MUST prove that every declared native hook, MCP registration, Skill/reference, adapter, runner, and setup receipt path exists exactly once under one harness owner and resolves inside the tarball.
+Packed verification MUST prove the native OpenCode main entry, CLI bin, canonical OpenCode Skill source, Codex/Claude marketplaces and shared plugin root, every declared hook/MCP/Skill/runner, and the exact shared core version; no host asset may resolve from the development checkout during public packed smoke.
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a project with prior durable memories and a supported host version
-- **WHEN** a root session starts or resumes
-- **THEN** the plugin supplies bounded, source-attributed recovery context through the shared lifecycle contract
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** a host event that cannot be mapped safely
-- **WHEN** the event is received
-- **THEN** the plugin reports that capability as degraded without inventing success or disabling explicit MCP memory operations
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US7 - Ship only the first product boundary 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** the packed first-product artifact
-- **WHEN** its required runtime inventory is validated
-- **THEN** each of the three harnesses has hooks, MCP registration, and Skills that resolve to the same core
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US7 - Ship only the first product boundary 2
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** the installed first product
-- **WHEN** it starts and serves MCP lifecycle operations
-- **THEN** deferred dashboard, observatory, HTTP, and graph surfaces are neither required nor started
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
 
 ### Requirement: Manifest Versions and Paths MUST Be Internally Consistent
 
@@ -128,31 +182,49 @@ Codex and Claude Code marketplace entries, plugin manifests, component paths, an
 
 ### Requirement: Installation Smoke Tests MUST Execute From the Packed Artifact
 
-Release verification MUST exercise repository marketplace discovery, plugin installation, native lifecycle execution, and MCP startup for Codex and Claude Code in isolated homes without reading or mutating real user configuration or resolving runtime files from the development checkout; it MUST also prove that receipt-owned `setup-v2` canary installation changes only its explicit local target and leaves committed public marketplace assets unchanged.
+Release verification MUST import the packed native OpenCode main, execute its packed CLI bin, exercise public exact-version and explicit local-file config planning plus Skill synchronization in disposable homes, and run Codex/Claude marketplace, lifecycle, and MCP smoke without reading real homes or resolving public runtime files from the source checkout. The removed `setup-v2` copied canary MUST NOT be exercised.
 
-#### Scenario: US3 - Keep public and canary installations separate 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** the repository marketplaces and a local v2 build
-- **WHEN** `setup-v2` installs a Codex or Claude canary target
-- **THEN** only the explicit target receives receipt-owned local assets and the committed public catalogs remain unchanged
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US3 - Keep public and canary installations separate 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** both public and canary configurations
-- **WHEN** their runtime resolution is inspected
-- **THEN** public installation resolves the pinned published package while canary installation resolves the explicit local build
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US4 - Publish coherent marketplace artifacts 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a release version change
-- **WHEN** integration assets are synchronized
-- **THEN** plugin manifests, marketplace metadata, and pinned runtime metadata agree with `package.json`
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US4 - Publish coherent marketplace artifacts 2
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** a packed release with a missing, escaped, stale, or undeclared public plugin asset
-- **WHEN** release verification runs
-- **THEN** it fails with a bounded diagnostic before publication
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
+
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Disposable Per-Harness Verification MUST Prove Runtime Activation
 Release verification MUST exercise the packed OpenCode, Codex, and Claude Code
@@ -261,103 +333,129 @@ Inventory and read-only package verification MUST declare and validate every pub
 
 ### Requirement: Include skill in managed drift
 
-OpenCode setup inspection and replacement MUST include the installed skill bundle in the existing receipt-owned asset comparison so missing, stale, or extra managed skill files are detected.
+OpenCode inspection MUST compare the packaged canonical thoth-mem Skill source with the exact globally synchronized `skills/thoth-mem` tree so missing, stale, extra, or linked managed entries are reported without scanning or claiming sibling Skills.
 
-#### Scenario: US3 - Preserve managed setup ownership 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a skill file is missing or modified inside the managed plugin assets
-- **WHEN** setup is inspected
-- **THEN** the installation is reported as drifted
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US3 - Preserve managed setup ownership 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** an older managed OpenCode installation without the bundled skill
-- **WHEN** setup is applied again
-- **THEN** the receipt-owned asset directory is upgraded to the complete current layout
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US3 - Preserve managed setup ownership 3
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a managed installation with the bundled skill
-- **WHEN** rollback is applied
-- **THEN** the receipt-owned plugin assets are restored or removed according to the receipt and no shared OpenCode skill directory is mutated
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
+
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Keep rollback ownership bounded
 
-OpenCode rollback MUST restore or remove the bundled skill only through the existing managed plugin asset receipt and MUST NOT create, edit, or delete the user's shared OpenCode skills directory.
+OpenCode rollback MUST restore or remove only the exact prior thoth-mem plugin entry and receipt-owned `skills/thoth-mem` tree; it MUST preserve unrelated global Skills, config entries, comments, and later user changes.
 
-#### Scenario: US3 - Preserve managed setup ownership 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a skill file is missing or modified inside the managed plugin assets
-- **WHEN** setup is inspected
-- **THEN** the installation is reported as drifted
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US3 - Preserve managed setup ownership 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** an older managed OpenCode installation without the bundled skill
-- **WHEN** setup is applied again
-- **THEN** the receipt-owned asset directory is upgraded to the complete current layout
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US3 - Preserve managed setup ownership 3
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a managed installation with the bundled skill
-- **WHEN** rollback is applied
-- **THEN** the receipt-owned plugin assets are restored or removed according to the receipt and no shared OpenCode skill directory is mutated
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-### Requirement: Replace the whole managed asset target safely
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
 
-Convergence MUST delete every prior entry inside the selected-scope managed asset target and install only the current packaged layout; if the target itself is a symlink, junction, or equivalent link, setup MUST remove the link without traversing or modifying its destination before creating a normal directory.
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
 
-#### Scenario: US1 - Converge an existing OpenCode installation 1
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
 
-- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
-- **WHEN** setup runs without `--force`
-- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
-
-#### Scenario: US1 - Converge an existing OpenCode installation 2
-
-- **GIVEN** the managed asset target exists without valid installation metadata
-- **WHEN** setup runs
-- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
-
-#### Scenario: US1 - Converge an existing OpenCode installation 3
-
-- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
-- **WHEN** setup runs
-- **THEN** setup repairs the full managed state automatically
-
-#### Scenario: US1 - Converge an existing OpenCode installation 4
-
-- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
-- **WHEN** setup runs again
-- **THEN** it returns `complete` with `changed=false` and performs zero mutation
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Verify current packed-package convergence
 
-Packed-artifact verification MUST exercise global and project OpenCode convergence from older, newer, missing, malformed, and same-version-diverged metadata and assets, and MUST prove an exact repeated no-op without using the source checkout or a real user home.
+Packed verification MUST exercise public exact-version and explicit local-file OpenCode convergence, Skill synchronization, duplicate/drift repair, unrelated-state preservation, exact repeated no-op, native plugin import, MCP startup, and lifecycle execution in disposable homes; it MUST also verify Codex/Claude native manager packages without mutating real homes.
 
-#### Scenario: US1 - Converge an existing OpenCode installation 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** the canonical OpenCode managed asset target contains an older or newer package version
-- **WHEN** setup runs without `--force`
-- **THEN** setup replaces the complete managed directory and canonical plugin entry with the current package and reports `complete` with `changed=true`
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Converge an existing OpenCode installation 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** the managed asset target exists without valid installation metadata
-- **WHEN** setup runs
-- **THEN** directory existence authorizes adoption and setup writes current canonical metadata instead of requiring manual deletion
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US1 - Converge an existing OpenCode installation 3
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** metadata names the current package version but any managed asset, metadata field, plugin entry, or owned configuration value differs
-- **WHEN** setup runs
-- **THEN** setup repairs the full managed state automatically
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US1 - Converge an existing OpenCode installation 4
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** every current managed asset, metadata value, plugin entry, and owned configuration value matches
-- **WHEN** setup runs again
-- **THEN** it returns `complete` with `changed=false` and performs zero mutation
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
+
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
 
 ### Requirement: First Product Package MUST Exclude Deferred Runtime Surfaces
 

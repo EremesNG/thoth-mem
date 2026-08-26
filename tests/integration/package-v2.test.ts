@@ -15,11 +15,25 @@ describe('canonical v2 integration package inventory', () => {
     for (const [harness, assets] of Object.entries(valid.harnesses)) {
       for (const asset of assets) expect(existsSync(join('integrations', harness, asset)), `${harness}:${asset}`).toBe(true);
       const combined = assets.map((asset) => readFileSync(join('integrations', harness, asset), 'utf8')).join('\n');
-      expect(combined).not.toMatch(/thoth_mem_root_identity|dashboard|observatory|sqlite-vec|hyde/i);
+      expect(combined).not.toMatch(/dashboard|observatory|sqlite-vec|hyde/i);
+    }
+
+    const opencode = readFileSync(join('integrations', 'opencode', 'skills', 'thoth-mem', 'references', 'opencode.md'), 'utf8');
+    expect(opencode).toMatch(/thoth_mem_root_identity/);
+    expect(opencode).toMatch(/root_session_key/);
+    expect(opencode).toMatch(/authorization/);
+
+    for (const [harness, reference, expected] of [
+      ['codex', 'codex.md', /CODEX_THREAD_ID[\s\S]*list_threads[\s\S]*root_session_key/],
+      ['claude-code', 'claude-code.md', /session_id[\s\S]*cwd[\s\S]*CLAUDE_SESSION_ID[\s\S]*root_session_key/],
+    ] as const) {
+      const canonical = readFileSync(join('integrations', harness, 'skills', 'thoth-mem', 'references', reference), 'utf8');
+      expect(canonical).toMatch(expected);
+      expect(readFileSync(join('plugin', 'skills', 'thoth-mem', 'references', reference), 'utf8')).toBe(canonical);
     }
   });
 
-  it('rejects missing, duplicate, cross-owner, identity-tool, and deferred inventory entries', () => {
+  it('rejects missing, duplicate, cross-owner, standalone identity-asset, and deferred inventory entries', () => {
     const clone = (): IntegrationInventory => structuredClone(inventory);
     const missing = clone(); missing.harnesses.codex.pop(); expect(() => validateIntegrationInventory(missing)).toThrow(/incomplete/i);
     const duplicate = clone(); duplicate.harnesses.opencode.push(duplicate.harnesses.opencode[0]!); expect(() => validateIntegrationInventory(duplicate)).toThrow(/duplicate/i);

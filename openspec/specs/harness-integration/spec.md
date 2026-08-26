@@ -323,34 +323,32 @@ Any unsupported, failed, or partially available lifecycle capability MUST produc
 - AND it MUST NOT include the raw prompt or removed private content
 
 ### Requirement: Hidden Codex Manager Residue MUST NOT Equal Registered State
-Codex setup MUST treat exact selected-scope marketplace and plugin list verification as the sole authority for registered, installed, and enabled manager state. A temporary checkout, cache entry, hidden directory, orphaned manager artifact, command exit code, or error string MUST remain secondary evidence and MUST NOT establish registration, successful installation, enablement, or thoth-mem ownership. State observed in another scope MUST NOT satisfy verification for the selected scope.
 
-#### Scenario: Orphan temporary checkout remains unregistered
-- GIVEN the selected Codex home contains `.codex/.tmp/marketplaces/thoth-mem`
-- AND exact selected-scope marketplace configuration and list output contain no registered thoth-mem marketplace
-- WHEN setup classifies marketplace state
-- THEN the marketplace MUST remain unverified and unregistered
-- AND the temporary checkout MUST NOT establish setup ownership or removal authority
+Exact global/user marketplace and enabled-plugin inspection is the sole authority for Codex native state. Hidden/cache/temporary residue, command text, exit code, or state from another home MUST NOT prove registration or ownership; project-scoped setup and cross-scope project/global verification are removed from the first product.
 
-#### Scenario: Nonzero command cannot negate exact verified state
-- GIVEN a marketplace or plugin command returns nonzero
-- AND its subsequent exact selected-scope list verifies the expected identity and state
-- WHEN setup classifies the operation
-- THEN the requested state MUST be treated as verified
-- AND the nonzero command evidence MUST remain diagnostic only
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-#### Scenario: Error text alone cannot prove registration
-- GIVEN command output says thoth-mem is already added or installed
-- BUT exact selected-scope list verification is absent, malformed, or conflicting
-- WHEN setup classifies manager state
-- THEN setup MUST keep that state unverified
-- AND it MUST NOT infer ownership or successful registration from the text
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
 
-#### Scenario: State from another scope is not authoritative
-- GIVEN the expected marketplace or plugin verifies in a global scope different from the selected project scope
-- WHEN project-scoped setup verifies its requested state
-- THEN the global entry MUST NOT satisfy project-scoped verification
-- AND setup MUST preserve the global state without claiming project completion
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
+
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Codex Orphan Residue Classification MUST Require Corroborated Safe Evidence
 Setup MAY classify the reproduced stale pre-registration marketplace-residue condition only when bounded redacted command evidence identifies the expected thoth-mem marketplace collision and the exact selected-scope marketplace list independently proves the expected marketplace absent. The classification MUST identify the selected scope and logical manager location without exposing a user-specific absolute home path. A name, path, hidden entry, temporary directory, source-like string, or failure message alone MUST NOT be sufficient. Conflicting scope, source provenance, containment, link, or concurrent-manager evidence MUST leave the condition unclassified and fail closed.
@@ -426,43 +424,32 @@ Setup MUST NOT directly delete, rename, rewrite, or repair Codex-owned temporary
 - AND it MUST NOT copy legacy assets or add legacy activation configuration
 
 ### Requirement: Codex Setup Capability Mapping MUST Select Exactly One Ownership Strategy
-Codex setup MUST classify the selected Codex version, selected scope, advertised command grammar, and independently verifiable state capabilities before mutation. It MUST select exactly one ownership strategy: `plugin_manager` when the tested version and safe capabilities for that scope are proven, or `legacy_filesystem` only when plugin management is unavailable or unprovable for that scope. The selected strategy MUST remain fixed for the mutating attempt, and a failure after `plugin_manager` selection MUST NOT cause an implicit legacy installation. When modern execution encounters corroborated orphan residue or ownership ambiguity that prevents safe recovery and requires manual intervention, `requires_user_action` MUST take precedence over `partial` even if another requested manager operation is independently verified.
 
-#### Scenario: Proven modern capability selects plugin manager ownership
-- GIVEN the selected Codex version is in a tested compatibility set
-- AND the selected scope safely exposes exact marketplace and plugin mutation and verification commands
-- WHEN setup classifies the Codex capability evidence
-- THEN it MUST select `plugin_manager`
-- AND it MUST classify marketplace, cache, installation, enablement, and generated activation state as Codex-owned
+Codex setup MUST select `plugin_manager` only when exact manager mutation and verification capabilities are available; otherwise it MUST return a non-mutating unsupported or requires-user-action result. The removed `legacy_filesystem` strategy MUST NOT be selected or emulated.
 
-#### Scenario: Unavailable scoped plugin management selects legacy ownership
-- GIVEN the selected Codex version or scope does not safely expose a complete and independently verifiable plugin-management path
-- WHEN setup classifies the Codex capability evidence before mutation
-- THEN it MUST select `legacy_filesystem`
-- AND it MUST report the missing or unproven manager capability without claiming modern ownership
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-#### Scenario: Version evidence alone is insufficient
-- GIVEN the selected Codex version is recognized
-- BUT one required scoped command shape or independent verification capability is unproven
-- WHEN setup selects an ownership strategy
-- THEN it MUST NOT select `plugin_manager`
-- AND it MUST classify plugin management as unavailable for that setup attempt
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
 
-#### Scenario: Modern operational failure does not activate legacy fallback
-- GIVEN setup selected `plugin_manager` before mutation
-- WHEN a manager mutation fails, times out, or cannot be independently verified
-- THEN setup MUST retain the `plugin_manager` ownership classification for that attempt
-- AND it MUST return `requires_user_action` when missing capability or ownership ambiguity prevents a safe attempt, or when corroborated orphan residue or ownership ambiguity prevents safe recovery and requires manual intervention, even if another requested manager operation verifies
-- AND otherwise it MUST return `partial` when at least one requested manager operation is verified and another safely attempted operation fails or remains unverified
-- AND otherwise it MUST return `failed` when safely attempted requested manager operations leave none verified
-- AND it MUST NOT copy legacy assets or add legacy activation config
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
 
-#### Scenario: Existing manager state blocks unsafe legacy coexistence
-- GIVEN plugin management is unavailable or unprovable for the selected scope
-- AND existing thoth-mem manager-owned installation or activation state is detected but cannot be safely classified as absent or compatible
-- WHEN setup considers `legacy_filesystem`
-- THEN it MUST return `requires_user_action` before legacy mutation
-- AND it MUST NOT create a second owner by copying assets or adding legacy activation config
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
+
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Codex Manager State Verification MUST Be Exact and Fail Closed
 Codex setup MUST verify marketplace and plugin state independently for the selected scope. When a list command advertises structured JSON, verification MUST use that command's JSON output and MUST require its expected schema, exact marketplace identity and Git provenance, and exact installed-and-enabled plugin identity. When JSON is not advertised for a list command, verification MAY use only a recognized strict legacy format for that command. Malformed or unexpected advertised JSON MUST fail closed and MUST NOT fall back to textual substring matching.
@@ -523,19 +510,25 @@ Unknown, degraded, malformed, or conflicting Codex ownership evidence MUST produ
 
 ### Requirement: Shared Skills MUST Route to One Host-Specific Lifecycle Contract
 
-Each packaged Skill MUST preserve shared memory rules, detect its verified host context, load only the relevant host reference, and avoid claiming unavailable lifecycle or injection capabilities.
+Packaged OpenCode, Codex, and Claude Skills MUST document their distinct authoritative sources and rejected substitutes: OpenCode prioritizes `thoth_mem_root_identity`; Codex prioritizes injected verified identity then targeted `CODEX_THREAD_ID` with only an unambiguous current-task cross-check; Claude prioritizes injected identity or official hook `session_id` plus `cwd` and MUST NOT invent `CLAUDE_SESSION_ID`. Canonical and distributed copies MUST remain synchronized.
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 1
+#### Scenario: US5 - Recover the verified root identity in every native host 1
 
-- **GIVEN** a project with prior durable memories and a supported host version
-- **WHEN** a root session starts or resumes
-- **THEN** the plugin supplies bounded, source-attributed recovery context through the shared lifecycle contract
+- **GIVEN** an OpenCode root or delegated session
+- **WHEN** `thoth_mem_root_identity` runs
+- **THEN** it returns the bounded versioned identity contract, resolves at most 16 parent links with cycle detection, grants lifecycle authorization only to the root caller, performs no memory dispatch, and does not change the six MCP tools
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 2
+#### Scenario: US5 - Recover the verified root identity in every native host 2
 
-- **GIVEN** a host event that cannot be mapped safely
-- **WHEN** the event is received
-- **THEN** the plugin reports that capability as degraded without inventing success or disabling explicit MCP memory operations
+- **GIVEN** Codex or Claude lifecycle recovery has accepted native `session_id` and project context
+- **WHEN** host output is produced
+- **THEN** it includes the complete verified identity before bounded memory context; Codex may use its documented root-agent fallback and Claude invents no environment fallback
+
+#### Scenario: US5 - Recover the verified root identity in every native host 3
+
+- **GIVEN** identity is absent, delegated, malformed, ambiguous, or too large for bounded output
+- **WHEN** the integration cannot prove the root
+- **THEN** it fails closed without inventing continuity or emitting a partial identity
 
 ### Requirement: Codex identity procedure
 
@@ -605,25 +598,25 @@ The OpenCode reference MUST identify the verified root session fields and projec
 
 ### Requirement: Verified identity header
 
-Confirmed native recovery and post-compaction host output MUST prepend the lifecycle-resolved root session ID and project name to model-visible memory context.
+OpenCode, Codex, and Claude recovery or post-compaction output MUST preserve the lifecycle-resolved root session and project in a complete bounded identity header before optional memory context. V2 consumers MUST map that exact host root identifier to `root_session_key`; output MUST truncate only optional context and MUST be unavailable rather than truncate identity.
 
-#### Scenario: US2 - Receive verified identity from native lifecycle context 1
+#### Scenario: US5 - Recover the verified root identity in every native host 1
 
-- **GIVEN** confirmed enrollment and recovery context
-- **WHEN** native host output is ready
-- **THEN** the emitted context begins with the verified root session ID and project and retains bounded memory context
+- **GIVEN** an OpenCode root or delegated session
+- **WHEN** `thoth_mem_root_identity` runs
+- **THEN** it returns the bounded versioned identity contract, resolves at most 16 parent links with cycle detection, grants lifecycle authorization only to the root caller, performs no memory dispatch, and does not change the six MCP tools
 
-#### Scenario: US2 - Receive verified identity from native lifecycle context 2
+#### Scenario: US5 - Recover the verified root identity in every native host 2
 
-- **GIVEN** identity plus recovery text near the output limit
-- **WHEN** host output is built
-- **THEN** it stays within the existing bound without truncating or fabricating the identity
+- **GIVEN** Codex or Claude lifecycle recovery has accepted native `session_id` and project context
+- **WHEN** host output is produced
+- **THEN** it includes the complete verified identity before bounded memory context; Codex may use its documented root-agent fallback and Claude invents no environment fallback
 
-#### Scenario: US2 - Receive verified identity from native lifecycle context 3
+#### Scenario: US5 - Recover the verified root identity in every native host 3
 
-- **GIVEN** an identity header that cannot fit safely
-- **WHEN** host output is built
-- **THEN** output is reported unavailable rather than emitting a partial identity
+- **GIVEN** identity is absent, delegated, malformed, ambiguous, or too large for bounded output
+- **WHEN** the integration cannot prove the root
+- **THEN** it fails closed without inventing continuity or emitting a partial identity
 
 ### Requirement: Preserve bounded output truth
 
@@ -649,75 +642,71 @@ Identity-aware host output MUST preserve the existing 1,000-code-point bound, ke
 
 ### Requirement: Every Harness Setup MUST Install Its Packaged Skill Asset
 
-Managed setup for OpenCode, Codex, and Claude Code MUST install the complete receipt-owned Skill asset and references for that harness without overwriting unrelated user Skills.
+OpenCode setup MUST synchronize the canonical packaged thoth-mem Skill into the exact global native `skills/thoth-mem` directory; Codex and Claude MUST receive the Skill from their native marketplace bundle. Setup MUST preserve unrelated Skills and verify the host-appropriate discovery path.
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a project with prior durable memories and a supported host version
-- **WHEN** a root session starts or resumes
-- **THEN** the plugin supplies bounded, source-attributed recovery context through the shared lifecycle contract
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Resume useful project context in any supported coding agent 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** a host event that cannot be mapped safely
-- **WHEN** the event is received
-- **THEN** the plugin reports that capability as degraded without inventing success or disabling explicit MCP memory operations
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-### Requirement: Register bundled discovery path
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-The OpenCode plugin MUST register the native absolute parent directory of its bundled `thoth-mem` skill through the supported runtime configuration hook.
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 1
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
 
-- **GIVEN** an OpenCode configuration with no `skills` block
-- **WHEN** the plugin configuration hook runs
-- **THEN** it creates `skills.paths` containing the absolute bundled skill parent
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 2
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
 
-- **GIVEN** existing user-defined skill paths
-- **WHEN** the plugin configuration hook runs
-- **THEN** it preserves their order and values and appends only the missing bundled path
-
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 3
-
-- **GIVEN** the hook runs more than once
-- **WHEN** the bundled path is already registered
-- **THEN** the configuration remains unchanged and contains no duplicate path
-
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 4
-
-- **GIVEN** an installation path containing spaces or URL-encoded characters
-- **WHEN** the plugin resolves its bundle
-- **THEN** it registers a valid native absolute filesystem path
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Preserve user skill configuration
 
-Runtime registration MUST preserve existing `skills.paths` entries and MUST be idempotent across repeated hook execution.
+OpenCode setup and runtime MUST preserve every existing `skills.paths` value and every sibling global Skill; only the exact setup-owned `skills/thoth-mem` tree may be synchronized or restored.
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** an OpenCode configuration with no `skills` block
-- **WHEN** the plugin configuration hook runs
-- **THEN** it creates `skills.paths` containing the absolute bundled skill parent
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** existing user-defined skill paths
-- **WHEN** the plugin configuration hook runs
-- **THEN** it preserves their order and values and appends only the missing bundled path
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 3
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** the hook runs more than once
-- **WHEN** the bundled path is already registered
-- **THEN** the configuration remains unchanged and contains no duplicate path
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US2 - Discover the installed skill at OpenCode runtime 4
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
 
-- **GIVEN** an installation path containing spaces or URL-encoded characters
-- **WHEN** the plugin resolves its bundle
-- **THEN** it registers a valid native absolute filesystem path
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
+
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
+
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Add an explicit version-gate override
 
@@ -765,31 +754,31 @@ A forced version override that proves complete safe mutation and independent ver
 
 ### Requirement: Preserve unforced setup behavior
 
-Codex setup MUST classify `0.144.x`, `0.146.x`, and `0.147.x` as tested versions. When `--force` is absent, setup MUST use the existing capability and manager-state evidence to select ownership and derive status, diagnostics, manual actions, and mutation boundaries; versions outside the tested set MUST retain the existing fail-closed version gate.
+Codex `0.147.x` is the supported unforced first-product manager contract. Other versions MUST fail closed before mutation unless an explicit force path independently proves the complete safe native-manager capability contract; safely absent manager state on any version MUST never select or preserve a legacy filesystem strategy.
 
-#### Scenario: Codex 0.146 and 0.147 use compatible manager state without force
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** Codex `0.146.x` or `0.147.x` exposes complete safe capabilities and compatible manager-owned state
-- **WHEN** setup runs without `--force`
-- **THEN** it selects `plugin_manager` and derives the normal evidence-based result without a forced-version warning
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
 
-#### Scenario: Codex 0.146 and 0.147 use absent manager state without force
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
 
-- **GIVEN** Codex `0.146.x` or `0.147.x` exposes complete safe capabilities and safely absent manager state
-- **WHEN** setup runs without `--force`
-- **THEN** it selects the `plugin_manager` strategy rather than legacy filesystem setup
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
 
-#### Scenario: Future compatible manager state remains blocked without force
+#### Scenario: US4 - Keep installation evidence truthful and repairable 1
 
-- **GIVEN** Codex `0.148.x` or another untested version has compatible manager-owned state
-- **WHEN** setup runs without `--force`
-- **THEN** it returns `requires_user_action` before mutation
+- **GIVEN** unrelated OpenCode plugins, MCP entries, comments, and Skills
+- **WHEN** setup installs, repairs, or rolls back thoth-mem
+- **THEN** only the exact thoth-mem plugin entry and owned Skill tree change
 
-#### Scenario: Future absent manager state retains legacy behavior without force
+#### Scenario: US4 - Keep installation evidence truthful and repairable 2
 
-- **GIVEN** Codex `0.148.x` or another untested version has safely absent manager state
-- **WHEN** setup runs without `--force`
-- **THEN** the existing legacy strategy behavior remains unchanged
+- **GIVEN** copied legacy/inert thoth-mem assets still exist
+- **WHEN** native setup inspects them
+- **THEN** it reports bounded cleanup guidance but does not infer ownership or delete them from name/path alone
 
 ### Requirement: Preserve non-version safety and ownership gates
 
@@ -815,28 +804,114 @@ Codex setup MUST classify `0.144.x`, `0.146.x`, and `0.147.x` as tested versions
 
 ### Requirement: Every Native Plugin MUST Bundle Hooks, MCP, and Skills
 
-The public Codex and Claude Code plugin distribution MUST expose exactly one host-appropriate hook registration, one registration path for the shared exact six-tool MCP server, and the v2 memory Skill, with host-specific lifecycle mapping over the same core.
+OpenCode MUST export a typed native plugin that contributes the shared MCP and verified lifecycle hooks while its setup synchronizes the bundled Skill source into OpenCode's native Skill root; Codex and Claude MUST expose their hooks, MCP, and Skill through their native marketplace bundle. Equivalent events MUST still terminate in the same host-neutral v2 lifecycle.
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 1
 
-- **GIVEN** a clean supported Codex installation
-- **WHEN** the user adds `EremesNG/thoth-mem` as a marketplace and installs `thoth-mem`
-- **THEN** Codex discovers one current plugin whose hooks, MCP descriptor, Skill, and runtime launcher resolve entirely from installed assets or the pinned public package
+- **GIVEN** public setup executes from a verified `thoth-mem` package version
+- **WHEN** OpenCode setup completes
+- **THEN** its configuration contains exactly `thoth-mem@<executing-version>`, the native Skill tree is current, and neither `.thoth-mem`, `plugins/thoth-mem.js`, nor an owned `mcp.thoth-mem` block is required
 
-#### Scenario: US1 - Install thoth-mem publicly in Codex 2
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 2
 
-- **GIVEN** the installed public Codex plugin and an unrelated current working directory
-- **WHEN** Codex invokes a lifecycle hook or starts MCP
-- **THEN** the invocation reaches the same v2 core without requiring `.thoth-mem-managed-v2.json`, a development checkout, or private canary configuration
+- **GIVEN** local-development setup receives an explicit package root and data directory
+- **WHEN** setup completes
+- **THEN** OpenCode contains exactly one canonical absolute `file://` plugin entry, the local Skill tree is synchronized, and the native plugin starts the checkout-built v2 core without `npx` or a published-package fallback
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 1
+#### Scenario: US1 - Install thoth-mem as a native OpenCode plugin 3
 
-- **GIVEN** a clean supported Claude Code installation
-- **WHEN** the user adds `EremesNG/thoth-mem` and installs `thoth-mem`
-- **THEN** Claude Code accepts the marketplace, manifest, root-relative component paths, native hooks, MCP descriptor, and Skill
+- **GIVEN** recovered memory changes between turns
+- **WHEN** OpenCode builds the model payload
+- **THEN** thoth-mem changes only its tagged trailing recovery region and preserves the byte-stable prefix used by the provider prompt cache
 
-#### Scenario: US2 - Install thoth-mem publicly in Claude Code 2
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 1
 
-- **GIVEN** the installed public Claude Code plugin
-- **WHEN** a supported session lifecycle event occurs
-- **THEN** its portable runner calls the v2 lifecycle contract and emits only host-shaped bounded output
+- **GIVEN** a supported Codex manager
+- **WHEN** the user registers `EremesNG/thoth-mem` and installs `thoth-mem@thoth-mem`
+- **THEN** Codex resolves one enabled native plugin and starts its exact six-tool MCP and lifecycle hooks without a private descriptor edit
+
+#### Scenario: US2 - Distribute Codex and Claude through their native managers 2
+
+- **GIVEN** the repository Claude marketplace and no paid model session
+- **WHEN** strict validation and isolated packed smoke run
+- **THEN** the manager-visible structure, hooks, MCP, Skill, runtime, and data binding can pass while real model consumption remains explicitly unobserved
+
+#### Scenario: US3 - Continue one memory across native hosts 1
+
+- **GIVEN** Codex confirmed a handoff in the selected v2 database
+- **WHEN** native OpenCode starts for the same project
+- **THEN** bounded recovery is injected through a supported native channel and the six tools can expand the same stable IDs
+
+#### Scenario: US3 - Continue one memory across native hosts 2
+
+- **GIVEN** any host lacks proof of model-visible consumption
+- **WHEN** certification is reported
+- **THEN** plugin resolution, hook execution, memory confirmation, context delivery, and model use are recorded as distinct dimensions
+
+#### Scenario: US5 - Recover the verified root identity in every native host 1
+
+- **GIVEN** an OpenCode root or delegated session
+- **WHEN** `thoth_mem_root_identity` runs
+- **THEN** it returns the bounded versioned identity contract, resolves at most 16 parent links with cycle detection, grants lifecycle authorization only to the root caller, performs no memory dispatch, and does not change the six MCP tools
+
+#### Scenario: US5 - Recover the verified root identity in every native host 2
+
+- **GIVEN** Codex or Claude lifecycle recovery has accepted native `session_id` and project context
+- **WHEN** host output is produced
+- **THEN** it includes the complete verified identity before bounded memory context; Codex may use its documented root-agent fallback and Claude invents no environment fallback
+
+#### Scenario: US5 - Recover the verified root identity in every native host 3
+
+- **GIVEN** identity is absent, delegated, malformed, ambiguous, or too large for bounded output
+- **WHEN** the integration cannot prove the root
+- **THEN** it fails closed without inventing continuity or emitting a partial identity
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
+
+### Requirement: OpenCode MUST expose one native identity-only tool
+
+The native OpenCode plugin MUST register exactly one host-native tool named `thoth_mem_root_identity`, separate from the exact six-tool MCP registry. It MUST accept no user arguments, return the proven versioned root/caller/project/authorization contract, resolve `parentID` ancestry with a fixed depth-16 bound and cycle detection, deny delegated lifecycle authority, perform no lifecycle or persistence side effect, and fail closed without a root ID when identity cannot be proven.
+
+#### Scenario: US5 - Recover the verified root identity in every native host 1
+
+- **GIVEN** an OpenCode root or delegated session
+- **WHEN** `thoth_mem_root_identity` runs
+- **THEN** it returns the bounded versioned identity contract, resolves at most 16 parent links with cycle detection, grants lifecycle authorization only to the root caller, performs no memory dispatch, and does not change the six MCP tools
+
+#### Scenario: US5 - Recover the verified root identity in every native host 2
+
+- **GIVEN** Codex or Claude lifecycle recovery has accepted native `session_id` and project context
+- **WHEN** host output is produced
+- **THEN** it includes the complete verified identity before bounded memory context; Codex may use its documented root-agent fallback and Claude invents no environment fallback
+
+#### Scenario: US5 - Recover the verified root identity in every native host 3
+
+- **GIVEN** identity is absent, delegated, malformed, ambiguous, or too large for bounded output
+- **WHEN** the integration cannot prove the root
+- **THEN** it fails closed without inventing continuity or emitting a partial identity
+
+### Requirement: OpenCode Bun Runtime MUST Keep SQLite Behind the Node Boundary
+
+The native OpenCode bundle MUST NOT import, bundle, instantiate, or execute `better-sqlite3`, `MemoryService`, or another Node-native persistence binding inside Bun. It MUST derive the lifecycle entry relative to its own package, invoke literal `node` without a shell or `npx`, send one validated host-neutral v2 event over stdin, accept only the versioned lifecycle envelope, bound time/output, and treat launch, timeout, exit, or parse failure as no verified lifecycle result rather than a host-fatal exception.
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+
+- **GIVEN** OpenCode loads the native plugin inside Bun
+- **WHEN** a root lifecycle event requires persistence or recovery
+- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+
+#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+
+- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
+- **WHEN** a lifecycle hook runs
+- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt

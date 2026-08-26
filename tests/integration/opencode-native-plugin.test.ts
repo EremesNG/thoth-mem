@@ -1,0 +1,396 @@
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import type { Config, Hooks, PluginInput } from '@opencode-ai/plugin';
+import { describe, expect, it } from 'vitest';
+
+import {
+  createThothMemPlugin,
+  RECOVERY_TAG_END,
+  RECOVERY_TAG_START,
+} from '../../src/integration/opencode/plugin.js';
+import { dispatchOpenCodeLifecycleThroughNode } from '../../src/integration/opencode/node-lifecycle-client.js';
+
+type EventInput = Parameters<NonNullable<Hooks['event']>>[0];
+
+function pluginInput(directory: string, sessions: Map<string, Record<string, unknown>>): PluginInput {
+  return {
+    directory,
+    worktree: directory,
+    project: { worktree: directory },
+    client: {
+      app: { log: async () => ({ data: true }) },
+      session: {
+        get: async ({ path }: { path: { id: string } }) => ({ data: sessions.get(path.id) }),
+      },
+    },
+  } as unknown as PluginInput;
+}
+
+function toolContext(sessionID: string, directory: string) {
+  return {
+    sessionID,
+    messageID: 'message-1',
+    agent: 'orchestrator',
+    directory,
+    worktree: directory,
+    abort: new AbortController().signal,
+    metadata: () => undefined,
+    ask: async () => undefined,
+  };
+}
+
+function sessionEvent(type: 'session.created' | 'session.deleted', project: string, sessionID: string, parentID?: string): EventInput {
+  return {
+    event: {
+      type,
+      properties: {
+        info: {
+          id: sessionID,
+          projectID: 'fixture-project',
+          directory: project,
+          ...(parentID ? { parentID } : {}),
+          title: 'Fixture',
+          version: '1',
+          time: { created: 1, updated: 1 },
+        },
+      },
+    },
+  } as EventInput;
+}
+
+describe.sequential('native OpenCode plugin', () => {
+  it('accepts only a matching versioned lifecycle envelope from the Node boundary', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-node-client-'));
+    const runtimeEntry = join(root, 'valid-runtime.mjs');
+    try {
+      writeFileSync(runtimeEntry, `
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const event = JSON.parse(input);
+process.stdout.write(JSON.stringify({
+  schema: 'thoth-mem.lifecycle.v2',
+  identity: { root_session_id: process.env.INVALID_IDENTITY ?? event.rootSessionKey, project: event.projectName },
+  data: {
+    outcome: 'confirmed', duplicate: false, projectId: 'project-id', sessionId: 'session-id', evidenceId: null,
+    recovery: { items: [], sources: [], budget: { requestedChars: 1, returnedChars: 0, truncatedChars: 0, sourceChars: 0, evidenceChars: 0, fullChars: 0, compressionRatio: 1, tokenBasis: 'estimated_chars_div_4' } },
+    capability: { hookExecuted: true, memoryConfirmed: true, contextDelivered: false, modelConsumed: false }
+  }
+}));
+`);
+      const diagnostics: string[] = [];
+      const result = await dispatchOpenCodeLifecycleThroughNode({
+        operation: 'recover',
+        directory: join(root, 'project'),
+        rootSessionKey: 'root-session',
+        eventKey: 'recover-1',
+      }, {
+        runtimeEntry,
+        nodeCommand: process.execPath,
+        onDiagnostic: (code) => diagnostics.push(code),
+      });
+
+      expect(result).toMatchObject({ outcome: 'confirmed', projectId: 'project-id', sessionId: 'session-id' });
+      expect(diagnostics).toEqual([]);
+
+      const rejectedDiagnostics: string[] = [];
+      const rejected = await dispatchOpenCodeLifecycleThroughNode({
+        operation: 'recover',
+        directory: join(root, 'project'),
+        rootSessionKey: 'root-session',
+        eventKey: 'recover-2',
+      }, {
+        runtimeEntry,
+        nodeCommand: process.execPath,
+        runtimeConfig: { env: { INVALID_IDENTITY: 'different-root' } },
+        onDiagnostic: (code) => rejectedDiagnostics.push(code),
+      });
+      expect(rejected).toBeUndefined();
+      expect(rejectedDiagnostics).toEqual(['node_lifecycle_invalid_envelope']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds Node lifecycle failures and returns no unverified result', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-node-failures-'));
+    const input = {
+      operation: 'recover' as const,
+      directory: join(root, 'project'),
+      rootSessionKey: 'root-session',
+      eventKey: 'recover-1',
+    };
+    try {
+      const scripts = {
+        nonzero: `process.exitCode = 3;`,
+        invalid: `process.stdout.write('not-json');`,
+        excessive: `process.stdout.write('x'.repeat(1000));`,
+        timeout: `setTimeout(() => {}, 1000);`,
+      };
+      const paths = Object.fromEntries(Object.entries(scripts).map(([name, source]) => {
+        const path = join(root, `${name}.mjs`);
+        writeFileSync(path, source);
+        return [name, path];
+      }));
+      const cases = [
+        { runtimeEntry: paths.nonzero!, diagnostic: 'node_lifecycle_nonzero_exit' },
+        { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_invalid_envelope' },
+        { runtimeEntry: paths.excessive!, diagnostic: 'node_lifecycle_output_limit', maxOutputBytes: 32 },
+        { runtimeEntry: paths.timeout!, diagnostic: 'node_lifecycle_timeout', timeoutMs: 20 },
+        { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_launch_failed', nodeCommand: join(root, 'missing-node') },
+      ];
+
+      for (const testCase of cases) {
+        const diagnostics: string[] = [];
+        const result = await dispatchOpenCodeLifecycleThroughNode(input, {
+          runtimeEntry: testCase.runtimeEntry,
+          nodeCommand: testCase.nodeCommand ?? process.execPath,
+          timeoutMs: testCase.timeoutMs,
+          maxOutputBytes: testCase.maxOutputBytes,
+          onDiagnostic: (code) => diagnostics.push(code),
+        });
+        expect(result, testCase.diagnostic).toBeUndefined();
+        expect(diagnostics, testCase.diagnostic).toEqual([testCase.diagnostic]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes one read-only native tool that returns the verified root identity without adding an MCP tool', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-identity-'));
+    const project = join(root, 'thoth-mem');
+    const dataDir = join(root, 'data');
+    try {
+      const sessions = new Map<string, Record<string, unknown>>([
+        ['root-session', { id: 'root-session', directory: project }],
+      ]);
+      const plugin = createThothMemPlugin({ runtimeConfig: { homeDir: root, env: {}, explicitDataDir: dataDir } });
+      const hooks = await plugin(pluginInput(project, sessions));
+
+      expect(Object.keys(hooks.tool ?? {})).toEqual(['thoth_mem_root_identity']);
+      const output = await hooks.tool!.thoth_mem_root_identity!.execute({}, toolContext('root-session', project));
+
+      expect(JSON.parse(String(output))).toEqual({
+        schema: 'thoth-mem.opencode.identity.v1',
+        status: 'verified',
+        root_session_id: 'root-session',
+        caller_session_id: 'root-session',
+        caller_role: 'root',
+        project: 'thoth-mem',
+        authorization: 'root_lifecycle',
+      });
+      expect(existsSync(join(dataDir, 'memory-v2.sqlite'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves bounded delegated ancestry without granting root lifecycle authority', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-delegated-identity-'));
+    const project = join(root, 'thoth-mem');
+    try {
+      const sessions = new Map<string, Record<string, unknown>>([
+        ['root-session', { id: 'root-session', directory: project }],
+        ['parent-session', { id: 'parent-session', directory: project, parentID: 'root-session' }],
+        ['child-session', { id: 'child-session', directory: project, parentID: 'parent-session' }],
+      ]);
+      const hooks = await createThothMemPlugin()(pluginInput(project, sessions));
+      const output = await hooks.tool!.thoth_mem_root_identity!.execute({}, toolContext('child-session', project));
+
+      expect(JSON.parse(String(output))).toEqual({
+        schema: 'thoth-mem.opencode.identity.v1',
+        status: 'verified',
+        root_session_id: 'root-session',
+        caller_session_id: 'child-session',
+        caller_role: 'delegated',
+        project: 'thoth-mem',
+        authorization: 'none',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts exactly sixteen validated parent links', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-identity-boundary-'));
+    const project = join(root, 'thoth-mem');
+    try {
+      const sessions = new Map<string, Record<string, unknown>>();
+      for (let index = 0; index <= 16; index += 1) {
+        sessions.set(`boundary-${index}`, { id: `boundary-${index}`, directory: project, ...(index < 16 ? { parentID: `boundary-${index + 1}` } : {}) });
+      }
+      const hooks = await createThothMemPlugin()(pluginInput(project, sessions));
+      const output = await hooks.tool!.thoth_mem_root_identity!.execute({}, toolContext('boundary-0', project));
+
+      expect(JSON.parse(String(output))).toMatchObject({
+        status: 'verified',
+        root_session_id: 'boundary-16',
+        caller_session_id: 'boundary-0',
+        caller_role: 'delegated',
+        authorization: 'none',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed with bounded reason codes for malformed or unprovable ancestry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-invalid-identity-'));
+    const project = join(root, 'thoth-mem');
+    try {
+      const deep = new Map<string, Record<string, unknown>>();
+      for (let index = 0; index <= 17; index += 1) {
+        deep.set(`deep-${index}`, { id: `deep-${index}`, directory: project, ...(index < 17 ? { parentID: `deep-${index + 1}` } : {}) });
+      }
+      const cases = [
+        { caller: 'missing', sessions: new Map<string, Record<string, unknown>>(), reason: 'session_not_found' },
+        { caller: 'mismatch', sessions: new Map([['mismatch', { id: 'other', directory: project }]]), reason: 'session_id_mismatch' },
+        { caller: 'malformed', sessions: new Map([['malformed', { id: 'malformed', directory: project, parentID: '' }]]), reason: 'parent_id_invalid' },
+        { caller: 'cycle-a', sessions: new Map([['cycle-a', { id: 'cycle-a', directory: project, parentID: 'cycle-b' }], ['cycle-b', { id: 'cycle-b', directory: project, parentID: 'cycle-a' }]]), reason: 'parent_cycle' },
+        { caller: 'deep-0', sessions: deep, reason: 'parent_depth_exceeded' },
+      ];
+
+      for (const testCase of cases) {
+        const hooks = await createThothMemPlugin()(pluginInput(project, testCase.sessions));
+        const output = await hooks.tool!.thoth_mem_root_identity!.execute({}, toolContext(testCase.caller, project));
+        expect(JSON.parse(String(output)), testCase.reason).toEqual({
+          schema: 'thoth-mem.opencode.identity.v1',
+          status: 'degraded',
+          reason: testCase.reason,
+          authorization: 'none',
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('contributes one package-relative MCP without changing skill discovery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-native-'));
+    try {
+      const runtimeEntry = join(root, 'package', 'dist', 'index.js');
+      const plugin = createThothMemPlugin({ runtimeEntry, runtimeConfig: { homeDir: root, env: {} } });
+      const hooks = await plugin({ directory: join(root, 'project') } as unknown as PluginInput);
+      const config = { skills: { paths: ['C:/user/skills'] } } as Config;
+
+      await hooks.config?.(config);
+
+      expect(config.skills?.paths).toEqual(['C:/user/skills']);
+      expect(config.mcp).toMatchObject({
+        'thoth-mem': {
+          type: 'local',
+          command: ['node', runtimeEntry, 'mcp', '--no-http'],
+        },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('captures root lifecycle and appends deterministic recovery in one tagged tail', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-recovery-'));
+    const project = join(root, 'project');
+    const dataDir = join(root, 'data');
+    try {
+      const plugin = createThothMemPlugin({ runtimeConfig: { homeDir: root, env: {}, explicitDataDir: dataDir } });
+      const hooks = await plugin({ directory: project } as unknown as PluginInput);
+      await hooks.event?.(sessionEvent('session.created', project, 'root-session'));
+
+      const compacting = { context: ['Keep the SQLite-first native plugin decision.'] };
+      await hooks['experimental.session.compacting']?.({ sessionID: 'root-session' }, compacting);
+      const first = { system: ['stable-system-prefix'] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, first);
+
+      expect(first.system[0]).toBe('stable-system-prefix');
+      expect(first.system.at(-1)).toContain(RECOVERY_TAG_START);
+      expect(first.system.at(-1)).toContain('thoth-mem verified identity: root_session_id=root-session; project=project');
+      expect(first.system.at(-1)).toContain('SQLite-first native plugin decision');
+      expect(first.system.at(-1)).toContain(RECOVERY_TAG_END);
+      expect(Array.from(first.system.at(-1)!).length).toBeLessThanOrEqual(1_000);
+
+      const repeated = { system: [...first.system] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, repeated);
+      expect(repeated).toEqual(first);
+      expect(repeated.system.filter((entry) => entry.includes(RECOVERY_TAG_START))).toHaveLength(1);
+
+      await hooks['experimental.session.compacting']?.({ sessionID: 'root-session' }, { context: ['Use the revised native recovery tail.'] });
+      const changed = { system: [...first.system] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, changed);
+      expect(changed.system.slice(0, -1)).toEqual(['stable-system-prefix']);
+      expect(changed.system.at(-1)).toContain('revised native recovery tail');
+
+      const database = join(dataDir, 'memory-v2.sqlite');
+      expect(existsSync(database)).toBe(true);
+      renameSync(database, `${database}.moved`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inject a partial OpenCode identity when the complete tagged block cannot fit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-identity-bound-'));
+    const project = join(root, 'project');
+    try {
+      const sessionID = `root-${'x'.repeat(1_000)}`;
+      const hooks = await createThothMemPlugin({ runtimeConfig: { homeDir: root, env: {}, explicitDataDir: join(root, 'data') } })(pluginInput(project, new Map()));
+      await hooks.event?.(sessionEvent('session.created', project, sessionID));
+      const output = { system: ['stable-system-prefix'] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID, model: {} as never }, output);
+      expect(output.system).toEqual(['stable-system-prefix']);
+
+      const injectedSessionID = 'root\ninjected-context';
+      await hooks.event?.(sessionEvent('session.created', project, injectedSessionID));
+      const injected = { system: ['stable-system-prefix'] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID: injectedSessionID, model: {} as never }, injected);
+      expect(injected.system).toEqual(['stable-system-prefix']);
+
+      for (const projectName of ['project; root_session_id=forged', 'project\tforged', 'project\u2028forged', 'project\u2029forged']) {
+        const unsafeProject = join(root, projectName);
+        const unsafeHooks = await createThothMemPlugin({ runtimeConfig: { homeDir: root, env: {}, explicitDataDir: join(root, `data-${projectName.length}`) } })(pluginInput(unsafeProject, new Map()));
+        await unsafeHooks.event?.(sessionEvent('session.created', unsafeProject, 'safe-root'));
+        const unsafeOutput = { system: ['stable-system-prefix'] };
+        await unsafeHooks['experimental.chat.system.transform']?.({ sessionID: 'safe-root', model: {} as never }, unsafeOutput);
+        expect(unsafeOutput.system, `project identity ${JSON.stringify(projectName)}`).toEqual(['stable-system-prefix']);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not persist or inject lifecycle context for delegated sessions', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-delegated-'));
+    const project = join(root, 'project');
+    try {
+      const plugin = createThothMemPlugin({ runtimeConfig: { homeDir: root, env: {}, explicitDataDir: join(root, 'data') } });
+      const hooks = await plugin({ directory: project } as unknown as PluginInput);
+      await hooks.event?.(sessionEvent('session.created', project, 'child-session', 'root-session'));
+      await hooks['experimental.session.compacting']?.({ sessionID: 'child-session' }, { context: ['Delegated private stream.'] });
+      const output = { system: ['stable-system-prefix'] };
+      await hooks['experimental.chat.system.transform']?.({ sessionID: 'child-session', model: {} as never }, output);
+      expect(output.system).toEqual(['stable-system-prefix']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps OpenCode callbacks usable and injects no false memory when lifecycle execution fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-node-fail-closed-'));
+    const project = join(root, 'project');
+    try {
+      const hooks = await createThothMemPlugin({
+        lifecycleDispatch: async () => { throw new Error('simulated Node failure'); },
+      })(pluginInput(project, new Map()));
+
+      await expect(hooks.event?.(sessionEvent('session.created', project, 'root-session'))).resolves.toBeUndefined();
+      const output = { system: ['stable-system-prefix'] };
+      await expect(hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, output)).resolves.toBeUndefined();
+      expect(output.system[0]).toBe('stable-system-prefix');
+      expect(output.system.at(-1)).toContain('root_session_id=root-session');
+      expect(output.system.at(-1)).not.toContain('## thoth-mem recovered context');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -18,13 +19,32 @@ describe('first-product packed boundary', () => {
   it('keeps exact hook/MCP/Skill ownership and no deferred active package, workspace, config, or CI references', () => {
     const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as { harnesses: Record<string, string[]> };
     expect(inventory.harnesses).toEqual(CANONICAL_PLUGIN_INVENTORY);
-    for (const assets of Object.values(inventory.harnesses)) {
+    expect(inventory.harnesses.opencode).toEqual([
+      'skills/thoth-mem/SKILL.md',
+      'skills/thoth-mem/references/opencode.md',
+    ]);
+    expect(inventory.harnesses.opencode).not.toContain('plugin.mjs');
+    for (const assets of [inventory.harnesses.codex, inventory.harnesses['claude-code']]) {
       expect(assets.filter((asset) => /hooks?\.json$/.test(asset))).toHaveLength(1);
       expect(assets.filter((asset) => /mcp\.json$/.test(asset))).toHaveLength(1);
       expect(assets.filter((asset) => /SKILL\.md$/.test(asset))).toHaveLength(1);
     }
-    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies: Record<string, string>; files: string[]; scripts: Record<string, string> };
-    expect(Object.keys(manifest.dependencies).sort()).toEqual(['@modelcontextprotocol/sdk', 'better-sqlite3', 'zod']);
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      main: string;
+      bin: Record<string, string>;
+      dependencies: Record<string, string>;
+      files: string[];
+      scripts: Record<string, string>;
+    };
+    expect(manifest.main).toBe('dist/opencode.js');
+    expect(manifest.bin).toEqual({ 'thoth-mem': 'dist/index.js' });
+    expect(Object.keys(manifest.dependencies).sort()).toEqual([
+      '@modelcontextprotocol/sdk',
+      '@opencode-ai/plugin',
+      'better-sqlite3',
+      'jsonc-parser',
+      'zod',
+    ]);
     expect(manifest.files).toEqual([
       'dist',
       'config.schema.json',
@@ -43,10 +63,16 @@ describe('first-product packed boundary', () => {
   });
 
   it('packs only the clean v2 dist and the canonical integration inventory', () => {
-    const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: process.cwd(), encoding: 'utf8', shell: process.platform === 'win32', windowsHide: true });
+    const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const packed = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
     expect(packed.status, packed.stderr).toBe(0);
     const paths = (JSON.parse(packed.stdout)[0].files as Array<{ path: string }>).map((file) => file.path.replaceAll('\\', '/'));
-    expect(paths.filter((path) => path.startsWith('dist/'))).toEqual(['dist/index.js', 'dist/index.js.map']);
+    expect(paths.filter((path) => path.startsWith('dist/'))).toEqual([
+      'dist/index.js',
+      'dist/index.js.map',
+      'dist/opencode.js',
+      'dist/opencode.js.map',
+    ]);
     const integrations = paths.filter((path) => path.startsWith('integrations/')).sort();
     const expected = ['integrations/inventory.json', 'integrations/shared/hook-runner.mjs'];
     for (const [harness, assets] of Object.entries(CANONICAL_PLUGIN_INVENTORY)) for (const asset of assets) expected.push(`integrations/${harness}/${asset}`);

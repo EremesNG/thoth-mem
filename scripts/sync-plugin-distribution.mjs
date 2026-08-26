@@ -21,9 +21,8 @@ marketplace.plugins[0].version = version;
 writeJson('.claude-plugin/marketplace.json', marketplace);
 
 writeJson('plugin/runtime.json', { package: packageManifest.name, version });
-const runtimeArgs = ['--yes', `${packageManifest.name}@${version}`, 'mcp', '--no-http'];
 const claudeMcp = readJson('plugin/.mcp.json');
-claudeMcp.mcpServers['thoth-mem'] = { command: 'npx', args: runtimeArgs };
+claudeMcp.mcpServers['thoth-mem'] = { cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] };
 writeJson('plugin/.mcp.json', claudeMcp);
 
 for (const [source, destination] of [

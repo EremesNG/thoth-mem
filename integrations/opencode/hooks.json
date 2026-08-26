@@ -1,1 +1,0 @@
-{"version":2,"events":["session.created","session.resumed","chat.message","experimental.session.compacting","experimental.session.compacted","session.deleted"]}

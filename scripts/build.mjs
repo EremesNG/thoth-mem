@@ -5,4 +5,15 @@ import * as esbuild from 'esbuild';
 const outputDirectory = resolve('dist');
 rmSync(outputDirectory, { recursive: true, force: true });
 mkdirSync(outputDirectory, { recursive: true });
-await esbuild.build({ entryPoints: [resolve('src/index.ts')], bundle: true, platform: 'node', format: 'esm', target: 'node22', outfile: resolve(outputDirectory, 'index.js'), sourcemap: true, external: ['better-sqlite3'], banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
+const shared = {
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  sourcemap: true,
+  packages: 'external',
+  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+};
+
+await esbuild.build({ ...shared, entryPoints: [resolve('src/index.ts')], outfile: resolve(outputDirectory, 'index.js') });
+await esbuild.build({ ...shared, entryPoints: [resolve('src/integration/opencode/index.ts')], outfile: resolve(outputDirectory, 'opencode.js') });

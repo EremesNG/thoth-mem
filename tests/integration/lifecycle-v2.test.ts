@@ -67,4 +67,33 @@ describe('host-neutral lifecycle v2', () => {
       expect(service.recall({ projectKey: 'repo:passive', query: 'tool subagent' }).items).toEqual([]);
     } finally { service.close(); }
   });
+
+  it('recovers Codex-seeded source attribution and stable IDs from OpenCode through one database', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-cross-host-v2-'));
+    const databasePath = join(root, 'memory-v2.sqlite');
+    const project = { key: 'path:C:/fixture/cross-host', name: 'cross-host' };
+    try {
+      let service = new MemoryService({ databasePath });
+      const seeded = service.save({
+        project,
+        session: { harness: 'codex', rootSessionKey: 'codex-root' },
+        eventKey: 'codex:handoff:stable',
+        evidence: { kind: 'handoff', content: 'Continue with the SQLite-first native plugin.', sourceRef: 'codex:handoff' },
+        memory: { kind: 'handoff', title: 'Cross-host native handoff', content: 'Continue with the SQLite-first native plugin.', topicKey: 'handoff/native-plugin' },
+      });
+      service.close();
+
+      service = new MemoryService({ databasePath });
+      const recovered = service.lifecycle({ operation: 'recover', harness: 'opencode', project, rootSessionKey: 'opencode-root', eventKey: 'opencode:start' });
+      expect(recovered.recovery?.items).toEqual([
+        expect.objectContaining({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id], content: 'Continue with the SQLite-first native plugin.' }),
+      ]);
+      expect(recovered.recovery?.sources).toEqual([seeded.memory!.id, seeded.evidence.id]);
+      expect(service.get({ id: seeded.evidence.id }).record).toMatchObject({ id: seeded.evidence.id, sourceRef: 'codex:handoff' });
+      expect(service.get({ id: seeded.memory!.id }).record).toMatchObject({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id] });
+      service.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

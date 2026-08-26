@@ -46,9 +46,9 @@ describe('public plugin release inventory', () => {
     const codex = readJson<{ version: string }>('plugin/.codex-plugin/plugin.json');
     const claude = readJson<{ version: string }>('plugin/.claude-plugin/plugin.json');
     const claudeMarketplace = readJson<{ plugins: Array<{ version: string }> }>('.claude-plugin/marketplace.json');
-    const claudeMcp = readJson<{ mcpServers: Record<string, { args: string[] }> }>('plugin/.mcp.json');
+    const claudeMcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>('plugin/.mcp.json');
     expect([runtime.version, codex.version, claude.version, claudeMarketplace.plugins[0]!.version]).toEqual(Array(4).fill(packageManifest.version));
-    expect(claudeMcp.mcpServers['thoth-mem']!.args).toContain(`thoth-mem@${packageManifest.version}`);
+    expect(claudeMcp.mcpServers['thoth-mem']).toEqual({ cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] });
     expect(packageManifest.files).toEqual(expect.arrayContaining(['plugin', '.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']));
     expect(packageManifest.scripts.version).toContain('integration:sync');
     expect(packageManifest.scripts.prepublishOnly).toContain('integration:verify');
@@ -70,7 +70,7 @@ describe('public plugin release inventory', () => {
   it.each([
     ['marketplace', '.agents/plugins/marketplace.json', '"./plugin"', '"./stale-plugin"'],
     ['manifest', 'plugin/.codex-plugin/plugin.json', '"./.mcp.json"', '"./stale.mcp.json"'],
-    ['MCP descriptor', 'plugin/.mcp.json', 'thoth-mem@0.4.13', 'thoth-mem@0.0.0'],
+    ['MCP descriptor', 'plugin/.mcp.json', './runners/public-runner.mjs', './runners/stale-runner.mjs'],
     ['hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
     ['Skill', 'plugin/skills/thoth-mem/SKILL.md', 'six v2 MCP tools', 'seven legacy MCP tools'],
     ['launcher', 'plugin/runners/public-runner.mjs', 'lifecycle-v2', 'lifecycle-stale'],
