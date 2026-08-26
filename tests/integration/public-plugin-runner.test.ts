@@ -19,7 +19,7 @@ if (process.env.FAIL_RUNTIME === '1') {
   process.exit(7);
 }
 process.stdout.write(JSON.stringify({
-  schema: 'thoth-mem.lifecycle.v2',
+        schema: 'thoth-mem.lifecycle',
   identity: { root_session_id: process.env.IDENTITY_ROOT ?? 'root', project: process.env.IDENTITY_PROJECT ?? 'fixture' },
   data: {
     outcome: 'confirmed',
@@ -43,7 +43,7 @@ function createPackedRuntimeShim(root: string): string {
   writeFileSync(runtime, `
 import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
-const lifecycle = args.indexOf('lifecycle-v2');
+        const lifecycle = args.indexOf('lifecycle');
 const child = spawnSync(process.execPath, [${JSON.stringify(join(process.cwd(), 'dist', 'index.js'))}, ...args.slice(lifecycle)], { stdio: 'inherit', env: process.env, windowsHide: true });
 process.exit(child.status ?? 1);
 `);
@@ -123,7 +123,7 @@ describe('public plugin runner', () => {
         },
       });
       expect(JSON.parse(readFileSync(shim.capture, 'utf8'))).toEqual([
-        '--yes', 'thoth-mem@0.4.13', 'lifecycle-v2', '--harness', harness,
+      '--yes', 'thoth-mem@0.4.13', 'lifecycle', '--harness', harness,
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -246,7 +246,7 @@ describe('public plugin runner', () => {
           additionalContext: 'thoth-mem verified identity: root_session_id=provider-root; project=fixture',
         },
       });
-      expect(existsSync(join(dataDir, 'memory-v2.sqlite'))).toBe(true);
+    expect(existsSync(join(dataDir, 'memory.sqlite'))).toBe(true);
 
       writeFileSync(configPath, '{ invalid json');
       const invalid = spawnSync(process.execPath, [runner, '--harness', 'codex'], { cwd: tmpdir(), input: payload, encoding: 'utf8', env: environment, windowsHide: true });

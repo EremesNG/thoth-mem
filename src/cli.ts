@@ -2,29 +2,29 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { loadRuntimeConfig } from './config/runtime.js';
-import { normalizeAdapterEvent, normalizeNativePayload, type AdapterEvent } from './integration/adapters/v2.js';
+import { normalizeAdapterEvent, normalizeNativePayload, type AdapterEvent } from './integration/adapters/index.js';
 import { importLegacyV1, LegacyImportFailure } from './memory-core/import/legacy-v1.js';
 import { MemoryService } from './memory-core/service.js';
 import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
 
-const HELP = 'thoth-mem v2\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  import-v2 --source <legacy.sqlite> --target <v2.sqlite> [--report <report.json>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  import-legacy --source <legacy.sqlite> --target <memory.sqlite> [--report <report.json>]\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
 
 export async function runCli(args: string[]): Promise<number> {
   const command = args.find((arg) => !arg.startsWith('-'));
   if (!command || command === 'help' || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return 0; }
-  if (command === 'lifecycle-v2') {
+  if (command === 'lifecycle') {
     try {
       const event = JSON.parse(readFileSync(0, 'utf8')) as AdapterEvent; const nativeHarness = value(args, '--harness') as 'opencode' | 'codex' | 'claude' | undefined;
       const dataDir = loadRuntimeConfig({ explicitDataDir: value(args, '--data-dir') }).dataDir;
       mkdirSync(dataDir, { recursive: true });
-      const service = new MemoryService({ databasePath: join(dataDir, 'memory-v2.sqlite') });
+      const service = new MemoryService({ databasePath: join(dataDir, 'memory.sqlite') });
       try {
         const normalized = nativeHarness ? normalizeNativePayload(nativeHarness, event) : normalizeAdapterEvent(event);
         const data = service.lifecycle(normalized);
-        process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.lifecycle.v2', identity: { root_session_id: normalized.rootSessionKey, project: normalized.project.name }, data })}\n`);
+        process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: { root_session_id: normalized.rootSessionKey, project: normalized.project.name }, data })}\n`);
       } finally { service.close(); }
       return 0;
     } catch (error) { process.stderr.write(`Lifecycle failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
@@ -49,9 +49,9 @@ export async function runCli(args: string[]): Promise<number> {
       return result.status === 'unsupported' || result.status === 'requires-user-action' ? 1 : 0;
     } catch (error) { process.stderr.write(`Setup failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
   }
-  if (command !== 'import-v2') { process.stderr.write(`Unknown command: ${command}\n`); return 2; }
+  if (command !== 'import-legacy') { process.stderr.write(`Unknown command: ${command}\n`); return 2; }
   const source = value(args, '--source'); const target = value(args, '--target');
-  if (!source || !target) { process.stderr.write('import-v2 requires explicit --source and --target paths\n'); return 2; }
+  if (!source || !target) { process.stderr.write('import-legacy requires explicit --source and --target paths\n'); return 2; }
   const reportPath = value(args, '--report'); const resolvedReportPath = reportPath ? resolve(reportPath) : null;
   try {
     if (resolvedReportPath && existsSync(resolvedReportPath)) throw new Error('Import report path must be absent');

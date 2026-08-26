@@ -4,26 +4,28 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { LifecycleRuntime } from '../../src/integration/core/lifecycle.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 
-describe('host-neutral lifecycle v2', () => {
+describe('host-neutral lifecycle', () => {
   it('covers enroll, recover, one prompt, checkpoint, guidance, and finalize receipts', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
+      const runtime = new LifecycleRuntime(service);
       const base = { harness: 'claude' as const, project: { key: 'repo:matrix', name: 'matrix' }, rootSessionKey: 'root-matrix' };
-      expect(service.lifecycle({ ...base, operation: 'enroll', eventKey: 'enroll' })).toMatchObject({ outcome: 'confirmed', duplicate: false });
-      expect(service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover' }).outcome).toBe('confirmed');
-      const prompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'One root prompt.' });
-      expect(service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'One root prompt.' })).toMatchObject({ duplicate: true, evidenceId: prompt.evidenceId });
-      expect(service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'early' }).outcome).toBe('degraded');
-      expect(service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre', content: 'Checkpoint.' }).outcome).toBe('confirmed');
-      expect(service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'post' }).outcome).toBe('confirmed');
-      expect(service.lifecycle({ ...base, operation: 'finalize', eventKey: 'finish' }).outcome).toBe('confirmed');
+      expect(runtime.handle({ ...base, operation: 'enroll', eventKey: 'enroll' })).toMatchObject({ outcome: 'confirmed', duplicate: false });
+      expect(runtime.handle({ ...base, operation: 'recover', eventKey: 'recover' }).outcome).toBe('confirmed');
+      const prompt = runtime.handle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'One root prompt.' });
+      expect(runtime.handle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'One root prompt.' })).toMatchObject({ duplicate: true, evidenceId: prompt.evidenceId });
+      expect(runtime.handle({ ...base, operation: 'guide_post_compact', eventKey: 'early' }).outcome).toBe('degraded');
+      expect(runtime.handle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre', content: 'Checkpoint.' }).outcome).toBe('confirmed');
+      expect(runtime.handle({ ...base, operation: 'guide_post_compact', eventKey: 'post' }).outcome).toBe('confirmed');
+      expect(runtime.handle({ ...base, operation: 'finalize', eventKey: 'finish' }).outcome).toBe('confirmed');
     } finally { service.close(); }
   });
 
   it('confirms one root prompt across duplicate delivery and restart', () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-lifecycle-v2-')); const path = join(root, 'memory.sqlite');
+    const root = mkdtempSync(join(tmpdir(), 'thoth-lifecycle-')); const path = join(root, 'memory.sqlite');
     const input = { operation: 'capture_root' as const, harness: 'codex' as const, project: { key: 'repo:life', name: 'life' }, rootSessionKey: 'root-1', eventKey: 'event-1', content: 'private-safe root request' };
     try {
       let service = new MemoryService({ databasePath: path }); const first = service.lifecycle(input); service.close();
@@ -69,8 +71,8 @@ describe('host-neutral lifecycle v2', () => {
   });
 
   it('recovers Codex-seeded source attribution and stable IDs from OpenCode through one database', () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-cross-host-v2-'));
-    const databasePath = join(root, 'memory-v2.sqlite');
+    const root = mkdtempSync(join(tmpdir(), 'thoth-cross-host-'));
+    const databasePath = join(root, 'memory.sqlite');
     const project = { key: 'path:C:/fixture/cross-host', name: 'cross-host' };
     try {
       let service = new MemoryService({ databasePath });

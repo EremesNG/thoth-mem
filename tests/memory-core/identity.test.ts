@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveProjectIdentity } from '../../src/memory-core/identity.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 
-describe('v2 project/session identity', () => {
+describe('project/session identity', () => {
   it('preserves verified identity across paths and reports path fallback as degraded', () => {
     const first = resolveProjectIdentity({ name: 'alpha', root: 'C:/work/a', verifiedKey: 'repo:stable-alpha' });
     const moved = resolveProjectIdentity({ name: 'alpha', root: 'D:/moved/a', verifiedKey: 'repo:stable-alpha' });
@@ -18,7 +18,7 @@ describe('v2 project/session identity', () => {
   });
 
   it('keeps lifecycle receipts idempotent across restart without verified placeholders', () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-identity-v2-')); const path = join(root, 'memory.sqlite');
+    const root = mkdtempSync(join(tmpdir(), 'thoth-identity-')); const path = join(root, 'memory.sqlite');
     try {
       let service = new MemoryService({ databasePath: path });
       const input = { operation: 'capture_root' as const, harness: 'codex' as const, project: { key: 'repo:alpha', name: 'alpha' }, rootSessionKey: 'root-session', eventKey: 'prompt-1', content: 'Remember this.' };

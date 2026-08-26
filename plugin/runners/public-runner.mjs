@@ -134,7 +134,7 @@ const mcp = arguments_.includes('--mcp');
 try {
   const harness = mcp ? undefined : parseHarness(arguments_);
   const runtime = loadRuntime();
-  const runtimeArguments = mcp ? ['mcp', '--no-http'] : ['lifecycle-v2', '--harness', harness];
+  const runtimeArguments = mcp ? ['mcp', '--no-http'] : ['lifecycle', '--harness', harness];
   const invocation = runtimeInvocation(runtime, runtimeArguments);
   if (mcp) {
     const child = spawnSync(invocation.command, invocation.arguments, {
@@ -159,7 +159,7 @@ try {
       fail(child.error?.message ?? child.stderr ?? `runtime exited ${child.status}`);
     } else {
       const lifecycle = JSON.parse(child.stdout);
-      if (lifecycle?.schema !== 'thoth-mem.lifecycle.v2' || !lifecycle.data) throw new Error('runtime returned an invalid lifecycle result');
+      if (lifecycle?.schema !== 'thoth-mem.lifecycle' || !lifecycle.data) throw new Error('runtime returned an invalid lifecycle result');
       process.stdout.write(JSON.stringify(renderHostOutput(payload, lifecycle)));
     }
   }

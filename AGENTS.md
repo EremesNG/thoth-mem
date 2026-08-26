@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is `thoth-mem`, a TypeScript/ESM persistent-memory service for coding agents. V2 stores immutable evidence, promoted temporal memories, sessions, and rebuildable FTS state in SQLite; exposes an exact six-tool MCP server plus scoped CLI; and packages native OpenCode, Codex, and Claude Code lifecycle bundles.
+This repository is `thoth-mem`, a TypeScript/ESM persistent-memory service for coding agents. It stores immutable evidence, promoted temporal memories, sessions, and rebuildable FTS state in SQLite; exposes an exact six-tool MCP server plus scoped CLI; and packages native OpenCode, Codex, and Claude Code lifecycle bundles.
 
 This file is the canonical repository-wide agent guide for `C:\DEV\Proyectos\Webstorm\thoth-mem`. Load task-specific detail from [`docs/agent/index.md`](docs/agent/index.md); do not read every linked document by default.
 
@@ -22,7 +22,7 @@ The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoin
 - `src/tools/`, `src/index.ts`, `src/server.ts`, `src/cli.ts`: the exact six MCP tools, process entrypoint, scoped setup, and one-way importer command.
 - `src/integration/` and `integrations/`: host-neutral lifecycle mapping and canonical OpenCode, Codex, and Claude Code bundles.
 - `src/setup/`, `scripts/`, `benchmarks/`, and package manifests: managed receipts, packed verification, and equal-budget evaluation contracts.
-- `tests/`: retained v2 unit, integration, setup, tool, importer, and benchmark suites; `docs/agent/`: on-demand agent context.
+- `tests/`: unit, integration, setup, tool, importer, and benchmark suites; `docs/agent/`: on-demand agent context.
 - `dist/`: generated output; never edit directly.
 
 ## Verified baseline

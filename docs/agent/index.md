@@ -7,4 +7,4 @@
 | Hooks, adapters, setup, package inventory | [Native lifecycle](native-lifecycle.md) | `src/integration/`, `src/setup/`, `integrations/` | `tests/integration/`, `tests/setup/` |
 | Build, test, pack, benchmark | [Testing](testing.md) | `scripts/`, `benchmarks/`, manifests | `tests/benchmarks/` |
 
-Load [engineering](engineering.md) for TypeScript changes. The retired Store, HTTP, dashboard, graph, vector, HyDE, semantic indexing, and sync surfaces are not valid routes in v2.
+Load [engineering](engineering.md) for TypeScript changes. The retired Store, HTTP, dashboard, graph, vector, HyDE, semantic indexing, and sync surfaces are not valid routes in the current product.

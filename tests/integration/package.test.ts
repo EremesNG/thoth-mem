@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest';
 
 import { validateIntegrationInventory, type IntegrationInventory } from '../../src/integration/package-inventory.js';
 
-describe('canonical v2 integration package inventory', () => {
+describe('canonical integration package inventory', () => {
   const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as IntegrationInventory;
 
-  it('ships the bounded V2 memory workflow and durable semantic-boundary contract', () => {
+  it('ships the bounded memory workflow and durable semantic-boundary contract', () => {
     const skill = readFileSync(join('plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'utf8');
     const toolNames = [...skill.matchAll(/`(mem_[a-z]+)`/gu)].map((match) => match[1]);
 

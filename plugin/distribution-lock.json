@@ -8,10 +8,10 @@
     "plugin/.mcp.json": "cfc3916b1d3533c1512a16d0d1b28e44bed188cdbae18c28eeea2271d13a0487",
     "plugin/hooks/claude-hooks.json": "64be3a6925e282453a1970b8738e2ef7023707821f5f423ccab651e58c7ed1fb",
     "plugin/hooks/hooks.json": "4e66dbbb674fce3e40c4ccf968503b247be25cc8c06d8678430e2daee1f19dcb",
-    "plugin/runners/public-runner.mjs": "fc70e00fe5ddb56d701abd650e5fe9832d5ef888955a643dfa78fb2614307eba",
+    "plugin/runners/public-runner.mjs": "5046085219b3ea7d06790c85abbb0262c1074b8cddac636f323bfae92525c739",
     "plugin/runtime.json": "8b70d2768a82ffe6ce7669bbdc8dfb0707fdbb59b42a6cc0247e75adad3a8ad1",
-    "plugin/skills/thoth-mem/SKILL.md": "ff067dba92478fdf22d49ddd6b7ee4ab3e238f6d9db0334e9f22fc497e9a9a98",
-    "plugin/skills/thoth-mem/references/claude-code.md": "dd052ffca7bec88fa3bbccd5cc6e48314cb91c6fe6fcc99593cd57de0231dfbc",
-    "plugin/skills/thoth-mem/references/codex.md": "71cabe5e44d83fe027060fbe8f466e77406ff7befc8332d889be37c673fdd9e1"
+    "plugin/skills/thoth-mem/SKILL.md": "cf045fb659286409349676890f117cafae3a67303c82bc4f35a120f3ff752da2",
+    "plugin/skills/thoth-mem/references/claude-code.md": "4aa5a47bc1bb0733c60d88f2af177b5c572ae3677bfaf9560f280fc680c6bdb3",
+    "plugin/skills/thoth-mem/references/codex.md": "772a3e2afc9340a49200e7b26f40411cd39b39a97278718e348e6b8915c5e9c2"
   }
 }

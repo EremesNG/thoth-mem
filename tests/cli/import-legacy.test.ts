@@ -16,19 +16,34 @@ function createLegacy(path: string): void {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('import-v2 CLI boundary', () => {
+describe('import-legacy CLI boundary', () => {
+  it('publishes only the current command names and rejects the transitional importer alias', async () => {
+    const removedCommand = `import-v${2}`;
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(await runCli(['--help'])).toBe(0);
+    const help = stdout.mock.calls.flat().join('');
+    expect(help).toContain('lifecycle');
+    expect(help).toContain('import-legacy');
+    expect(help.toLowerCase()).not.toContain(`v${2}`);
+
+    expect(await runCli([removedCommand])).toBe(2);
+    expect(stderr.mock.calls.flat().join('')).toContain(`Unknown command: ${removedCommand}`);
+  });
+
   it('requires explicit paths and writes a versioned report to an explicit new file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-cli-import-'));
-    const source = join(root, 'legacy.sqlite'); const target = join(root, 'v2.sqlite'); const reportPath = join(root, 'report.json');
+    const source = join(root, 'legacy.sqlite'); const target = join(root, 'memory.sqlite'); const reportPath = join(root, 'report.json');
     createLegacy(source);
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await runCli(['import-v2'])).toBe(2);
+      expect(await runCli(['import-legacy'])).toBe(2);
       expect(stderr.mock.calls.flat().join('')).toMatch(/explicit --source and --target/);
-      expect(await runCli(['import-v2', '--source', source, '--target', target, '--report', reportPath])).toBe(0);
+      expect(await runCli(['import-legacy', '--source', source, '--target', target, '--report', reportPath])).toBe(0);
       expect(stdout).not.toHaveBeenCalled();
-      expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toMatchObject({ schema: 'thoth-mem.import.v2', targetPath: target });
+      expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toMatchObject({ schema: 'thoth-mem.import', targetPath: target });
       expect(existsSync(target)).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -39,10 +54,10 @@ describe('import-v2 CLI boundary', () => {
     const unknown = new Database(source); unknown.exec('CREATE TABLE something_else(value TEXT)'); unknown.close();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await runCli(['import-v2', '--source', source, '--target', fresh])).toBe(1);
+      expect(await runCli(['import-legacy', '--source', source, '--target', fresh])).toBe(1);
       expect(existsSync(fresh)).toBe(false);
       writeFileSync(target, 'do-not-touch'); const before = readFileSync(target);
-      expect(await runCli(['import-v2', '--source', source, '--target', target])).toBe(1);
+      expect(await runCli(['import-legacy', '--source', source, '--target', target])).toBe(1);
       expect(readFileSync(target)).toEqual(before);
       const output = stderr.mock.calls.flat().join('');
       expect(output).toMatch(/Unsupported legacy schema|must be empty or absent/);
@@ -52,23 +67,23 @@ describe('import-v2 CLI boundary', () => {
 
   it('rejects an occupied report path before creating the target', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-cli-import-report-'));
-    const source = join(root, 'legacy.sqlite'); const target = join(root, 'v2.sqlite'); const report = join(root, 'existing.json');
+    const source = join(root, 'legacy.sqlite'); const target = join(root, 'memory.sqlite'); const report = join(root, 'existing.json');
     createLegacy(source); writeFileSync(report, 'owned');
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await runCli(['import-v2', '--source', source, '--target', target, '--report', report])).toBe(1);
+      expect(await runCli(['import-legacy', '--source', source, '--target', target, '--report', report])).toBe(1);
       expect(existsSync(target)).toBe(false);
       expect(readFileSync(report, 'utf8')).toBe('owned');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('writes a schema-valid bounded failure report without leaving a target', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-cli-import-failure-report-')); const source = join(root, 'unknown.sqlite'); const target = join(root, 'v2.sqlite'); const reportPath = join(root, 'failure.json');
+    const root = mkdtempSync(join(tmpdir(), 'thoth-cli-import-failure-report-')); const source = join(root, 'unknown.sqlite'); const target = join(root, 'memory.sqlite'); const reportPath = join(root, 'failure.json');
     const db = new Database(source); db.exec('CREATE TABLE unknown(value TEXT)'); db.close(); vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await runCli(['import-v2', '--source', source, '--target', target, '--report', reportPath])).toBe(1);
+      expect(await runCli(['import-legacy', '--source', source, '--target', target, '--report', reportPath])).toBe(1);
       expect(existsSync(target)).toBe(false);
-      expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toMatchObject({ schema: 'thoth-mem.import.v2', reportVersion: 2, committed: false, errors: [{ code: 'UNSUPPORTED_SCHEMA' }] });
+      expect(JSON.parse(readFileSync(reportPath, 'utf8'))).toMatchObject({ schema: 'thoth-mem.import', reportVersion: 2, committed: false, errors: [{ code: 'UNSUPPORTED_SCHEMA' }] });
       expect(readFileSync(reportPath).length).toBeLessThan(5_000);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

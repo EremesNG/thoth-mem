@@ -10,7 +10,7 @@ import { MemoryService } from '../../src/memory-core/service.js';
 const roots: string[] = [];
 
 function databasePath(): string {
-  const root = mkdtempSync(join(tmpdir(), 'thoth-v2-ledger-'));
+  const root = mkdtempSync(join(tmpdir(), 'thoth-ledger-'));
   roots.push(root);
   return join(root, 'memory.sqlite');
 }
@@ -49,7 +49,7 @@ describe('SQLite-first memory ledger', () => {
     const legacy = new Database(path);
     legacy.exec('CREATE TABLE observations(id INTEGER PRIMARY KEY, content TEXT NOT NULL)');
     legacy.close();
-    expect(() => new MemoryService({ databasePath: path })).toThrow(/not a clean v2 database/i);
+    expect(() => new MemoryService({ databasePath: path })).toThrow(/not a clean current database/i);
     const check = new Database(path, { readonly: true });
     expect(check.prepare("SELECT name FROM sqlite_master WHERE name='projects'").get()).toBeUndefined();
     check.close();

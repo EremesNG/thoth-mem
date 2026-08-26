@@ -58,7 +58,7 @@ function readProviderConfig(path: string): ProviderConfig | null {
     if (!statSync(path).isFile()) throw providerConfigError('config path is not a regular file');
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
     const result = providerConfigSchema.safeParse(parsed);
-    if (!result.success) throw providerConfigError('schema-v2 validation failed');
+    if (!result.success) throw providerConfigError('schema validation failed');
     return result.data;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('thoth-mem provider configuration')) throw error;

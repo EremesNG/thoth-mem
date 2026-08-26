@@ -1,6 +1,6 @@
 export const ALL_TESTS = ['tests/**/*.test.ts'];
 export const INTEGRATION_TESTS = [
-  'tests/integration-v2.test.ts',
+  'tests/integration.test.ts',
   'tests/integration/**/*.test.ts',
   'tests/setup/**/*.test.ts',
   'tests/packaging/**/*.test.ts',

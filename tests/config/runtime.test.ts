@@ -41,6 +41,7 @@ describe('runtime provider configuration', () => {
       mkdirSync(join(root, '.config', 'thoth-mem'), { recursive: true });
       writeFileSync(configPath, content);
       expect(() => loadRuntimeConfig({ homeDir: root, env: {} })).toThrow(/provider configuration/i);
+      expect(() => loadRuntimeConfig({ homeDir: root, env: {} })).not.toThrow(/schema-v\d/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

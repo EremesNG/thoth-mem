@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 
 import { EVIDENCE_KIND_VALUES, MEMORY_KIND_VALUES } from '../contracts.js';
-import { IMMUTABILITY_TRIGGER_SQL, TAXONOMY_GUARD_SQL, V2_SCHEMA_SQL } from './schema.js';
+import { CURRENT_SCHEMA_SQL, IMMUTABILITY_TRIGGER_SQL, TAXONOMY_GUARD_SQL } from './schema.js';
 
 interface NameRow { name: string }
 interface VersionRow { version: number | null }
@@ -42,15 +42,15 @@ function migrateRevisionTwo(database: Database.Database): void {
   })();
 }
 
-export function migrateV2(database: Database.Database): void {
+export function migrateCurrentSchema(database: Database.Database): void {
   database.pragma('foreign_keys = ON');
   const objects = database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").all() as NameRow[];
   if (objects.length > 0 && !objects.some((row) => row.name === 'schema_migrations')) {
-    throw new Error('Database is not a clean v2 database; use the one-way legacy importer');
+    throw new Error('Database is not a clean current database; use the one-way legacy importer');
   }
   if (objects.length === 0) {
     database.transaction(() => {
-      database.exec(V2_SCHEMA_SQL);
+      database.exec(CURRENT_SCHEMA_SQL);
       database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
     })();
     return;

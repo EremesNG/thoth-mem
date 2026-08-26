@@ -13,7 +13,7 @@ Use the first confirmed source that applies:
 
 Derive the memory project from the current repository/workspace represented by verified context. Codex saved-project `projectId` is not the memory project or root session.
 
-## Map to V2 memory tools
+## Map to memory tools
 
 - Pass the exact Codex task/thread ID as `root_session_key` and set `harness` to `codex` when saving session-attributed memory.
 - Use the resolved repository identity as `project_key` and its display name as `project_name`.

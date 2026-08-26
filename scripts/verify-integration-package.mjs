@@ -33,4 +33,4 @@ for (const path of expectedLockedPaths) {
   const hash = createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex');
   if (lock.assets?.[path] !== hash) errors.push(`stale-public-asset:${path}`);
 }
-if (errors.length) { process.stderr.write(`Missing or stale integration assets:\n${errors.join('\n')}\n`); process.exitCode = 1; } else process.stdout.write('Verified v2 local and public Codex, Claude Code, and OpenCode plugin inventories.\n');
+if (errors.length) { process.stderr.write(`Missing or stale integration assets:\n${errors.join('\n')}\n`); process.exitCode = 1; } else process.stdout.write('Verified local and public Codex, Claude Code, and OpenCode plugin inventories.\n');

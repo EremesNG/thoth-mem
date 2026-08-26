@@ -59,7 +59,7 @@ describe('optional projections', () => {
       const complete = service.projections.rebuild({ projectionId: 'semantic', configHash: 'cfg-v1' });
       expect(complete).toMatchObject({ state: 'ready', sourceCount: 3, duplicate: false });
       expect(service.projections.rebuild({ projectionId: 'semantic', configHash: 'cfg-v1' })).toMatchObject({ state: 'ready', duplicate: true, sourceCount: 3 });
-      expect(service.projections.ensureConfiguration('semantic', 'cfg-v2')).toBe('stale');
+      expect(service.projections.ensureConfiguration('semantic', 'cfg-changed')).toBe('stale');
       expect(service.projections.effectiveStates().semantic).toBe('stale');
     } finally { service.close(); }
   });

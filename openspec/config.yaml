@@ -1,11 +1,11 @@
 schema: spec-driven
 
 context: |
-  Tech stack: TypeScript, ESM, Node.js >=18, SQLite (better-sqlite3), zod
-  Architecture: src/ with store/, tools/, utils/, sync/, http-* modules
-  Testing: vitest, in-memory SQLite for isolation, 10s timeout
+  Tech stack: strict TypeScript/ESM, Node.js >=22.12.0, SQLite/FTS5 (better-sqlite3), zod, MCP SDK
+  Architecture: src/memory-core/ is the SQLite authority; exactly six MCP tools and native OpenCode, Codex, and Claude bundles share one lifecycle core
+  Testing: Vitest unit/integration/setup/packaging suites plus disposable packed-plugin smoke and an offline benchmark contract fixture
   Style: no linter; semicolons, single quotes dominant
-  CI: none configured
+  CI: GitHub Actions builds, tests, verifies package inventory, and exercises packed release boundaries
 
 rules:
   proposal:
@@ -25,15 +25,15 @@ rules:
       external_research: true
   tasks:
     guidance:
-      - Group tasks by phase (infrastructure, implementation, testing)
-      - Use hierarchical numbering (1.1, 1.2, etc.)
-      - Keep tasks small enough to complete in one session
+      - Group tasks by independently testable story
+      - Use globally sequential T### identifiers
+      - Keep behavior work test-first and name a public verification seam
     traceability: true
     parallel_markers: false
   apply:
     guidance:
       - Follow existing code patterns and conventions
-    tdd: false
+    tdd: true
     test_command: 'pnpm test'
   verify:
     test_command: 'pnpm test'

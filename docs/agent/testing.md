@@ -1,6 +1,6 @@
 # Testing and verification
 
-Use the nearest terminating Vitest file first. Unit tests are the v2 memory-core, tool, and benchmark suites; integration tests are under `tests/integration/`, `tests/setup/`, and `tests/packaging/`.
+Use the nearest terminating Vitest file first. Unit tests are the memory-core, tool, and benchmark suites; integration tests are under `tests/integration/`, `tests/setup/`, and `tests/packaging/`.
 
 Verified commands:
 

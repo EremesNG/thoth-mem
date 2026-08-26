@@ -12,7 +12,7 @@ Use the first confirmed source that applies:
 
 Use the verified project from the identity block when present; otherwise derive it from the repository/workspace represented by verified `cwd`.
 
-## Map to V2 memory tools
+## Map to memory tools
 
 - Pass the exact native root session as `root_session_key` and set `harness` to `claude` when saving session-attributed memory.
 - Use the resolved repository identity as `project_key` and its display name as `project_name`.

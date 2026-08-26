@@ -9,9 +9,9 @@ import { describe, expect, it } from 'vitest';
 
 import { createServer } from '../src/server.js';
 
-describe('v2 process construction', () => {
-  it('constructs one shared core and lists only bounded v2 tools', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-process-v2-')); const built = createServer({ dataDir: root });
+describe('process construction', () => {
+  it('constructs one shared core and lists only bounded tools', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-process-')); const built = createServer({ dataDir: root });
     const client = new Client({ name: 'test', version: '1' }); const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
       await built.server.connect(serverTransport); await client.connect(clientTransport);
@@ -19,7 +19,7 @@ describe('v2 process construction', () => {
       const saved = await client.callTool({ name: 'mem_save', arguments: { project_key: 'repo:process', project_name: 'process', evidence: { kind: 'explicit_save', content: 'Bounded process memory.' }, memory: { kind: 'decision', title: 'Bounded', content: 'Bounded process memory.' } } });
       expect(saved.isError).not.toBe(true); expect(JSON.stringify(saved).length).toBeLessThan(20_000);
       const recalled = await client.callTool({ name: 'mem_recall', arguments: { project_key: 'repo:process', query: 'bounded', budget_chars: 128 } });
-      expect(JSON.stringify(recalled)).toContain('thoth-mem.mcp.v2.mem_recall'); expect(JSON.stringify(recalled).length).toBeLessThan(20_000);
+      expect(JSON.stringify(recalled)).toContain('thoth-mem.mcp.mem_recall'); expect(JSON.stringify(recalled).length).toBeLessThan(20_000);
     } finally { await client.close(); await built.server.close(); built.service.close(); rmSync(root, { recursive: true, force: true }); }
   });
 

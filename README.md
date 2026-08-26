@@ -2,7 +2,7 @@
 
 SQLite-first persistent memory for OpenCode, Codex, and Claude Code.
 
-The v2 product has one local SQLite/FTS5 source of truth, immutable evidence, promoted temporal memories, and exactly six MCP tools: `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. OpenCode additionally exposes one read-only native `thoth_mem_root_identity` tool for active-session metadata; it is not an MCP memory operation. Codex and Claude obtain the same root identity from verified native lifecycle context. It requires no embedding model, vector extension, graph engine, LLM, network service, HTTP server, or dashboard.
+The product has one local SQLite/FTS5 source of truth, immutable evidence, promoted temporal memories, and exactly six MCP tools: `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. OpenCode additionally exposes one read-only native `thoth_mem_root_identity` tool for active-session metadata; it is not an MCP memory operation. Codex and Claude obtain the same root identity from verified native lifecycle context. It requires no embedding model, vector extension, graph engine, LLM, network service, HTTP server, or dashboard.
 
 ## Use
 
@@ -64,7 +64,7 @@ node dist/index.js setup opencode \
   --data-dir /absolute/path/to/shared-memory
 ```
 
-The local entry is the canonical absolute URL for `dist/opencode.js`. OpenCode loads the thin native adapter inside Bun; SQLite-backed lifecycle calls cross bounded JSON stdio to literal `node` and the package-relative `dist/index.js lifecycle-v2` entry, while MCP starts through the same package-relative Node entry. The adapter preserves user `skills.paths`, keeps changing recovered memory in one tagged trailing prompt region, and degrades without rejecting the host prompt if the Node lifecycle process is unavailable. Setup owns only the exact thoth-mem plugin entries, global `skills/thoth-mem` tree, provider config, and its bounded receipts.
+The local entry is the canonical absolute URL for `dist/opencode.js`. OpenCode loads the thin native adapter inside Bun; SQLite-backed lifecycle calls cross bounded JSON stdio to literal `node` and the package-relative `dist/index.js lifecycle` entry, while MCP starts through the same package-relative Node entry. The adapter preserves user `skills.paths`, keeps changing recovered memory in one tagged trailing prompt region, and degrades without rejecting the host prompt if the Node lifecycle process is unavailable. Setup owns only the exact thoth-mem plugin entries, global `skills/thoth-mem` tree, provider config, and its bounded receipts.
 
 Local Codex or Claude development uses the same explicit checkout provenance. The native manager still owns plugin installation; thoth-mem records the verified built `dist/index.js` entry outside the manager cache so the bundle runner uses the checkout instead of the published npm package:
 
@@ -75,17 +75,19 @@ node dist/index.js setup claude --local-package-root /absolute/path/to/thoth-mem
 
 ## Shared runtime data
 
-All hosts resolve one data directory in this order: explicit command value, `THOTH_MEM_DATA_DIR`, strict schema-v2 provider config, then `~/.thoth-mem`. The provider file is `${XDG_CONFIG_HOME:-~/.config}/thoth-mem/config.json`; `setup --data-dir` atomically merges only `dataDir` and preserves other valid provider fields. Explicit local Codex/Claude setup additionally records an absolute, package-identity-checked `runtimeEntry`; public manager setup removes that local override. Malformed, unreadable, schema-invalid, missing-runtime, or non-file configuration fails closed.
+All hosts resolve one data directory in this order: explicit command value, `THOTH_MEM_DATA_DIR`, strict provider config, then `~/.thoth-mem`. The provider file is `${XDG_CONFIG_HOME:-~/.config}/thoth-mem/config.json`; `setup --data-dir` atomically merges only `dataDir` and preserves other valid provider fields. Explicit local Codex/Claude setup additionally records an absolute, package-identity-checked `runtimeEntry`; public manager setup removes that local override. Malformed, unreadable, schema-invalid, missing-runtime, or non-file configuration fails closed. The runtime database is always `memory.sqlite` inside the selected data directory.
 
 Changed setup requests a host restart. A verified repeated setup changes no files or manager state and requests no restart. `--plan` performs no writes or mutating manager commands.
 
 ## Legacy import
 
-V2 never opens a legacy database during normal runtime. Import is a one-way CLI operation into a distinct clean target; the source is opened read-only and verified unchanged.
+The current runtime never opens a legacy database during normal operation. Import is a one-way CLI operation into a distinct clean target; the source is opened read-only and verified unchanged.
 
 ```sh
-node dist/index.js import-v2 --source ./legacy.sqlite --target ./memory-v2.sqlite --report ./import-report.json
+node dist/index.js import-legacy --source ./legacy.sqlite --target ./memory.sqlite --report ./import-report.json
 ```
+
+The runtime also does not guess, rename, copy, or dual-read a database created under the previous generation-suffixed default filename. To adopt an existing local ledger, first close every host process, create a recoverable backup, then explicitly copy or move the exact selected old database to `memory.sqlite` in the configured data directory before restarting. Repository setup and tests never perform this stateful operation in a real user home.
 
 ## Verification and benchmarks
 

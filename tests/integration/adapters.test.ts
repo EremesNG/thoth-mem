@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeAdapterEvent, normalizeNativePayload } from '../../src/integration/adapters/v2.js';
+import { normalizeAdapterEvent, normalizeNativePayload } from '../../src/integration/adapters/index.js';
 
-describe('native v2 adapters', () => {
+describe('native adapters', () => {
   it('maps each host to one host-neutral lifecycle contract and denies delegation', () => {
     for (const harness of ['opencode', 'codex', 'claude'] as const) expect(normalizeAdapterEvent({ version: 2, harness, intent: 'session.enroll', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: `${harness}:1`, callerRole: 'root' })).toMatchObject({ operation: 'enroll', harness, project: { key: 'repo:x' } });
     expect(() => normalizeAdapterEvent({ version: 2, harness: 'opencode', intent: 'prompt.capture_root', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'child', eventKey: 'e', callerRole: 'delegated', content: 'not root intent' })).toThrow(/delegated/i);

@@ -62,7 +62,7 @@ describe('first-product packed boundary', () => {
     expect(active).toContain('benchmark:fixture');
   });
 
-  it('packs only the clean v2 dist and the canonical integration inventory', () => {
+  it('packs only the clean dist and the canonical integration inventory', () => {
     const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const packed = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
     expect(packed.status, packed.stderr).toBe(0);

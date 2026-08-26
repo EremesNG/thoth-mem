@@ -13,8 +13,8 @@ import type { MemoryService } from '../memory-core/service.js';
 
 export const ALL_TOOLS = ['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session'] as const;
 export type MemoryToolName = typeof ALL_TOOLS[number];
-export interface V2ToolResult { [key: string]: unknown; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown>; isError?: boolean }
-type ToolHandler = (input: Record<string, unknown>) => Promise<V2ToolResult>;
+export interface ToolResult { [key: string]: unknown; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown>; isError?: boolean }
+type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
 const evidenceInputSchema = z.object({
@@ -59,8 +59,8 @@ function parseToolInput<T>(schema: z.ZodType<T>, input: unknown): T {
   const field = issue?.path.join('.') || 'request';
   throw new Error(`${field}: ${issue?.message ?? 'invalid value'}`);
 }
-function success(tool: MemoryToolName, data: unknown, extras: Record<string, unknown> = {}): V2ToolResult { const structuredContent = { schema: `thoth-mem.mcp.v2.${tool}`, data, ...extras }; const text = JSON.stringify(structuredContent); return { content: [{ type: 'text', text: text.length > 20_000 ? `${text.slice(0, 19_900)}…` : text }], structuredContent }; }
-function failure(message: string, code = 'invalid_request'): V2ToolResult { const structuredContent = { schema: 'thoth-mem.mcp.v2.error', error: { code, message: message.slice(0, 500), retryable: false } }; return { isError: true, content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }; }
+function success(tool: MemoryToolName, data: unknown, extras: Record<string, unknown> = {}): ToolResult { const structuredContent = { schema: `thoth-mem.mcp.${tool}`, data, ...extras }; const text = JSON.stringify(structuredContent); return { content: [{ type: 'text', text: text.length > 20_000 ? `${text.slice(0, 19_900)}…` : text }], structuredContent }; }
+function failure(message: string, code = 'invalid_request'): ToolResult { const structuredContent = { schema: 'thoth-mem.mcp.error', error: { code, message: message.slice(0, 500), retryable: false } }; return { isError: true, content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }; }
 function guarded(handler: ToolHandler): ToolHandler { return async (input) => { try { return await handler(input); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); } }; }
 
 export function createToolHandlers(service: MemoryService): ToolHandlers {
@@ -98,6 +98,6 @@ export function registerTools(server: McpServer, service: MemoryService): void {
     mem_project: { action: z.enum(['list', 'briefing', 'history']), project_key: z.string().optional(), id: z.string().optional(), budget_chars: z.number().optional() },
     mem_session: memSessionInputSchema.shape,
   };
-  for (const name of ALL_TOOLS) server.tool(name, `thoth-mem v2 ${name}`, schemas[name], async (args) => handlers[name](args));
+  for (const name of ALL_TOOLS) server.tool(name, `thoth-mem ${name}`, schemas[name], async (args) => handlers[name](args));
 }
 export function getToolCount(): number { return ALL_TOOLS.length; }

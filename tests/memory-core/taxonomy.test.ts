@@ -11,7 +11,7 @@ import { MemoryService } from '../../src/memory-core/service.js';
 const roots: string[] = [];
 
 function databasePath(): string {
-  const root = mkdtempSync(join(tmpdir(), 'thoth-v2-taxonomy-'));
+  const root = mkdtempSync(join(tmpdir(), 'thoth-taxonomy-'));
   roots.push(root);
   return join(root, 'memory.sqlite');
 }
@@ -20,7 +20,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('canonical V2 taxonomy', () => {
+describe('canonical taxonomy', () => {
   it('rejects invalid direct service classifications before durable mutation', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {

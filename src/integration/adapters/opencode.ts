@@ -1,1 +1,1 @@
-export { normalizeAdapterEvent } from './v2.js';
+export { normalizeAdapterEvent } from './index.js';

@@ -21,7 +21,7 @@ import {
 } from './contracts.js';
 import { buildFtsQuery, surgicalSnippet } from './sqlite/fts.js';
 import { ensureProject, ensureSession, evidenceFromRow, hashContent, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
-import { migrateV2 } from './sqlite/migrations.js';
+import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
 
 interface ServiceOptions { databasePath: string; readonly?: boolean }
@@ -52,7 +52,7 @@ export class MemoryService {
   constructor(options: ServiceOptions) {
     this.database = new Database(options.databasePath, options.readonly ? { readonly: true, fileMustExist: true } : undefined);
     try {
-      if (!options.readonly) { this.database.pragma('journal_mode = WAL'); migrateV2(this.database); }
+      if (!options.readonly) { this.database.pragma('journal_mode = WAL'); migrateCurrentSchema(this.database); }
     } catch (error) {
       this.database.close();
       throw error;

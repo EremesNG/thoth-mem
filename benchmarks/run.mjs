@@ -43,7 +43,7 @@ const reader = { id: READER.id, settings_hash: hash(READER.settings) };
 const scorer = { id: SCORER.id, settings_hash: hash(SCORER.settings) };
 const queryOrder = fixtures.map((fixture) => fixture.id);
 const runConfig = { schema_version: manifest.schemaVersion, budgets, sample_count: SAMPLE_COUNT, reader, scorer, ...EXECUTION };
-const scratch = mkdtempSync(join(tmpdir(), 'thoth-benchmark-v2-'));
+const scratch = mkdtempSync(join(tmpdir(), 'thoth-benchmark-'));
 const databasePath = join(scratch, 'memory.sqlite');
 const startupStart = performance.now();
 let service;

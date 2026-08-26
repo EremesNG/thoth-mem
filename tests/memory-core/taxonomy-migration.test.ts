@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MemoryService } from '../../src/memory-core/service.js';
-import { migrateV2 } from '../../src/memory-core/sqlite/migrations.js';
+import { migrateCurrentSchema } from '../../src/memory-core/sqlite/migrations.js';
 import { IMMUTABILITY_TRIGGER_SQL } from '../../src/memory-core/sqlite/schema.js';
 
 const roots: string[] = [];
@@ -19,7 +19,7 @@ interface Fixture {
 }
 
 function databasePath(): string {
-  const root = mkdtempSync(join(tmpdir(), 'thoth-v2-taxonomy-migration-'));
+  const root = mkdtempSync(join(tmpdir(), 'thoth-taxonomy-migration-'));
   roots.push(root);
   return join(root, 'memory.sqlite');
 }
@@ -107,7 +107,7 @@ describe('SQLite taxonomy migration', () => {
       expect(migrated.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'SC008'").all()).toEqual([{ memory_id: fixture.memoryId }]);
       expect(() => migrated.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('invalid-evidence', fixture.projectId, null, 'certification', 'Invalid.', 'hash', null, new Date().toISOString(), '{}')).toThrow(/invalid evidence kind/i);
       migrated.pragma('query_only = ON');
-      expect(() => migrateV2(migrated)).not.toThrow();
+      expect(() => migrateCurrentSchema(migrated)).not.toThrow();
     } finally { migrated.close(); }
   });
 

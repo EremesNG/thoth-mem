@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
-import type { AdapterEvent, LifecycleIntent } from '../adapters/v2.js';
+import type { AdapterEvent, LifecycleIntent } from '../adapters/index.js';
 import {
   isCanonicalValue,
   MEMORY_KIND_VALUES,
@@ -134,7 +134,7 @@ function parseEnvelope(value: string, event: AdapterEvent): EnvelopeParseResult 
   }
   const envelope = record(parsed);
   const identity = record(envelope?.identity);
-  if (envelope?.schema !== 'thoth-mem.lifecycle.v2'
+  if (envelope?.schema !== 'thoth-mem.lifecycle'
     || typeof identity?.root_session_id !== 'string'
     || typeof identity.project !== 'string') return { diagnostic: 'node_lifecycle_invalid_envelope' };
   if (identity.root_session_id !== event.rootSessionKey || identity.project !== event.projectName) return { diagnostic: 'node_lifecycle_identity_mismatch' };
@@ -173,7 +173,7 @@ export async function dispatchOpenCodeLifecycleThroughNode(
   options: NodeLifecycleClientOptions,
 ): Promise<LifecycleResult | undefined> {
   const event = adapterEvent(input);
-  const args = [options.runtimeEntry, 'lifecycle-v2'];
+  const args = [options.runtimeEntry, 'lifecycle'];
   if (options.runtimeConfig?.explicitDataDir !== undefined) args.push('--data-dir', options.runtimeConfig.explicitDataDir);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;

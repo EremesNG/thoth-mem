@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { ALL_TOOLS, createToolHandlers } from '../../src/tools/index.js';
 
-describe('MCP v2 boundary', () => {
+describe('MCP boundary', () => {
   it('exposes exactly six workflow tools and rejects removed graph actions', async () => {
     expect(ALL_TOOLS).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session']);
     const service = new MemoryService({ databasePath: ':memory:' });
@@ -20,9 +20,10 @@ describe('MCP v2 boundary', () => {
     try {
       const handlers = createToolHandlers(service);
       const saved = await handlers.mem_save({ project_key: 'repo:test', project_name: 'test', evidence: { kind: 'explicit_save', content: 'Use strict validation.' }, memory: { kind: 'decision', title: 'Validation', content: 'Use strict validation.', topic_key: 'validation/strict' } });
-      expect(saved.structuredContent).toMatchObject({ schema: 'thoth-mem.mcp.v2.mem_save' });
+      expect(saved.structuredContent).toMatchObject({ schema: 'thoth-mem.mcp.mem_save' });
+      expect(JSON.stringify(saved.structuredContent)).not.toContain(`.mcp.v${2}.`);
       const compact = await handlers.mem_recall({ project_key: 'repo:test', query: 'validation', mode: 'compact', budget_chars: 300 });
-      expect(compact.structuredContent).toMatchObject({ schema: 'thoth-mem.mcp.v2.mem_recall', data: { mode: 'compact' }, lanes: { lexical: 'ready' } });
+      expect(compact.structuredContent).toMatchObject({ schema: 'thoth-mem.mcp.mem_recall', data: { mode: 'compact' }, lanes: { lexical: 'ready' } });
       const context = await handlers.mem_recall({ project_key: 'repo:test', query: 'validation', mode: 'context', budget_chars: 300 });
       expect(JSON.stringify(context.structuredContent)).toContain('compression_ratio');
     } finally { service.close(); }

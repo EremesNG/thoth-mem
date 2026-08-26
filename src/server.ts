@@ -13,9 +13,9 @@ export interface ServerOptions { dataDir?: string; databasePath?: string }
 export function createServer(options: ServerOptions = {}): { server: McpServer; service: MemoryService; databasePath: string } {
   const dataDir = loadRuntimeConfig({ ...(options.dataDir ? { explicitDataDir: options.dataDir } : {}) }).dataDir;
   mkdirSync(dataDir, { recursive: true });
-  const databasePath = options.databasePath ?? join(dataDir, 'memory-v2.sqlite');
+  const databasePath = options.databasePath ?? join(dataDir, 'memory.sqlite');
   const service = new MemoryService({ databasePath });
-  const server = new McpServer({ name: 'thoth-mem', version: VERSION }, { instructions: 'SQLite-first durable memory v2. Use compact recall, context expansion, then mem_get.' });
+  const server = new McpServer({ name: 'thoth-mem', version: VERSION }, { instructions: 'SQLite-first durable memory. Use compact recall, context expansion, then mem_get.' });
   registerTools(server, service);
   return { server, service, databasePath };
 }

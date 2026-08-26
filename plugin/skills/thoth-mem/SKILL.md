@@ -3,9 +3,9 @@ name: thoth-mem
 description: Use SQLite-first persistent project memory to resume prior work, recall decisions and failures, or preserve a durable handoff for another coding-agent session.
 ---
 
-# thoth-mem V2 memory recipe
+# thoth-mem memory recipe
 
-Use only the six v2 MCP tools: `mem_save`, `mem_recall`, `mem_context`,
+Use only the six MCP tools: `mem_save`, `mem_recall`, `mem_context`,
 `mem_get`, `mem_project`, and `mem_session`.
 
 ## Choose the smallest workflow

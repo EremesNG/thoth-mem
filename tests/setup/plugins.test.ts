@@ -8,19 +8,20 @@ import { describe, expect, it } from 'vitest';
 import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-inventory.js';
 
 describe('first-product native setup boundary', () => {
-  it('exposes only native setup commands and rejects the removed copied setup-v2 command', () => {
+  it('exposes only native setup commands and rejects the removed copied setup command', () => {
+    const removedCommand = `setup-v${2}`;
     const cli = join(process.cwd(), 'dist', 'index.js');
     const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8', windowsHide: true });
     expect(help.status, help.stderr).toBe(0);
     expect(help.stdout).toContain('setup <opencode|codex|claude>');
-    expect(help.stdout).not.toContain('setup-v2');
+    expect(help.stdout).not.toContain(removedCommand);
     expect(help.stdout).not.toContain('--target <plugin-dir>');
 
-    const root = mkdtempSync(join(tmpdir(), 'thoth-removed-setup-v2-'));
+    const root = mkdtempSync(join(tmpdir(), 'thoth-removed-setup-'));
     try {
-      const removed = spawnSync(process.execPath, [cli, 'setup-v2', '--harness', 'opencode', '--target', root], { encoding: 'utf8', windowsHide: true });
+      const removed = spawnSync(process.execPath, [cli, removedCommand, '--harness', 'opencode', '--target', root], { encoding: 'utf8', windowsHide: true });
       expect(removed.status).toBe(2);
-      expect(removed.stderr).toContain('Unknown command: setup-v2');
+      expect(removed.stderr).toContain(`Unknown command: ${removedCommand}`);
       expect(existsSync(join(root, 'thoth-mem'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });

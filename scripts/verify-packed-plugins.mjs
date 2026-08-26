@@ -52,7 +52,7 @@ try {
   assert(!nativeSource.includes('better-sqlite3') && !nativeSource.includes('class MemoryService'), 'Packed Bun entry contains the Node-native persistence graph.');
 
   const help = run(process.execPath, [cli, '--help'], { cwd: tmpdir() });
-  assert(help.stdout.includes('setup <opencode|codex|claude>') && !help.stdout.includes('setup-v2'), 'Packed CLI exposes the wrong setup contract.');
+  assert(help.stdout.includes('setup <opencode|codex|claude>') && !help.stdout.includes(`setup-v${2}`), 'Packed CLI exposes the wrong setup contract.');
 
   const publicHome = isolatedEnvironment('opencode-public');
   const publicData = join(publicHome.root, 'shared data');
@@ -104,7 +104,7 @@ process.stdout.write('native-open-code-ok');
   const messages = mcp.stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
   const toolResult = messages.find((message) => message.id === 2);
   assert(toolResult?.result?.tools?.length === 6, `Packed MCP exposed ${toolResult?.result?.tools?.length ?? 0} tools instead of six.`);
-  assert(existsSync(join(localData, 'memory-v2.sqlite')), 'Packed MCP did not use the persisted provider data directory.');
+  assert(existsSync(join(localData, 'memory.sqlite')), 'Packed MCP did not use the persisted provider data directory.');
 
   const publicPluginRoot = join(packageRoot, 'plugin');
   for (const path of [
@@ -176,7 +176,7 @@ function createNpxShim(root, cli) {
   writeFileSync(runtime, `
 import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
-const lifecycle = args.indexOf('lifecycle-v2');
+const lifecycle = args.indexOf('lifecycle');
 const child = spawnSync(process.execPath, [${JSON.stringify(cli)}, ...args.slice(lifecycle)], { stdio: 'inherit', env: process.env, windowsHide: true });
 process.exit(child.status ?? 1);
 `);

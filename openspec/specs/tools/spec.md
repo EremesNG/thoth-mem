@@ -4,636 +4,98 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The v2 server MUST expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; internal migration, indexing, evaluation, setup, diagnostics, and deferred graph operations MUST remain outside the model-visible MCP registry.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, with unversioned descriptions and envelopes and without reintroducing retired admin, graph, setup, migration, or diagnostic tools.
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 1
+#### Scenario: US1 - Read one truthful canonical product contract 1
 
-- **GIVEN** the v2 MCP server
-- **WHEN** its registry is listed
-- **THEN** it exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+- **GIVEN** the active canonical specification tree
+- **WHEN** a maintainer inspects its capabilities
+- **THEN** it contains only the CLI, configuration, evaluation, native-harness, packaging, retrieval, store, and tool contracts implemented or deliberately gated by the current product
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 2
+#### Scenario: US1 - Read one truthful canonical product contract 2
 
-- **GIVEN** a client that depends on an old request, response, graph action, or storage behavior
-- **WHEN** it calls v2
-- **THEN** v2 follows its documented contract and does not activate a hidden compatibility shim
+- **GIVEN** the retired V1 surfaces
+- **WHEN** the canonical tree and OpenSpec context are searched
+- **THEN** dashboard, HTTP, graph/KG, vector/embedding, HyDE, sync, observatory, and passive-capture requirements are absent except where a retained requirement explicitly prohibits or gates them
 
-### Requirement: Recall Surface MUST Expose Ranked Core Retrieval With Optional Lane Truth
+### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 
-`mem_recall` MUST return ranked lexical/structured evidence and MAY include promoted optional evidence only when response metadata identifies the contributing lanes and their readiness truthfully.
+All tool inputs and outputs MUST use closed validated schemas under `thoth-mem.mcp.<tool>` or `thoth-mem.mcp.error`; unknown nested taxonomy values and removed generation namespaces MUST fail without durable side effects.
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 1
+#### Scenario: Save with an invalid nested value
 
-- **GIVEN** the v2 MCP server
-- **WHEN** its registry is listed
-- **THEN** it exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+- **GIVEN** an otherwise valid `mem_save` request with an unknown memory kind
+- **WHEN** handler validation runs
+- **THEN** it returns a bounded non-retryable error envelope and commits nothing
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 2
+### Requirement: mem_save MUST Persist Evidence Before Optional Memory
 
-- **GIVEN** a client that depends on an old request, response, graph action, or storage behavior
-- **WHEN** it calls v2
-- **THEN** v2 follows its documented contract and does not activate a hidden compatibility shim
+`mem_save` MUST accept immutable evidence and MAY atomically promote a linked memory with topic, outcome, and supersession semantics while reporting confirmed IDs only after commit.
+
+#### Scenario: Save evidence and a promoted convention
+
+- **GIVEN** a valid project and save request
+- **WHEN** `mem_save` succeeds
+- **THEN** it reports the evidence and memory IDs, support link, project bounds, and duplicate truth
+
+### Requirement: mem_recall, mem_context, and mem_get MUST Form a Progressive Funnel
+
+`mem_recall` MUST support compact and context modes, `mem_context` MUST provide a bounded project briefing, and `mem_get` MUST fetch only a selected full record or lineage.
+
+#### Scenario: Recall progressively
+
+- **GIVEN** durable relevant memory
+- **WHEN** a client performs compact recall, context expansion, and one selected get
+- **THEN** earlier stages remain bounded and only the selected final fetch returns full content
+
+### Requirement: mem_project MUST Keep Project Operations Bounded
+
+`mem_project` MUST support listing, briefing, and history over the authoritative ledger without requiring a graph projection.
+
+#### Scenario: Request project history
+
+- **GIVEN** a project with current and superseded memories
+- **WHEN** `mem_project action=history` runs
+- **THEN** it returns a deterministic bounded ledger history with stable IDs and temporal status
+
+### Requirement: mem_session MUST Handle Only Verified Root Lifecycle
+
+`mem_session` MUST accept only the declared root lifecycle operations with verified project, root-session, harness, and event identity. Ordinary response finalization MUST NOT be fabricated as a lifecycle event.
+
+#### Scenario: Replay a lifecycle event
+
+- **GIVEN** a confirmed lifecycle event with a stable event key
+- **WHEN** the same event is submitted again
+- **THEN** the operation is idempotent and does not duplicate evidence or receipts
 
 ### Requirement: Tooling MUST Signal Optional Projection State Without Degrading Core
 
-Tool responses MUST expose requested optional projection states as bounded metadata while continuing to return usable core results when optional components are unavailable.
+Tool responses MUST expose optional-lane readiness and warnings as bounded metadata while continuing to return authoritative results when optional components are unavailable.
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 1
+#### Scenario: Projection is rebuilding
 
-- **GIVEN** the v2 MCP server
-- **WHEN** its registry is listed
-- **THEN** it exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+- **GIVEN** a rebuilding optional projection
+- **WHEN** recall runs
+- **THEN** the response reports the lane as pending and still returns core candidates
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 2
+### Requirement: Native Integrations MUST Use the Documented Tool Contracts
 
-- **GIVEN** a client that depends on an old request, response, graph action, or storage behavior
-- **WHEN** it calls v2
-- **THEN** v2 follows its documented contract and does not activate a hidden compatibility shim
+Every native integration MUST consume the same closed six-tool request and response schemas under the current unversioned MCP namespace, and retired generation-qualified namespaces MUST NOT remain registered as aliases.
 
-### Requirement: Manual Rebuild Surface MUST Remain CLI-Controlled
+#### Scenario: US2 - Treat the replacement architecture as the normal product base 1
 
-The system MUST keep manual `thoth-mem rebuild-index` control for semantic/KG reindexing on the CLI rather than the compact MCP tool surface, and `rebuild-index --status` MUST report persisted semantic progress without running startup recovery, reconciliation, coverage repair, or any other database mutation.
+- **GIVEN** a clean installation
+- **WHEN** the MCP and native lifecycle paths execute
+- **THEN** their public envelopes and commands use the current unversioned thoth-mem contract and persist to `memory.sqlite`
 
-#### Scenario: US1 - Inspect rebuild status without mutation 1
+#### Scenario: US2 - Treat the replacement architecture as the normal product base 2
 
-- **GIVEN** a completed semantic index with unchanged effective embedding configuration
-- **WHEN** the operator runs `rebuild-index --status`
-- **THEN** progress is reported without inserting, reactivating, retrying, or updating semantic jobs or semantic index state
+- **GIVEN** an invocation using a removed transitional command or namespace
+- **WHEN** it reaches the current package
+- **THEN** it fails explicitly instead of entering a compatibility shim
 
-#### Scenario: US1 - Inspect rebuild status without mutation 2
+#### Scenario: US2 - Treat the replacement architecture as the normal product base 3
 
-- **GIVEN** semantic work already pending or failed
-- **WHEN** the operator runs `rebuild-index --status`
-- **THEN** the existing state is reported without recovery or queue mutation
-
-#### Scenario: US1 - Inspect rebuild status without mutation 3
-
-- **GIVEN** an operator explicitly requests a semantic rebuild
-- **WHEN** the CLI rebuild command runs without `--status`
-- **THEN** the rebuild is initiated with observable status and remains outside the compact MCP tool surface
-
-### Requirement: Context And Summary Responses MUST Be Bounded By A Configurable Character Budget
-`mem_context` and `mem_project` with `action=summary` MUST bound their rendered
-response to a configurable total-character budget (working name
-`maxContextChars`, resolved per the config spec). The bound MUST be enforced
-before the response is returned, and the response MUST report the boundedness
-explicitly (for example, shown/omitted observation counts and/or an explicit
-truncation marker), consistent with constitution P4 ("measured, not claimed").
-The previously observed unbounded dumps (`mem_context` ~104K characters;
-`mem_project action=summary` ~74K characters) MUST NOT recur for the same store
-state under the default budget.
-
-#### Scenario: Large memory store yields bounded context output
-- GIVEN a memory store whose recent observations would render to far more than
-  the configured `maxContextChars` (reproducing the observed ~104K
-  `mem_context` dump)
-- WHEN `mem_context` is executed with the default budget
-- THEN the returned response length MUST be less than or equal to the configured
-  `maxContextChars`
-- AND the response MUST report how much content was shown versus omitted
-
-#### Scenario: Large memory store yields bounded project summary output
-- GIVEN a memory store whose recent observations would render to far more than
-  the configured `maxContextChars` (reproducing the observed ~74K
-  `mem_project action=summary` dump)
-- WHEN `mem_project` is executed with `action=summary` under the default budget
-- THEN the returned response length MUST be less than or equal to the configured
-  `maxContextChars`
-- AND the response MUST report how much content was shown versus omitted
-
-### Requirement: Context And Summary Responses MUST Render Previews By Default With Full Content Via mem_get
-The recent-observation blocks in `mem_context` and `mem_project action=summary`
-responses MUST render a bounded preview of each observation's content by default
-rather than the full `obs.content`. Full observation content MUST remain
-available through `mem_get` (the single-record full-fetch tier of the P4 recall
-funnel). The response MUST direct callers to `mem_get` for full bodies, mirroring
-the existing "Use `mem_get` with an ID for full content." escalation footer used
-by search-result rendering.
-
-#### Scenario: Preview-by-default then escalate to mem_get
-- GIVEN an observation whose content is longer than the preview length
-- WHEN `mem_context` (or `mem_project action=summary`) renders that observation
-- THEN the rendered block MUST contain only a bounded preview of the content, not
-  the full body
-- AND the response MUST include a pointer instructing the caller to use `mem_get`
-  with the observation ID for the full content
-- AND fetching that observation ID via `mem_get` MUST return the full,
-  untruncated content
-
-### Requirement: Context And Summary Budget MUST Be Overridable Per Call
-`mem_context` and `mem_project action=summary` MUST accept an optional per-call
-budget parameter that overrides the configured default `maxContextChars` for that
-invocation only. When the override is absent, the configured default MUST apply.
-A per-call override MUST NOT mutate persisted configuration. The per-call value
-MUST accept the unbounded sentinel `0` (disabling the bound for that invocation
-only), consistent with the configured sentinel semantics.
-
-#### Scenario: Per-call budget override is honored
-- GIVEN a configured default `maxContextChars`
-- WHEN `mem_context` is called with an explicit per-call budget different from the
-  default
-- THEN the response MUST be bounded by the per-call budget for that invocation
-- AND a subsequent call without an override MUST again be bounded by the
-  configured default
-
-### Requirement: Context And Summary Output MUST Support An Explicit Unbounded Mode
-`mem_context` and `mem_project action=summary` MUST support the explicit,
-documented sentinel value `0` ("no output cap") that disables the output bound
-(restoring full-dump behavior) for rollback and debugging. The unbounded mode
-MUST be reachable through the resolved configuration (and through the per-call
-override below) and MUST be selectable only by an explicit `0`, never as the
-default. **Note**: the unbounded sentinel `0` applies to `action=summary` only; `action=graph` and `action=topic` retain a minimum of `200` for `max_chars` and do NOT accept the sentinel.
-
-#### Scenario: Unbounded sentinel restores full output
-- GIVEN the unbounded sentinel `0` is configured for the output budget
-- WHEN `mem_context` (or `mem_project action=summary`) renders a large store
-- THEN the response MUST NOT be truncated by `maxContextChars`
-- AND the default (non-sentinel) configuration MUST still enforce the bound
-
-### Requirement: Output Bound MUST Be Applied At The Shared getContext Layer
-The output bound for context/summary responses MUST be enforced at the shared
-`Store.getContext` rendering layer rather than independently per caller, so that
-every surface backed by `getContext` inherits the bound consistently. This
-includes the MCP `mem_context` tool, the MCP `mem_project action=summary` tool,
-the HTTP project-summary surface
-(`handleProjectSummary`, `src/http-routes.ts:1032`), and the CLI project-summary
-surface (`src/cli.ts:380`). No per-surface re-implementation of the bound is
-permitted.
-
-#### Scenario: HTTP and CLI summary inherit the shared bound
-- GIVEN the output bound is enforced inside the shared `getContext` layer
-- WHEN the HTTP `/projects/{project}/summary` surface renders a large store
-- THEN its payload MUST be bounded by `maxContextChars` without any HTTP-specific
-  bounding code
-- AND WHEN the CLI project-summary command renders the same store
-- THEN its output MUST be bounded by `maxContextChars` without any CLI-specific
-  bounding code
-
-### Requirement: B3 MUST NOT Change the MCP Tool Surface
-B3 MUST NOT add, remove, rename, or split any MCP tool; it only changes behavior
-WITHIN the existing tools (the `mem_project action=graph` default view, and the
-`mem_recall` superseded annotation behavior described in the retrieval delta).
-The registered set MUST remain exactly `mem_save`, `mem_recall`, `mem_context`,
-`mem_get`, `mem_project`, and `mem_session` (constitution **P1**).
-
-#### Scenario: MCP registry is unchanged by B3
-- GIVEN B3 is applied
-- WHEN clients list available tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`,
-  and `mem_session` MUST be registered
-- AND no supersession-specific tool MUST appear in the registry
-
-## MODIFIED Requirements
-
-## REMOVED Requirements
-
-## Assumptions
-- **CL-6 (RESOLVED — current-state default for graph only):** The current-state
-  DEFAULT (hide-or-flag superseded) applies to `mem_project action=graph` only.
-  `mem_recall` and the multi-hop frontier DEPRIORITIZE+flag (keep reachable)
-  rather than hide (see the retrieval delta). History stays reachable everywhere
-  (constitution **P5**).
-- **Parity is conditional on the flag (B1 contract preserved):** B1 kept
-  `action=graph` byte-for-byte. B3 INTENTIONALLY changes the default view, but
-  only when `kgSupersedeEnabled` is on; flag-off restores the exact B1 output.
-  This mirrors the B1/B2 flag-gated reversibility discipline and is the only
-  observable behavior change in B3.
-- **`mem_recall` annotation (cross-reference):** The `mem_recall` superseded
-  annotation/deprioritization is specified in the retrieval delta
-  (`queryKnowledgeLane` flag + fusion deprioritization). This tools delta covers
-  only the `action=graph` default-view change and the unchanged tool surface.
-- **Visualization vocabulary (non-breaking):** The supersession relation may
-  appear in the relation vocabulary exposed by visualization/relation listings
-  without breaking the existing relation set; this is additive and parity-safe.
-
-## Delta from kg-superseded-pruning
-
-# Delta for Tools
-
-> Change **C1** (`kg-superseded-pruning`). C1 adds the `prune-graph` admin op on
-> the CLI + HTTP surfaces ONLY (see the indexing delta); it adds NO MCP tool and
-> changes NO existing MCP tool behavior. The registered MCP surface stays exactly
-> six workflow-level tools (constitution **P1**), honoring the
-> admin-ops-are-not-MCP boundary (`src/evals/retrieval.ts:284-286`).
-
-## ADDED Requirements
-
-### Requirement: C1 MUST NOT Change the MCP Tool Surface
-C1 MUST NOT add, remove, rename, or split any MCP tool. `prune-graph` is an admin
-op exposed on the CLI and HTTP surfaces only and MUST NOT be registered as an MCP
-tool (constitution **P1**; Success Criterion 7). C1 also MUST NOT change the
-observable behavior of any existing MCP tool: in particular, `mem_project
-action=graph`, `mem_recall`, and `mem_context` MUST behave exactly as they did
-after B3 — pruning only removes deep-history superseded rows that these surfaces do
-not present as current truth. The registered set MUST remain exactly `mem_save`,
-`mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
-
-#### Scenario: MCP registry is unchanged by C1
-- GIVEN C1 is applied
-- WHEN clients list available tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`,
-  and `mem_session` MUST be registered
-- AND no pruning-specific MCP tool MUST appear in the registry
-
-#### Scenario: mem_project action=graph behavior is unaffected by pruning
-- GIVEN a project whose superseded history has been bounded by pruning
-- WHEN `mem_project action=graph` renders the ledger for that project
-- THEN its current-state default view (from B3) MUST render exactly as it did
-  after B3 for the current facts and retained history
-- AND pruning MUST NOT change the rendered current-truth ledger
-
-## MODIFIED Requirements
-
-## REMOVED Requirements
-
-## Assumptions
-- **Admin op, not MCP (constitution P1):** `prune-graph` deliberately follows the
-  `rebuild-graph` precedent: admin/sync operations live on the CLI and HTTP API,
-  not on the compact MCP surface. The MCP registry assertion here is the tools-side
-  counterpart of the indexing delta's CLI+HTTP requirement.
-- **No `action=graph` default change in C1:** B3 introduced the current-state
-  default for `action=graph`; C1 makes no further change to that view. Pruning
-  removes only deep superseded history that the current-state view already hid, so
-  the default ledger is unchanged.
-- **History-reachability caveat (disclosed):** B3 guaranteed superseded history is
-  reachable through a history-inclusive path. C1 bounds that history to the N most-
-  recent superseded rows per slot; a history-inclusive read after pruning returns
-  the RETAINED window, not the full pre-prune chain. This is the intended bounded-
-  retention behavior (see the knowledge-graph delta's disclosed reversibility
-  limit) and is not an MCP surface change.
-
-
-
-# Delta for Community Summaries LazyGraphRAG
-
-## ADDED Requirements
-
-### Requirement: Community Summaries MUST NOT Change the MCP Registry
-This change MUST NOT add, remove, rename, or split any MCP tool. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Community rebuild and inspection controls are admin operations and SHALL NOT be registered as MCP tools.
-
-#### Scenario: Community summary registry remains six tools
-- GIVEN community summaries are implemented
-- WHEN clients list MCP tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
-- AND no community-specific MCP tool MUST appear
-
-### Requirement: Community Admin Operations MUST Be CLI and HTTP Only
-The system MUST expose community-summary rebuild and inspection operations only through CLI and HTTP admin surfaces, following the existing `rebuild-graph` and `prune-graph` boundary. Admin surfaces MUST support project scoping, observable status, and inspection of freshness/degraded state.
-
-#### Scenario: CLI rebuilds community summaries
-- GIVEN an operator invokes the community-summary rebuild command for a project
-- WHEN the command completes
-- THEN it MUST report rebuild status and relevant counts
-- AND it MUST NOT require an MCP tool invocation
-
-#### Scenario: HTTP inspects community summary state
-- GIVEN community summaries exist or are stale for a project
-- WHEN an HTTP admin inspection route is requested
-- THEN it MUST return bounded community metadata including freshness/degraded state
-- AND it MUST not expose secrets or unbounded source content
-
-### Requirement: Existing Tool Outputs MAY Consume Community Evidence Without Contract Expansion
-Existing `mem_recall` and `mem_project action=summary` outputs MAY include compact community-summary annotations or evidence when retrieval supplies them, but the tool input/output contract MUST remain backward-compatible and bounded. `mem_project action=graph` MUST remain KG-backed and MUST NOT become a community graph visualization surface.
-
-#### Scenario: mem_recall annotates community evidence without new tool
-- GIVEN retrieval returns community-summary evidence in the KG lane
-- WHEN `mem_recall` renders results
-- THEN the result MAY include compact community metadata
-- AND no new tool, action, or required client flow MUST be introduced
-
-#### Scenario: action=graph remains KG fact ledger
-- GIVEN community summaries exist for a project
-- WHEN `mem_project action=graph` is requested
-- THEN it MUST continue to render the KG-backed graph ledger semantics
-- AND it MUST NOT replace the ledger with community-summary reports
-## Sync and Resilience Requirements
-
-### Requirement: mem_recall MUST Support Exact Topic-Key Lookup
-The `mem_recall` behavior MUST support exact `topic_key` retrieval intent and SHALL return deterministic exact-key matches when the request expresses exact topic-key lookup.
-
-#### Scenario: Exact topic key recall returns deterministic match set
-- GIVEN a stored observation with `topic_key` equal to `architecture/auth-model`
-- WHEN a `mem_recall` request targets exact topic key `architecture/auth-model`
-- THEN returned results MUST include that observation and MUST NOT include observations with non-equal topic keys
-
-#### Scenario: Exact lookup coexists with existing filters
-- GIVEN multiple observations share the same topic key across scopes or projects
-- WHEN exact topic-key lookup is requested with additional scope/project/type filters via `mem_recall`
-- THEN results MUST respect both exact key equality and provided filters
-
-### Requirement: Exact Topic-Key Recall and Full-Text Recall Must Coexist
-General search in `mem_recall` MUST keep full-text behavior for non-exact queries while still honoring exact topic-key lookup when `topic_key_exact` is provided.
-
-#### Scenario: Non-exact query remains full-text
-- GIVEN a natural-language search query that is not an exact topic-key lookup
-- WHEN `mem_recall` executes without `topic_key_exact`
-- THEN results MUST follow general full-text relevance behavior
-
-### Requirement: Topic-Key Exactness Must Be Available Through HTTP Search
-The HTTP search route MUST preserve deterministic topic-key exactness by passing explicit topic-key filters into `Store.searchObservations` so HTTP callers receive the same exact-match behavior as `mem_recall`.
-
-#### Scenario: HTTP topic-key recall is deterministic
-- GIVEN HTTP search is queried with `topic_key_exact=architecture/auth-model` and project/scope filters
-- WHEN the route calls `search` on Store
-- THEN the response MUST match Store exact-key semantics (exact key equality and matching filters)
-
-### Requirement: Sync Import/Export Are CLI/HTTP-Only Surfaces
-Sync export/import capabilities MUST be exposed only through CLI and HTTP (`src/sync/index.ts`, `sync`, `sync-import`, `/sync/export`, `/sync/import`) and MUST NOT be registered as MCP tools.
-
-#### Scenario: Sync surfaces are not MCP tools
-- GIVEN the MCP tool registry
-- WHEN inspecting exposed tools
-- THEN only the compact six MCP tools are present and sync capabilities are absent
-
-### Requirement: Sync Import/Export Errors Must Be Explicit
-CLI and HTTP sync operations MUST return explicit failure responses when sync artifacts are unreadable/corrupt or sync state transitions fail.
-
-#### Scenario: Sync artifact import error is explicit
-- GIVEN a corrupt sync artifact supplied to sync import
-- WHEN the import operation runs
-- THEN the operation MUST return an explicit error response rather than a silent success
-
-
-## Merge: stable-memory-identity-bootstrap/tools
-
-# Delta for Tools
-
-## ADDED Requirements
-
-### Requirement: MCP Session and Save Tools MUST Preserve Explicit Identity
-The existing `mem_session` and `mem_save` tools MUST preserve caller-provided `session_id` and `project` values when persisting sessions, prompts, session summaries, or observations. The tools MUST NOT replace explicit identity with compatibility placeholders such as `manual-save-*` or `unknown` when a non-empty caller-provided value is available.
-
-#### Scenario: Explicit session start identity is preserved
-- GIVEN a caller invokes `mem_session` with `action=start`, an explicit session id, and an explicit project
-- WHEN the tool persists the session
-- THEN the stored session MUST use the supplied session id
-- AND the stored session MUST use the supplied project
-- AND no compatibility fallback identity MUST be reported for that call
-
-#### Scenario: Explicit save identity is preserved
-- GIVEN a caller invokes `mem_save` for a prompt, session summary, or observation with explicit session id and project values
-- WHEN the tool persists the record
-- THEN the persisted record MUST remain associated with those explicit values where the target record type supports them
-- AND the tool MUST NOT synthesize `manual-save-*` or `unknown` for the explicit values
-
-### Requirement: Compatibility Fallback Identity MUST Be Observable and Deterministic
-When `mem_session` or `mem_save` must retain backward-compatible behavior for missing identity, the tool response MUST make the fallback visible and MUST use deterministic placeholder values. Fallback visibility MUST identify which identity field was degraded and what placeholder value was used, without requiring a new MCP tool or changing the compact tool registry.
-
-#### Scenario: Missing session uses visible fallback
-- GIVEN a caller invokes `mem_save` for a prompt or session summary without a session id
-- WHEN compatibility behavior creates or uses a fallback session id
-- THEN the fallback session id MUST be deterministic for the same effective project and save category
-- AND the response MUST report that fallback session identity was used
-- AND the response MUST include the fallback session id
-
-#### Scenario: Missing project uses visible degraded project
-- GIVEN a caller invokes `mem_save` without a project where the persistence path requires or benefits from project identity
-- WHEN compatibility behavior persists the record under a placeholder or null project
-- THEN the response MUST report the project identity as missing or degraded
-- AND any placeholder project value MUST be deterministic and query-stable
-
-### Requirement: HTTP Save and Session Routes MUST Mirror MCP Identity Semantics
-HTTP routes that mirror session and save behavior MUST preserve explicit identity and report deterministic fallback identity with semantics equivalent to `mem_session` and `mem_save`. HTTP response shape MAY use HTTP-appropriate JSON fields, but the observable identity outcome MUST match the MCP tool result for the same inputs.
-
-#### Scenario: HTTP preserves explicit identity like MCP
-- GIVEN equivalent save or session requests are made through MCP and HTTP with explicit session id and project
-- WHEN both requests persist records
-- THEN both surfaces MUST preserve the explicit identity
-- AND neither surface MUST report fallback identity
-
-#### Scenario: HTTP reports fallback identity like MCP
-- GIVEN equivalent save or session requests are made through MCP and HTTP with missing identity
-- WHEN compatibility fallback identity is used
-- THEN both surfaces MUST report fallback use for the same missing fields
-- AND both surfaces MUST expose deterministic placeholder values or degraded-state metadata
-
-### Requirement: Identity Bootstrap MUST NOT Expand the Compact MCP Tool Surface
-This change MUST NOT add, remove, rename, or split MCP tools. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; identity fallback reporting MUST be implemented within existing tool responses and handlers.
-
-#### Scenario: Identity bootstrap registry remains six tools
-- GIVEN stable identity bootstrap behavior is implemented
-- WHEN clients list available MCP tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
-- AND no identity-bootstrap-specific MCP tool MUST appear
-
-## MODIFIED Requirements
-
-## REMOVED Requirements
-
-## Assumptions
-- Compatibility fallbacks remain for callers that omit identity, but their use is visible and deterministic rather than silent.
-- Fallback reporting may be expressed as human-readable MCP text and structured HTTP JSON, provided both surfaces expose the same degraded identity facts.
-- A caller-provided identity is explicit only when the submitted value is non-empty after existing input normalization/validation; blank or absent values follow missing-identity compatibility behavior.
-- The same degraded identity facts are: the affected field (`session_id` or `project`), whether the value was omitted or synthesized, and the placeholder/null value used when one is persisted.
-- Existing historical records with placeholder identity are not rewritten by tool calls in this change.
-
-## Handoff Hints
-- Preserve the six-tool registry unchanged in design and tasks.
-- Design should choose a reusable fallback-reporting shape shared by MCP and HTTP without adding tools.
-- Tests should cover explicit identity, missing session id, missing project, and HTTP/MCP parity.
-
-# Delta for Community Read Path Rollout Gate
-
-## ADDED Requirements
-
-### Requirement: Rollout Gate MUST Preserve the Compact MCP Surface
-This change MUST NOT add, remove, rename, or split MCP tools. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; community rollout decisions, rebuilds, status checks, and readiness evidence SHALL NOT create a community-specific MCP tool.
-
-#### Scenario: Rollout gate registry remains six tools
-- GIVEN the community read-path rollout gate is implemented
-- WHEN clients list MCP tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
-- AND no rollout-specific or community-specific MCP tool MUST appear
-
-#### Scenario: Admin rollout evidence is not an MCP tool
-- GIVEN an operator needs readiness evidence or rebuild/status inspection
-- WHEN the operator uses the supported surfaces
-- THEN those admin actions MUST remain on existing CLI, HTTP, eval, documentation, or config paths
-- AND they MUST NOT require a new MCP tool
-
-### Requirement: Existing Tool Outputs MAY Surface Eligible Community Evidence Without Contract Expansion
-Existing `mem_recall` and `mem_project action=summary` outputs MAY include compact bounded community-summary evidence or annotations only when retrieval supplies eligible KG-lane community evidence. Such output MUST remain backward-compatible, bounded, and source-attributed, and MUST preserve escalation through the existing recall/get flow.
-
-#### Scenario: mem_recall surfaces community evidence through existing output
-- GIVEN an opted-in project is eligible and retrieval returns KG-lane community-summary evidence
-- WHEN `mem_recall` renders results
-- THEN the result MAY include bounded community-summary metadata or text
-- AND it MUST NOT require a new action, tool, or client flow
-
-#### Scenario: Full source detail still escalates through mem_get
-- GIVEN a compact community-summary annotation appears in an existing tool output
-- WHEN a caller needs source details
-- THEN source observations MUST remain reachable through existing IDs, provenance, or `mem_get`
-- AND the annotation MUST NOT replace source lineage
-
-### Requirement: Tool Behavior MUST Not Claim Deferred Scope
-Tool output and documentation for this rollout gate MUST NOT claim multi-harness support, G3 harness parity, MemoryIntegrationCore migration, P5 graph navigation v2, or full GraphRAG global-answer synthesis. Existing tools MAY report bounded rollout status or degraded-state facts only within their current contracts.
-
-#### Scenario: Tool output does not imply harness parity
-- GIVEN a project passes community read-path rollout eligibility
-- WHEN existing tool output includes community-summary annotations or status
-- THEN the output MUST NOT claim cross-harness support or MemoryIntegrationCore migration
-
-#### Scenario: action=graph remains a KG fact ledger
-- GIVEN community summaries exist for a project
-- WHEN `mem_project action=graph` is requested
-- THEN it MUST remain a KG-backed fact ledger
-- AND it MUST NOT become a P5 graph navigation v2 or community-summary visualization surface
-
-## MODIFIED Requirements
-
-## REMOVED Requirements
-
-## Assumptions
-- Existing CLI, HTTP, eval, README, and config surfaces cover rollout evidence and operator control; a new MCP tool would violate the compact-surface invariant.
-- Tool output changes, if any, are limited to bounded annotations from retrieval and do not require new required request fields.
-- Multi-harness support and P5 graph navigation v2 remain explicit non-goals for this change.
-
-## Handoff Hints
-- Preserve the six-tool MCP registry exactly.
-- Do not route community rebuild, readiness, or rollout decisions through MCP.
-- Keep `mem_project action=graph` KG-ledger semantics separate from community-summary rollout evidence.
-
-
-## ADDED for graph-navigation-v2
-
-### Requirement: `mem_project action=graph` MUST Preserve Default Ledger Compatibility
-The system MUST preserve existing `mem_project action="graph"` behavior when no graph-navigation option is provided. The default graph response MUST remain the KG-backed current-state ledger, MUST use the existing `project`, `topic_key`, `relation`, `limit`, and `max_chars` semantics, MUST keep the `max_chars` minimum of `200`, and MUST NOT accept the unbounded sentinel `0`.
-
-### Requirement: Neighborhood Navigation MUST Return a Bounded Frontier View
-When `navigation="neighborhood"` is requested, `mem_project action="graph"` MUST return a bounded, agent-readable neighborhood/frontier view with focus identity, added/visible-node tracking, and frontier/exhaustion metadata.
-
-### Requirement: Lineage Navigation MUST Return Scoped Timeline Evidence
-When `navigation="lineage"` is requested, `mem_project action="graph"` MUST return scoped, deterministic, bounded lineage/timeline evidence and include pivot fields.
-
-### Requirement: Superseded Navigation MUST Be Explicit and Tagged
-When history is explicitly requested, retained superseded facts MUST be reachable and visibly tagged as historical while default views remain current-state.
-
-### Requirement: Community Navigation MUST Inspect Existing Community State Only
-When `navigation="community"` is requested, `mem_project action="graph"` MUST return a bounded community inspection/debugging view and must not present community summaries as global-answer GraphRAG output.
-
-## Handoff Hints
-- Preserve the six-tool MCP registry exactly.
-- Keep omitted `navigation` behavior compatible with the existing ledger path.
-- Enforce bounds and source attribution in every navigation view.
-- Do not claim deferred deferred-scope features in navigation outputs.
-
-## Merged change: pre-multiharness-foundations (tools)
-
-# Delta for Tools
-
-## ADDED Requirements
-
-### Requirement: mem_project action=health MUST Report Community Summary Health State
-`mem_project` with `action="health"` MUST expose the current community-summary health state for the requested project, when community-summary configuration or artifacts exist. The state MUST be one of `fresh`, `stale`, `rebuilding`, `failed`, `degraded`, `missing`, or `disabled`. The output MUST include bounded coverage, graph signature or freshness basis, latest community job status, and degraded/failure reason when present.
-
-#### Scenario: Fresh community state is reported
-- GIVEN a project has a committed community summary matching the current graph freshness basis
-- WHEN `mem_project` is called with `action="health"` for that project
-- THEN the output MUST include community state `fresh`
-- AND it MUST include coverage and graph freshness/signature basis metadata
-
-#### Scenario: Unavailable community states are distinguishable
-- GIVEN community summaries for a project are stale, rebuilding, failed, degraded, missing, or disabled
-- WHEN `mem_project action="health"` renders project health
-- THEN the output MUST report the matching state
-- AND it MUST NOT collapse those states into a generic unavailable message
-
-#### Scenario: Latest job status is visible
-- GIVEN a community rebuild or summary job has started, completed, or failed for a project
-- WHEN `mem_project action="health"` renders project health
-- THEN the output MUST include the latest job status and relevant timestamp or reason metadata where available
-
-### Requirement: Health Output MUST Be Bounded and Privacy-Safe
-`mem_project action="health"` MUST render bounded operator-facing health output. The output MUST include counts, states, signatures, timestamps, and reasons, but MUST NOT include raw observation content, raw prompt content, private-tagged content, or unbounded community summary bodies.
-
-#### Scenario: Health output stays within max chars
-- GIVEN a project has many community artifacts, jobs, and degraded reasons
-- WHEN `mem_project action="health"` renders with default or explicit `max_chars`
-- THEN the output MUST be bounded by the applicable character budget
-- AND omitted detail MUST be indicated through counts or truncation metadata
-
-#### Scenario: Health output does not leak source content
-- GIVEN community summaries reference source observations that contain sensitive content
-- WHEN project health is rendered
-- THEN the output MUST expose only safe metadata such as counts, ids, states, signatures, and redacted reasons
-- AND raw source memory content MUST NOT be included
-
-### Requirement: This Change MUST Preserve the Compact MCP Tool Surface
-This change MUST NOT add, remove, rename, or split MCP tools. Identity resolver v2 warnings, community health state, and token-savings telemetry MUST be surfaced through existing tools and metadata where appropriate. The registered MCP surface MUST remain exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
-
-#### Scenario: Foundation health registry remains six tools
-- GIVEN pre-multiharness foundation behavior is implemented
-- WHEN clients list MCP tools
-- THEN exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` MUST be registered
-- AND no identity, health, telemetry, or multi-harness-specific MCP tool MUST appear
-
-#### Scenario: Health remains an existing mem_project action
-- GIVEN community health state is exposed
-- WHEN clients inspect the MCP tool registry
-- THEN health inspection MUST remain inside the existing `mem_project` tool
-- AND no separate community-health MCP tool MUST be registered
-
-## MODIFIED Requirements
-
-## REMOVED Requirements
-
-## Assumptions
-- `action="health"` already exists on `mem_project`; this spec extends its rendered content and data source rather than expanding the tool surface.
-- Health output may be human-readable MCP text or structured HTTP JSON on mirrored surfaces, but both must expose the same health facts.
-
-## Handoff Hints
-- Design should reuse existing `formatProjectHealth` and store health readers when possible.
-- Design must keep community rebuild/admin controls outside MCP and preserve the six-tool registry test.
-- Verification should include all seven community states and max_chars/privacy assertions.
-
-## Native Multi-Harness Integration Requirements
-
-### Requirement: Native Integrations MUST Use Only the Existing MCP Tool Surface
-OpenCode, Codex, and Claude Code lifecycle integrations MUST perform memory operations only through `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Session enrollment and lifecycle checkpoint/summary MUST use `mem_session`; root-user prompt and explicit observation persistence MUST use `mem_save`; compact/context recall and full-record escalation MUST use `mem_recall`, `mem_context`, and `mem_get`; project navigation or health MUST use `mem_project`. Native integration MUST NOT require direct storage access, a harness-specific memory tool, a legacy granular tool, or an admin/sync operation to satisfy lifecycle behavior.
-
-#### Scenario: Session lifecycle uses existing tools
-- GIVEN a native harness starts, compacts, or finalizes a root session
-- WHEN its integration performs memory work
-- THEN enrollment and lifecycle checkpoint/summary MUST use `mem_session`
-- AND root-user prompt or explicit observation persistence MUST use `mem_save`
-- AND recall or full-record escalation MUST use `mem_recall`, `mem_context`, or `mem_get` according to the requested tier
-- AND it MUST NOT invoke a harness-specific MCP tool
-
-#### Scenario: Project context uses existing tools
-- GIVEN a native integration needs project-level memory context or health information
-- WHEN it requests that information
-- THEN it MUST use existing `mem_project`, `mem_context`, or `mem_recall` behavior as applicable
-- AND it MUST NOT access storage through a new MCP surface
-
-### Requirement: Native Integrations MUST Use the Documented V2 Tool Contracts
-
-The six-tool MCP surface MUST describe and validate nested evidence kind, memory kind, memory outcome, harness, and lifecycle operation values using canonical runtime schemas; TypeScript casts alone MUST NOT admit arbitrary strings, and every native integration MUST consume the same validated V2 contract.
-
-#### Scenario: US1 - Reject invalid memory writes before persistence 1
-
-- **GIVEN** a valid V2 save request
-- **WHEN** it enters through MCP or the shared service
-- **THEN** it persists with canonical evidence, memory, outcome, and session values and remains immediately recallable
-
-#### Scenario: US1 - Reject invalid memory writes before persistence 2
-
-- **GIVEN** a request containing `learning`, `certification`, `verification`, or another non-canonical taxonomy value
-- **WHEN** the write boundary validates it
-- **THEN** the request fails with a bounded field-specific error and no evidence, memory, receipt, or FTS row is committed
-
-### Requirement: Native Integrations MUST Share V2 Storage and Retrieval Semantics
-
-Enabling any native plugin MUST use the same authoritative ledger, identity, privacy, idempotency, ranking, temporal, and bounded-output rules as direct v2 MCP use.
-
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 1
-
-- **GIVEN** the v2 MCP server
-- **WHEN** its registry is listed
-- **THEN** it exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
-
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 2
-
-- **GIVEN** a client that depends on an old request, response, graph action, or storage behavior
-- **WHEN** it calls v2
-- **THEN** v2 follows its documented contract and does not activate a hidden compatibility shim
+- **GIVEN** a legacy database selected for import
+- **WHEN** the operator runs the current importer
+- **THEN** `import-legacy` writes a distinct current database and preserves the source without describing the target as a replacement generation

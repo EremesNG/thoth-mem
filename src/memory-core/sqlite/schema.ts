@@ -21,7 +21,7 @@ CREATE TRIGGER evidence_immutable_delete BEFORE DELETE ON evidence BEGIN SELECT 
 CREATE TRIGGER memory_content_immutable BEFORE UPDATE OF title,content,kind,project_id,topic_key,created_at,valid_from ON memories BEGIN SELECT RAISE(ABORT, 'memory content is immutable'); END;
 `;
 
-export const V2_SCHEMA_SQL = `
+export const CURRENT_SCHEMA_SQL = `
 CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 CREATE TABLE projects(id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, root_hint TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, UNIQUE(project_id, root_session_key, harness));

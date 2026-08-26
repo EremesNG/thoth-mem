@@ -40,12 +40,12 @@ function logicalRows(path: string): unknown {
 describe('one-way legacy importer', () => {
   it('keeps the supported source read-only and imports only authoritative rows with quarantine', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-import-'));
-    const source = join(root, 'legacy.sqlite'); const target = join(root, 'v2.sqlite');
+    const source = join(root, 'legacy.sqlite'); const target = join(root, 'memory.sqlite');
     createLegacy(source);
     const before = createHash('sha256').update(readFileSync(source)).digest('hex');
     try {
       const report = importLegacyV1({ sourcePath: source, targetPath: target });
-      expect(report).toMatchObject({ schema: 'thoth-mem.import.v2', sourceHash: before, imported: { sessions: 1, prompts: 1, observations: 1 }, skipped: 1, quarantined: 2, ignoredDerived: { tables: ['kg_triples', 'vector_embeddings'], rows: 2 }, integrity: { foreignKeys: true, fts: true }, sourceUnchanged: true });
+      expect(report).toMatchObject({ schema: 'thoth-mem.import', sourceHash: before, imported: { sessions: 1, prompts: 1, observations: 1 }, skipped: 1, quarantined: 2, ignoredDerived: { tables: ['kg_triples', 'vector_embeddings'], rows: 2 }, integrity: { foreignKeys: true, fts: true }, sourceUnchanged: true });
       expect(report).toMatchObject({ reportVersion: 2, sourceSchemaVersion: 'legacy-v1', targetSchemaVersion: 2, committed: true, dispositions: { sessions: { imported: 1, quarantined: 1 }, prompts: { imported: 1, quarantined: 1 }, observations: { imported: 1, skipped: 1 } } });
       expect(report.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); expect(report.finishedAt).toBe(report.startedAt);
       expect(report.dispositionReasons).toEqual(['observations:2:deleted', 'sessions:s2:placeholder_identity', 'user_prompts:2:placeholder_identity']);
@@ -71,12 +71,12 @@ describe('one-way legacy importer', () => {
 
   it('removes its staging database when authoritative mapping fails', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-import-cleanup-'));
-    const source = join(root, 'legacy.sqlite'); const target = join(root, 'v2.sqlite'); createLegacy(source);
+    const source = join(root, 'legacy.sqlite'); const target = join(root, 'memory.sqlite'); createLegacy(source);
     const db = new Database(source); db.prepare('UPDATE user_prompts SET content=? WHERE id=1').run('<private>secret</private>'); db.close();
     try {
       let failure: LegacyImportFailure | undefined; try { importLegacyV1({ sourcePath: source, targetPath: target }); } catch (error) { failure = error as LegacyImportFailure; }
       expect(failure).toBeInstanceOf(LegacyImportFailure);
-      expect(failure?.report).toMatchObject({ schema: 'thoth-mem.import.v2', reportVersion: 2, committed: false, failed: 1, errors: [{ code: 'MAPPING_FAILED' }] });
+      expect(failure?.report).toMatchObject({ schema: 'thoth-mem.import', reportVersion: 2, committed: false, failed: 1, errors: [{ code: 'MAPPING_FAILED' }] });
       expect(JSON.stringify(failure?.report).length).toBeLessThan(5_000);
       expect(existsSync(target)).toBe(false);
       expect(readdirSync(root).filter((name) => name.includes('.importing-'))).toEqual([]);

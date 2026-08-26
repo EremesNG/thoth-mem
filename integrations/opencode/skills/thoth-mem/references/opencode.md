@@ -14,7 +14,7 @@ The tool follows at most 16 validated `parentID` links with cycle detection. It 
 
 Only if the native tool is not registered, reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project=<name>`. Inside the native plugin, root events use `properties.info.id`; transform and compaction inputs use `input.sessionID`; `parentID` proves delegated traffic. Do not invent an OpenCode environment variable.
 
-## Map to V2 memory tools
+## Map to memory tools
 
 - Pass the exact verified root ID as `root_session_key` and set `harness` to `opencode` when saving session-attributed memory.
 - Use the resolved workspace identity as `project_key` and its display name as `project_name`.

@@ -71,7 +71,7 @@ let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const event = JSON.parse(input);
 process.stdout.write(JSON.stringify({
-  schema: 'thoth-mem.lifecycle.v2',
+        schema: 'thoth-mem.lifecycle',
   identity: { root_session_id: process.env.INVALID_IDENTITY ?? event.rootSessionKey, project: event.projectName },
   data: {
     outcome: 'confirmed', duplicate: false, projectId: 'project-id', sessionId: 'session-id', evidenceId: null,
@@ -205,7 +205,7 @@ process.stdout.write(JSON.stringify({
         project: 'thoth-mem',
         authorization: 'root_lifecycle',
       });
-      expect(existsSync(join(dataDir, 'memory-v2.sqlite'))).toBe(false);
+      expect(existsSync(join(dataDir, 'memory.sqlite'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -345,7 +345,7 @@ process.stdout.write(JSON.stringify({
       expect(changed.system.slice(0, -1)).toEqual(['stable-system-prefix']);
       expect(changed.system.at(-1)).toContain('revised native recovery tail');
 
-      const database = join(dataDir, 'memory-v2.sqlite');
+      const database = join(dataDir, 'memory.sqlite');
       expect(existsSync(database)).toBe(true);
       renameSync(database, `${database}.moved`);
     } finally {
