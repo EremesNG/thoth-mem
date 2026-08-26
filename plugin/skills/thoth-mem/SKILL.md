@@ -42,6 +42,29 @@ session continuity.
 
 Before the final response, explicitly decide whether the work reached a useful
 semantic boundary and whether future sessions benefit from a durable handoff.
+Apply this promotion test:
+**Will this materially change how a future coding agent acts?** Save only when
+the answer is yes and the information is not already fully represented by a
+canonical artifact.
+
+Keep automatic evidence separate from promoted memory. Evidence is the minimal,
+immutable support for a root prompt, checkpoint, authoritative handoff/finalization,
+or explicit save. A promoted memory is a selective, reusable interpretation with
+a stable `topic_key`, provenance, temporal validity, and an `outcome` of
+`succeeded`, `failed`, `mixed`, or `unknown`. Use the existing memory kinds:
+
+- `decision`, `convention`, and `architecture` for accepted choices and constraints;
+- `discovery` and `project_structure` for verified reusable facts;
+- `failure` for lessons that preserve the attempted action, observed failure,
+  root cause or bounded hypothesis, safe next action, and outcome;
+- `preference` only for a stable user preference;
+- `handoff` for continuation-critical state.
+
+Reuse `topic_key` when a newer memory corrects or supersedes an evolving fact.
+Do not promote speculation, arbitrary assistant reasoning, tool streams, subagent
+output, or a full transcript. Keep those out even when they are available as
+supporting evidence.
+
 Examples are user-approved architecture or product direction, a verified root
 cause or failure, a reusable convention, a completed change, and
 continuation-critical state.
@@ -49,15 +72,19 @@ continuation-critical state.
 When the boundary is durable, save one concise handoff with `mem_save`:
 
 - `evidence.kind="handoff"` with compact supporting evidence;
-- `memory.kind="handoff"` with the goal, decisions, discoveries, completed work,
-  next steps, and relevant files;
+- `memory.kind="handoff"` with exactly the actionable fields `Objective`,
+  `Completed`, `First pending action`, `Blockers`, and `Key files/checks`;
 - a stable `topic_key`, plus a stable `event_key` when the same event may replay.
 
 Do not create memory for transient status, speculation, raw logs, or facts
 already fully represented by canonical artifacts. Remove `<private>...</private>`
-blocks and exclude secrets, full transcripts, assistant/tool traffic, and
-generated prompts. Avoid a duplicate manual write when native lifecycle handling
-already confirmed the same event.
+blocks and exclude secrets, full transcripts, generated prompts, assistant
+reasoning, tool streams, and subagent output. Avoid a duplicate manual write when
+native lifecycle handling already confirmed the same event.
+
+Compact recall and project context are a memory index: use their memory IDs to
+select candidates. Fetch `mem_get` or project history only when supporting
+evidence IDs and lineage are actually needed.
 
 Do not report persistence until the result confirms the saved evidence and
 memory. A failed or indeterminate write remains not confirmed. Do not call

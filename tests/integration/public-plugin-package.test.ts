@@ -29,6 +29,24 @@ const verifyFixture = (root: string) => spawnSync(process.execPath, ['scripts/ve
 });
 
 describe('public plugin release inventory', () => {
+  it('defines a selective durable-memory and actionable-handoff contract', () => {
+    const skill = readFileSync('plugin/skills/thoth-mem/SKILL.md', 'utf8');
+    for (const required of [
+      'Will this materially change how a future coding agent acts?',
+      '`topic_key`',
+      '`outcome`',
+      'Objective',
+      'Completed',
+      'First pending action',
+      'Blockers',
+      'Key files/checks',
+      'supporting evidence',
+      'assistant reasoning',
+      'tool streams',
+      'subagent output',
+    ]) expect(skill, required).toContain(required);
+  });
+
   it('owns exactly two marketplace anchors and one complete shared plugin root', () => {
     const inventory = validateIntegrationInventory(readJson<IntegrationInventory>('integrations/inventory.json'));
     expect(inventory.publicDistribution.marketplaces).toEqual({
