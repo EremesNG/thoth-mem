@@ -12,6 +12,23 @@ const codexCommand = process.platform === 'win32' ? 'codex.exe' : 'codex';
 const codexAvailable = spawnSync(codexCommand, ['--version'], { encoding: 'utf8', windowsHide: true }).status === 0;
 
 describe('public plugin marketplace distribution', () => {
+  it('keeps one Skill body across all hosts while preserving host-specific identity references', () => {
+    const canonical = readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'utf8');
+    for (const harness of ['opencode', 'codex', 'claude-code']) {
+      expect(readFileSync(join(repository, 'integrations', harness, 'skills', 'thoth-mem', 'SKILL.md'), 'utf8')).toBe(canonical);
+    }
+
+    const references = {
+      opencode: join(repository, 'integrations', 'opencode', 'skills', 'thoth-mem', 'references', 'opencode.md'),
+      codex: join(repository, 'integrations', 'codex', 'skills', 'thoth-mem', 'references', 'codex.md'),
+      claude: join(repository, 'integrations', 'claude-code', 'skills', 'thoth-mem', 'references', 'claude-code.md'),
+    };
+    for (const path of Object.values(references)) expect(existsSync(path), path).toBe(true);
+    expect(existsSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'opencode.md'))).toBe(false);
+    expect(readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'codex.md'), 'utf8')).toBe(readFileSync(references.codex, 'utf8'));
+    expect(readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'claude-code.md'), 'utf8')).toBe(readFileSync(references.claude, 'utf8'));
+  });
+
   it.runIf(existsSync(codexValidator))('passes the installed Codex plugin ingestion validator', () => {
     const result = spawnSync('python', [codexValidator, join(repository, 'plugin')], {
       cwd: repository,

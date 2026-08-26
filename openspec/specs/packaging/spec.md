@@ -301,19 +301,25 @@ checkout as a runtime dependency.
 
 ### Requirement: Synchronize reference assets
 
-The explicit integration synchronization command MUST copy every canonical harness reference into the shared plugin skill and report changed reference paths.
+The explicit integration synchronization command MUST copy the canonical Skill body into all three harness Skill roots, preserve the OpenCode reference in its native integration, copy the canonical Codex and Claude references into the shared public Codex/Claude plugin Skill, and leave every destination byte-stable on repeated execution.
 
-#### Scenario: US3 - Publish the complete skill bundle 1
+#### Scenario: US3 - Ship one behaviorally consistent Skill 1
 
-- **GIVEN** canonical harness references
+- **GIVEN** the canonical Skill changes
 - **WHEN** integration assets are synchronized
-- **THEN** the shared plugin skill contains byte-identical copies and reports each changed path
+- **THEN** the OpenCode, Codex, and Claude Code Skill bodies are byte-identical to the canonical body, every integration retains its own host reference, and the shared public Codex/Claude plugin retains byte-identical Codex and Claude references
 
-#### Scenario: US3 - Publish the complete skill bundle 2
+#### Scenario: US3 - Ship one behaviorally consistent Skill 2
 
-- **GIVEN** a missing, stale, or undeclared packaged reference
-- **WHEN** the read-only verifier runs
-- **THEN** verification fails with a bounded asset error
+- **GIVEN** a distributed Skill omits semantic-boundary persistence, confirmation, identity ownership, or the progressive recall funnel
+- **WHEN** package verification runs
+- **THEN** it fails with a bounded contract error
+
+#### Scenario: US3 - Ship one behaviorally consistent Skill 3
+
+- **GIVEN** synchronization has already converged every Skill
+- **WHEN** it runs again
+- **THEN** it produces no content drift
 
 ### Requirement: Verify published references
 

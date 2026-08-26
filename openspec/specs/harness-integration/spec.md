@@ -507,25 +507,19 @@ Unknown, degraded, malformed, or conflicting Codex ownership evidence MUST produ
 
 ### Requirement: Shared Skills MUST Route to One Host-Specific Lifecycle Contract
 
-Packaged OpenCode, Codex, and Claude Skills MUST document their distinct authoritative sources and rejected substitutes: OpenCode prioritizes `thoth_mem_root_identity`; Codex prioritizes injected verified identity then targeted `CODEX_THREAD_ID` with only an unambiguous current-task cross-check; Claude prioritizes injected identity or official hook `session_id` plus `cwd` and MUST NOT invent `CLAUDE_SESSION_ID`. Canonical and distributed copies MUST remain synchronized.
+Packaged OpenCode, Codex, and Claude Skills MUST retain their distinct verified identity procedures, root/delegated ownership boundaries, and rejected identity substitutes; session-attributed V2 writes MUST pass the exact `root_session_key` together with its matching `harness`, and canonical and distributed Skill bodies and host references MUST remain synchronized.
 
-#### Scenario: US5 - Recover the verified root identity in every native host 1
+#### Scenario: US1 - Resume prior project work boundedly 1
 
-- **GIVEN** an OpenCode root or delegated session
-- **WHEN** `thoth_mem_root_identity` runs
-- **THEN** it returns the bounded versioned identity contract, resolves at most 16 parent links with cycle detection, grants lifecycle authorization only to the root caller, performs no memory dispatch, and does not change the six MCP tools
+- **GIVEN** a request that may overlap prior project work
+- **WHEN** the Skill is followed
+- **THEN** recall begins compactly, expands only strong candidates, and fetches full content only when needed
 
-#### Scenario: US5 - Recover the verified root identity in every native host 2
+#### Scenario: US1 - Resume prior project work boundedly 2
 
-- **GIVEN** Codex or Claude lifecycle recovery has accepted native `session_id` and project context
-- **WHEN** host output is produced
-- **THEN** it includes the complete verified identity before bounded memory context; Codex may use its documented root-agent fallback and Claude invents no environment fallback
-
-#### Scenario: US5 - Recover the verified root identity in every native host 3
-
-- **GIVEN** identity is absent, delegated, malformed, ambiguous, or too large for bounded output
-- **WHEN** the integration cannot prove the root
-- **THEN** it fails closed without inventing continuity or emitting a partial identity
+- **GIVEN** recall returns missing, stale, contradictory, or insufficient evidence
+- **WHEN** the agent answers
+- **THEN** it reports that limitation rather than inventing continuity
 
 ### Requirement: Codex identity procedure
 
@@ -918,3 +912,37 @@ The Bun-side lifecycle client MUST continue to accept only a bounded versioned N
 - **GIVEN** a fresh real OpenCode session and a marker absent from the user prompt
 - **WHEN** the model is instructed not to call tools, MCP, or Skills
 - **THEN** it can return the marker from automatic context and the export contains no thoth-mem tool calls
+
+### Requirement: Memory Skills MUST Persist Durable Semantic Boundaries
+
+Before meaningful root work ends, the Skill MUST require one explicit boundary decision and MUST persist one concise `mem_save` handoff using `evidence.kind="handoff"` and `memory.kind="handoff"` when future sessions benefit from the completed goal, durable decisions, verified discoveries or failures, completed work, next steps, and relevant files, without waiting for an explicit user save request or a terminal hook.
+
+#### Scenario: US2 - Persist a durable semantic boundary proactively 1
+
+- **GIVEN** a root agent has completed an architectural decision, verified root cause, reusable convention, completed change, or continuation-critical state review
+- **WHEN** the work reaches a useful semantic boundary
+- **THEN** it saves one concise handoff containing goal, decisions, discoveries, completed work, next steps, and relevant files before the final response
+
+#### Scenario: US2 - Persist a durable semantic boundary proactively 2
+
+- **GIVEN** a turn contains only transient status, speculation, raw logs, generated prompts, or facts already fully represented by canonical artifacts
+- **WHEN** the boundary decision is made
+- **THEN** the Skill does not create noisy memory
+
+#### Scenario: US2 - Persist a durable semantic boundary proactively 3
+
+- **GIVEN** native lifecycle handling already confirmed the same semantic event
+- **WHEN** the agent considers a manual save
+- **THEN** it avoids duplicate persistence or uses a stable event identity so the write is idempotent
+
+#### Scenario: US2 - Persist a durable semantic boundary proactively 4
+
+- **GIVEN** session identity is verified
+- **WHEN** a root-owned handoff is saved
+- **THEN** the exact `root_session_key` and matching `harness` are supplied together; if identity is unavailable or delegated, no identity or lifecycle ownership is invented
+
+#### Scenario: US2 - Persist a durable semantic boundary proactively 5
+
+- **GIVEN** `mem_save` fails or remains indeterminate
+- **WHEN** the agent reports the result
+- **THEN** it states that memory was not confirmed and does not claim durable persistence

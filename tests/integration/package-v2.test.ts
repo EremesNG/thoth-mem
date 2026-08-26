@@ -8,6 +8,36 @@ import { validateIntegrationInventory, type IntegrationInventory } from '../../s
 describe('canonical v2 integration package inventory', () => {
   const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as IntegrationInventory;
 
+  it('ships the bounded V2 memory workflow and durable semantic-boundary contract', () => {
+    const skill = readFileSync(join('plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'utf8');
+    const toolNames = [...skill.matchAll(/`(mem_[a-z]+)`/gu)].map((match) => match[1]);
+
+    expect(new Set(toolNames)).toEqual(new Set([
+      'mem_save',
+      'mem_recall',
+      'mem_context',
+      'mem_get',
+      'mem_project',
+      'mem_session',
+    ]));
+    expect(skill).toMatch(/persistent project memory[\s\S]*resume prior work[\s\S]*durable/iu);
+    expect(skill).toMatch(/compact[\s\S]*context[\s\S]*selected[\s\S]*`mem_get`/iu);
+    expect(skill).toMatch(/before (?:the )?final response[\s\S]*semantic boundary[\s\S]*future sessions benefit/iu);
+    expect(skill).toMatch(/architecture[\s\S]*root\s+cause|root\s+cause[\s\S]*architecture/iu);
+    expect(skill).toMatch(/reusable convention[\s\S]*completed change[\s\S]*continuation-critical/iu);
+    expect(skill).toMatch(/goal[\s\S]*decisions[\s\S]*discoveries[\s\S]*completed work[\s\S]*next steps[\s\S]*relevant files/iu);
+    expect(skill).toMatch(/evidence\.kind="handoff"[\s\S]*memory\.kind="handoff"/u);
+    expect(skill).toMatch(/transient status[\s\S]*speculation[\s\S]*raw logs[\s\S]*canonical artifacts/iu);
+    expect(skill).toMatch(/<private>[\s\S]*secrets[\s\S]*transcripts[\s\S]*assistant\/tool traffic[\s\S]*generated prompts/iu);
+    expect(skill).toMatch(/root_session_key[\s\S]*(?:together|paired)[\s\S]*harness/iu);
+    expect(skill).toMatch(/project-only[\s\S]*(?:unattributed|without claiming session continuity)/iu);
+    expect(skill).toMatch(/do not report[\s\S]*until[\s\S]*confirm/iu);
+    expect(skill).toMatch(/record ids[\s\S]*project[\s\S]*session bounds[\s\S]*(?:degraded|unattributed|not confirmed)/iu);
+    expect(skill).toMatch(/`mem_session`[\s\S]*actual\s+lifecycle\s+event/iu);
+    expect(skill).not.toMatch(/dashboard|observatory|community|graph|vector|hyde|http administration/iu);
+    expect(skill).not.toMatch(/mem_session\s*\(\s*action|session_id|include_timeline|max_length|navigation="community"/iu);
+  });
+
   it('owns one exact hook, MCP, Skill/reference, adapter runner, and manifest bundle per harness', () => {
     const valid = validateIntegrationInventory(inventory);
     expect(valid.shared).toEqual(['hook-runner.mjs']);
