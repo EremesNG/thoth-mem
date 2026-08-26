@@ -1,7 +1,14 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-import type { EvidenceKind, Harness, MemoryKind, MemoryOutcome, SaveMemoryInput } from '../memory-core/contracts.js';
+import {
+  EVIDENCE_KIND_VALUES,
+  HARNESS_VALUES,
+  LIFECYCLE_OPERATION_VALUES,
+  MEMORY_KIND_VALUES,
+  MEMORY_OUTCOME_VALUES,
+  type SaveMemoryInput,
+} from '../memory-core/contracts.js';
 import type { MemoryService } from '../memory-core/service.js';
 
 export const ALL_TOOLS = ['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session'] as const;
@@ -10,10 +17,48 @@ export interface V2ToolResult { [key: string]: unknown; content: Array<{ type: '
 type ToolHandler = (input: Record<string, unknown>) => Promise<V2ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
-function object(value: unknown, label: string): Record<string, unknown> { if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`); return value as Record<string, unknown>; }
+const evidenceInputSchema = z.object({
+  kind: z.enum(EVIDENCE_KIND_VALUES),
+  content: z.string().min(1),
+  source_ref: z.string().optional(),
+}).strict();
+const memoryInputSchema = z.object({
+  kind: z.enum(MEMORY_KIND_VALUES),
+  title: z.string().min(1),
+  content: z.string().min(1),
+  topic_key: z.string().optional(),
+  outcome: z.enum(MEMORY_OUTCOME_VALUES).optional(),
+  supersedes_id: z.string().optional(),
+}).strict();
+const memSaveInputSchema = z.object({
+  project_key: z.string().min(1),
+  project_name: z.string().min(1),
+  root_session_key: z.string().optional(),
+  harness: z.enum(HARNESS_VALUES).optional(),
+  event_key: z.string().optional(),
+  evidence: evidenceInputSchema,
+  memory: memoryInputSchema.optional(),
+}).strict();
+const memSessionInputSchema = z.object({
+  operation: z.enum(LIFECYCLE_OPERATION_VALUES),
+  harness: z.enum(HARNESS_VALUES),
+  project_key: z.string().min(1),
+  project_name: z.string().min(1),
+  root_session_key: z.string().min(1),
+  event_key: z.string().min(1),
+  content: z.string().optional(),
+}).strict();
+
 function string(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`); return value; }
 function optionalString(value: unknown): string | undefined { return typeof value === 'string' && value.trim() ? value : undefined; }
 function number(value: unknown, fallback: number): number { return typeof value === 'number' && Number.isFinite(value) ? value : fallback; }
+function parseToolInput<T>(schema: z.ZodType<T>, input: unknown): T {
+  const parsed = schema.safeParse(input);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const field = issue?.path.join('.') || 'request';
+  throw new Error(`${field}: ${issue?.message ?? 'invalid value'}`);
+}
 function success(tool: MemoryToolName, data: unknown, extras: Record<string, unknown> = {}): V2ToolResult { const structuredContent = { schema: `thoth-mem.mcp.v2.${tool}`, data, ...extras }; const text = JSON.stringify(structuredContent); return { content: [{ type: 'text', text: text.length > 20_000 ? `${text.slice(0, 19_900)}…` : text }], structuredContent }; }
 function failure(message: string, code = 'invalid_request'): V2ToolResult { const structuredContent = { schema: 'thoth-mem.mcp.v2.error', error: { code, message: message.slice(0, 500), retryable: false } }; return { isError: true, content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }; }
 function guarded(handler: ToolHandler): ToolHandler { return async (input) => { try { return await handler(input); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); } }; }
@@ -21,10 +66,10 @@ function guarded(handler: ToolHandler): ToolHandler { return async (input) => { 
 export function createToolHandlers(service: MemoryService): ToolHandlers {
   return {
     mem_save: guarded(async (input) => {
-      const evidence = object(input.evidence, 'evidence'); const memoryValue = input.memory === undefined ? undefined : object(input.memory, 'memory');
-      const rootSessionKey = optionalString(input.root_session_key); const harness = optionalString(input.harness) as Harness | undefined;
+      const parsed = parseToolInput(memSaveInputSchema, input);
+      const rootSessionKey = optionalString(parsed.root_session_key); const harness = parsed.harness;
       if ((rootSessionKey && !harness) || (!rootSessionKey && harness)) throw new Error('root_session_key and harness must be supplied together');
-      const saveInput: SaveMemoryInput = { project: { key: string(input.project_key, 'project_key'), name: string(input.project_name, 'project_name') }, ...(rootSessionKey && harness ? { session: { rootSessionKey, harness } } : {}), evidence: { kind: string(evidence.kind, 'evidence.kind') as EvidenceKind, content: string(evidence.content, 'evidence.content'), sourceRef: optionalString(evidence.source_ref) }, ...(memoryValue ? { memory: { kind: string(memoryValue.kind, 'memory.kind') as MemoryKind, title: string(memoryValue.title, 'memory.title'), content: string(memoryValue.content, 'memory.content'), topicKey: optionalString(memoryValue.topic_key), outcome: optionalString(memoryValue.outcome) as MemoryOutcome | undefined, supersedesId: optionalString(memoryValue.supersedes_id) } } : {}), eventKey: optionalString(input.event_key) };
+      const saveInput: SaveMemoryInput = { project: { key: parsed.project_key, name: parsed.project_name }, ...(rootSessionKey && harness ? { session: { rootSessionKey, harness } } : {}), evidence: { kind: parsed.evidence.kind, content: parsed.evidence.content, sourceRef: optionalString(parsed.evidence.source_ref) }, ...(parsed.memory ? { memory: { kind: parsed.memory.kind, title: parsed.memory.title, content: parsed.memory.content, topicKey: optionalString(parsed.memory.topic_key), outcome: parsed.memory.outcome, supersedesId: optionalString(parsed.memory.supersedes_id) } } : {}), eventKey: optionalString(parsed.event_key) };
       const data = service.save(saveInput); return success('mem_save', data, { sources: [data.evidence.id, ...(data.memory ? [data.memory.id] : [])], lanes: { lexical: 'ready' }, warnings: [] });
     }),
     mem_recall: guarded(async (input) => {
@@ -39,19 +84,19 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
       if (action === 'history') { const result = service.get({ id: string(input.id, 'id'), history: true }); return success('mem_project', { action, lineage: result.lineage }, { sources: result.lineage.map((item) => item.id) }); }
       return failure(`Unsupported mem_project action: ${action}`);
     }),
-    mem_session: guarded(async (input) => { const data = service.lifecycle({ operation: string(input.operation, 'operation') as Parameters<MemoryService['lifecycle']>[0]['operation'], harness: string(input.harness, 'harness') as Harness, project: { key: string(input.project_key, 'project_key'), name: string(input.project_name, 'project_name') }, rootSessionKey: string(input.root_session_key, 'root_session_key'), eventKey: string(input.event_key, 'event_key'), content: optionalString(input.content) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
+    mem_session: guarded(async (input) => { const parsed = parseToolInput(memSessionInputSchema, input); const data = service.lifecycle({ operation: parsed.operation, harness: parsed.harness, project: { key: parsed.project_key, name: parsed.project_name }, rootSessionKey: parsed.root_session_key, eventKey: parsed.event_key, content: optionalString(parsed.content) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
   };
 }
 
 export function registerTools(server: McpServer, service: MemoryService): void {
   const handlers = createToolHandlers(service);
   const schemas: Record<MemoryToolName, Record<string, z.ZodType>> = {
-    mem_save: { project_key: z.string(), project_name: z.string(), root_session_key: z.string().optional(), harness: z.enum(['opencode', 'codex', 'claude', 'mcp', 'cli', 'import']).optional(), event_key: z.string().optional(), evidence: z.record(z.string(), z.unknown()), memory: z.record(z.string(), z.unknown()).optional() },
+    mem_save: memSaveInputSchema.shape,
     mem_recall: { project_key: z.string(), query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
     mem_context: { project_key: z.string(), budget_chars: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
     mem_get: { id: z.string(), history: z.boolean().optional(), correlation_id: z.string().optional() },
     mem_project: { action: z.enum(['list', 'briefing', 'history']), project_key: z.string().optional(), id: z.string().optional(), budget_chars: z.number().optional() },
-    mem_session: { operation: z.enum(['enroll', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'finalize']), harness: z.enum(['opencode', 'codex', 'claude', 'mcp', 'cli', 'import']), project_key: z.string(), project_name: z.string(), root_session_key: z.string(), event_key: z.string(), content: z.string().optional() },
+    mem_session: memSessionInputSchema.shape,
   };
   for (const name of ALL_TOOLS) server.tool(name, `thoth-mem v2 ${name}`, schemas[name], async (args) => handlers[name](args));
 }

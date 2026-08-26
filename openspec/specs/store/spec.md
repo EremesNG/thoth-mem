@@ -1033,19 +1033,25 @@ The system MUST persist create, update, and delete mutations in `sync_mutations`
 
 ### Requirement: Startup Migrations MUST Be Structured and Idempotent
 
-Startup MUST apply only ordered migrations for the clean v2 schema and repeated runs SHALL converge; startup MUST NOT inspect, mutate, dual-read, or silently upgrade a legacy database.
+Startup MUST transactionally migrate only the declared known mappings `learning -> convention` and `certification|verification -> explicit_save`, preserve authoritative record identity and lineage, fail without partial mutation for unknown values, distinguish the internal SQLite revision from the public V2 protocol version, and remain separate from the one-way legacy-database importer.
 
-#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 1
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 1
 
-- **GIVEN** a readable legacy database
-- **WHEN** the importer runs
-- **THEN** it creates or populates a separate v2 target, leaves the source byte-for-byte unchanged, and reports imported, skipped, quarantined, and failed records
+- **GIVEN** an existing V2 database containing memory kind `learning` and evidence kinds `certification` or `verification`
+- **WHEN** startup migration runs
+- **THEN** it maps `learning` to `convention`, maps `certification` and `verification` to `explicit_save`, preserves stable records and relationships, and records the new internal schema revision atomically
 
-#### Scenario: US4 - Move useful legacy data without carrying legacy behavior 2
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 2
 
-- **GIVEN** legacy rows with placeholder or missing identity
-- **WHEN** they cannot be mapped safely
-- **THEN** the importer applies a documented deterministic disposition and reports it rather than presenting fabricated identity as trusted fact
+- **GIVEN** an existing database containing an unknown non-canonical taxonomy value
+- **WHEN** migration preflight runs
+- **THEN** startup fails with a bounded diagnostic and leaves the database at its prior revision without partial normalization
+
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 3
+
+- **GIVEN** an already-converged database
+- **WHEN** startup runs repeatedly
+- **THEN** migration is idempotent and performs no further ledger mutation
 
 ### Requirement: FTS Rebuild MUST Preserve Search Integrity
 When schema evolution requires FTS rebuild, the system MUST rebuild indexes so searchable observation coverage remains complete for non-deleted records.
@@ -1440,3 +1446,37 @@ The system MUST store stable identity, project and session provenance, creation 
 - **GIVEN** a failed implementation attempt with source-session evidence
 - **WHEN** a related task is recalled later
 - **THEN** the failure and its outcome can be returned with provenance instead of being silently deleted or rewritten
+
+### Requirement: SQLite Ledger MUST Enforce Canonical V2 Taxonomies
+
+Fresh and migrated SQLite ledgers MUST reject non-canonical evidence and memory kinds at the storage boundary, while the shared service MUST validate the same contract before opening a durable write.
+
+#### Scenario: US1 - Reject invalid memory writes before persistence 1
+
+- **GIVEN** a valid V2 save request
+- **WHEN** it enters through MCP or the shared service
+- **THEN** it persists with canonical evidence, memory, outcome, and session values and remains immediately recallable
+
+#### Scenario: US1 - Reject invalid memory writes before persistence 2
+
+- **GIVEN** a request containing `learning`, `certification`, `verification`, or another non-canonical taxonomy value
+- **WHEN** the write boundary validates it
+- **THEN** the request fails with a bounded field-specific error and no evidence, memory, receipt, or FTS row is committed
+
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 1
+
+- **GIVEN** an existing V2 database containing memory kind `learning` and evidence kinds `certification` or `verification`
+- **WHEN** startup migration runs
+- **THEN** it maps `learning` to `convention`, maps `certification` and `verification` to `explicit_save`, preserves stable records and relationships, and records the new internal schema revision atomically
+
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 2
+
+- **GIVEN** an existing database containing an unknown non-canonical taxonomy value
+- **WHEN** migration preflight runs
+- **THEN** startup fails with a bounded diagnostic and leaves the database at its prior revision without partial normalization
+
+#### Scenario: US2 - Converge the pre-constraint V2 ledger safely 3
+
+- **GIVEN** an already-converged database
+- **WHEN** startup runs repeatedly
+- **THEN** migration is idempotent and performs no further ledger mutation

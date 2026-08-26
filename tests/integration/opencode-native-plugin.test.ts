@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { Config, Hooks, PluginInput } from '@opencode-ai/plugin';
 import { describe, expect, it } from 'vitest';
 
+import type { LifecycleResult, RecallItem } from '../../src/memory-core/contracts.js';
 import {
   createThothMemPlugin,
   RECOVERY_TAG_END,
@@ -74,8 +75,16 @@ process.stdout.write(JSON.stringify({
   identity: { root_session_id: process.env.INVALID_IDENTITY ?? event.rootSessionKey, project: event.projectName },
   data: {
     outcome: 'confirmed', duplicate: false, projectId: 'project-id', sessionId: 'session-id', evidenceId: null,
-    recovery: { items: [], sources: [], budget: { requestedChars: 1, returnedChars: 0, truncatedChars: 0, sourceChars: 0, evidenceChars: 0, fullChars: 0, compressionRatio: 1, tokenBasis: 'estimated_chars_div_4' } },
-    capability: { hookExecuted: true, memoryConfirmed: true, contextDelivered: false, modelConsumed: false }
+    recovery: {
+      items: [{
+        id: 'memory-sc008', title: 'SC008 marker', kind: process.env.MEMORY_KIND ?? 'convention', topicKey: 'certification/sc008',
+        outcome: 'succeeded', status: 'current', snippet: 'SC008-CROSS-HOST-NATIVE-20260825-B', content: 'SC008-CROSS-HOST-NATIVE-20260825-B',
+        score: 1, scoreComponents: { exact: 1, lexical: 0, temporal: 1 }, lane: 'structured', evidenceIds: ['evidence-sc008']
+      }],
+      sources: ['memory-sc008', 'evidence-sc008'],
+      budget: { requestedChars: 1000, returnedChars: 39, truncatedChars: 0, sourceChars: 39, evidenceChars: 0, fullChars: 39, compressionRatio: 1, tokenBasis: 'estimated_chars_div_4' }
+    },
+    capability: { hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false }
   }
 }));
 `);
@@ -91,7 +100,7 @@ process.stdout.write(JSON.stringify({
         onDiagnostic: (code) => diagnostics.push(code),
       });
 
-      expect(result).toMatchObject({ outcome: 'confirmed', projectId: 'project-id', sessionId: 'session-id' });
+      expect(result).toMatchObject({ outcome: 'confirmed', projectId: 'project-id', sessionId: 'session-id', recovery: { items: [{ kind: 'convention', snippet: 'SC008-CROSS-HOST-NATIVE-20260825-B' }] } });
       expect(diagnostics).toEqual([]);
 
       const rejectedDiagnostics: string[] = [];
@@ -107,7 +116,22 @@ process.stdout.write(JSON.stringify({
         onDiagnostic: (code) => rejectedDiagnostics.push(code),
       });
       expect(rejected).toBeUndefined();
-      expect(rejectedDiagnostics).toEqual(['node_lifecycle_invalid_envelope']);
+      expect(rejectedDiagnostics).toEqual(['node_lifecycle_identity_mismatch']);
+
+      const taxonomyDiagnostics: string[] = [];
+      const invalidTaxonomy = await dispatchOpenCodeLifecycleThroughNode({
+        operation: 'recover',
+        directory: join(root, 'project'),
+        rootSessionKey: 'root-session',
+        eventKey: 'recover-3',
+      }, {
+        runtimeEntry,
+        nodeCommand: process.execPath,
+        runtimeConfig: { env: { MEMORY_KIND: 'learning' } },
+        onDiagnostic: (code) => taxonomyDiagnostics.push(code),
+      });
+      expect(invalidTaxonomy).toBeUndefined();
+      expect(taxonomyDiagnostics).toEqual(['node_lifecycle_invalid_recovery_taxonomy']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -135,7 +159,7 @@ process.stdout.write(JSON.stringify({
       }));
       const cases = [
         { runtimeEntry: paths.nonzero!, diagnostic: 'node_lifecycle_nonzero_exit' },
-        { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_invalid_envelope' },
+        { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_invalid_json' },
         { runtimeEntry: paths.excessive!, diagnostic: 'node_lifecycle_output_limit', maxOutputBytes: 32 },
         { runtimeEntry: paths.timeout!, diagnostic: 'node_lifecycle_timeout', timeoutMs: 20 },
         { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_launch_failed', nodeCommand: join(root, 'missing-node') },
@@ -324,6 +348,59 @@ process.stdout.write(JSON.stringify({
       const database = join(dataDir, 'memory-v2.sqlite');
       expect(existsSync(database)).toBe(true);
       renameSync(database, `${database}.moved`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('shares the host recovery budget across complete source-attributed item lines', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-recovery-budget-'));
+    const project = join(root, 'thoth-mem');
+    const marker = 'SC008-CROSS-HOST-NATIVE-20260825-A';
+    const item = (input: Pick<RecallItem, 'id' | 'title' | 'kind' | 'snippet' | 'evidenceIds'>): RecallItem => ({
+      ...input,
+      topicKey: null,
+      outcome: 'succeeded',
+      status: 'current',
+      content: input.snippet,
+      score: 1,
+      scoreComponents: { exact: 0, lexical: 0, temporal: 1 },
+      lane: 'structured',
+    });
+    const items = [
+      item({ id: '0956d981-b8e0-50b3-a648-9ade249ef89b', title: 'SC008 persistent-memory recovery independently certified', kind: 'convention', snippet: 'A'.repeat(499), evidenceIds: ['8ad08c9b-9376-52dc-a0c7-998a1f3229fd'] }),
+      item({ id: 'a7999201-f738-56a1-a5ba-c334c710d9a0', title: 'Host identity contract regression and correction', kind: 'failure', snippet: 'B'.repeat(359), evidenceIds: ['evidence-identity-contract'] }),
+      item({ id: 'db64a1c3-e6f7-528c-ac67-6d5ec98812ef', title: 'SC008 native cross-host handoff', kind: 'handoff', snippet: `${marker} ${'C'.repeat(425)}`, evidenceIds: ['7a052fa7-cross-host-evidence'] }),
+      item({ id: '3a60a13d-22ca-5ea6-ab3c-ec4d4576634a', title: 'SC005 local restart marker', kind: 'handoff', snippet: 'D'.repeat(73), evidenceIds: ['evidence-local-restart'] }),
+    ];
+    const recovery: LifecycleResult = {
+      outcome: 'confirmed',
+      duplicate: false,
+      projectId: 'project-id',
+      sessionId: 'session-id',
+      evidenceId: null,
+      recovery: {
+        items,
+        sources: items.flatMap((entry) => [entry.id, ...entry.evidenceIds]),
+        budget: { requestedChars: 4000, returnedChars: 1395, truncatedChars: 53, sourceChars: 1448, evidenceChars: 1538, fullChars: 1448, compressionRatio: 1395 / 1448, tokenBasis: 'estimated_chars_div_4' },
+      },
+      capability: { hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false },
+    };
+
+    try {
+      const hooks = await createThothMemPlugin({ lifecycleDispatch: async () => recovery })(pluginInput(project, new Map()));
+      await hooks.event?.(sessionEvent('session.created', project, 'root-session'));
+      const output = { system: ['stable-system-prefix'] };
+
+      await hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, output);
+
+      const block = output.system.at(-1)!;
+      expect(Array.from(block)).toHaveLength(1_000);
+      expect(block).toContain(marker);
+      expect(block).toContain('memory:db64a1c3-e6f7-528c-ac67-6d5ec98812ef');
+      const renderedItems = block.split('\n').filter((line) => line.startsWith('- ['));
+      expect(renderedItems).toHaveLength(4);
+      expect(renderedItems.every((line) => / \(memory:[^;]+; evidence:[^)]+\)$/u.test(line))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

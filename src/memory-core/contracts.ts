@@ -1,11 +1,30 @@
-export const MEMORY_SCHEMA_VERSION = 2;
+export const MEMORY_PROTOCOL_VERSION = 2;
 
-export type Harness = 'opencode' | 'codex' | 'claude' | 'mcp' | 'cli' | 'import';
-export type EvidenceKind = 'root_prompt' | 'explicit_save' | 'checkpoint' | 'handoff' | 'legacy_prompt' | 'legacy_observation';
-export type MemoryKind = 'decision' | 'convention' | 'architecture' | 'discovery' | 'failure' | 'project_structure' | 'handoff' | 'preference';
-export type MemoryOutcome = 'unknown' | 'succeeded' | 'failed' | 'mixed';
-export type MemoryStatus = 'current' | 'superseded' | 'retracted' | 'historical';
+export const HARNESS_VALUES = ['opencode', 'codex', 'claude', 'mcp', 'cli', 'import'] as const;
+export const EVIDENCE_KIND_VALUES = ['root_prompt', 'explicit_save', 'checkpoint', 'handoff', 'legacy_prompt', 'legacy_observation'] as const;
+export const MEMORY_KIND_VALUES = ['decision', 'convention', 'architecture', 'discovery', 'failure', 'project_structure', 'handoff', 'preference'] as const;
+export const MEMORY_OUTCOME_VALUES = ['unknown', 'succeeded', 'failed', 'mixed'] as const;
+export const MEMORY_STATUS_VALUES = ['current', 'superseded', 'retracted', 'historical'] as const;
+export const LIFECYCLE_OPERATION_VALUES = ['enroll', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'finalize'] as const;
+
+type CanonicalValue<T extends readonly string[]> = T[number];
+
+export type Harness = CanonicalValue<typeof HARNESS_VALUES>;
+export type EvidenceKind = CanonicalValue<typeof EVIDENCE_KIND_VALUES>;
+export type MemoryKind = CanonicalValue<typeof MEMORY_KIND_VALUES>;
+export type MemoryOutcome = CanonicalValue<typeof MEMORY_OUTCOME_VALUES>;
+export type MemoryStatus = CanonicalValue<typeof MEMORY_STATUS_VALUES>;
+export type LifecycleOperation = CanonicalValue<typeof LIFECYCLE_OPERATION_VALUES>;
 export type ProjectionState = 'disabled' | 'pending' | 'ready' | 'stale' | 'rebuilding' | 'degraded';
+
+export function isCanonicalValue<T extends readonly string[]>(values: T, value: unknown): value is CanonicalValue<T> {
+  return typeof value === 'string' && (values as readonly string[]).includes(value);
+}
+
+export function requireCanonicalValue<T extends readonly string[]>(label: string, values: T, value: unknown): CanonicalValue<T> {
+  if (!isCanonicalValue(values, value)) throw new Error(`${label} must be one of: ${values.join(', ')}`);
+  return value;
+}
 
 export interface ProjectIdentityInput { key: string; name: string; rootHint?: string | null }
 export interface SessionIdentityInput { rootSessionKey: string; harness: Harness }
@@ -22,7 +41,7 @@ export interface RecallItem { id: string; title: string; kind: MemoryKind; topic
 export interface RecallResult { items: RecallItem[]; budget: BudgetMeasurement; lanes: Record<string, ProjectionState | 'ready'>; warnings: string[]; correlationId: string }
 export interface ProjectionRecord { projectionId: string; configHash: string; sourceWatermark: number; state: ProjectionState; updatedAt: string; lastErrorCode: string | null }
 
-export interface LifecycleInput { operation: 'enroll' | 'recover' | 'capture_root' | 'checkpoint_pre_compact' | 'guide_post_compact' | 'finalize'; harness: Harness; project: ProjectIdentityInput; rootSessionKey: string; eventKey: string; identityConfidence?: 'confirmed' | 'degraded'; content?: string; capability?: { nativeEvent: string; contextInjection: boolean; modelConsumption: boolean } }
+export interface LifecycleInput { operation: LifecycleOperation; harness: Harness; project: ProjectIdentityInput; rootSessionKey: string; eventKey: string; identityConfidence?: 'confirmed' | 'degraded'; content?: string; capability?: { nativeEvent: string; contextInjection: boolean; modelConsumption: boolean } }
 export interface LifecycleCapability { hookExecuted: boolean; memoryConfirmed: boolean; contextDelivered: boolean; modelConsumed: boolean }
 export interface LifecycleRecovery { items: RecallItem[]; sources: string[]; budget: BudgetMeasurement }
 export interface LifecycleResult { outcome: 'confirmed' | 'degraded' | 'failed'; duplicate: boolean; projectId: string; sessionId: string; evidenceId: string | null; recovery?: LifecycleRecovery; capability: LifecycleCapability }

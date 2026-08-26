@@ -2,7 +2,15 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
 import type { AdapterEvent, LifecycleIntent } from '../adapters/v2.js';
-import type { LifecycleInput, LifecycleResult, RecallItem } from '../../memory-core/contracts.js';
+import {
+  isCanonicalValue,
+  MEMORY_KIND_VALUES,
+  MEMORY_OUTCOME_VALUES,
+  MEMORY_STATUS_VALUES,
+  type LifecycleInput,
+  type LifecycleResult,
+  type RecallItem,
+} from '../../memory-core/contracts.js';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 256_000;
@@ -32,11 +40,8 @@ export interface NodeLifecycleClientOptions {
   onDiagnostic?: (code: string) => void;
 }
 
-interface LifecycleEnvelope {
-  schema: 'thoth-mem.lifecycle.v2';
-  identity: { root_session_id: string; project: string };
-  data: LifecycleResult;
-}
+type EnvelopeDiagnostic = 'node_lifecycle_invalid_json' | 'node_lifecycle_identity_mismatch' | 'node_lifecycle_invalid_recovery_taxonomy' | 'node_lifecycle_invalid_envelope';
+type EnvelopeParseResult = { result: LifecycleResult; diagnostic?: never } | { result?: never; diagnostic: EnvelopeDiagnostic };
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -69,10 +74,10 @@ function recallItem(value: unknown): value is RecallItem {
   return Boolean(item
     && typeof item.id === 'string'
     && typeof item.title === 'string'
-    && ['decision', 'convention', 'architecture', 'discovery', 'failure', 'project_structure', 'handoff', 'preference'].includes(String(item.kind))
+    && isCanonicalValue(MEMORY_KIND_VALUES, item.kind)
     && (item.topicKey === null || typeof item.topicKey === 'string')
-    && ['unknown', 'succeeded', 'failed', 'mixed'].includes(String(item.outcome))
-    && ['current', 'superseded', 'retracted', 'historical'].includes(String(item.status))
+    && isCanonicalValue(MEMORY_OUTCOME_VALUES, item.outcome)
+    && isCanonicalValue(MEMORY_STATUS_VALUES, item.status)
     && typeof item.snippet === 'string'
     && (item.content === undefined || typeof item.content === 'string')
     && finiteNumber(item.score)
@@ -106,20 +111,36 @@ function lifecycleResult(value: unknown): value is LifecycleResult {
         && budget(recovery.budget))));
 }
 
-function parseEnvelope(value: string, event: AdapterEvent): LifecycleResult | undefined {
+function hasInvalidRecoveryTaxonomy(value: unknown): boolean {
+  const data = record(value);
+  const recovery = record(data?.recovery);
+  if (!Array.isArray(recovery?.items)) return false;
+  return recovery.items.some((value) => {
+    const item = record(value);
+    return Boolean(item && (
+      ('kind' in item && !isCanonicalValue(MEMORY_KIND_VALUES, item.kind))
+      || ('outcome' in item && !isCanonicalValue(MEMORY_OUTCOME_VALUES, item.outcome))
+      || ('status' in item && !isCanonicalValue(MEMORY_STATUS_VALUES, item.status))
+    ));
+  });
+}
+
+function parseEnvelope(value: string, event: AdapterEvent): EnvelopeParseResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return undefined;
+    return { diagnostic: 'node_lifecycle_invalid_json' };
   }
   const envelope = record(parsed);
   const identity = record(envelope?.identity);
   if (envelope?.schema !== 'thoth-mem.lifecycle.v2'
-    || identity?.root_session_id !== event.rootSessionKey
-    || identity.project !== event.projectName
-    || !lifecycleResult(envelope.data)) return undefined;
-  return envelope.data;
+    || typeof identity?.root_session_id !== 'string'
+    || typeof identity.project !== 'string') return { diagnostic: 'node_lifecycle_invalid_envelope' };
+  if (identity.root_session_id !== event.rootSessionKey || identity.project !== event.projectName) return { diagnostic: 'node_lifecycle_identity_mismatch' };
+  if (hasInvalidRecoveryTaxonomy(envelope.data)) return { diagnostic: 'node_lifecycle_invalid_recovery_taxonomy' };
+  if (!lifecycleResult(envelope.data)) return { diagnostic: 'node_lifecycle_invalid_envelope' };
+  return { result: envelope.data };
 }
 
 function adapterEvent(input: OpenCodeLifecycleDispatchInput): AdapterEvent {
@@ -210,8 +231,8 @@ export async function dispatchOpenCodeLifecycleThroughNode(
         finish(undefined, 'node_lifecycle_nonzero_exit');
         return;
       }
-      const result = parseEnvelope(stdout.trim(), event);
-      finish(result, result ? undefined : 'node_lifecycle_invalid_envelope');
+      const parsed = parseEnvelope(stdout.trim(), event);
+      finish(parsed.result, parsed.diagnostic);
     });
     child.stdin.once('error', () => finish(undefined, 'node_lifecycle_stdin_failed'));
     child.stdin.end(JSON.stringify(event));

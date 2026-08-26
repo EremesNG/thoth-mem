@@ -2,7 +2,23 @@ import { randomUUID } from 'node:crypto';
 
 import Database from 'better-sqlite3';
 
-import type { BudgetMeasurement, EvidenceRecord, LifecycleInput, LifecycleResult, MemoryRecord, RecallItem, RecallResult, SaveMemoryInput, SaveMemoryResult } from './contracts.js';
+import {
+  EVIDENCE_KIND_VALUES,
+  HARNESS_VALUES,
+  LIFECYCLE_OPERATION_VALUES,
+  MEMORY_KIND_VALUES,
+  MEMORY_OUTCOME_VALUES,
+  requireCanonicalValue,
+  type BudgetMeasurement,
+  type EvidenceRecord,
+  type LifecycleInput,
+  type LifecycleResult,
+  type MemoryRecord,
+  type RecallItem,
+  type RecallResult,
+  type SaveMemoryInput,
+  type SaveMemoryResult,
+} from './contracts.js';
 import { buildFtsQuery, surgicalSnippet } from './sqlite/fts.js';
 import { ensureProject, ensureSession, evidenceFromRow, hashContent, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
 import { migrateV2 } from './sqlite/migrations.js';
@@ -18,6 +34,15 @@ function measure(requested: number, source: number, evidence: number, returned: 
   return { requestedChars: requested, returnedChars: returned, truncatedChars: Math.max(0, source - returned), sourceChars: source, evidenceChars: evidence, fullChars: source, compressionRatio: source === 0 ? 1 : returned / source, tokenBasis: 'estimated_chars_div_4' };
 }
 function privacySafe(value: string): string { return value.replace(/<private>[\s\S]*?<\/private>/gi, '').replace(/\[private\][\s\S]*?\[\/private\]/gi, ''); }
+function validateEvidenceKind(value: unknown): void { requireCanonicalValue('evidence.kind', EVIDENCE_KIND_VALUES, value); }
+function validateSaveTaxonomy(input: SaveMemoryInput): void {
+  validateEvidenceKind(input.evidence.kind);
+  if (input.session) requireCanonicalValue('session.harness', HARNESS_VALUES, input.session.harness);
+  if (input.memory) {
+    requireCanonicalValue('memory.kind', MEMORY_KIND_VALUES, input.memory.kind);
+    if (input.memory.outcome !== undefined) requireCanonicalValue('memory.outcome', MEMORY_OUTCOME_VALUES, input.memory.outcome);
+  }
+}
 
 export class MemoryService {
   readonly projections: ProjectionRegistry;
@@ -54,6 +79,7 @@ export class MemoryService {
   }
 
   save(input: SaveMemoryInput): SaveMemoryResult {
+    validateSaveTaxonomy(input);
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project);
       const payloadHash = hashContent(JSON.stringify({ evidence: input.evidence, memory: input.memory ?? null }));
@@ -92,6 +118,7 @@ export class MemoryService {
   }
 
   retract(input: { id: string; evidence: SaveMemoryInput['evidence'] }): MemoryRecord {
+    validateEvidenceKind(input.evidence.kind);
     return this.database.transaction(() => {
       const row = this.database.prepare('SELECT * FROM memories WHERE id=?').get(input.id) as Record<string, unknown> | undefined;
       if (!row || row.status !== 'current') throw new Error('Memory is not current');
@@ -158,6 +185,8 @@ export class MemoryService {
   }
 
   lifecycle(input: LifecycleInput): LifecycleResult {
+    requireCanonicalValue('operation', LIFECYCLE_OPERATION_VALUES, input.operation);
+    requireCanonicalValue('harness', HARNESS_VALUES, input.harness);
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
       const found = this.database.prepare('SELECT outcome,evidence_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { outcome: LifecycleResult['outcome']; evidence_id: string | null } | undefined;

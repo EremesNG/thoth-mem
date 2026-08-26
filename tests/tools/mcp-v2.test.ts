@@ -28,6 +28,55 @@ describe('MCP v2 boundary', () => {
     } finally { service.close(); }
   });
 
+  it('accepts the canonical taxonomy and rejects non-canonical values before persistence', async () => {
+    const evidenceKinds = ['root_prompt', 'explicit_save', 'checkpoint', 'handoff', 'legacy_prompt', 'legacy_observation'] as const;
+    const memoryKinds = ['decision', 'convention', 'architecture', 'discovery', 'failure', 'project_structure', 'handoff', 'preference'] as const;
+    const memoryOutcomes = ['unknown', 'succeeded', 'failed', 'mixed'] as const;
+    const harnesses = ['opencode', 'codex', 'claude', 'mcp', 'cli', 'import'] as const;
+    const lifecycleOperations = ['enroll', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'finalize'] as const;
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+
+      for (const [index, kind] of evidenceKinds.entries()) {
+        const result = await handlers.mem_save({ project_key: `repo:evidence:${index}`, project_name: 'taxonomy', evidence: { kind, content: `Evidence ${kind}` } });
+        expect(result.isError, kind).not.toBe(true);
+      }
+      for (const [index, kind] of memoryKinds.entries()) {
+        const result = await handlers.mem_save({ project_key: `repo:memory:${index}`, project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: `Evidence ${kind}` }, memory: { kind, title: `Memory ${kind}`, content: `Memory ${kind}` } });
+        expect(result.isError, kind).not.toBe(true);
+      }
+      for (const [index, outcome] of memoryOutcomes.entries()) {
+        const result = await handlers.mem_save({ project_key: `repo:outcome:${index}`, project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: `Evidence ${outcome}` }, memory: { kind: 'decision', title: `Memory ${outcome}`, content: `Memory ${outcome}`, outcome } });
+        expect(result.isError, outcome).not.toBe(true);
+      }
+      for (const [index, harness] of harnesses.entries()) {
+        const result = await handlers.mem_save({ project_key: `repo:harness:${index}`, project_name: 'taxonomy', root_session_key: `root-${index}`, harness, evidence: { kind: 'explicit_save', content: `Evidence ${harness}` } });
+        expect(result.isError, harness).not.toBe(true);
+      }
+      for (const [index, operation] of lifecycleOperations.entries()) {
+        const result = await handlers.mem_session({ operation, harness: 'mcp', project_key: `repo:lifecycle:${index}`, project_name: 'taxonomy', root_session_key: `root-${index}`, event_key: `event-${index}` });
+        expect(result.isError, operation).not.toBe(true);
+      }
+
+      const invalidCases = [
+        { field: 'evidence.kind', input: { project_key: 'repo:invalid:evidence', project_name: 'taxonomy', evidence: { kind: 'certification', content: 'Must fail.' } }, handler: handlers.mem_save },
+        { field: 'memory.kind', input: { project_key: 'repo:invalid:memory', project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: 'Must fail.' }, memory: { kind: 'learning', title: 'Must fail', content: 'Must fail.' } }, handler: handlers.mem_save },
+        { field: 'memory.outcome', input: { project_key: 'repo:invalid:outcome', project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: 'Must fail.' }, memory: { kind: 'decision', title: 'Must fail', content: 'Must fail.', outcome: 'successful' } }, handler: handlers.mem_save },
+        { field: 'harness', input: { project_key: 'repo:invalid:harness', project_name: 'taxonomy', root_session_key: 'root', harness: 'cursor', evidence: { kind: 'explicit_save', content: 'Must fail.' } }, handler: handlers.mem_save },
+        { field: 'operation', input: { operation: 'restore', harness: 'mcp', project_key: 'repo:invalid:operation', project_name: 'taxonomy', root_session_key: 'root', event_key: 'event' }, handler: handlers.mem_session },
+      ];
+      const projectCount = service.listProjects().length;
+      for (const testCase of invalidCases) {
+        const result = await testCase.handler(testCase.input);
+        expect(result.isError, testCase.field).toBe(true);
+        expect(JSON.stringify(result.structuredContent), testCase.field).toContain(testCase.field);
+      }
+      expect(service.listProjects()).toHaveLength(projectCount);
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
   it('correlates compact recall with explicit full-fetch escalation telemetry', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {

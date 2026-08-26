@@ -608,19 +608,19 @@ OpenCode, Codex, and Claude Code lifecycle integrations MUST perform memory oper
 
 ### Requirement: Native Integrations MUST Use the Documented V2 Tool Contracts
 
-Every native plugin MUST call the shared v2 tools and schemas; the release MAY break old inputs, actions, and response shapes and MUST NOT add compatibility shims unless a separate change explicitly requires them.
+The six-tool MCP surface MUST describe and validate nested evidence kind, memory kind, memory outcome, harness, and lifecycle operation values using canonical runtime schemas; TypeScript casts alone MUST NOT admit arbitrary strings, and every native integration MUST consume the same validated V2 contract.
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 1
+#### Scenario: US1 - Reject invalid memory writes before persistence 1
 
-- **GIVEN** the v2 MCP server
-- **WHEN** its registry is listed
-- **THEN** it exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+- **GIVEN** a valid V2 save request
+- **WHEN** it enters through MCP or the shared service
+- **THEN** it persists with canonical evidence, memory, outcome, and session values and remains immediately recallable
 
-#### Scenario: US5 - Keep the MCP workflow compact while resetting semantics deliberately 2
+#### Scenario: US1 - Reject invalid memory writes before persistence 2
 
-- **GIVEN** a client that depends on an old request, response, graph action, or storage behavior
-- **WHEN** it calls v2
-- **THEN** v2 follows its documented contract and does not activate a hidden compatibility shim
+- **GIVEN** a request containing `learning`, `certification`, `verification`, or another non-canonical taxonomy value
+- **WHEN** the write boundary validates it
+- **THEN** the request fails with a bounded field-specific error and no evidence, memory, receipt, or FTS row is committed
 
 ### Requirement: Native Integrations MUST Share V2 Storage and Retrieval Semantics
 

@@ -84,13 +84,48 @@ function renderRecovery(result: LifecycleResult | undefined, rootSessionKey: str
   const required = `${prefix}${suffix}`;
   if (Array.from(required).length > MAX_HOST_OUTPUT_CODE_POINTS) return undefined;
   if (items.length === 0) return required;
-  const context = [
-    '## thoth-mem recovered context',
-    ...items.map((item) => `- [${item.kind}] ${item.title}: ${item.content ?? item.snippet} (memory:${item.id}; evidence:${item.evidenceIds.join(',') || 'none'})`),
-  ].join('\n');
   const contextBudget = MAX_HOST_OUTPUT_CODE_POINTS - Array.from(required).length - 2;
   if (contextBudget <= 0) return required;
-  return `${prefix}\n\n${Array.from(context).slice(0, contextBudget).join('')}${suffix}`;
+  const heading = Array.from('## thoth-mem recovered context');
+  const candidates = items.map((item) => ({
+    prefix: Array.from(`- [${item.kind}] ${item.title}: `),
+    content: Array.from(item.content ?? item.snippet),
+    suffix: Array.from(` (memory:${item.id}; evidence:${item.evidenceIds.join(',') || 'none'})`),
+  }));
+  const selected: typeof candidates = [];
+  let reservedCodePoints = heading.length;
+  for (const candidate of candidates) {
+    const fixedItemCodePoints = 1 + candidate.prefix.length + candidate.suffix.length;
+    const minimumContentCodePoints = Math.min(1, candidate.content.length);
+    if (reservedCodePoints + fixedItemCodePoints + minimumContentCodePoints > contextBudget) continue;
+    selected.push(candidate);
+    reservedCodePoints += fixedItemCodePoints + minimumContentCodePoints;
+  }
+  if (selected.length === 0) return required;
+
+  const allocations = selected.map(() => 0);
+  const fixedCodePoints = heading.length + selected.reduce((sum, item) => sum + 1 + item.prefix.length + item.suffix.length, 0);
+  let remainingCodePoints = contextBudget - fixedCodePoints;
+  while (remainingCodePoints > 0) {
+    let allocated = false;
+    for (const [index, item] of selected.entries()) {
+      if (allocations[index]! >= item.content.length) continue;
+      allocations[index]! += 1;
+      remainingCodePoints -= 1;
+      allocated = true;
+      if (remainingCodePoints === 0) break;
+    }
+    if (!allocated) break;
+  }
+
+  const lines = selected.map((item, index) => {
+    const allowance = allocations[index]!;
+    const content = item.content.slice(0, allowance);
+    if (allowance > 0 && allowance < item.content.length) content[allowance - 1] = '…';
+    return [...item.prefix, ...content, ...item.suffix].join('');
+  });
+  const context = [heading.join(''), ...lines].join('\n');
+  return `${prefix}\n\n${context}${suffix}`;
 }
 
 function isOwnedRecoveryBlock(value: string): boolean {

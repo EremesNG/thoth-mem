@@ -242,29 +242,26 @@ A Codex lifecycle capability MUST be classified as active only when the current 
 - **THEN** it reports degradation instead of inventing confirmed exactly-once behavior
 
 ### Requirement: Model-Visible Recovery Context MUST Be Bounded and Capability-Gated
-When a verified OpenCode, Codex, or Claude Code activation path safely supports
-model-context delivery on session start or resume, the integration MUST request
-only bounded recovery through the existing memory lifecycle and MUST deliver the
-result to the active model through that verified host capability. Recovery
-content MUST preserve existing identity, privacy, retrieval-bound, and
-source-attribution contracts. A host that cannot safely inject or confirm
-model-visible delivery MUST report that recovery capability as degraded or
-unsupported without claiming that delivered context was consumed.
 
-#### Scenario: Supported start delivers bounded recovery context
-- GIVEN an active root session has a verified model-context injection capability
-- WHEN activation or resume succeeds
-- THEN the integration MUST request bounded recovery using only the existing
-  memory operations
-- AND it MUST deliver the resulting bounded guidance through the verified host
-  mechanism
+Confirmed automatic recovery MUST render only canonical, bounded, source-attributed items from the shared lifecycle result; the host-visible budget MUST be allocated at item boundaries so a long leading item cannot consume the complete content allowance while later selected items fit only outside the final block; an invalid envelope MUST inject no memory and MUST remain distinguishable from successful context delivery and model consumption.
 
-#### Scenario: Unverified injection does not claim delivery
-- GIVEN a harness can activate an asset but cannot safely prove model-context
-  injection for the detected version and payload
-- WHEN the session starts or resumes
-- THEN the integration MUST report recovery delivery as degraded or unsupported
-- AND it MUST NOT report model-visible recovery as confirmed
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 1
+
+- **GIVEN** a project with canonical current memories
+- **WHEN** OpenCode invokes `experimental.chat.system.transform` for a verified root session
+- **THEN** the Node lifecycle envelope passes the shared taxonomy validator and the bounded tagged recovery block contains source-attributed context
+
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 2
+
+- **GIVEN** Node returns an envelope with a non-canonical recovery item
+- **WHEN** the Bun-side client validates it
+- **THEN** it rejects the envelope, emits a bounded reason-specific diagnostic, injects no unverified memory, and does not reject the user's prompt
+
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 3
+
+- **GIVEN** a fresh real OpenCode session and a marker absent from the user prompt
+- **WHEN** the model is instructed not to call tools, MCP, or Skills
+- **THEN** it can return the marker from automatic context and the export contains no thoth-mem tool calls
 
 ### Requirement: Verified Compaction MUST Checkpoint Before Post-Compaction Guidance
 For a verified compaction event, the integration MUST request the existing
@@ -902,16 +899,22 @@ The native OpenCode plugin MUST register exactly one host-native tool named `tho
 
 ### Requirement: OpenCode Bun Runtime MUST Keep SQLite Behind the Node Boundary
 
-The native OpenCode bundle MUST NOT import, bundle, instantiate, or execute `better-sqlite3`, `MemoryService`, or another Node-native persistence binding inside Bun. It MUST derive the lifecycle entry relative to its own package, invoke literal `node` without a shell or `npx`, send one validated host-neutral v2 event over stdin, accept only the versioned lifecycle envelope, bound time/output, and treat launch, timeout, exit, or parse failure as no verified lifecycle result rather than a host-fatal exception.
+The Bun-side lifecycle client MUST continue to accept only a bounded versioned Node envelope, but its nested taxonomy validation MUST consume the same canonical runtime values as the Node core and MUST report a reason-specific safe diagnostic when validation fails.
 
-#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 1
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 1
 
-- **GIVEN** OpenCode loads the native plugin inside Bun
-- **WHEN** a root lifecycle event requires persistence or recovery
-- **THEN** the Bun bundle sends one bounded v2 JSON request to the package-relative `node dist/index.js lifecycle-v2` entry and never imports or instantiates `better-sqlite3` or `MemoryService` itself
+- **GIVEN** a project with canonical current memories
+- **WHEN** OpenCode invokes `experimental.chat.system.transform` for a verified root session
+- **THEN** the Node lifecycle envelope passes the shared taxonomy validator and the bounded tagged recovery block contains source-attributed context
 
-#### Scenario: US6 - Run native OpenCode hooks safely inside Bun 2
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 2
 
-- **GIVEN** Node is missing, exits nonzero, times out, or returns malformed output
-- **WHEN** a lifecycle hook runs
-- **THEN** thoth-mem fails closed without injecting unverified recovery and without rejecting the user's OpenCode prompt
+- **GIVEN** Node returns an envelope with a non-canonical recovery item
+- **WHEN** the Bun-side client validates it
+- **THEN** it rejects the envelope, emits a bounded reason-specific diagnostic, injects no unverified memory, and does not reject the user's prompt
+
+#### Scenario: US3 - Deliver automatic OpenCode recovery through the strict shared contract 3
+
+- **GIVEN** a fresh real OpenCode session and a marker absent from the user prompt
+- **WHEN** the model is instructed not to call tools, MCP, or Skills
+- **THEN** it can return the marker from automatic context and the export contains no thoth-mem tool calls
