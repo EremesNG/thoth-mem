@@ -54,7 +54,7 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
-            "timeout": 5
+            "timeout": 3
           }
         ]
       }

@@ -99,8 +99,9 @@ describe('public plugin marketplace distribution', () => {
       expect(existsSync(resolve(pluginRoot, component)), component).toBe(true);
     }
 
-    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>> }>(resolve(pluginRoot, './hooks/hooks.json'));
+    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string; timeout: number }> }>> }>(resolve(pluginRoot, './hooks/hooks.json'));
     expect(Object.keys(hooks.hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'SessionEnd']);
+    expect(hooks.hooks.SessionEnd?.flatMap((group) => group.hooks).map((hook) => hook.timeout)).toEqual([3]);
     for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
       expect(hook.type).toBe('command');
       expect(hook.command).toContain('${PLUGIN_ROOT}/runners/public-runner.mjs');
