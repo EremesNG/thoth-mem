@@ -120,7 +120,7 @@
       "checkpoints": 1,
       "recoveries": 2,
       "recovery_success": 2,
-      "delivered_sources": 6
+      "delivered_sources": 4
     },
     "continuity": {
       "actionable_field_names": [
@@ -143,47 +143,46 @@
       "poisoned_memory_safe": 1,
       "host_cap_compliance": 1,
       "evidence_ids_exposed": 0,
-      "injected_code_points": 1000,
-      "injected_tokens": 250,
-      "useful_content_code_points": 549,
-      "useful_content_ratio": 0.6189402480270575,
+      "injected_code_points": 960,
+      "injected_tokens": 240,
+      "useful_content_code_points": 584,
+      "useful_content_ratio": 0.6894923258559622,
       "selected_memory_ids": [
         "c2c5fdf5-d9c3-54f8-a8eb-d400cbcf6228",
-        "d22a3ea5-3add-5961-aad2-c39cc1d41033",
-        "f879eb2b-7920-5efb-a921-de8e99202659"
+        "d22a3ea5-3add-5961-aad2-c39cc1d41033"
       ]
     },
     "resources": {
-      "latency_p50_ms": 0.43590000000000373,
-      "latency_p95_ms": 2.7906000000000404,
-      "ingestion_ms": 2.1323999999999614,
-      "startup_ms": 239.92899999999997,
-      "peak_memory_bytes": 81793024,
+      "latency_p50_ms": 0.33440000000001646,
+      "latency_p95_ms": 1.8748999999999967,
+      "ingestion_ms": 1.6818999999999846,
+      "startup_ms": 227.52769999999998,
+      "peak_memory_bytes": 81563648,
       "database_bytes": 143360,
       "model_bytes": 0,
       "network_calls": 0,
       "llm_calls": 0,
-      "injected_tokens": 250,
+      "injected_tokens": 240,
       "returned_chars": 23,
       "truncated_chars": 0,
       "samples": {
         "latency_ms": [
-          2.7906000000000404,
-          0.5704999999999814,
-          0.3464999999999918,
-          0.43590000000000373,
-          0.6884000000000015,
-          0.42349999999999,
-          0.39549999999997
+          1.8748999999999967,
+          0.35120000000000573,
+          0.32519999999999527,
+          0.30400000000003047,
+          0.32389999999998054,
+          0.33440000000001646,
+          0.38100000000002865
         ],
         "memory_bytes": [
-          81686528,
-          81690624,
-          81707008,
-          81727488,
-          81756160,
-          81772544,
-          81793024
+          81326080,
+          81371136,
+          81391616,
+          81391616,
+          81477632,
+          81498112,
+          81563648
         ]
       }
     }
