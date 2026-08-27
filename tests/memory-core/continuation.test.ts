@@ -27,6 +27,24 @@ const item = (id: string, kind: MemoryKind, title: string, content: string): Rec
 });
 
 describe('continuation renderer', () => {
+  it('preserves an individually fitting primary handoff before competing memories', () => {
+    const primaryContent = `Objective: resume the certified plugin. Completed: native hook delivery is verified. ${'Relevant handoff detail. '.repeat(14)}First pending action: HIDDEN-EXACT-OPENCODE-ACTION. Blockers: none. Key files/checks: continuation renderer and real-host smoke.`;
+    const result = renderContinuation({
+      rootSessionKey: 'root-primary',
+      projectName: 'thoth-mem',
+      items: [
+        item('memory-primary', 'handoff', 'Newest actionable handoff', primaryContent),
+        item('memory-secondary-decision', 'decision', 'Older project decision', `Secondary decision. ${'decision detail '.repeat(120)}`),
+        item('memory-secondary-failure', 'failure', 'Older failed attempt', `Secondary failure. ${'failure detail '.repeat(120)}`),
+      ],
+    });
+
+    expect(result.selectedMemoryIds[0]).toBe('memory-primary');
+    expect(result.context).toContain(primaryContent);
+    expect(result.context).toContain('First pending action: HIDDEN-EXACT-OPENCODE-ACTION.');
+    expect(result.measurements.totalCodePoints).toBeLessThanOrEqual(MAX_HOST_OUTPUT_CODE_POINTS);
+  });
+
   it('allocates useful content before optional candidates under one complete bounded envelope', () => {
     const candidates = [
       item('memory-a', 'handoff', 'Current handoff', `Objective: HIDDEN-OBJECTIVE. First pending action: HIDDEN-ACTION. ${'primary detail '.repeat(160)}`),
@@ -57,6 +75,21 @@ describe('continuation renderer', () => {
     expect(first.measurements.totalCodePoints).toBe(codePoints(first.context));
     expect(first.measurements.totalCodePoints).toBeLessThanOrEqual(MAX_HOST_OUTPUT_CODE_POINTS);
     expect(first.measurements.usefulContentRatio).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('keeps deterministic input order when no handoff is eligible', () => {
+    const result = renderContinuation({
+      rootSessionKey: 'root-guidance',
+      projectName: 'thoth-mem',
+      items: [
+        item('memory-decision-first', 'decision', 'Primary decision', `Keep SQLite authoritative. ${'Decision detail. '.repeat(80)}`),
+        item('memory-failure-second', 'failure', 'Secondary failure', `A previous runtime failed. ${'Failure detail. '.repeat(80)}`),
+      ],
+    });
+
+    expect(result.selectedMemoryIds).toEqual(['memory-decision-first', 'memory-failure-second']);
+    expect(result.context.indexOf('(memory:memory-decision-first)')).toBeLessThan(result.context.indexOf('(memory:memory-failure-second)'));
+    expect(result.measurements.totalCodePoints).toBeLessThanOrEqual(MAX_HOST_OUTPUT_CODE_POINTS);
   });
 
   it('counts Unicode code points and normalizes untrusted line and delimiter controls', () => {

@@ -127,17 +127,25 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
   const contextualSuffix = `\n${RECOVERY_TAG_END}`;
   const fixedEnvelopeCodePoints = codePoints(`${contextualPrefix}${contextualSuffix}`).length;
   const identityPrefixCodePoints = codePoints(identityPrefix).length;
+  const candidates = input.items.map(candidateFrom).filter((candidate): candidate is Candidate => candidate !== undefined);
+  const primaryHandoff = candidates.find((candidate) => candidate.item.kind === 'handoff');
+  const primaryFitsCompletely = primaryHandoff !== undefined
+    && fixedEnvelopeCodePoints + fixedItemCodePoints(primaryHandoff) + primaryHandoff.content.length <= maxCodePoints;
+  const orderedCandidates = primaryHandoff
+    ? [primaryHandoff, ...candidates.filter((candidate) => candidate !== primaryHandoff)]
+    : candidates;
   const selected: Candidate[] = [];
   let reservedCodePoints = fixedEnvelopeCodePoints;
-  for (const item of input.items) {
+  for (const candidate of orderedCandidates) {
     if (selected.length === MAX_CONTINUATION_ITEMS) break;
-    const candidate = candidateFrom(item);
-    if (!candidate) continue;
-    const candidateFixedCodePoints = fixedItemCodePoints(candidate);
-    if (reservedCodePoints + candidateFixedCodePoints + candidate.minimumContentCodePoints > maxCodePoints) continue;
-    if (metadataWouldStarveAvailableContent([...selected, candidate], maxCodePoints, fixedEnvelopeCodePoints, identityPrefixCodePoints)) continue;
-    selected.push(candidate);
-    reservedCodePoints += candidateFixedCodePoints + candidate.minimumContentCodePoints;
+    const budgetedCandidate = primaryFitsCompletely && candidate === primaryHandoff
+      ? { ...candidate, minimumContentCodePoints: candidate.content.length }
+      : candidate;
+    const candidateFixedCodePoints = fixedItemCodePoints(budgetedCandidate);
+    if (reservedCodePoints + candidateFixedCodePoints + budgetedCandidate.minimumContentCodePoints > maxCodePoints) continue;
+    if (metadataWouldStarveAvailableContent([...selected, budgetedCandidate], maxCodePoints, fixedEnvelopeCodePoints, identityPrefixCodePoints)) continue;
+    selected.push(budgetedCandidate);
+    reservedCodePoints += candidateFixedCodePoints + budgetedCandidate.minimumContentCodePoints;
   }
 
   if (selected.length === 0) {

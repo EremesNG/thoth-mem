@@ -151,31 +151,41 @@ describe('host-neutral lifecycle', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-cross-host-'));
     const databasePath = join(root, 'memory.sqlite');
     const project = { key: 'path:C:/fixture/cross-host', name: 'cross-host' };
+    const handoffContent = `Objective: continue the SQLite-first native plugin. Completed: automatic context delivery is verified. ${'Relevant cross-host detail. '.repeat(14)}First pending action: HIDDEN-CROSS-HOST-ACTION. Blockers: none. Key files/checks: continuation renderer and lifecycle smoke.`;
     try {
       let service = new MemoryService({ databasePath });
       const seeded = service.save({
         project,
         session: { harness: 'codex', rootSessionKey: 'codex-root' },
         eventKey: 'codex:handoff:stable',
-        evidence: { kind: 'handoff', content: 'Continue with the SQLite-first native plugin.', sourceRef: 'codex:handoff' },
-        memory: { kind: 'handoff', title: 'Cross-host native handoff', content: 'Continue with the SQLite-first native plugin.', topicKey: 'handoff/native-plugin' },
+        evidence: { kind: 'handoff', content: handoffContent, sourceRef: 'codex:handoff' },
+        memory: { kind: 'handoff', title: 'Cross-host native handoff', content: handoffContent, topicKey: 'handoff/native-plugin' },
+      });
+      service.save({
+        project,
+        evidence: { kind: 'explicit_save', content: 'Older SQLite decision evidence.' },
+        memory: { kind: 'decision', title: 'Older SQLite decision', content: `SQLite remains authoritative. ${'Decision detail. '.repeat(120)}` },
+      });
+      service.save({
+        project,
+        evidence: { kind: 'explicit_save', content: 'Older failed runtime evidence.' },
+        memory: { kind: 'failure', title: 'Older failed runtime', content: `A direct Bun SQLite load failed. ${'Failure detail. '.repeat(120)}`, outcome: 'failed' },
       });
       service.close();
 
       service = new MemoryService({ databasePath });
       const recovered = service.lifecycle({ operation: 'recover', harness: 'opencode', project, rootSessionKey: 'opencode-root', eventKey: 'opencode:start' });
-      expect(recovered.recovery?.items).toEqual([
-        expect.objectContaining({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id], content: 'Continue with the SQLite-first native plugin.' }),
-      ]);
-      expect(recovered.recovery?.context).toContain('Continue with the SQLite-first native plugin.');
+      expect(recovered.recovery?.items[0]).toEqual(expect.objectContaining({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id], content: handoffContent }));
+      expect(recovered.recovery?.context).toContain(handoffContent);
+      expect(recovered.recovery?.context).toContain('First pending action: HIDDEN-CROSS-HOST-ACTION.');
       expect(recovered.recovery?.context).toContain(`(memory:${seeded.memory!.id})`);
       expect(recovered.recovery?.context).not.toContain(seeded.evidence.id);
-      expect(recovered.recovery?.selectedMemoryIds).toEqual([seeded.memory!.id]);
+      expect(recovered.recovery?.selectedMemoryIds[0]).toBe(seeded.memory!.id);
       expect(recovered.recovery?.rendering).toMatchObject({ maxCodePoints: MAX_HOST_OUTPUT_CODE_POINTS, contentCodePoints: expect.any(Number), usefulContentRatio: expect.any(Number) });
-      expect(recovered.recovery?.sources).toEqual([seeded.memory!.id, seeded.evidence.id]);
+      expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([seeded.memory!.id, seeded.evidence.id]));
       expect(recovered.capability.contextDelivered).toBe(true);
       const replay = service.lifecycle({ operation: 'recover', harness: 'opencode', project, rootSessionKey: 'opencode-root', eventKey: 'opencode:start' });
-      expect(replay).toMatchObject({ duplicate: true, recovery: { context: recovered.recovery?.context, selectedMemoryIds: [seeded.memory!.id] } });
+      expect(replay).toMatchObject({ duplicate: true, recovery: { context: recovered.recovery?.context, selectedMemoryIds: recovered.recovery?.selectedMemoryIds } });
       expect(service.get({ id: seeded.evidence.id }).record).toMatchObject({ id: seeded.evidence.id, sourceRef: 'codex:handoff' });
       expect(service.get({ id: seeded.memory!.id }).record).toMatchObject({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id] });
       service.close();
