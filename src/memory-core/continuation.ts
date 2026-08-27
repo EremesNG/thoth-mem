@@ -1,4 +1,4 @@
-import { MEMORY_KIND_VALUES, type RecallItem } from './contracts.js';
+import { MEMORY_KIND_VALUES, SESSION_SUMMARY_KIND_VALUES, type ContextItem, type RecallItem, type SummaryContextItem } from './contracts.js';
 
 export const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
 export const RECOVERY_TAG_END = '<!-- thoth-mem:recovery:end -->';
@@ -22,25 +22,29 @@ export interface ContinuationMeasurements {
 export interface ContinuationRenderInput {
   rootSessionKey: string;
   projectName: string;
-  items: RecallItem[];
+  items: ContextItem[];
   maxCodePoints?: number;
 }
 
 export interface ContinuationRenderResult {
   context: string;
-  selectedItems: RecallItem[];
+  selectedItems: ContextItem[];
+  selectedSummaryIds: string[];
   selectedMemoryIds: string[];
+  selectedRecordIds: string[];
   contextDelivered: boolean;
   measurements: ContinuationMeasurements;
 }
 
 interface Candidate {
-  item: RecallItem;
+  item: ContextItem;
   prefix: string;
   suffix: string;
   content: string[];
   minimumContentCodePoints: number;
 }
+
+const SUMMARY_CLAIM_ORDER = ['objective', 'completed', 'decision', 'verification', 'changed_surface', 'pending', 'blocker', 'next_action'] as const;
 
 const codePoints = (value: string): string[] => Array.from(value);
 
@@ -64,7 +68,8 @@ function safeDisplay(value: string, withheldReferences: string[]): string {
     .normalize('NFC')
     .replaceAll(RECOVERY_TAG_START, '[thoth-mem recovery start data]')
     .replaceAll(RECOVERY_TAG_END, '[thoth-mem recovery end data]')
-    .replaceAll('(memory:', '(memory-data:');
+    .replaceAll('(memory:', '(memory-data:')
+    .replaceAll('(summary:', '(summary-data:');
   for (const reference of withheldReferences) {
     if (reference) safe = safe.replaceAll(reference, WITHHELD_EVIDENCE_REFERENCE);
   }
@@ -74,7 +79,43 @@ function safeDisplay(value: string, withheldReferences: string[]): string {
     .trim();
 }
 
-function candidateFrom(item: RecallItem): Candidate | undefined {
+function isSummaryItem(item: ContextItem): item is SummaryContextItem {
+  return 'recordType' in item && item.recordType === 'summary';
+}
+
+function summaryClaimText(item: SummaryContextItem, maxCodePoints: number): { content: string; nextAction: string } | undefined {
+  const ordered = item.claims.slice().sort((left, right) => SUMMARY_CLAIM_ORDER.indexOf(left.kind) - SUMMARY_CLAIM_ORDER.indexOf(right.kind));
+  const nextAction = ordered.filter((claim) => claim.kind === 'next_action').map((claim) => safeDisplay(claim.content, [item.submissionEvidenceId])).filter(Boolean).join(' ');
+  const contentBudget = Math.max(80, Math.min(480, Math.floor(maxCodePoints * 0.55)));
+  const selected: string[] = [];
+  let used = 0;
+  for (const claim of ordered) {
+    if (claim.kind === 'next_action') continue;
+    const rendered = `${claim.kind.replace('_', ' ')}: ${safeDisplay(claim.content, [item.submissionEvidenceId])}`;
+    const size = codePoints(rendered).length + (selected.length > 0 ? 1 : 0);
+    if (rendered.endsWith(': ') || used + size > contentBudget) continue;
+    selected.push(rendered);
+    used += size;
+  }
+  const content = selected.join(' ');
+  return content || nextAction ? { content, nextAction } : undefined;
+}
+
+function candidateFrom(item: ContextItem, maxCodePoints: number): Candidate | undefined {
+  if (isSummaryItem(item)) {
+    if (!SESSION_SUMMARY_KIND_VALUES.includes(item.kind) || !/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(item.id)) return undefined;
+    const claims = summaryClaimText(item, maxCodePoints);
+    if (!claims) return undefined;
+    const content = codePoints(claims.content || 'Supported session summary.');
+    const protectedNextAction = claims.nextAction ? ` next action: ${claims.nextAction}` : '';
+    return {
+      item,
+      prefix: `- [summary:${item.kind} v${item.version}] `,
+      suffix: `${protectedNextAction} (summary:${item.id})`,
+      content,
+      minimumContentCodePoints: content.length,
+    };
+  }
   if (!MEMORY_KIND_VALUES.includes(item.kind) || !/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(item.id)) return undefined;
   const title = safeDisplay(item.title, item.evidenceIds);
   const content = codePoints(safeDisplay(item.content ?? item.snippet, item.evidenceIds));
@@ -127,18 +168,18 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
   const contextualSuffix = `\n${RECOVERY_TAG_END}`;
   const fixedEnvelopeCodePoints = codePoints(`${contextualPrefix}${contextualSuffix}`).length;
   const identityPrefixCodePoints = codePoints(identityPrefix).length;
-  const candidates = input.items.map(candidateFrom).filter((candidate): candidate is Candidate => candidate !== undefined);
-  const primaryHandoff = candidates.find((candidate) => candidate.item.kind === 'handoff');
-  const primaryFitsCompletely = primaryHandoff !== undefined
-    && fixedEnvelopeCodePoints + fixedItemCodePoints(primaryHandoff) + primaryHandoff.content.length <= maxCodePoints;
-  const orderedCandidates = primaryHandoff
-    ? [primaryHandoff, ...candidates.filter((candidate) => candidate !== primaryHandoff)]
+  const candidates = input.items.map((item) => candidateFrom(item, maxCodePoints)).filter((candidate): candidate is Candidate => candidate !== undefined);
+  const primary = candidates.find((candidate) => isSummaryItem(candidate.item)) ?? candidates.find((candidate) => candidate.item.kind === 'handoff');
+  const primaryFitsCompletely = primary !== undefined
+    && fixedEnvelopeCodePoints + fixedItemCodePoints(primary) + primary.content.length <= maxCodePoints;
+  const orderedCandidates = primary
+    ? [primary, ...candidates.filter((candidate) => candidate !== primary)]
     : candidates;
   const selected: Candidate[] = [];
   let reservedCodePoints = fixedEnvelopeCodePoints;
   for (const candidate of orderedCandidates) {
     if (selected.length === MAX_CONTINUATION_ITEMS) break;
-    const budgetedCandidate = primaryFitsCompletely && candidate === primaryHandoff
+    const budgetedCandidate = primaryFitsCompletely && candidate === primary
       ? { ...candidate, minimumContentCodePoints: candidate.content.length }
       : candidate;
     const candidateFixedCodePoints = fixedItemCodePoints(budgetedCandidate);
@@ -152,7 +193,9 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
     return {
       context: identityOnly,
       selectedItems: [],
+      selectedSummaryIds: [],
       selectedMemoryIds: [],
+      selectedRecordIds: [],
       contextDelivered: false,
       measurements: measurements(maxCodePoints, identityOnly, 0, identityPrefix),
     };
@@ -177,10 +220,13 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
     return `${candidate.prefix}${content.join('')}${candidate.suffix}`;
   });
   const context = `${contextualPrefix}\n${lines.join('\n')}${contextualSuffix}`;
+  const selectedItems = selected.map((candidate) => candidate.item);
   return {
     context,
-    selectedItems: selected.map((candidate) => candidate.item),
-    selectedMemoryIds: selected.map((candidate) => candidate.item.id),
+    selectedItems,
+    selectedSummaryIds: selectedItems.filter(isSummaryItem).map((item) => item.id),
+    selectedMemoryIds: selectedItems.filter((item): item is RecallItem => !isSummaryItem(item)).map((item) => item.id),
+    selectedRecordIds: selectedItems.map((item) => item.id),
     contextDelivered: true,
     measurements: measurements(maxCodePoints, context, contentCodePoints, identityPrefix),
   };

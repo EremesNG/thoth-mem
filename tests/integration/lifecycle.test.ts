@@ -72,7 +72,7 @@ describe('host-neutral lifecycle', () => {
     } finally { service.close(); }
   });
 
-  it('keeps root prompts as filtered evidence and promotes one idempotent checkpoint handoff', () => {
+  it('keeps root prompts and checkpoint content as filtered evidence without automatic promotion', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
       const base = { harness: 'opencode' as const, project: { key: 'repo:layers', name: 'layers' }, rootSessionKey: 'root-layers' };
@@ -98,13 +98,9 @@ describe('host-neutral lifecycle', () => {
       const checkpoint = service.lifecycle(checkpointInput);
       const replay = service.lifecycle(checkpointInput);
       expect(replay).toMatchObject({ duplicate: true, evidenceId: checkpoint.evidenceId });
-      expect(service.context({ projectKey: 'repo:layers' }).items).toEqual([
-        expect.objectContaining({
-          kind: 'handoff',
-          content: checkpointInput.content,
-          evidenceIds: [checkpoint.evidenceId],
-        }),
-      ]);
+      expect(service.get({ id: checkpoint.evidenceId! }).record).toMatchObject({ kind: 'checkpoint', content: checkpointInput.content });
+      expect(service.context({ projectKey: 'repo:layers' }).items).toEqual([]);
+      expect(service.recall({ projectKey: 'repo:layers', query: 'continuity' }).items).toEqual([]);
     } finally { service.close(); }
   });
 
@@ -135,15 +131,14 @@ describe('host-neutral lifecycle', () => {
 
       const promptRecord = service.get({ id: prompt.evidenceId! }).record;
       const checkpointRecord = service.get({ id: checkpoint.evidenceId! }).record;
-      const handoff = service.context({ projectKey: base.project.key }).items[0]!;
-      for (const content of [promptRecord.content, checkpointRecord.content, handoff.content!]) {
+      for (const content of [promptRecord.content, checkpointRecord.content]) {
         expect(content).not.toContain(credential);
         expect(content).toContain('[REDACTED]');
       }
       expect(promptRecord.content).toContain('Keep this request');
-      expect(handoff.content).toContain('Objective: continue safely');
+      expect(checkpointRecord.content).toContain('Objective: continue safely');
       expect(checkpointReplay).toMatchObject({ duplicate: true, evidenceId: checkpoint.evidenceId });
-      expect(service.context({ projectKey: base.project.key }).items).toHaveLength(1);
+      expect(service.context({ projectKey: base.project.key }).items).toHaveLength(0);
     } finally { service.close(); }
   });
 
@@ -222,6 +217,34 @@ describe('host-neutral lifecycle', () => {
       const recovered = service.lifecycle({ operation: 'recover', harness: 'codex', project: { key: 'repo:degraded-recovery', name: 'degraded-recovery' }, rootSessionKey: 'root-degraded', eventKey: 'recover-degraded', identityConfidence: 'degraded' });
       expect(recovered).toMatchObject({ outcome: 'degraded', recovery: { items: [], selectedMemoryIds: [], sources: [] }, capability: { memoryConfirmed: false, contextDelivered: false, modelConsumed: false } });
       expect(recovered.recovery?.context).not.toContain(saved.memory!.id);
+    } finally { service.close(); }
+  });
+
+  it('recovers checkpoint and final summaries for the verified root with truthful capability and selected IDs', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const base = { harness: 'codex' as const, project: { key: 'repo:summary-lifecycle', name: 'summary-lifecycle' }, rootSessionKey: 'root-summary' };
+    try {
+      const prompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'Implement supported session summaries.' });
+      const checkpoint = service.lifecycle({
+        ...base, operation: 'checkpoint_pre_compact', eventKey: 'checkpoint',
+        summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'CHECKPOINT-SUMMARY-CONTENT', supportIds: [prompt.evidenceId!] }, { kind: 'next_action', content: 'CONTINUE-AFTER-COMPACTION', supportIds: [prompt.evidenceId!] }] },
+      });
+      expect(checkpoint).toMatchObject({ summaryId: expect.any(String), capability: { modelConsumed: false } });
+      const guided = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'post' });
+      expect(guided.recovery).toMatchObject({ selectedSummaryIds: [checkpoint.summaryId], selectedMemoryIds: [], selectedRecordIds: [checkpoint.summaryId] });
+      expect(guided.recovery?.context).toContain(`(summary:${checkpoint.summaryId})`);
+      expect(guided.recovery?.context).toContain('CONTINUE-AFTER-COMPACTION');
+
+      const secondPrompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt-2', content: 'Finalize with verified evidence.' });
+      const final = service.lifecycle({
+        ...base, operation: 'finalize', eventKey: 'final',
+        summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: secondPrompt.event!.sequence }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'completed', content: 'FINAL-SUMMARY-CONTENT', outcome: 'succeeded', supportIds: [secondPrompt.evidenceId!] }] },
+      });
+      const recovered = service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover-final' });
+      expect(recovered.recovery?.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId, kind: 'final' });
+      expect(recovered.recovery?.selectedSummaryIds).toEqual([final.summaryId]);
+      expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([final.summaryId, service.get({ id: final.summaryId! }).record.submissionEvidenceId]));
+      expect(recovered.capability).toMatchObject({ hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false });
     } finally { service.close(); }
   });
 });

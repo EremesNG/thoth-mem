@@ -4,19 +4,19 @@ import { normalizeAdapterEvent, normalizeNativePayload } from '../../src/integra
 
 describe('native adapters', () => {
   it('maps each host to one host-neutral lifecycle contract and denies delegation', () => {
-    for (const harness of ['opencode', 'codex', 'claude'] as const) expect(normalizeAdapterEvent({ version: 2, harness, intent: 'session.enroll', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: `${harness}:1`, callerRole: 'root' })).toMatchObject({ operation: 'enroll', harness, project: { key: 'repo:x' } });
-    expect(() => normalizeAdapterEvent({ version: 2, harness: 'opencode', intent: 'prompt.capture_root', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'child', eventKey: 'e', callerRole: 'delegated', content: 'not root intent' })).toThrow(/delegated/i);
+    for (const harness of ['opencode', 'codex', 'claude'] as const) expect(normalizeAdapterEvent({ version: 3, harness, intent: 'session.enroll', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: `${harness}:1`, callerRole: 'root' })).toMatchObject({ operation: 'enroll', harness, project: { key: 'repo:x' } });
+    expect(() => normalizeAdapterEvent({ version: 3, harness: 'opencode', intent: 'prompt.capture_root', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'child', eventKey: 'e', callerRole: 'delegated', content: 'not root intent' })).toThrow(/delegated/i);
   });
 
   it('maps every versioned intent identically across hosts, including pre-MCP lifecycle', () => {
     const intents = ['session.enroll','session.recover','prompt.capture_root','session.checkpoint_pre_compact','session.guide_post_compact','session.finalize'] as const;
     const expected = ['enroll','recover','capture_root','checkpoint_pre_compact','guide_post_compact','finalize'];
-    for (const harness of ['opencode','codex','claude'] as const) expect(intents.map((intent) => normalizeAdapterEvent({ version: 2, harness, intent, projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: `${harness}:${intent}`, callerRole: 'root' }).operation)).toEqual(expected);
+    for (const harness of ['opencode','codex','claude'] as const) expect(intents.map((intent) => normalizeAdapterEvent({ version: 3, harness, intent, projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: `${harness}:${intent}`, callerRole: 'root' }).operation)).toEqual(expected);
   });
 
   it('fails closed for unsupported versions, intents, and missing identity', () => {
-    const base = { version: 2 as const, harness: 'codex' as const, intent: 'session.enroll' as const, projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: 'event' };
-    expect(() => normalizeAdapterEvent({ ...base, version: 1 as 2 })).toThrow(/version/i);
+    const base = { version: 3 as const, harness: 'codex' as const, intent: 'session.enroll' as const, projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: 'event' };
+    expect(() => normalizeAdapterEvent({ ...base, version: 2 as 3 })).toThrow(/version/i);
     expect(() => normalizeAdapterEvent({ ...base, intent: 'session.unknown' as typeof base.intent })).toThrow(/intent/i);
     expect(() => normalizeAdapterEvent({ ...base, rootSessionKey: '' })).toThrow(/identity/i);
   });
@@ -82,5 +82,17 @@ describe('native adapters', () => {
     expect(() => normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'child', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'child', parentID: 'root' }, message: { role: 'user', sessionID: 'child', content: 'child' } } })).toThrow(/delegated/i);
     expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: '', cwd: '/repo', prompt: 'x', event_id: 'bad' })).toThrow(/identity/i);
     expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: 'root\ninjected', cwd: '/repo', prompt: 'x', event_id: 'bad-line' })).toThrow(/identity/i);
+  });
+
+  it('normalizes one identical root-owned structured summary across all three native hosts', () => {
+    const structured = { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'Resume safely.', supportIds: ['evidence-1'] }] };
+    const normalized = [
+      normalizeNativePayload('opencode', { event: 'experimental.session.compacting', eventId: 'open:summary', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'root' }, thothMemSummary: structured } }),
+      normalizeNativePayload('codex', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', turn_id: 'turn-1', thoth_mem_summary: structured }),
+      normalizeNativePayload('claude', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', event_id: 'claude:summary', thoth_mem_summary: structured }),
+    ];
+    expect(normalized.map((item) => item.summary)).toEqual([structured, structured, structured]);
+    expect(() => normalizeNativePayload('codex', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', thoth_mem_summary: structured })).toThrow(/verified root/i);
+    expect(() => normalizeAdapterEvent({ version: 3, harness: 'codex', intent: 'session.checkpoint_pre_compact', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'child', eventKey: 'child', callerRole: 'delegated', summary: structured })).toThrow(/delegated/i);
   });
 });

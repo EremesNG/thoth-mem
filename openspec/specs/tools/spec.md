@@ -4,19 +4,31 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, with unversioned descriptions and envelopes and without reintroducing retired admin, graph, setup, migration, or diagnostic tools.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; summary submission, selection, inspection, and history MUST extend those workflow tools through closed current schemas rather than adding stage-specific tools.
 
-#### Scenario: US1 - Read one truthful canonical product contract 1
+#### Scenario: US2 - Preserve a source-supported versioned session summary 1
 
-- **GIVEN** the active canonical specification tree
-- **WHEN** a maintainer inspects its capabilities
-- **THEN** it contains only the CLI, configuration, evaluation, native-harness, packaging, retrieval, store, and tool contracts implemented or deliberately gated by the current product
+- **GIVEN** a verified root session and ordered supporting evidence
+- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
+- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
 
-#### Scenario: US1 - Read one truthful canonical product contract 2
+#### Scenario: US2 - Preserve a source-supported versioned session summary 2
 
-- **GIVEN** the retired V1 surfaces
-- **WHEN** the canonical tree and OpenSpec context are searched
-- **THEN** dashboard, HTTP, graph/KG, vector/embedding, HyDE, sync, observatory, and passive-capture requirements are absent except where a retained requirement explicitly prohibits or gates them
+- **GIVEN** an existing current summary of the same session and summary kind
+- **WHEN** a later valid version commits
+- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+
+- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
+- **WHEN** validation runs
+- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+
+- **GIVEN** an unavailable model or generator
+- **WHEN** ordinary save, recall, or recovery executes
+- **THEN** the SQLite core remains available and never attempts a model or network call
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 
@@ -40,57 +52,87 @@ All tool inputs and outputs MUST use closed validated schemas under `thoth-mem.m
 
 ### Requirement: mem_recall, mem_context, and mem_get MUST Form a Progressive Funnel
 
-`mem_context` MUST expose the same continuation selection used by native recovery, `mem_recall` MUST remain query-specific and compact-first, and `mem_get` MUST return only the selected full record and provenance without widening the six-tool surface.
+Compact context and recovery MUST expose stable selected summary IDs without raw support payloads, and `mem_get` MUST expand an explicitly selected summary into its structured claims, coverage, generator, version lineage, and support IDs without returning unrelated records.
 
-#### Scenario: US3 - Explore memory progressively 1
+#### Scenario: US2 - Preserve a source-supported versioned session summary 1
 
-- **GIVEN** a project with a current handoff and multiple durable memories
-- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
-- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+- **GIVEN** a verified root session and ordered supporting evidence
+- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
+- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
 
-#### Scenario: US3 - Explore memory progressively 2
+#### Scenario: US2 - Preserve a source-supported versioned session summary 2
 
-- **GIVEN** a specific coding question
-- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
-- **THEN** only the selected context/full-record path pays the additional content cost
+- **GIVEN** an existing current summary of the same session and summary kind
+- **WHEN** a later valid version commits
+- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
 
-#### Scenario: US3 - Explore memory progressively 3
+#### Scenario: US2 - Preserve a source-supported versioned session summary 3
 
-- **GIVEN** similarly named memories in another project or historical superseded guidance
-- **WHEN** current project retrieval runs
-- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
+- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
+- **WHEN** validation runs
+- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+
+- **GIVEN** an unavailable model or generator
+- **WHEN** ordinary save, recall, or recovery executes
+- **THEN** the SQLite core remains available and never attempts a model or network call
 
 ### Requirement: mem_project MUST Keep Project Operations Bounded
 
-`mem_project action=briefing` MUST delegate to the shared continuation selector, `history` MUST preserve explicit temporal lineage, and neither action MAY require or expose a graph/vector projection or add another MCP tool.
+Project operations MUST support bounded current and historical session-summary inspection within verified project/session scope while briefing continues to delegate to the shared continuation selector and no seventh tool or optional model/vector/graph dependency is introduced.
 
-#### Scenario: US3 - Explore memory progressively 1
+#### Scenario: US2 - Preserve a source-supported versioned session summary 1
 
-- **GIVEN** a project with a current handoff and multiple durable memories
-- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
-- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+- **GIVEN** a verified root session and ordered supporting evidence
+- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
+- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
 
-#### Scenario: US3 - Explore memory progressively 2
+#### Scenario: US2 - Preserve a source-supported versioned session summary 2
 
-- **GIVEN** a specific coding question
-- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
-- **THEN** only the selected context/full-record path pays the additional content cost
+- **GIVEN** an existing current summary of the same session and summary kind
+- **WHEN** a later valid version commits
+- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
 
-#### Scenario: US3 - Explore memory progressively 3
+#### Scenario: US2 - Preserve a source-supported versioned session summary 3
 
-- **GIVEN** similarly named memories in another project or historical superseded guidance
-- **WHEN** current project retrieval runs
-- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
+- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
+- **WHEN** validation runs
+- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+
+- **GIVEN** an unavailable model or generator
+- **WHEN** ordinary save, recall, or recovery executes
+- **THEN** the SQLite core remains available and never attempts a model or network call
 
 ### Requirement: mem_session MUST Handle Only Verified Root Lifecycle
 
-`mem_session` MUST accept only the declared root lifecycle operations with verified project, root-session, harness, and event identity. Ordinary response finalization MUST NOT be fabricated as a lifecycle event.
+`mem_session` MUST allow an externally generated structured summary only on the declared verified checkpoint/final lifecycle boundary, validate its identity, ordering, coverage, generator, claims, and supports atomically with the lifecycle receipt, and remain idempotent by stable event identity.
 
-#### Scenario: Replay a lifecycle event
+#### Scenario: US2 - Preserve a source-supported versioned session summary 1
 
-- **GIVEN** a confirmed lifecycle event with a stable event key
-- **WHEN** the same event is submitted again
-- **THEN** the operation is idempotent and does not duplicate evidence or receipts
+- **GIVEN** a verified root session and ordered supporting evidence
+- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
+- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+
+- **GIVEN** an existing current summary of the same session and summary kind
+- **WHEN** a later valid version commits
+- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+
+- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
+- **WHEN** validation runs
+- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+
+#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+
+- **GIVEN** an unavailable model or generator
+- **WHEN** ordinary save, recall, or recovery executes
+- **THEN** the SQLite core remains available and never attempts a model or network call
 
 ### Requirement: Tooling MUST Signal Optional Projection State Without Degrading Core
 

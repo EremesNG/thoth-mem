@@ -30,6 +30,16 @@ function percentile(samples, percentileValue) {
   return ordered[Math.ceil((percentileValue / 100) * ordered.length) - 1];
 }
 
+function recoveryUtility(recovery, actionableValues) {
+  const context = recovery.recovery?.context ?? '';
+  const recoveredValues = actionableValues.filter((value) => context.includes(value));
+  return {
+    actionableFieldsRecovered: recoveredValues.length,
+    injectedCodePoints: Array.from(context).length,
+    usefulContentCodePoints: recoveredValues.reduce((total, value) => total + Array.from(value).length, 0),
+  };
+}
+
 const root = dirname(fileURLToPath(import.meta.url));
 const fixtureText = readFileSync(resolve(root, 'fixtures', 'queries.jsonl'), 'utf8');
 const fixtures = fixtureText.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
@@ -146,10 +156,121 @@ try {
     project: { key: 'benchmark:fixture', name: 'fixture' }, rootSessionKey: 'delegated-session',
     eventKey: 'recovery:delegated',
   });
+  const summaryRecoveries = [];
+  const controlRecoveries = [];
+  const candidateSummaryIds = [];
+  const controlSelectedMemoryIds = [];
+  const candidateSelectedMemoryIds = [];
+  const candidateProjectKeys = [];
+  const knownSummarySupports = new Set();
+  let orderedIdempotency = 1;
+  let versionPrecedence = 1;
+  let checkpointContentEventsRecorded = 0;
+  for (const harness of ['opencode', 'codex', 'claude']) {
+    const actionableValues = [
+      `Preserve attributable ordered session state for ${harness}.`,
+      `The supported session-summary pipeline is implemented for ${harness}.`,
+      `Run the corrected equal-budget recovery gate for ${harness}.`,
+      `No blocking product defect remains for ${harness}.`,
+      `Verify benchmarks/run.mjs and focused lifecycle checks for ${harness}.`,
+    ];
+    const controlProject = { key: `benchmark:control:${harness}`, name: 'fixture' };
+    const controlRootSessionKey = `benchmark-control-${harness}`;
+    const controlContent = `Objective: ${actionableValues[0]} Completed: ${actionableValues[1]} First pending action: ${actionableValues[2]} Blockers: ${actionableValues[3]} Key files/checks: ${actionableValues[4]}`;
+    service.save({
+      project: controlProject,
+      eventKey: `control:${harness}:handoff`,
+      evidence: { kind: 'handoff', content: controlContent },
+      memory: { kind: 'handoff', title: 'Equivalent actionable recovery', content: controlContent, topicKey: 'continuity/equal-budget', outcome: 'succeeded' },
+    });
+    const controlRecovery = service.lifecycle({
+      operation: 'recover', harness, project: controlProject,
+      rootSessionKey: controlRootSessionKey, eventKey: `control:${harness}:recover`,
+    });
+    controlRecoveries.push({ recovery: controlRecovery, actionableValues });
+    controlSelectedMemoryIds.push(...(controlRecovery.recovery?.selectedMemoryIds ?? []));
+
+    const candidateProject = { key: `benchmark:candidate:${harness}`, name: 'fixture' };
+    const rootSessionKey = `benchmark-summary-${harness}`;
+    candidateProjectKeys.push(candidateProject.key);
+    const firstSupport = service.save({
+      project: candidateProject,
+      session: { rootSessionKey, harness },
+      eventKey: `summary:${harness}:support:1`,
+      evidence: { kind: 'explicit_save', content: actionableValues.join(' ') },
+    });
+    knownSummarySupports.add(firstSupport.evidence.id);
+    const firstSummaryInput = {
+      kind: 'checkpoint',
+      coverage: { fromSequence: 1, toSequence: 1 },
+      generator: { kind: 'harness', name: `fixture-${harness}` },
+      claims: [
+        { kind: 'objective', content: actionableValues[0], supportIds: [firstSupport.evidence.id] },
+        { kind: 'next_action', content: actionableValues[2], supportIds: [firstSupport.evidence.id] },
+      ],
+    };
+    const firstSummary = service.lifecycle({ operation: 'checkpoint_pre_compact', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:checkpoint:1`, summary: firstSummaryInput });
+    const replay = service.lifecycle({ operation: 'checkpoint_pre_compact', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:checkpoint:1`, summary: firstSummaryInput });
+    if (!replay.duplicate || replay.summaryId !== firstSummary.summaryId) orderedIdempotency = 0;
+
+    const secondSupport = service.save({
+      project: candidateProject,
+      session: { rootSessionKey, harness },
+      eventKey: `summary:${harness}:support:2`,
+      evidence: { kind: 'explicit_save', content: actionableValues.join(' ') },
+    });
+    knownSummarySupports.add(secondSupport.evidence.id);
+    const secondSummary = service.lifecycle({
+      operation: 'checkpoint_pre_compact', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:checkpoint:2`,
+      content: `Non-empty checkpoint content for ${harness}.`,
+      summary: {
+        ...firstSummaryInput,
+        coverage: { fromSequence: 1, toSequence: secondSupport.event.sequence },
+        claims: [
+          { kind: 'objective', content: actionableValues[0], supportIds: [secondSupport.evidence.id] },
+          { kind: 'completed', content: actionableValues[1], outcome: 'succeeded', supportIds: [secondSupport.evidence.id] },
+          { kind: 'next_action', content: actionableValues[2], supportIds: [secondSupport.evidence.id] },
+          { kind: 'blocker', content: actionableValues[3], supportIds: [secondSupport.evidence.id] },
+          { kind: 'verification', content: actionableValues[4], outcome: 'succeeded', supportIds: [secondSupport.evidence.id] },
+        ],
+      },
+    });
+    if (secondSummary.event && secondSummary.evidenceId) checkpointContentEventsRecorded += 1;
+    const recovered = service.lifecycle({ operation: 'recover', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:recover` });
+    if (recovered.recovery?.selectedSummaryIds[0] !== secondSummary.summaryId || recovered.recovery?.selectedSummaryIds.includes(firstSummary.summaryId)) versionPrecedence = 0;
+    candidateSummaryIds.push(secondSummary.summaryId);
+    candidateSelectedMemoryIds.push(...(recovered.recovery?.selectedMemoryIds ?? []));
+    summaryRecoveries.push({ recovery: recovered, actionableValues });
+  }
+  const foreignSupport = service.save({
+    project: { key: 'benchmark:foreign-summary', name: 'foreign-summary' },
+    session: { rootSessionKey: 'foreign-summary', harness: 'codex' },
+    eventKey: 'summary:foreign:support',
+    evidence: { kind: 'explicit_save', content: 'Foreign support must be rejected.' },
+  });
+  let crossScopeRejection = 0;
+  try {
+    service.lifecycle({
+      operation: 'checkpoint_pre_compact', harness: 'codex', project: { key: 'benchmark:candidate:codex', name: 'fixture' }, rootSessionKey: 'benchmark-summary-codex', eventKey: 'summary:cross-scope',
+      summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 999 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'This must fail.', supportIds: [foreignSupport.evidence.id] }] },
+    });
+  } catch { crossScopeRejection = 1; }
+  const summaryRecords = candidateSummaryIds.map((id) => service.get({ id }).record);
+  const unsupportedClaims = summaryRecords.reduce((count, record) => count + record.claims.filter((claim) => claim.supportIds.length === 0 || claim.supportIds.some((id) => !knownSummarySupports.has(id))).length, 0);
+  const supportLeakage = summaryRecoveries.reduce((count, entry) => count + [...knownSummarySupports].filter((id) => entry.recovery.recovery?.context.includes(id)).length, 0);
+  const promotedHandoffs = candidateProjectKeys.reduce((count, projectKey) => count + service.recall({ projectKey, query: 'checkpoint summary', history: true, limit: 100 }).items.filter((item) => item.kind === 'handoff').length, 0);
+  const controlUtility = controlRecoveries.map((entry) => recoveryUtility(entry.recovery, entry.actionableValues));
+  const candidateUtility = summaryRecoveries.map((entry) => recoveryUtility(entry.recovery, entry.actionableValues));
+  const controlInjectedCodePoints = controlUtility.reduce((total, item) => total + item.injectedCodePoints, 0);
+  const candidateInjectedCodePoints = candidateUtility.reduce((total, item) => total + item.injectedCodePoints, 0);
+  const controlUsefulContentCodePoints = controlUtility.reduce((total, item) => total + item.usefulContentCodePoints, 0);
+  const candidateUsefulContentCodePoints = candidateUtility.reduce((total, item) => total + item.usefulContentCodePoints, 0);
+  const baselineUsefulContentRatio = controlUsefulContentCodePoints / controlInjectedCodePoints;
+  const summaryUsefulContentRatio = candidateUsefulContentCodePoints / candidateInjectedCodePoints;
   const irrelevant = service.recall({ projectKey: 'benchmark:fixture', query: 'qzxwvu unrelated meteorology', mode: 'compact', limit: manifest.candidateK, budgetChars: manifest.contextTokenBudget * 4 });
   const recoveryContext = restartRecovery.recovery?.context ?? '';
   const selectedItems = restartRecovery.recovery?.items ?? [];
-  const selectedEvidenceIds = selectedItems.flatMap((item) => item.evidenceIds);
+  const selectedEvidenceIds = selectedItems.flatMap((item) => item.evidenceIds ?? []);
   const injectedCodePoints = Array.from(recoveryContext).length;
   const injectedTokens = Math.ceil(injectedCodePoints / 4);
   const continuity = {
@@ -173,10 +294,40 @@ try {
     useful_content_ratio: restartRecovery.recovery?.rendering.usefulContentRatio ?? 0,
     selected_memory_ids: restartRecovery.recovery?.selectedMemoryIds ?? [],
   };
+  const summary = {
+    ordered_idempotency: orderedIdempotency,
+    supported_claims: unsupportedClaims === 0 ? 1 : 0,
+    unsupported_claims: unsupportedClaims,
+    cross_scope_rejection: crossScopeRejection,
+    version_precedence: versionPrecedence,
+    no_auto_promotion: promotedHandoffs === 0 ? 1 : 0,
+    promoted_handoffs: promotedHandoffs,
+    checkpoint_content_events_expected: 3,
+    checkpoint_content_events_recorded: checkpointContentEventsRecorded,
+    host_recoveries_expected: 3,
+    three_host_recovery: summaryRecoveries.filter((entry) => entry.recovery.outcome === 'confirmed' && entry.recovery.capability.contextDelivered && entry.recovery.recovery?.selectedSummaryIds.length === 1 && entry.recovery.recovery.selectedMemoryIds.length === 0).length,
+    support_leakage: supportLeakage,
+    actionable_field_names: actionableFields,
+    actionable_fields_expected: actionableFields.length,
+    control_actionable_fields_recovered: Math.min(...controlUtility.map((item) => item.actionableFieldsRecovered)),
+    candidate_actionable_fields_recovered: Math.min(...candidateUtility.map((item) => item.actionableFieldsRecovered)),
+    control_injected_code_points: controlInjectedCodePoints,
+    candidate_injected_code_points: candidateInjectedCodePoints,
+    control_useful_content_code_points: controlUsefulContentCodePoints,
+    candidate_useful_content_code_points: candidateUsefulContentCodePoints,
+    baseline_useful_content_ratio: baselineUsefulContentRatio,
+    summary_useful_content_ratio: summaryUsefulContentRatio,
+    useful_content_non_inferiority: summaryUsefulContentRatio >= baselineUsefulContentRatio ? 1 : 0,
+    control_selected_memory_ids: controlSelectedMemoryIds,
+    candidate_selected_summary_ids: candidateSummaryIds,
+    candidate_selected_memory_ids: candidateSelectedMemoryIds,
+    model_calls: 0,
+    network_calls: 0,
+  };
 
   service.close();
   service = undefined;
-  const provenanceIds = [...new Set([saved.memory.id, ...saved.memory.evidenceIds, handoff.memory.id, ...handoff.memory.evidenceIds, ...(restartRecovery.recovery?.sources ?? [])])];
+  const provenanceIds = [...new Set([saved.memory.id, ...saved.memory.evidenceIds, handoff.memory.id, ...handoff.memory.evidenceIds, ...controlSelectedMemoryIds, ...candidateSummaryIds, ...(restartRecovery.recovery?.sources ?? [])])];
   const report = {
     schema: 'thoth-mem.benchmark-report.v1',
     created_at: new Date(0).toISOString(),
@@ -218,6 +369,7 @@ try {
         delivered_sources: restartRecovery.recovery?.sources.length ?? 0,
       },
       continuity,
+      summary,
       resources: {
         latency_p50_ms: percentile(latencySamples, 50), latency_p95_ms: percentile(latencySamples, 95),
         ingestion_ms: ingestionMs, startup_ms: startupMs,
@@ -235,7 +387,7 @@ try {
     promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
   };
   const validation = validateReport(report);
-  if (!validation.valid) throw new Error(`Invalid report: ${validation.errors.join(',')}`);
+  if (!validation.valid) throw new Error(`Invalid report: ${validation.errors.join(',')}; summary ratios control=${summary.baseline_useful_content_ratio}, candidate=${summary.summary_useful_content_ratio}`);
   mkdirSync(resolve(root, 'results'), { recursive: true });
   const output = resolve(root, 'results', 'fixture-report.json');
   writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`);

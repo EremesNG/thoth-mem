@@ -7,9 +7,13 @@ import {
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
   MEMORY_STATUS_VALUES,
+  SESSION_SUMMARY_CLAIM_KIND_VALUES,
+  SESSION_SUMMARY_KIND_VALUES,
   type LifecycleInput,
   type LifecycleResult,
   type RecallItem,
+  type SessionSummaryInput,
+  type SummaryContextItem,
 } from '../../memory-core/contracts.js';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -29,6 +33,7 @@ export interface OpenCodeLifecycleDispatchInput {
   rootSessionKey: string;
   eventKey: string;
   content?: string;
+  summary?: SessionSummaryInput;
 }
 
 export interface NodeLifecycleClientOptions {
@@ -105,6 +110,30 @@ function recallItem(value: unknown): value is RecallItem {
     && stringArray(item.evidenceIds));
 }
 
+function summaryItem(value: unknown): value is SummaryContextItem {
+  const item = record(value);
+  const coverage = record(item?.coverage);
+  return Boolean(item
+    && item.recordType === 'summary'
+    && typeof item.id === 'string'
+    && isCanonicalValue(SESSION_SUMMARY_KIND_VALUES, item.kind)
+    && Number.isSafeInteger(item.version) && Number(item.version) > 0
+    && item.status === 'current'
+    && coverage && Number.isSafeInteger(coverage.fromSequence) && Number.isSafeInteger(coverage.toSequence)
+    && typeof item.snippet === 'string'
+    && finiteNumber(item.score)
+    && typeof item.submissionEvidenceId === 'string'
+    && Array.isArray(item.claims)
+    && item.claims.every((value) => {
+      const claim = record(value);
+      return Boolean(claim && isCanonicalValue(SESSION_SUMMARY_CLAIM_KIND_VALUES, claim.kind) && typeof claim.content === 'string');
+    }));
+}
+
+function contextItem(value: unknown): value is RecallItem | SummaryContextItem {
+  return recallItem(value) || summaryItem(value);
+}
+
 function lifecycleResult(value: unknown): value is LifecycleResult {
   const data = record(value);
   const capability = record(data?.capability);
@@ -115,6 +144,8 @@ function lifecycleResult(value: unknown): value is LifecycleResult {
     && typeof data.projectId === 'string'
     && typeof data.sessionId === 'string'
     && (data.evidenceId === null || typeof data.evidenceId === 'string')
+    && (data.summaryId === null || typeof data.summaryId === 'string')
+    && (data.event === null || record(data.event) !== undefined)
     && capability
     && typeof capability.hookExecuted === 'boolean'
     && typeof capability.memoryConfirmed === 'boolean'
@@ -126,10 +157,14 @@ function lifecycleResult(value: unknown): value is LifecycleResult {
         && Array.from(recovery.context).length === record(recovery.rendering)?.totalCodePoints
         && Array.isArray(recovery.items)
         && recovery.items.length <= 3
-        && recovery.items.every(recallItem)
+        && recovery.items.every(contextItem)
+        && stringArray(recovery.selectedSummaryIds)
         && stringArray(recovery.selectedMemoryIds)
-        && JSON.stringify(recovery.selectedMemoryIds) === JSON.stringify(recovery.items.map((item) => record(item)?.id))
-        && capability.contextDelivered === (recovery.items.length > 0)
+        && stringArray(recovery.selectedRecordIds)
+        && JSON.stringify(recovery.selectedSummaryIds) === JSON.stringify(recovery.items.filter((item) => record(item)?.recordType === 'summary').map((item) => record(item)?.id))
+        && JSON.stringify(recovery.selectedMemoryIds) === JSON.stringify(recovery.items.filter((item) => record(item)?.recordType !== 'summary').map((item) => record(item)?.id))
+        && JSON.stringify(recovery.selectedRecordIds) === JSON.stringify(recovery.items.map((item) => record(item)?.id))
+        && capability.contextDelivered === (recovery.selectedRecordIds.length > 0)
         && stringArray(recovery.sources)
         && budget(recovery.budget)
         && rendering(recovery.rendering))));
@@ -142,7 +177,8 @@ function hasInvalidRecoveryTaxonomy(value: unknown): boolean {
   return recovery.items.some((value) => {
     const item = record(value);
     return Boolean(item && (
-      ('kind' in item && !isCanonicalValue(MEMORY_KIND_VALUES, item.kind))
+      ('kind' in item && item.recordType === 'summary' && !isCanonicalValue(SESSION_SUMMARY_KIND_VALUES, item.kind))
+      || ('kind' in item && item.recordType !== 'summary' && !isCanonicalValue(MEMORY_KIND_VALUES, item.kind))
       || ('outcome' in item && !isCanonicalValue(MEMORY_OUTCOME_VALUES, item.outcome))
       || ('status' in item && !isCanonicalValue(MEMORY_STATUS_VALUES, item.status))
     ));
@@ -171,7 +207,7 @@ function adapterEvent(input: OpenCodeLifecycleDispatchInput): AdapterEvent {
   const normalizedDirectory = input.directory.replaceAll('\\', '/').replace(/\/$/u, '');
   const projectName = normalizedDirectory.split('/').filter(Boolean).at(-1) ?? normalizedDirectory;
   return {
-    version: 2,
+    version: 3,
     harness: 'opencode',
     intent: INTENTS[input.operation],
     projectKey: `path:${normalizedDirectory}`,
@@ -179,6 +215,7 @@ function adapterEvent(input: OpenCodeLifecycleDispatchInput): AdapterEvent {
     rootSessionKey: input.rootSessionKey,
     eventKey: input.eventKey,
     ...(input.content?.trim() ? { content: input.content.slice(0, 20_000) } : {}),
+    ...(input.summary ? { summary: input.summary } : {}),
     callerRole: 'root',
   };
 }

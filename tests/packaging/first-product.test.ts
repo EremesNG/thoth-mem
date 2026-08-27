@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-inventory.js';
+import { ALL_TOOLS } from '../../src/tools/index.js';
 
 const deferred = /(@xenova|transformers|embedding|hyde|knowledge.graph|dashboard|observatory|http-server|vitest\.browser)/i;
 
@@ -55,6 +56,7 @@ describe('first-product packed boundary', () => {
       '.claude-plugin/marketplace.json',
       'benchmarks/manifest.json',
       'benchmarks/report.schema.json',
+      'benchmarks/retrieval-report.schema.json',
     ]);
     const active = ['package.json', 'pnpm-workspace.yaml', 'config.schema.json', '.github/workflows/ci.yml', '.github/workflows/release.yml'].map((path) => readFileSync(path, 'utf8')).join('\n');
     expect(active).not.toMatch(deferred);
@@ -77,5 +79,15 @@ describe('first-product packed boundary', () => {
     const expected = ['integrations/inventory.json', 'integrations/shared/hook-runner.mjs'];
     for (const [harness, assets] of Object.entries(CANONICAL_PLUGIN_INVENTORY)) for (const asset of assets) expected.push(`integrations/${harness}/${asset}`);
     expect(integrations).toEqual(expected.sort());
+  });
+
+  it('pins the lifecycle-v3 summary envelope across the unchanged six-tool, three-host package', () => {
+    const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as { lifecycleProtocolVersion: number; harnesses: Record<string, string[]> };
+    const publicRunner = readFileSync('plugin/runners/public-runner.mjs', 'utf8');
+    expect(ALL_TOOLS).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session']);
+    expect(inventory.lifecycleProtocolVersion).toBe(3);
+    expect(Object.keys(inventory.harnesses).sort()).toEqual(['claude-code', 'codex', 'opencode']);
+    for (const field of ['selectedSummaryIds', 'selectedMemoryIds', 'selectedRecordIds', "'summary' : 'memory'"]) expect(publicRunner).toContain(field);
+    expect(readFileSync('integrations/shared/hook-runner.mjs', 'utf8')).toContain("readFileSync(0, 'utf8')");
   });
 });

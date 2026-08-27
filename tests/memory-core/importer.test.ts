@@ -46,12 +46,14 @@ describe('one-way legacy importer', () => {
     try {
       const report = importLegacyV1({ sourcePath: source, targetPath: target });
       expect(report).toMatchObject({ schema: 'thoth-mem.import', sourceHash: before, imported: { sessions: 1, prompts: 1, observations: 1 }, skipped: 1, quarantined: 2, ignoredDerived: { tables: ['kg_triples', 'vector_embeddings'], rows: 2 }, integrity: { foreignKeys: true, fts: true }, sourceUnchanged: true });
-      expect(report).toMatchObject({ reportVersion: 2, sourceSchemaVersion: 'legacy-v1', targetSchemaVersion: 2, committed: true, dispositions: { sessions: { imported: 1, quarantined: 1 }, prompts: { imported: 1, quarantined: 1 }, observations: { imported: 1, skipped: 1 } } });
+      expect(report).toMatchObject({ reportVersion: 2, sourceSchemaVersion: 'legacy-v1', targetSchemaVersion: 4, committed: true, dispositions: { sessions: { imported: 1, quarantined: 1 }, prompts: { imported: 1, quarantined: 1 }, observations: { imported: 1, skipped: 1 } } });
       expect(report.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/); expect(report.finishedAt).toBe(report.startedAt);
       expect(report.dispositionReasons).toEqual(['observations:2:deleted', 'sessions:s2:placeholder_identity', 'user_prompts:2:placeholder_identity']);
       expect(createHash('sha256').update(readFileSync(source)).digest('hex')).toBe(before);
       const targetDb = new Database(target, { readonly: true });
       expect(targetDb.prepare("SELECT count(*) AS count FROM memories WHERE content='derived'").get()).toEqual({ count: 0 });
+      expect(targetDb.prepare('SELECT count(*) AS count FROM session_events').get()).toEqual({ count: 0 });
+      expect(targetDb.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
       targetDb.close();
       expect(() => importLegacyV1({ sourcePath: source, targetPath: source })).toThrow(/distinct/i);
     } finally { rmSync(root, { recursive: true, force: true }); }

@@ -10,6 +10,7 @@ import {
   MEMORY_OUTCOME_VALUES,
   requireCanonicalValue,
   type BudgetMeasurement,
+  type ContextResult,
   type EvidenceRecord,
   type LifecycleInput,
   type LifecycleResult,
@@ -18,11 +19,15 @@ import {
   type RecallResult,
   type SaveMemoryInput,
   type SaveMemoryResult,
+  type SessionEventInput,
+  type SessionSummaryRecord,
+  type SummaryContextItem,
 } from './contracts.js';
 import { renderContinuation } from './continuation.js';
 import { sanitizePrivateContent } from './privacy.js';
+import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { buildFtsQuery, surgicalSnippet } from './sqlite/fts.js';
-import { ensureProject, ensureSession, evidenceFromRow, hashContent, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
 
@@ -43,6 +48,17 @@ function validateSaveTaxonomy(input: SaveMemoryInput): void {
     requireCanonicalValue('memory.kind', MEMORY_KIND_VALUES, input.memory.kind);
     if (input.memory.outcome !== undefined) requireCanonicalValue('memory.outcome', MEMORY_OUTCOME_VALUES, input.memory.outcome);
   }
+}
+
+function sessionEventDefaults(input: SaveMemoryInput): SessionEventInput | null {
+  if (!input.session || input.session.harness === 'import' || input.evidence.kind === 'legacy_prompt' || input.evidence.kind === 'legacy_observation') return null;
+  if (input.evidence.kind === 'root_prompt') return { actor: 'user', authority: 'root_user', retentionClass: 'session', privacyClass: 'standard' };
+  if (input.evidence.kind === 'explicit_save') return { actor: 'agent', authority: 'root_user', retentionClass: 'project', privacyClass: 'standard' };
+  if (input.evidence.kind === 'handoff') return { actor: 'agent', authority: 'harness', retentionClass: 'session', privacyClass: 'standard' };
+  return { actor: 'agent', authority: 'root_user', retentionClass: 'session', privacyClass: 'standard' };
+}
+function isSummaryContextItem(item: ContextResult['items'][number]): item is SummaryContextItem {
+  return 'recordType' in item && item.recordType === 'summary';
 }
 
 export class MemoryService {
@@ -93,22 +109,25 @@ export class MemoryService {
         evidence: { ...input.evidence, content: evidenceContent },
         memory: filteredMemory,
       }));
+      const sessionId = input.session ? ensureSession(this.database, projectId, input.session) : null;
       if (input.eventKey) {
         const receipt = this.database.prepare('SELECT payload_hash,evidence_id,memory_id FROM save_receipts WHERE project_id=? AND event_key=?').get(projectId, input.eventKey) as { payload_hash: string; evidence_id: string; memory_id: string | null } | undefined;
         if (receipt) {
-          if (receipt.payload_hash !== payloadHash) throw new Error('Save event key was reused with a different payload');
           const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(receipt.evidence_id) as Record<string, unknown>);
+          if (evidence.sessionId !== sessionId) throw new Error('Save event key was reused with a different session identity');
+          if (receipt.payload_hash !== payloadHash) throw new Error('Save event key was reused with a different payload');
           const memory = receipt.memory_id ? memoryFromRow(this.database, this.database.prepare('SELECT * FROM memories WHERE id=?').get(receipt.memory_id) as Record<string, unknown>) : null;
-          return { evidence, memory, projectId, sessionId: evidence.sessionId, duplicate: true };
+          return { evidence, memory, event: eventForEvidence(this.database, evidence.id), projectId, sessionId: evidence.sessionId, duplicate: true };
         }
       }
-      const sessionId = input.session ? ensureSession(this.database, projectId, input.session) : null;
       const at = input.evidence.capturedAt ?? now();
       if (!evidenceContent.trim()) throw new Error('Evidence content is required after privacy filtering');
       const evidenceId = input.eventKey ? stableUuid(`evidence:${projectId}:${input.eventKey}`) : randomUUID();
       this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceId, projectId, sessionId, input.evidence.kind, evidenceContent, hashContent(evidenceContent), input.evidence.sourceRef ?? null, at, JSON.stringify(input.evidence.metadata ?? {}));
       const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
-      if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, projectId, sessionId, duplicate: false }; }
+      const eventDefaults = sessionEventDefaults(input);
+      const event = sessionId && eventDefaults ? appendSessionEvent(this.database, sessionId, evidenceId, eventDefaults) : null;
+      if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, event, projectId, sessionId, duplicate: false }; }
       if (!filteredMemory.title.trim() || !filteredMemory.content.trim()) throw new Error('Promoted memory title and content are required');
       let supersedesId = filteredMemory.supersedesId ?? null;
       if (!supersedesId && filteredMemory.topicKey) {
@@ -123,7 +142,7 @@ export class MemoryService {
       this.database.prepare("INSERT INTO memory_evidence VALUES(?,?,'supports')").run(memoryId, evidenceId);
       if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,?)').run(projectId, input.eventKey, payloadHash, evidenceId, memoryId);
       const memory = memoryFromRow(this.database, this.database.prepare('SELECT * FROM memories WHERE id=?').get(memoryId) as Record<string, unknown>);
-      return { evidence, memory, projectId, sessionId, duplicate: false };
+      return { evidence, memory, event, projectId, sessionId, duplicate: false };
     })();
   }
 
@@ -167,7 +186,21 @@ export class MemoryService {
     return { items, budget: measure(requested, sourceChars, evidenceChars, returned), lanes: { lexical: 'ready', ...this.projections.effectiveStates() }, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId };
   }
 
-  get(input: { id: string; history?: boolean }): { record: MemoryRecord | EvidenceRecord; lineage: MemoryRecord[] } {
+  get(input: { id: string; history?: boolean }): { record: MemoryRecord | EvidenceRecord | SessionSummaryRecord; lineage: Array<MemoryRecord | SessionSummaryRecord> } {
+    const summary = sessionSummaryFromId(this.database, input.id);
+    if (summary) {
+      const lineage: SessionSummaryRecord[] = [summary];
+      if (input.history) {
+        let id = summary.supersedesId;
+        while (id) {
+          const item = sessionSummaryFromId(this.database, id);
+          if (!item) break;
+          lineage.push(item);
+          id = item.supersedesId;
+        }
+      }
+      return { record: summary, lineage };
+    }
     const memoryRow = this.database.prepare('SELECT * FROM memories WHERE id=?').get(input.id) as Record<string, unknown> | undefined;
     if (memoryRow) {
       const record = memoryFromRow(this.database, memoryRow); const lineage: MemoryRecord[] = [record];
@@ -179,12 +212,75 @@ export class MemoryService {
     return { record: evidenceFromRow(evidenceRow), lineage: [] };
   }
 
-  context(input: { projectKey: string; budgetChars?: number; correlationId?: string }): Pick<RecallResult, 'items' | 'budget' | 'lanes' | 'warnings' | 'correlationId'> {
+  projectSummaries(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; history?: boolean; budgetChars?: number }): { items: SessionSummaryRecord[]; requestedChars: number; returnedChars: number; truncated: boolean } {
+    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
+    const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
+    const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+    if (!project) return { items: [], requestedChars, returnedChars: 0, truncated: false };
+    let sessionId: string | null = null;
+    if (input.rootSessionKey && input.harness) {
+      sessionId = (this.database.prepare('SELECT id FROM sessions WHERE project_id=? AND root_session_key=? AND harness=?').get(project.id, input.rootSessionKey, input.harness) as { id: string } | undefined)?.id ?? null;
+      if (!sessionId) return { items: [], requestedChars, returnedChars: 0, truncated: false };
+    }
+    const rows = this.database.prepare(`SELECT id FROM session_summaries WHERE project_id=? ${sessionId ? 'AND session_id=?' : ''} ${input.history ? '' : "AND status='current'"} ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id`).all(...(sessionId ? [project.id, sessionId] : [project.id])) as Array<{ id: string }>;
+    const items: SessionSummaryRecord[] = [];
+    let returnedChars = 0;
+    for (const row of rows) {
+      const record = sessionSummaryFromId(this.database, row.id)!;
+      const size = JSON.stringify(record).length;
+      if (returnedChars + size > requestedChars) break;
+      items.push(record);
+      returnedChars += size;
+    }
+    return { items, requestedChars, returnedChars, truncated: items.length < rows.length };
+  }
+
+  context(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; budgetChars?: number; correlationId?: string }): ContextResult {
+    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
     const requested = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000));
     const correlationId = input.correlationId ?? randomUUID();
     const lanes = { lexical: 'ready' as const, ...this.projections.effectiveStates() };
     const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
-    if (!project) return { items: [], budget: measure(requested, 0, 0, 0), lanes, warnings: [], correlationId };
+    if (!project) return { items: [], selectedSummaryIds: [], selectedMemoryIds: [], selectedRecordIds: [], budget: measure(requested, 0, 0, 0), lanes, warnings: [], correlationId };
+
+    let sessionId: string | null = null;
+    if (input.rootSessionKey && input.harness) {
+      sessionId = (this.database.prepare('SELECT id FROM sessions WHERE project_id=? AND root_session_key=? AND harness=?').get(project.id, input.rootSessionKey, input.harness) as { id: string } | undefined)?.id ?? null;
+    }
+
+    const items: ContextResult['items'] = [];
+    let remaining = requested;
+    let sourceChars = 0;
+    let evidenceChars = 0;
+    if (sessionId) {
+      const selected = this.database.prepare("SELECT id FROM session_summaries WHERE session_id=? AND status='current' ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id LIMIT 1").get(sessionId) as { id: string } | undefined;
+      if (selected) {
+        const record = sessionSummaryFromId(this.database, selected.id)!;
+        const claimOrder = ['objective', 'completed', 'decision', 'verification', 'changed_surface', 'pending', 'blocker', 'next_action'] as const;
+        const orderedClaims = record.claims.slice().sort((left, right) => claimOrder.indexOf(left.kind) - claimOrder.indexOf(right.kind));
+        const nextActions = orderedClaims.filter((claim) => claim.kind === 'next_action');
+        const selectedClaims: SummaryContextItem['claims'] = [];
+        let claimChars = nextActions.reduce((sum, claim) => sum + [...claim.content].length, 0);
+        if (claimChars <= Math.min(remaining, 700)) {
+          for (const claim of orderedClaims) {
+            if (claim.kind === 'next_action') continue;
+            const size = [...claim.content].length;
+            if (claimChars + size > Math.min(remaining, 700)) continue;
+            selectedClaims.push({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) });
+            claimChars += size;
+          }
+          selectedClaims.push(...nextActions.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) })));
+        }
+        const fullSummaryChars = record.claims.reduce((sum, claim) => sum + claim.content.length, 0);
+        sourceChars += fullSummaryChars;
+        evidenceChars += Number((this.database.prepare('SELECT length(content) AS value FROM evidence WHERE id=?').get(record.submissionEvidenceId) as { value: number }).value);
+        const snippet = selectedClaims.map((claim) => `${claim.kind.replace('_', ' ')}: ${claim.content}`).join(' ');
+        if (snippet && snippet.length <= remaining) {
+          items.push({ recordType: 'summary', id: record.id, kind: record.kind, version: record.version, coverage: record.coverage, snippet, status: 'current', score: 200, submissionEvidenceId: record.submissionEvidenceId, claims: selectedClaims });
+          remaining -= snippet.length;
+        }
+      }
+    }
 
     const rows = this.database.prepare(`
       SELECT m.*,
@@ -201,9 +297,7 @@ export class MemoryService {
       ORDER BY continuation_priority,created_at DESC,id ASC
       LIMIT 20
     `).all(project.id) as Array<Record<string, unknown>>;
-    const sourceChars = rows.reduce((sum, row) => sum + String(row.content).length, 0);
-    let remaining = requested;
-    const items: RecallItem[] = [];
+    sourceChars += rows.reduce((sum, row) => sum + String(row.content).length, 0);
     for (const row of rows) {
       if (remaining < 32) break;
       const record = memoryFromRow(this.database, row);
@@ -231,19 +325,26 @@ export class MemoryService {
       });
     }
     const returned = items.reduce((sum, item) => sum + item.snippet.length, 0);
-    const evidenceChars = items.reduce((sum, item) => sum + Number((this.database.prepare('SELECT coalesce(sum(length(content)),0) AS value FROM evidence WHERE id IN (SELECT evidence_id FROM memory_evidence WHERE memory_id=?)').get(item.id) as { value: number }).value), 0);
-    return { items, budget: measure(requested, sourceChars, evidenceChars, returned), lanes, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId };
+    evidenceChars += items.reduce((sum, item) => sum + (isSummaryContextItem(item) ? 0 : Number((this.database.prepare('SELECT coalesce(sum(length(content)),0) AS value FROM evidence WHERE id IN (SELECT evidence_id FROM memory_evidence WHERE memory_id=?)').get(item.id) as { value: number }).value)), 0);
+    const selectedSummaryIds = items.filter(isSummaryContextItem).map((item) => item.id);
+    const selectedMemoryIds = items.filter((item): item is RecallItem => !isSummaryContextItem(item)).map((item) => item.id);
+    return { items, selectedSummaryIds, selectedMemoryIds, selectedRecordIds: items.map((item) => item.id), budget: measure(requested, sourceChars, evidenceChars, returned), lanes, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId };
   }
 
   lifecycle(input: LifecycleInput): LifecycleResult {
     requireCanonicalValue('operation', LIFECYCLE_OPERATION_VALUES, input.operation);
     requireCanonicalValue('harness', HARNESS_VALUES, input.harness);
+    const canonicalSummary = input.summary ? canonicalizeSessionSummary(input.summary) : null;
+    if (canonicalSummary && input.operation !== 'checkpoint_pre_compact' && input.operation !== 'finalize') throw new Error('Structured summaries are accepted only for checkpoint_pre_compact or finalize');
+    if (canonicalSummary && ((input.operation === 'checkpoint_pre_compact' && canonicalSummary.input.kind !== 'checkpoint') || (input.operation === 'finalize' && canonicalSummary.input.kind !== 'final'))) throw new Error('Summary kind must match the lifecycle operation');
+    if (canonicalSummary && input.identityConfidence === 'degraded') throw new Error('A verified root identity is required to submit a summary');
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
       const lifecycleContent = sanitizePrivateContent(input.content ?? '');
-      const found = this.database.prepare('SELECT outcome,evidence_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { outcome: LifecycleResult['outcome']; evidence_id: string | null } | undefined;
+      const payloadHash = canonicalSummary ? hashContent(JSON.stringify({ content: lifecycleContent, summary: canonicalSummary.canonicalJson })) : hashContent(lifecycleContent);
+      const found = this.database.prepare('SELECT payload_hash,outcome,evidence_id,summary_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { payload_hash: string; outcome: LifecycleResult['outcome']; evidence_id: string | null; summary_id: string | null } | undefined;
       const recovery = (outcome: LifecycleResult['outcome']): NonNullable<LifecycleResult['recovery']> => {
-        const briefing = this.context({ projectKey: input.project.key });
+        const briefing = this.context({ projectKey: input.project.key, rootSessionKey: input.rootSessionKey, harness: input.harness });
         const rendered = renderContinuation({
           rootSessionKey: input.rootSessionKey,
           projectName: input.project.name,
@@ -253,13 +354,15 @@ export class MemoryService {
         return {
           context: rendered.context,
           items,
+          selectedSummaryIds: rendered.selectedSummaryIds,
           selectedMemoryIds: rendered.selectedMemoryIds,
-          sources: [...new Set(items.flatMap((item) => [item.id, ...item.evidenceIds]))],
+          selectedRecordIds: rendered.selectedRecordIds,
+          sources: [...new Set(items.flatMap((item) => isSummaryContextItem(item) ? [item.id, item.submissionEvidenceId] : [item.id, ...item.evidenceIds]))],
           budget: briefing.budget,
           rendering: rendered.measurements,
         };
       };
-      const result = (outcome: LifecycleResult['outcome'], duplicate: boolean, evidenceId: string | null): LifecycleResult => {
+      const result = (outcome: LifecycleResult['outcome'], duplicate: boolean, evidenceId: string | null, summaryId: string | null): LifecycleResult => {
         const delivered = input.operation === 'recover' || input.operation === 'guide_post_compact' ? recovery(outcome) : undefined;
         return {
           outcome,
@@ -267,22 +370,43 @@ export class MemoryService {
           projectId,
           sessionId,
           evidenceId,
+          event: evidenceId ? eventForEvidence(this.database, evidenceId) : null,
+          summaryId,
           ...(delivered ? { recovery: delivered } : {}),
-          capability: { hookExecuted: true, memoryConfirmed: outcome === 'confirmed', contextDelivered: Boolean(delivered?.selectedMemoryIds.length), modelConsumed: false },
+          capability: { hookExecuted: true, memoryConfirmed: outcome === 'confirmed', contextDelivered: Boolean(delivered?.selectedRecordIds.length), modelConsumed: false },
         };
       };
-      if (found) return result(found.outcome, true, found.evidence_id);
+      if (found) {
+        if (found.payload_hash !== payloadHash) throw new Error('Lifecycle event key was reused with a different payload');
+        return result(found.outcome, true, found.evidence_id, found.summary_id);
+      }
       if (input.operation === 'guide_post_compact') {
         const state = (this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string }).state;
-        if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(''), 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null); }
+        if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(''), 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null, null); }
       }
       const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
       let evidenceId: string | null = null;
-      if (outcome === 'confirmed' && (input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact') && lifecycleContent.trim()) { const checkpoint = input.operation === 'checkpoint_pre_compact'; const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent }, ...(checkpoint ? { memory: { kind: 'handoff', title: 'Pre-compaction checkpoint', content: lifecycleContent, topicKey: `session/${sessionId}/checkpoint` } } : {}) }); evidenceId = saved.evidence.id; }
+      let summaryId: string | null = null;
+      if (outcome === 'confirmed' && (input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact') && lifecycleContent.trim()) {
+        const checkpoint = input.operation === 'checkpoint_pre_compact';
+        const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent } });
+        evidenceId = saved.evidence.id;
+      }
+      if (canonicalSummary) {
+        const submitted = this.save({
+          project: input.project,
+          session: { rootSessionKey: input.rootSessionKey, harness: input.harness },
+          eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}:summary`,
+          evidence: { kind: 'session_summary', content: canonicalSummary.canonicalJson },
+        });
+        const record = insertSessionSummaryProjection(this.database, { projectId, sessionId, submissionEvidenceId: submitted.evidence.id, summary: canonicalSummary.input, createdAt: submitted.evidence.capturedAt });
+        summaryId = record.id;
+        evidenceId ??= submitted.evidence.id;
+      }
       if (input.operation === 'finalize') this.database.prepare("UPDATE sessions SET state='ended',ended_at=? WHERE id=?").run(now(), sessionId);
       if (input.operation === 'checkpoint_pre_compact') this.database.prepare("UPDATE sessions SET state='compacted' WHERE id=?").run(sessionId);
-      this.database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(lifecycleContent), outcome, outcome === 'confirmed' ? now() : null, outcome === 'degraded' ? 'identity_unconfirmed' : null, evidenceId);
-      return result(outcome, false, evidenceId);
+      this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, payloadHash, outcome, outcome === 'confirmed' ? now() : null, outcome === 'degraded' ? 'identity_unconfirmed' : null, evidenceId, summaryId);
+      return result(outcome, false, evidenceId, summaryId);
     })();
   }
 }

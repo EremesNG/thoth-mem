@@ -26,25 +26,31 @@ Each host bundle MUST continue to package its supported hooks, one registration 
 
 ### Requirement: Runtime Lifecycle MUST Preserve the Core Contract
 
-Start/resume recovery, root-prompt capture, compaction, finalization, and degraded diagnostics MUST use the shared unversioned lifecycle command and envelope while preserving identity, privacy, idempotency, temporal, and bounded-output behavior.
+OpenCode, Codex, and Claude lifecycle adapters MUST normalize the same externally supplied summary contract, preserve root identity/privacy/idempotency semantics, invoke no summarization model in the core, and degrade without blocking the host when a valid summary is unavailable.
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 1
+#### Scenario: US3 - Resume from the newest truthful session projection 1
 
-- **GIVEN** a clean installation
-- **WHEN** the MCP and native lifecycle paths execute
-- **THEN** their public envelopes and commands use the current unversioned thoth-mem contract and persist to `memory.sqlite`
+- **GIVEN** a current supported session summary and current promoted project memories
+- **WHEN** start/resume or post-compaction recovery runs
+- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 2
+#### Scenario: US3 - Resume from the newest truthful session projection 2
 
-- **GIVEN** an invocation using a removed transitional command or namespace
-- **WHEN** it reaches the current package
-- **THEN** it fails explicitly instead of entering a compatibility shim
+- **GIVEN** no eligible summary after migration
+- **WHEN** recovery runs
+- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 3
+#### Scenario: US3 - Resume from the newest truthful session projection 3
 
-- **GIVEN** a legacy database selected for import
-- **WHEN** the operator runs the current importer
-- **THEN** `import-legacy` writes a distinct current database and preserves the source without describing the target as a replacement generation
+- **GIVEN** a selected summary
+- **WHEN** host-visible context renders
+- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+
+#### Scenario: US3 - Resume from the newest truthful session projection 4
+
+- **GIVEN** a pre-compaction checkpoint after this change
+- **WHEN** it is captured
+- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
 
 ### Requirement: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
@@ -86,31 +92,31 @@ Native integrations MAY automatically capture only verified non-synthetic root p
 
 ### Requirement: Model-Visible Recovery Context MUST Be Bounded and Source-Attributed
 
-Confirmed recovery MUST inject at most one tagged block within the host cap, preserve complete fixed metadata, allocate non-trivial useful content before optional headings/metadata, include only complete selected memory IDs for progressive fetch, omit supporting evidence IDs even when they appear inside selected title/content data, and delimit recovered memory as untrusted data that cannot override current system, developer, or user instructions. A metadata-heavy candidate MUST be omitted when abundant source content exists but the complete metadata would make the 50% useful-content threshold impossible.
+Native recovery MUST render the newest eligible current session summary as untrusted historical data with a stable expansion ID, preserve actionable summary fields under the host cap, omit raw supporting evidence by default, and report delivery/consumption truthfully.
 
-#### Scenario: US2 - Resume from actionable context 1
+#### Scenario: US3 - Resume from the newest truthful session projection 1
 
-- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
-- **WHEN** session-start or post-compaction recovery runs
-- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+- **GIVEN** a current supported session summary and current promoted project memories
+- **WHEN** start/resume or post-compaction recovery runs
+- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
 
-#### Scenario: US2 - Resume from actionable context 2
+#### Scenario: US3 - Resume from the newest truthful session projection 2
 
-- **GIVEN** more candidate memories than fit the host cap
-- **WHEN** the continuation capsule is assembled
-- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
-
-#### Scenario: US2 - Resume from actionable context 3
-
-- **GIVEN** a selected memory with provenance
-- **WHEN** host-visible context renders
-- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
-
-#### Scenario: US2 - Resume from actionable context 4
-
-- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **GIVEN** no eligible summary after migration
 - **WHEN** recovery runs
-- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
+- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+
+#### Scenario: US3 - Resume from the newest truthful session projection 3
+
+- **GIVEN** a selected summary
+- **WHEN** host-visible context renders
+- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+
+#### Scenario: US3 - Resume from the newest truthful session projection 4
+
+- **GIVEN** a pre-compaction checkpoint after this change
+- **WHEN** it is captured
+- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 

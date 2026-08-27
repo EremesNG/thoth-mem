@@ -7,8 +7,16 @@ import {
   LIFECYCLE_OPERATION_VALUES,
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
+  SESSION_SUMMARY_CLAIM_KIND_VALUES,
+  SESSION_SUMMARY_GENERATOR_KIND_VALUES,
+  SESSION_SUMMARY_KIND_VALUES,
+  SESSION_SUMMARY_LIMITS,
+  type ContextItem,
+  type Harness,
   type RecallItem,
   type SaveMemoryInput,
+  type SessionSummaryInput,
+  type SummaryContextItem,
 } from '../memory-core/contracts.js';
 import type { MemoryService } from '../memory-core/service.js';
 
@@ -40,6 +48,28 @@ const memSaveInputSchema = z.object({
   evidence: evidenceInputSchema,
   memory: memoryInputSchema.optional(),
 }).strict();
+const summaryCoverageSchema = z.object({
+  from_sequence: z.number().int().positive(),
+  to_sequence: z.number().int().positive(),
+}).strict();
+const summaryGeneratorSchema = z.object({
+  kind: z.enum(SESSION_SUMMARY_GENERATOR_KIND_VALUES),
+  name: z.string().min(1).max(200),
+  version: z.string().min(1).max(200).optional(),
+  config_hash: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+}).strict();
+const summaryClaimSchema = z.object({
+  kind: z.enum(SESSION_SUMMARY_CLAIM_KIND_VALUES),
+  content: z.string().min(1),
+  outcome: z.enum(MEMORY_OUTCOME_VALUES).optional(),
+  support_ids: z.array(z.string().min(1).max(200)).min(SESSION_SUMMARY_LIMITS.minSupportsPerClaim).max(SESSION_SUMMARY_LIMITS.maxSupportsPerClaim),
+}).strict();
+const sessionSummarySchema = z.object({
+  kind: z.enum(SESSION_SUMMARY_KIND_VALUES),
+  coverage: summaryCoverageSchema,
+  generator: summaryGeneratorSchema,
+  claims: z.array(summaryClaimSchema).min(SESSION_SUMMARY_LIMITS.minClaims).max(SESSION_SUMMARY_LIMITS.maxClaims),
+}).strict();
 const memSessionInputSchema = z.object({
   operation: z.enum(LIFECYCLE_OPERATION_VALUES),
   harness: z.enum(HARNESS_VALUES),
@@ -48,6 +78,24 @@ const memSessionInputSchema = z.object({
   root_session_key: z.string().min(1),
   event_key: z.string().min(1),
   content: z.string().optional(),
+  summary: sessionSummarySchema.optional(),
+}).strict();
+const memContextInputSchema = z.object({
+  project_key: z.string().min(1),
+  root_session_key: z.string().min(1).optional(),
+  harness: z.enum(HARNESS_VALUES).optional(),
+  budget_chars: z.number().optional(),
+  correlation_id: z.string().optional(),
+  finalize_answer: z.boolean().optional(),
+}).strict();
+const memProjectInputSchema = z.object({
+  action: z.enum(['list', 'briefing', 'history', 'summaries']),
+  project_key: z.string().min(1).optional(),
+  id: z.string().min(1).optional(),
+  root_session_key: z.string().min(1).optional(),
+  harness: z.enum(HARNESS_VALUES).optional(),
+  temporal: z.enum(['current', 'history']).optional(),
+  budget_chars: z.number().optional(),
 }).strict();
 
 function string(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`); return value; }
@@ -64,6 +112,31 @@ function success(tool: MemoryToolName, data: unknown, extras: Record<string, unk
 function failure(message: string, code = 'invalid_request'): ToolResult { const structuredContent = { schema: 'thoth-mem.mcp.error', error: { code, message: message.slice(0, 500), retryable: false } }; return { isError: true, content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }; }
 function guarded(handler: ToolHandler): ToolHandler { return async (input) => { try { return await handler(input); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); } }; }
 function publicRecallItem(item: RecallItem): Omit<RecallItem, 'evidenceIds'> { const { evidenceIds, ...publicItem } = item; void evidenceIds; return publicItem; }
+function isSummaryContextItem(item: ContextItem): item is SummaryContextItem { return 'recordType' in item && item.recordType === 'summary'; }
+function publicContextItem(item: ContextItem): unknown {
+  if (!isSummaryContextItem(item)) return { recordType: 'memory', ...publicRecallItem(item) };
+  return { recordType: 'summary', id: item.id, kind: item.kind, version: item.version, coverage: item.coverage, snippet: item.snippet, status: item.status, score: item.score };
+}
+function sessionIdentity(rootSessionKey: string | undefined, harness: Harness | undefined): { rootSessionKey: string; harness: Harness } | undefined {
+  if ((rootSessionKey && !harness) || (!rootSessionKey && harness)) throw new Error('root_session_key and harness must be supplied together');
+  return rootSessionKey && harness ? { rootSessionKey, harness } : undefined;
+}
+function internalSummary(summary: z.infer<typeof sessionSummarySchema>): SessionSummaryInput {
+  return {
+    kind: summary.kind,
+    coverage: { fromSequence: summary.coverage.from_sequence, toSequence: summary.coverage.to_sequence },
+    generator: { kind: summary.generator.kind, name: summary.generator.name, ...(summary.generator.version ? { version: summary.generator.version } : {}), ...(summary.generator.config_hash ? { configHash: summary.generator.config_hash } : {}) },
+    claims: summary.claims.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}), supportIds: claim.support_ids })),
+  };
+}
+function recordSourceIds(record: Record<string, unknown>): string[] {
+  const id = String(record.id);
+  if (record.recordType === 'summary') {
+    const claims = Array.isArray(record.claims) ? record.claims as Array<{ supportIds?: string[] }> : [];
+    return [id, String(record.submissionEvidenceId), ...claims.flatMap((claim) => claim.supportIds ?? [])];
+  }
+  return [id, ...(Array.isArray(record.evidenceIds) ? record.evidenceIds.map(String) : [])];
+}
 
 export function createToolHandlers(service: MemoryService): ToolHandlers {
   return {
@@ -78,15 +151,17 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
       const mode = input.mode === 'context' ? 'context' : 'compact'; const result = service.recall({ projectKey: string(input.project_key, 'project_key'), query: string(input.query, 'query'), mode, history: input.temporal === 'history', budgetChars: number(input.budget_chars, mode === 'context' ? 4000 : 1200), limit: number(input.limit, 5), correlationId: optionalString(input.correlation_id) });
       return success('mem_recall', { mode, items: result.items.map(publicRecallItem) }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, mode, input.finalize_answer === true) });
     }),
-    mem_context: guarded(async (input) => { const result = service.context({ projectKey: string(input.project_key, 'project_key'), budgetChars: number(input.budget_chars, 4000), correlationId: optionalString(input.correlation_id) }); return success('mem_context', { items: result.items.map(publicRecallItem) }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', input.finalize_answer === true) }); }),
-    mem_get: guarded(async (input) => { const result = service.get({ id: string(input.id, 'id'), history: input.history === true }); const correlationId = optionalString(input.correlation_id); const evidenceIds = 'evidenceIds' in result.record ? result.record.evidenceIds : []; return success('mem_get', result, { sources: [...new Set([result.record.id, ...evidenceIds, ...result.lineage.flatMap((item) => [item.id, ...item.evidenceIds])])], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } }); }),
+    mem_context: guarded(async (input) => { const parsed = parseToolInput(memContextInputSchema, input); const identity = sessionIdentity(parsed.root_session_key, parsed.harness); const result = service.context({ projectKey: parsed.project_key, ...(identity ?? {}), budgetChars: number(parsed.budget_chars, 4000), correlationId: optionalString(parsed.correlation_id) }); return success('mem_context', { items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', parsed.finalize_answer === true) }); }),
+    mem_get: guarded(async (input) => { const result = service.get({ id: string(input.id, 'id'), history: input.history === true }); const correlationId = optionalString(input.correlation_id); return success('mem_get', result, { sources: [...new Set([recordSourceIds(result.record as unknown as Record<string, unknown>), ...result.lineage.map((item) => recordSourceIds(item as unknown as Record<string, unknown>))].flat())], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } }); }),
     mem_project: guarded(async (input) => {
-      const action = string(input.action, 'action'); if (action === 'list') return success('mem_project', { projects: service.listProjects() });
-      if (action === 'briefing') { const result = service.context({ projectKey: string(input.project_key, 'project_key'), budgetChars: number(input.budget_chars, 5000) }); return success('mem_project', { action, items: result.items.map(publicRecallItem) }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, compression_ratio: result.budget.compressionRatio } }); }
-      if (action === 'history') { const result = service.get({ id: string(input.id, 'id'), history: true }); return success('mem_project', { action, lineage: result.lineage }, { sources: [...new Set(result.lineage.flatMap((item) => [item.id, ...item.evidenceIds]))] }); }
+      const parsed = parseToolInput(memProjectInputSchema, input); const action = parsed.action; if (action === 'list') return success('mem_project', { projects: service.listProjects() });
+      const identity = sessionIdentity(parsed.root_session_key, parsed.harness);
+      if (action === 'briefing') { const result = service.context({ projectKey: string(parsed.project_key, 'project_key'), ...(identity ?? {}), budgetChars: number(parsed.budget_chars, 5000) }); return success('mem_project', { action, items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, compression_ratio: result.budget.compressionRatio } }); }
+      if (action === 'history') { const result = service.get({ id: string(parsed.id, 'id'), history: true }); return success('mem_project', { action, lineage: result.lineage }, { sources: [...new Set(result.lineage.flatMap((item) => recordSourceIds(item as unknown as Record<string, unknown>)))] }); }
+      if (action === 'summaries') { const result = service.projectSummaries({ projectKey: string(parsed.project_key, 'project_key'), ...(identity ?? {}), history: parsed.temporal === 'history', budgetChars: number(parsed.budget_chars, 4_000) }); return success('mem_project', { action, items: result.items }, { sources: [...new Set(result.items.flatMap((item) => recordSourceIds(item as unknown as Record<string, unknown>)))], budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars }, warnings: result.truncated ? ['payload_truncated'] : [] }); }
       return failure(`Unsupported mem_project action: ${action}`);
     }),
-    mem_session: guarded(async (input) => { const parsed = parseToolInput(memSessionInputSchema, input); const data = service.lifecycle({ operation: parsed.operation, harness: parsed.harness, project: { key: parsed.project_key, name: parsed.project_name }, rootSessionKey: parsed.root_session_key, eventKey: parsed.event_key, content: optionalString(parsed.content) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
+    mem_session: guarded(async (input) => { const parsed = parseToolInput(memSessionInputSchema, input); const data = service.lifecycle({ operation: parsed.operation, harness: parsed.harness, project: { key: parsed.project_key, name: parsed.project_name }, rootSessionKey: parsed.root_session_key, eventKey: parsed.event_key, content: optionalString(parsed.content), ...(parsed.summary ? { summary: internalSummary(parsed.summary) } : {}) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : []), ...(data.summaryId ? [data.summaryId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
   };
 }
 
@@ -95,9 +170,9 @@ export function registerTools(server: McpServer, service: MemoryService): void {
   const schemas: Record<MemoryToolName, Record<string, z.ZodType>> = {
     mem_save: memSaveInputSchema.shape,
     mem_recall: { project_key: z.string(), query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
-    mem_context: { project_key: z.string(), budget_chars: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
+    mem_context: memContextInputSchema.shape,
     mem_get: { id: z.string(), history: z.boolean().optional(), correlation_id: z.string().optional() },
-    mem_project: { action: z.enum(['list', 'briefing', 'history']), project_key: z.string().optional(), id: z.string().optional(), budget_chars: z.number().optional() },
+    mem_project: memProjectInputSchema.shape,
     mem_session: memSessionInputSchema.shape,
   };
   for (const name of ALL_TOOLS) server.tool(name, `thoth-mem ${name}`, schemas[name], async (args) => handlers[name](args));

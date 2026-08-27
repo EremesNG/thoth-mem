@@ -16,6 +16,23 @@ pnpm run prepublishOnly
 git diff --check
 ```
 
+The opt-in LongMemEval-S baseline has two deliberately separate commands:
+
+```sh
+pnpm run benchmark:prepare:longmemeval
+pnpm run benchmark:longmemeval
+```
+
+`benchmark:prepare:longmemeval` is stateful and networked. Run it only with explicit authorization; it writes only the pinned, SHA-verified cleaned-S file and receipt beneath the gitignored `benchmarks/.cache/longmemeval/` boundary. `benchmark:longmemeval` is offline, revalidates that file, uses disposable per-question SQLite databases, makes zero model/network calls, and atomically writes `benchmarks/results/longmemeval-s-fts5-report.json` without overwriting existing evidence. Neither command belongs to normal tests, prepublish, package installation, or a real host home.
+
+Focused implementation checks for this lane are:
+
+```sh
+pnpm exec vitest run tests/benchmarks/longmemeval-contract.test.ts tests/benchmarks/longmemeval-prepare.test.ts tests/benchmarks/longmemeval-runner.test.ts tests/benchmarks/retrieval-report.test.ts tests/benchmarks/adapters.test.ts --config vitest.unit.config.ts
+```
+
+The real-dataset outcome is observed only when the prepared file matches revision `98d7416c24c778c2fee6e6f3006e7a073259d48f`, SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`, and the resulting retrieval-only report validates. Keep the product profile (`sqlite-fts5-bm25-session-full`) distinct from the official `rank_bm25` implementation, preserve repeated base session IDs as separate occurrence source IDs and Top-K positions, accept string-typed empty turn content, preserve Top-20 and the separate 4,000-UTF-16-unit delivery budget, reconcile per-query ranking/delivery source/returned/truncated evidence with report aggregates, and do not infer optional-module promotion from a baseline-only report.
+
 There is no lint or browser lane. `integration:smoke` packs the real tarball, installs it in a disposable directory, verifies all three native inventories, cold-starts its CLI, and executes every packaged lifecycle runner with host-shaped fixtures without touching real host homes. It does not launch real host binaries or prove host-model consumption. External benchmark lanes may remain unavailable only when the report says so explicitly.
 
 Memory-operating-model seams are covered by:
@@ -26,5 +43,16 @@ Memory-operating-model seams are covered by:
 - `tests/tools/mcp.test.ts` for the compact → context → get funnel, shared briefing selection, deferred evidence IDs, and history provenance;
 - `tests/integration/adapters.test.ts`, `tests/integration/opencode-native-plugin.test.ts`, and `tests/integration/public-plugin-runner.test.ts` for pre-hash credential sanitation, verbatim final-context injection, and identity-only fallback across all hosts;
 - `tests/benchmarks/report.test.ts` and `tests/benchmarks/runner.test.ts` for hidden actionable fields, abstention, poisoning, isolation, injected characters/tokens, useful-content ratio, and equal Top-K/final-context comparability.
+
+Ordered session events and summaries add this focused verification lane:
+
+```sh
+pnpm exec vitest run tests/memory-core/contracts.test.ts tests/memory-core/schema-migration.test.ts tests/memory-core/service.test.ts tests/memory-core/session-summaries.test.ts --config vitest.unit.config.ts
+pnpm exec vitest run tests/memory-core/context.test.ts tests/memory-core/continuation.test.ts tests/tools/mcp.test.ts --config vitest.unit.config.ts
+pnpm exec vitest run tests/integration/lifecycle.test.ts tests/integration/adapters.test.ts tests/integration/opencode-native-plugin.test.ts tests/integration/public-plugin-runner.test.ts --config vitest.unit.config.ts
+pnpm exec vitest run tests/benchmarks/report.test.ts tests/benchmarks/runner.test.ts tests/packaging/first-product.test.ts --config vitest.unit.config.ts
+```
+
+The committed summary outcome fixture is offline and deterministic. For each OpenCode, Codex, and Claude-shaped harness it uses isolated control and candidate projects, identical five-field actionable source values, and the same 1,000-code-point delivery cap. It requires ordered idempotency, same-scope claim support, version precedence, three-host recovery, non-empty checkpoint capture, zero automatic handoff promotion, zero support leakage, zero mixed candidate memories, zero model/network calls, and a candidate useful-content ratio no lower than the handoff control. `benchmarks/report.mjs` and `benchmarks/report.schema.json` close that summary envelope; missing, extra, incoherent, contaminated, or non-inferior-by-assertion-only reports fail validation.
 
 Run the nearest file first, then `pnpm run build`, `pnpm test`, `pnpm run integration:verify`, `pnpm run integration:smoke`, `pnpm run benchmark:fixture`, and `pnpm run prepublishOnly`. The committed fixture must make zero network/model calls and must not claim external quality while LongMemEval-S, LoCoMo, AMB/BEAM/PersonaMem, or SDEBench lanes are unavailable.

@@ -91,7 +91,7 @@ await hooks['experimental.chat.system.transform']({ sessionID: 'packed-root' }, 
 if (transformed.system[0] !== 'stable-prefix') throw new Error('changed stable system prefix');
 const recovery = transformed.system.at(-1) ?? '';
 if (!recovery.includes('root_session_id=packed-root')) throw new Error('missing verified OpenCode identity');
-if (!recovery.includes('Packed lifecycle checkpoint.')) throw new Error('missing Node-backed lifecycle recovery');
+if (recovery.includes('Packed lifecycle checkpoint.') || recovery.includes('(memory:')) throw new Error('checkpoint-only OpenCode capture was promoted into recovery memory');
 process.stdout.write('native-open-code-ok');
 `);
   const nativeSmoke = run(process.env.BUN_BINARY ?? 'bun', [nativeSmokePath], { cwd: tmpdir(), env: { ...process.env, THOTH_MEM_DATA_DIR: join(scratch, 'native hook data') } });
@@ -132,28 +132,47 @@ process.stdout.write('native-open-code-ok');
   const managerTools = managerMessages.find((message) => message.id === 2)?.result?.tools;
   assert(managerTools?.length === 6, `Packed manager runner exposed ${managerTools?.length ?? 0} tools instead of six.`);
   const npxShim = createNpxShim(scratch, cli);
+  const managerData = join(scratch, 'manager data');
   for (const harness of ['codex', 'claude']) {
     const runner = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
       cwd: tmpdir(),
       input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: `${harness}-root`, event_id: `packed-${harness}-start`, cwd: join(scratch, 'project with spaces'), source: 'startup' }),
-      env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+      env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: managerData },
     });
     const hostOutput = JSON.parse(runner.stdout);
     assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=${harness}-root; project=project with spaces`), `Packed ${harness} runner omitted verified identity.`);
     if (harness === 'claude') {
+      const support = jsonOutput(run(process.execPath, [cli, 'lifecycle', '--harness', 'claude', '--data-dir', managerData], {
+        cwd: tmpdir(),
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'claude-root', event_id: 'packed-claude-support', cwd: join(scratch, 'project with spaces'), prompt: 'Keep packed Claude compact recovery.' }),
+      }));
+      assert(support.data?.evidenceId && support.data?.event?.sequence === 1, 'Packed Claude support evidence was not ordered.');
       run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
         cwd: tmpdir(),
-        input: JSON.stringify({ hook_event_name: 'PreCompact', session_id: 'claude-root', event_id: 'packed-claude-pre-compact', cwd: join(scratch, 'project with spaces'), summary: 'Keep packed Claude compact recovery.' }),
-        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+        input: JSON.stringify({
+          hook_event_name: 'PreCompact', session_id: 'claude-root', event_id: 'packed-claude-pre-compact', cwd: join(scratch, 'project with spaces'),
+          content: 'Non-empty packed Claude checkpoint content.',
+          thoth_mem_summary: {
+            kind: 'checkpoint',
+            coverage: { fromSequence: 1, toSequence: 1 },
+            generator: { kind: 'harness', name: 'packed-smoke' },
+            claims: [
+              { kind: 'objective', content: 'Keep packed Claude compact recovery.', supportIds: [support.data.evidenceId] },
+              { kind: 'next_action', content: 'Continue from the packed supported summary.', supportIds: [support.data.evidenceId] },
+            ],
+          },
+        }),
+        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: managerData },
       });
       const compactRunner = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
         cwd: tmpdir(),
         input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'claude-root', event_id: 'packed-claude-compact-start', cwd: join(scratch, 'project with spaces'), source: 'compact' }),
-        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: join(scratch, 'manager data') },
+        env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: managerData },
       });
       const compactOutput = JSON.parse(compactRunner.stdout).hookSpecificOutput?.additionalContext;
       assert(compactOutput?.startsWith('<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-root; project=project with spaces\n\n'), 'Packed Claude compact recovery omitted verified identity.');
       assert(compactOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude compact recovery omitted the pre-compaction checkpoint.');
+      assert(compactOutput.includes('(summary:') && !compactOutput.includes('(memory:'), 'Packed Claude compact recovery did not isolate the supported summary.');
     }
   }
 

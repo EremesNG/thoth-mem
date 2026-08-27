@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { MemoryService } from '../../src/memory-core/service.js';
 import { migrateCurrentSchema } from '../../src/memory-core/sqlite/migrations.js';
-import { IMMUTABILITY_TRIGGER_SQL } from '../../src/memory-core/sqlite/schema.js';
+import { IMMUTABILITY_TRIGGER_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
 
 const roots: string[] = [];
 
@@ -26,44 +26,36 @@ function databasePath(): string {
 
 function createRevision2Fixture(options: { memoryKind?: string; evidenceKinds?: [string, string] } = {}): Fixture {
   const path = databasePath();
-  const service = new MemoryService({ databasePath: path });
-  const first = service.save({
-    project: { key: 'path:/fixture', name: 'fixture' },
-    session: { rootSessionKey: 'root-session', harness: 'opencode' },
-    eventKey: 'fixture:first',
-    evidence: { kind: 'explicit_save', content: 'SC008 migration evidence.' },
-    memory: { kind: 'decision', title: 'SC008 migration marker', content: 'SC008-CROSS-HOST-NATIVE-20260825-B', topicKey: 'certification/sc008', outcome: 'succeeded' },
-  });
-  const second = service.save({
-    project: { key: 'path:/fixture', name: 'fixture' },
-    session: { rootSessionKey: 'root-session', harness: 'opencode' },
-    eventKey: 'fixture:second',
-    evidence: { kind: 'explicit_save', content: 'Independent verification evidence.' },
-  });
-  service.lifecycle({ operation: 'recover', harness: 'opencode', project: { key: 'path:/fixture', name: 'fixture' }, rootSessionKey: 'root-session', eventKey: 'fixture:recover' });
-  service.close();
-
   const database = new Database(path);
+  const projectId = 'project-1'; const memoryId = 'memory-1'; const evidenceIds = ['evidence-1', 'evidence-2']; const timestamp = '2026-08-25T00:00:00.000Z';
   try {
+    database.pragma('foreign_keys = ON');
+    database.exec(REVISION_THREE_SCHEMA_SQL);
+    database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(2, timestamp);
+    database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run(projectId, 'path:/fixture', 'fixture', null, timestamp, timestamp);
+    database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?)').run('session-1', projectId, 'root-session', 'opencode', 'active', timestamp, null);
     database.exec('DROP TRIGGER evidence_kind_insert_guard; DROP TRIGGER memory_kind_insert_guard; DROP TRIGGER evidence_immutable_update; DROP TRIGGER evidence_immutable_delete; DROP TRIGGER memory_content_immutable;');
-    database.prepare('UPDATE evidence SET kind=? WHERE id=?').run(options.evidenceKinds?.[0] ?? 'certification', first.evidence.id);
-    database.prepare('UPDATE evidence SET kind=? WHERE id=?').run(options.evidenceKinds?.[1] ?? 'verification', second.evidence.id);
-    database.prepare('UPDATE memories SET kind=? WHERE id=?').run(options.memoryKind ?? 'learning', first.memory!.id);
-    database.prepare('UPDATE schema_migrations SET version=2').run();
+    database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceIds[0], projectId, 'session-1', options.evidenceKinds?.[0] ?? 'certification', 'SC008 migration evidence.', 'hash-1', null, timestamp, '{}');
+    database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceIds[1], projectId, 'session-1', options.evidenceKinds?.[1] ?? 'verification', 'Independent verification evidence.', 'hash-2', null, timestamp, '{}');
+    database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(memoryId, projectId, 'certification/sc008', options.memoryKind ?? 'learning', 'SC008 migration marker', 'SC008-CROSS-HOST-NATIVE-20260825-B', 'succeeded', 'current', timestamp, null, null, timestamp);
+    database.prepare('INSERT INTO memory_evidence VALUES(?,?,?)').run(memoryId, evidenceIds[0], 'supports');
+    database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,?)').run(projectId, 'fixture:first', 'payload', evidenceIds[0], memoryId);
+    database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?)').run('opencode', projectId, 'root-session', 'fixture:recover', 'recover', 'payload', 'confirmed', timestamp, null, null);
+    database.exec('DROP TABLE projection_source_mapping; DROP TABLE projection_jobs;');
     database.exec(IMMUTABILITY_TRIGGER_SQL);
   } finally { database.close(); }
 
-  return { path, projectId: first.projectId, memoryId: first.memory!.id, evidenceIds: [first.evidence.id, second.evidence.id] };
+  return { path, projectId, memoryId, evidenceIds };
 }
 
 function authoritativeSnapshot(database: Database.Database): Record<string, unknown> {
   return {
     projects: database.prepare('SELECT * FROM projects ORDER BY id').all(),
-    sessions: database.prepare('SELECT * FROM sessions ORDER BY id').all(),
+    sessions: database.prepare('SELECT id,project_id,root_session_key,harness,state,started_at,ended_at FROM sessions ORDER BY id').all(),
     evidence: database.prepare('SELECT id,project_id,session_id,content,content_hash,source_ref,captured_at,metadata_json FROM evidence ORDER BY id').all(),
     memories: database.prepare('SELECT id,project_id,topic_key,title,content,outcome,status,valid_from,invalid_at,supersedes_id,created_at FROM memories ORDER BY id').all(),
     links: database.prepare('SELECT * FROM memory_evidence ORDER BY memory_id,evidence_id').all(),
-    lifecycleReceipts: database.prepare('SELECT * FROM lifecycle_receipts ORDER BY event_key').all(),
+    lifecycleReceipts: database.prepare('SELECT harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id FROM lifecycle_receipts ORDER BY event_key').all(),
     saveReceipts: database.prepare('SELECT * FROM save_receipts ORDER BY event_key').all(),
     fts: database.prepare('SELECT memory_id,project_id,title,content,topic_key FROM memory_fts ORDER BY memory_id').all(),
     watermarks: database.prepare('SELECT source_id,changed_at FROM change_watermark ORDER BY id').all(),
@@ -99,7 +91,7 @@ describe('SQLite taxonomy migration', () => {
 
     const migrated = new Database(fixture.path);
     try {
-      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 2 }, { version: 3 }]);
+      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 2 }, { version: 3 }, { version: 4 }]);
       expect(migrated.prepare('SELECT id,kind FROM evidence ORDER BY id').all()).toEqual(fixture.evidenceIds.slice().sort().map((id) => ({ id, kind: 'explicit_save' })));
       expect(migrated.prepare('SELECT kind FROM memories WHERE id=?').get(fixture.memoryId)).toEqual({ kind: 'convention' });
       expect(authoritativeSnapshot(migrated)).toEqual(before);

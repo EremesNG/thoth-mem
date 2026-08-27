@@ -1,14 +1,23 @@
-import type Database from 'better-sqlite3';
+import { existsSync, renameSync, rmSync } from 'node:fs';
+
+import Database from 'better-sqlite3';
 
 import { EVIDENCE_KIND_VALUES, MEMORY_KIND_VALUES } from '../contracts.js';
-import { CURRENT_SCHEMA_SQL, IMMUTABILITY_TRIGGER_SQL, TAXONOMY_GUARD_SQL } from './schema.js';
+import {
+  CURRENT_SCHEMA_SQL,
+  IMMUTABILITY_TRIGGER_SQL,
+  REVISION_THREE_TAXONOMY_GUARD_SQL,
+  SESSION_PROJECTION_SCHEMA_SQL,
+  TAXONOMY_GUARD_SQL,
+} from './schema.js';
 
 interface NameRow { name: string }
 interface VersionRow { version: number | null }
 interface KindRow { kind: string }
 
-export const SQLITE_SCHEMA_REVISION = 3;
+export const SQLITE_SCHEMA_REVISION = 4;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
+const ORDERED_SESSION_SCHEMA_REVISION = 3;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -34,10 +43,67 @@ function migrateRevisionTwo(database: Database.Database): void {
     database.prepare("UPDATE evidence SET kind='explicit_save' WHERE kind IN ('certification','verification')").run();
     database.prepare("UPDATE memories SET kind='convention' WHERE kind='learning'").run();
     database.exec(REVISION_TWO_AUXILIARY_SQL);
-    database.exec(TAXONOMY_GUARD_SQL);
+    database.exec(REVISION_THREE_TAXONOMY_GUARD_SQL);
     database.exec(IMMUTABILITY_TRIGGER_SQL);
     const foreignKeyFailures = database.pragma('foreign_key_check') as unknown[];
     if (foreignKeyFailures.length > 0) throw new Error('SQLite revision 3 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(ORDERED_SESSION_SCHEMA_REVISION, new Date().toISOString());
+  })();
+}
+
+export function preV4BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v4.bak`;
+}
+
+function verifyRevisionThreeBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v4 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v4 backup failed foreign-key verification');
+    const version = backup.prepare('SELECT max(version) AS version FROM schema_migrations').get() as VersionRow;
+    if (version.version !== ORDERED_SESSION_SCHEMA_REVISION) throw new Error('SQLite pre-v4 backup has an unexpected schema revision');
+  } finally {
+    backup.close();
+  }
+}
+
+function ensureRevisionThreeBackup(database: Database.Database): void {
+  const databasePath = database.name;
+  if (!databasePath || databasePath === ':memory:') return;
+  const backupPath = preV4BackupPath(databasePath);
+  if (existsSync(backupPath)) {
+    verifyRevisionThreeBackup(backupPath);
+    return;
+  }
+  const temporaryPath = `${backupPath}.tmp`;
+  if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  try {
+    database.prepare('VACUUM INTO ?').run(temporaryPath);
+    verifyRevisionThreeBackup(temporaryPath);
+    renameSync(temporaryPath, backupPath);
+  } finally {
+    if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  }
+}
+
+function migrateRevisionThree(database: Database.Database): void {
+  ensureRevisionThreeBackup(database);
+  database.transaction(() => {
+    database.exec(`
+      DROP TRIGGER IF EXISTS evidence_kind_insert_guard;
+      DROP TRIGGER IF EXISTS memory_kind_insert_guard;
+      DROP TRIGGER IF EXISTS evidence_immutable_update;
+      DROP TRIGGER IF EXISTS evidence_immutable_delete;
+      DROP TRIGGER IF EXISTS memory_content_immutable;
+      ALTER TABLE sessions ADD COLUMN next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0);
+    `);
+    database.exec(SESSION_PROJECTION_SCHEMA_SQL);
+    database.exec('ALTER TABLE lifecycle_receipts ADD COLUMN summary_id TEXT REFERENCES session_summaries(id)');
+    database.exec(TAXONOMY_GUARD_SQL);
+    database.exec(IMMUTABILITY_TRIGGER_SQL);
+    const foreignKeyFailures = database.pragma('foreign_key_check') as unknown[];
+    if (foreignKeyFailures.length > 0) throw new Error('SQLite revision 4 migration failed foreign-key verification');
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
   })();
 }
@@ -59,6 +125,11 @@ export function migrateCurrentSchema(database: Database.Database): void {
   if (version.version === SQLITE_SCHEMA_REVISION) return;
   if (version.version === PRE_CONSTRAINT_SCHEMA_REVISION) {
     migrateRevisionTwo(database);
+    migrateRevisionThree(database);
+    return;
+  }
+  if (version.version === ORDERED_SESSION_SCHEMA_REVISION) {
+    migrateRevisionThree(database);
     return;
   }
   throw new Error(`Unsupported memory SQLite schema revision: ${version.version}`);

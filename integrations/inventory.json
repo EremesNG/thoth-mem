@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "lifecycleProtocolVersion": 3,
   "coreVersion": "0.4.13",
   "shared": ["hook-runner.mjs"],
   "harnesses": {

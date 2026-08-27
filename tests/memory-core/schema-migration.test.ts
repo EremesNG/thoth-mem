@@ -1,0 +1,137 @@
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { migrateCurrentSchema, preV4BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
+import { REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
+
+const roots: string[] = [];
+
+function fixturePath(name = 'memory.sqlite'): string {
+  const root = mkdtempSync(join(tmpdir(), 'thoth-schema-v4-'));
+  roots.push(root);
+  return join(root, name);
+}
+
+function createRevisionThreeFixture(path: string): void {
+  const database = new Database(path);
+  const timestamp = '2026-08-27T00:00:00.000Z';
+  try {
+    database.pragma('foreign_keys = ON');
+    database.exec(REVISION_THREE_SCHEMA_SQL);
+    database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(3, timestamp);
+    database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
+    database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?)').run('session-1', 'project-1', 'root-1', 'codex', 'active', timestamp, null);
+    database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', 'session-1', 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
+    database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run('memory-1', 'project-1', 'fixture/topic', 'decision', 'Fixture decision', 'searchable migration marker', 'succeeded', 'current', timestamp, null, null, timestamp);
+    database.prepare('INSERT INTO memory_evidence VALUES(?,?,?)').run('memory-1', 'evidence-1', 'supports');
+  } finally {
+    database.close();
+  }
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('SQLite revision 4 migration', () => {
+  it('creates revision 4 directly for clean file and in-memory databases without a backup', () => {
+    const path = fixturePath();
+    for (const target of [path, ':memory:']) {
+      const database = new Database(target);
+      try {
+        migrateCurrentSchema(database);
+        expect(SQLITE_SCHEMA_REVISION).toBe(4);
+        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 4 });
+        expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_events','session_summaries','session_summary_claims','session_summary_claim_supports') ORDER BY name").all()).toHaveLength(4);
+      } finally { database.close(); }
+    }
+    expect(existsSync(preV4BackupPath(path))).toBe(false);
+  });
+
+  it('upgrades revision 3 once, verifies a restorable backup, and never infers history', () => {
+    const path = fixturePath();
+    createRevisionThreeFixture(path);
+
+    const database = new Database(path);
+    try {
+      migrateCurrentSchema(database);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }]);
+      expect(database.prepare('SELECT next_event_sequence FROM sessions WHERE id=?').get('session-1')).toEqual({ next_event_sequence: 0 });
+      expect(database.prepare('SELECT count(*) AS count FROM session_events').get()).toEqual({ count: 0 });
+      expect(database.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
+      expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'migration'").all()).toEqual([{ memory_id: 'memory-1' }]);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      expect(() => migrateCurrentSchema(database)).not.toThrow();
+    } finally { database.close(); }
+
+    const backup = new Database(preV4BackupPath(path), { readonly: true, fileMustExist: true });
+    try {
+      expect(backup.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+      expect(backup.pragma('foreign_key_check')).toEqual([]);
+      expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 3 });
+      expect(backup.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name='session_events'").get()).toEqual({ count: 0 });
+    } finally { backup.close(); }
+  });
+
+  it('leaves revision 3 usable after an injected migration failure and preserves its verified backup', () => {
+    const path = fixturePath();
+    createRevisionThreeFixture(path);
+    const setup = new Database(path);
+    setup.exec("CREATE TRIGGER reject_revision_four BEFORE INSERT ON schema_migrations WHEN new.version=4 BEGIN SELECT RAISE(ABORT, 'blocked revision four'); END;");
+    setup.close();
+
+    const database = new Database(path);
+    try {
+      expect(() => migrateCurrentSchema(database)).toThrow(/blocked revision four/i);
+    } finally { database.close(); }
+
+    const source = new Database(path, { readonly: true });
+    try {
+      expect(source.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 3 });
+      expect(source.prepare("SELECT count(*) AS count FROM pragma_table_info('sessions') WHERE name='next_event_sequence'").get()).toEqual({ count: 0 });
+      expect(source.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'migration'").all()).toEqual([{ memory_id: 'memory-1' }]);
+    } finally { source.close(); }
+
+    const backupPath = preV4BackupPath(path);
+    expect(existsSync(backupPath)).toBe(true);
+    const restoredPath = fixturePath('restored.sqlite');
+    copyFileSync(backupPath, restoredPath);
+    const restored = new Database(restoredPath, { readonly: true });
+    try {
+      expect(restored.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+      expect(restored.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 3 });
+      expect(restored.prepare('SELECT content FROM evidence WHERE id=?').get('evidence-1')).toEqual({ content: 'source evidence' });
+    } finally { restored.close(); }
+  });
+
+  it('enforces closed revision-4 taxonomy, scope, uniqueness, foreign keys, and immutability in SQLite', () => {
+    const database = new Database(':memory:');
+    const timestamp = '2026-08-27T00:00:00.000Z';
+    try {
+      migrateCurrentSchema(database);
+      database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
+      database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run('session-1', 'project-1', 'root-1', 'codex', 'active', timestamp);
+      for (const [id, kind] of [['evidence-1', 'explicit_save'], ['submission-1', 'session_summary'], ['submission-2', 'session_summary']] as const) {
+        database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(id, 'project-1', 'session-1', kind, id, `hash-${id}`, null, timestamp, '{}');
+      }
+
+      expect(() => database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)').run('evidence-1', 'session-1', 1, 'intruder', 'root_user', 'project', 'standard')).toThrow(/check constraint/i);
+      database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)').run('evidence-1', 'session-1', 1, 'agent', 'root_user', 'project', 'standard');
+      expect(() => database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)').run('submission-1', 'session-1', 1, 'agent', 'root_user', 'project', 'standard')).toThrow(/unique constraint/i);
+      expect(() => database.prepare("UPDATE evidence SET content='changed' WHERE id='evidence-1'").run()).toThrow(/immutable/i);
+      expect(() => database.prepare("DELETE FROM session_events WHERE evidence_id='evidence-1'").run()).toThrow(/immutable/i);
+
+      const insertSummary = database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      insertSummary.run('summary-1', 'project-1', 'session-1', 'submission-1', 'checkpoint', 1, 'current', 1, 1, 'root_agent', 'codex', null, null, null, timestamp);
+      expect(() => insertSummary.run('summary-2', 'project-1', 'session-1', 'submission-2', 'checkpoint', 2, 'current', 1, 2, 'root_agent', 'codex', null, null, 'summary-1', timestamp)).toThrow(/unique constraint/i);
+      expect(() => database.prepare("UPDATE session_summaries SET generator_name='forged' WHERE id='summary-1'").run()).toThrow(/immutable/i);
+
+      database.prepare('INSERT INTO session_summary_claims VALUES(?,?,?,?,?,?)').run('claim-1', 'summary-1', 0, 'objective', 'Ship safely', null);
+      expect(() => database.prepare('INSERT INTO session_summary_claim_supports VALUES(?,?,?)').run('claim-1', 'missing-evidence', 'supports')).toThrow(/foreign key/i);
+    } finally { database.close(); }
+  });
+});

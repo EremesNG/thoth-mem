@@ -58,6 +58,30 @@ describe('benchmark fixture runner', () => {
           useful_content_ratio: expect.any(Number),
           selected_memory_ids: expect.arrayContaining([expect.any(String)]),
         },
+        summary: {
+          ordered_idempotency: 1,
+          supported_claims: 1,
+          unsupported_claims: 0,
+          cross_scope_rejection: 1,
+          version_precedence: 1,
+          no_auto_promotion: 1,
+          promoted_handoffs: 0,
+          checkpoint_content_events_expected: 3,
+          checkpoint_content_events_recorded: 3,
+          host_recoveries_expected: 3,
+          three_host_recovery: 3,
+          support_leakage: 0,
+          actionable_field_names: ['Objective', 'Completed', 'First pending action', 'Blockers', 'Key files/checks'],
+          actionable_fields_expected: 5,
+          control_actionable_fields_recovered: 5,
+          candidate_actionable_fields_recovered: 5,
+          useful_content_non_inferiority: 1,
+          control_selected_memory_ids: expect.arrayContaining([expect.any(String)]),
+          candidate_selected_summary_ids: expect.arrayContaining([expect.any(String)]),
+          candidate_selected_memory_ids: [],
+          model_calls: 0,
+          network_calls: 0,
+        },
       },
       promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
     });
@@ -74,6 +98,14 @@ describe('benchmark fixture runner', () => {
     expect(report.metrics.continuity.useful_content_ratio).toBeGreaterThanOrEqual(0.5);
     expect(report.metrics.continuity.selected_memory_ids.length).toBeGreaterThanOrEqual(1);
     expect(report.metrics.continuity.selected_memory_ids.length).toBeLessThanOrEqual(3);
+    expect(report.metrics.summary.summary_useful_content_ratio).toBeGreaterThanOrEqual(report.metrics.summary.baseline_useful_content_ratio);
+    expect(report.metrics.summary.control_useful_content_code_points / report.metrics.summary.control_injected_code_points).toBe(report.metrics.summary.baseline_useful_content_ratio);
+    expect(report.metrics.summary.candidate_useful_content_code_points / report.metrics.summary.candidate_injected_code_points).toBe(report.metrics.summary.summary_useful_content_ratio);
+    expect(report.metrics.summary.control_injected_code_points).toBeLessThanOrEqual(report.budgets.final_context_code_points * 3);
+    expect(report.metrics.summary.candidate_injected_code_points).toBeLessThanOrEqual(report.budgets.final_context_code_points * 3);
+    expect(report.metrics.summary.control_selected_memory_ids).toHaveLength(3);
+    expect(report.metrics.summary.candidate_selected_summary_ids).toHaveLength(3);
+    expect(report.metrics.summary.candidate_selected_memory_ids).toEqual([]);
     expect(report.metrics.resources.injected_tokens).toBe(report.metrics.continuity.injected_tokens);
     expect(report.provenance).toMatchObject({ coverage: 1, source_ids: expect.arrayContaining([expect.any(String)]) });
     expect(report.primary_metrics).toEqual(expect.arrayContaining([

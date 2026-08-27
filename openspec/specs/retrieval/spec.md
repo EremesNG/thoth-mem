@@ -90,49 +90,31 @@ Default current retrieval MUST prefer valid guidance over comparable superseded,
 
 ### Requirement: Project Briefing MUST Be Deterministic and Bounded
 
-`mem_context`, `mem_project action=briefing`, and native recovery MUST use one host-neutral continuation policy that prioritizes the newest eligible current handoff, then current relevant decisions/conventions, failed or mixed lessons, and project structure. Selection MUST be deterministic, project-scoped, source-attributed, content-first, and bounded without synthesizing unsupported facts.
+The shared continuation selector MUST consider the newest eligible current session summary before current promoted memories, use deterministic project/session/version precedence, retain existing handoff fallback when no summary exists, and never synthesize unsupported fields.
 
-#### Scenario: US2 - Resume from actionable context 1
+#### Scenario: US3 - Resume from the newest truthful session projection 1
 
-- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
-- **WHEN** session-start or post-compaction recovery runs
-- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+- **GIVEN** a current supported session summary and current promoted project memories
+- **WHEN** start/resume or post-compaction recovery runs
+- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
 
-#### Scenario: US2 - Resume from actionable context 2
+#### Scenario: US3 - Resume from the newest truthful session projection 2
 
-- **GIVEN** more candidate memories than fit the host cap
-- **WHEN** the continuation capsule is assembled
-- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
-
-#### Scenario: US2 - Resume from actionable context 3
-
-- **GIVEN** a selected memory with provenance
-- **WHEN** host-visible context renders
-- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
-
-#### Scenario: US2 - Resume from actionable context 4
-
-- **GIVEN** no useful eligible memory or a degraded lifecycle child
+- **GIVEN** no eligible summary after migration
 - **WHEN** recovery runs
-- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
+- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
 
-#### Scenario: US3 - Explore memory progressively 1
+#### Scenario: US3 - Resume from the newest truthful session projection 3
 
-- **GIVEN** a project with a current handoff and multiple durable memories
-- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
-- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
+- **GIVEN** a selected summary
+- **WHEN** host-visible context renders
+- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
 
-#### Scenario: US3 - Explore memory progressively 2
+#### Scenario: US3 - Resume from the newest truthful session projection 4
 
-- **GIVEN** a specific coding question
-- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
-- **THEN** only the selected context/full-record path pays the additional content cost
-
-#### Scenario: US3 - Explore memory progressively 3
-
-- **GIVEN** similarly named memories in another project or historical superseded guidance
-- **WHEN** current project retrieval runs
-- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
+- **GIVEN** a pre-compaction checkpoint after this change
+- **WHEN** it is captured
+- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
 
 ### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 

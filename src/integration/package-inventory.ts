@@ -1,6 +1,6 @@
 export type PackageHarness = 'opencode' | 'codex' | 'claude-code';
 export interface PublicDistributionInventory { marketplaces: Record<'codex' | 'claude-code', string>; assets: string[] }
-export interface IntegrationInventory { schemaVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
+export interface IntegrationInventory { schemaVersion: number; lifecycleProtocolVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
 
 export const CANONICAL_PLUGIN_INVENTORY: Record<PackageHarness, string[]> = {
   opencode: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/opencode.md'],
@@ -26,6 +26,7 @@ export function validateIntegrationInventory(value: unknown): IntegrationInvento
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Integration inventory must be an object');
   const inventory = value as IntegrationInventory;
   if (inventory.schemaVersion !== 2 || typeof inventory.coreVersion !== 'string' || !inventory.coreVersion) throw new Error('Integration inventory version is invalid');
+  if (inventory.lifecycleProtocolVersion !== 3) throw new Error('Integration lifecycle protocol version is invalid');
   if (!Array.isArray(inventory.shared) || inventory.shared.length !== 1 || inventory.shared[0] !== 'hook-runner.mjs') throw new Error('Integration inventory must own the exact shared runner');
   if (!inventory.harnesses || Object.keys(inventory.harnesses).sort().join(',') !== ['claude-code','codex','opencode'].join(',')) throw new Error('Integration inventory must own exactly three harnesses');
   for (const harness of Object.keys(CANONICAL_PLUGIN_INVENTORY) as PackageHarness[]) {

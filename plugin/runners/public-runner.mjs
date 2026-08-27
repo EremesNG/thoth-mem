@@ -114,6 +114,8 @@ function verifiedRecovery(lifecycle, identity) {
   const context = recovery.context;
   const items = Array.isArray(recovery.items) ? recovery.items : [];
   const selectedIds = items.map((item) => item?.id);
+  const selectedSummaryIds = items.filter((item) => item?.recordType === 'summary').map((item) => item?.id);
+  const selectedMemoryIds = items.filter((item) => item?.recordType !== 'summary').map((item) => item?.id);
   const rendering = recovery.rendering;
   const totalCodePoints = Array.from(context).length;
   if (
@@ -127,11 +129,17 @@ function verifiedRecovery(lifecycle, identity) {
     rendering?.totalCodePoints !== totalCodePoints ||
     items.length > 3 ||
     selectedIds.some((id) => typeof id !== 'string') ||
+    !Array.isArray(recovery.selectedSummaryIds) ||
     !Array.isArray(recovery.selectedMemoryIds) ||
-    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
+    !Array.isArray(recovery.selectedRecordIds) ||
+    JSON.stringify(selectedSummaryIds) !== JSON.stringify(recovery.selectedSummaryIds) ||
+    JSON.stringify(selectedMemoryIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
+    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedRecordIds) ||
     data?.capability?.contextDelivered !== (selectedIds.length > 0) ||
-    selectedIds.some((id) => !context.includes(`(memory:${id})`)) ||
-    items.some((item) => Array.isArray(item?.evidenceIds) && item.evidenceIds.some((id) => typeof id === 'string' && context.includes(id)))
+    items.some((item) => !context.includes(`(${item?.recordType === 'summary' ? 'summary' : 'memory'}:${item?.id})`)) ||
+    items.some((item) => item?.recordType === 'summary'
+      ? typeof item?.submissionEvidenceId === 'string' && context.includes(item.submissionEvidenceId)
+      : Array.isArray(item?.evidenceIds) && item.evidenceIds.some((id) => typeof id === 'string' && context.includes(id)))
   ) return fallback;
   return context;
 }

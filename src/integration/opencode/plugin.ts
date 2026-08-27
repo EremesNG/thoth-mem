@@ -97,6 +97,8 @@ function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: s
   const context = recovery.context;
   const codePointLength = Array.from(context).length;
   const selectedIds = recovery.items.map((item) => item.id);
+  const selectedSummaryIds = recovery.items.filter((item) => 'recordType' in item && item.recordType === 'summary').map((item) => item.id);
+  const selectedMemoryIds = recovery.items.filter((item) => !('recordType' in item && item.recordType === 'summary')).map((item) => item.id);
   const identity = `thoth-mem verified identity: root_session_id=${rootSessionKey}; project=${project}`;
   if (
     !isOwnedRecoveryBlock(context) ||
@@ -107,10 +109,12 @@ function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: s
     recovery.rendering.maxCodePoints !== MAX_HOST_OUTPUT_CODE_POINTS ||
     recovery.rendering.totalCodePoints !== codePointLength ||
     selectedIds.length > 3 ||
-    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
+    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedRecordIds) ||
+    JSON.stringify(selectedSummaryIds) !== JSON.stringify(recovery.selectedSummaryIds) ||
+    JSON.stringify(selectedMemoryIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
     result.capability.contextDelivered !== (selectedIds.length > 0) ||
-    selectedIds.some((id) => !context.includes(`(memory:${id})`)) ||
-    recovery.items.some((item) => item.evidenceIds.some((id) => context.includes(id)))
+    recovery.items.some((item) => !context.includes(`(${'recordType' in item && item.recordType === 'summary' ? 'summary' : 'memory'}:${item.id})`)) ||
+    recovery.items.some((item) => 'recordType' in item && item.recordType === 'summary' ? context.includes(item.submissionEvidenceId) : 'evidenceIds' in item && item.evidenceIds.some((id) => context.includes(id)))
   ) return fallback;
   return context;
 }

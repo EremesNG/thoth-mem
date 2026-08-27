@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 
-import type { EvidenceRecord, MemoryRecord, ProjectIdentityInput, SessionIdentityInput } from '../contracts.js';
+import type { EvidenceRecord, MemoryRecord, ProjectIdentityInput, SessionEventInput, SessionEventRecord, SessionIdentityInput } from '../contracts.js';
 
 export function hashContent(value: string): string { return createHash('sha256').update(value.normalize('NFC')).digest('hex'); }
 export function stableUuid(value: string): string { const hex = hashContent(value); return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`; }
@@ -25,6 +25,32 @@ export function ensureSession(database: Database.Database, projectId: string, in
   const id = stableUuid(`session:${projectId}:${input.harness}:${input.rootSessionKey}`);
   database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run(id, projectId, input.rootSessionKey, input.harness, 'active', now());
   return id;
+}
+
+export function sessionEventFromRow(row: Record<string, unknown>): SessionEventRecord {
+  return {
+    evidenceId: String(row.evidence_id),
+    sessionId: String(row.session_id),
+    sequence: Number(row.sequence),
+    actor: row.actor as SessionEventRecord['actor'],
+    authority: row.authority as SessionEventRecord['authority'],
+    retentionClass: row.retention_class as SessionEventRecord['retentionClass'],
+    privacyClass: row.privacy_class as SessionEventRecord['privacyClass'],
+  };
+}
+
+export function eventForEvidence(database: Database.Database, evidenceId: string): SessionEventRecord | null {
+  const row = database.prepare('SELECT * FROM session_events WHERE evidence_id=?').get(evidenceId) as Record<string, unknown> | undefined;
+  return row ? sessionEventFromRow(row) : null;
+}
+
+export function appendSessionEvent(database: Database.Database, sessionId: string, evidenceId: string, input: SessionEventInput): SessionEventRecord {
+  const allocated = database.prepare('UPDATE sessions SET next_event_sequence=next_event_sequence+1 WHERE id=? RETURNING next_event_sequence').get(sessionId) as { next_event_sequence: number } | undefined;
+  if (!allocated) throw new Error('Verified session is required for event allocation');
+  database.prepare('INSERT INTO session_events(evidence_id,session_id,sequence,actor,authority,retention_class,privacy_class) VALUES(?,?,?,?,?,?,?)').run(
+    evidenceId, sessionId, allocated.next_event_sequence, input.actor, input.authority, input.retentionClass, input.privacyClass,
+  );
+  return { evidenceId, sessionId, sequence: allocated.next_event_sequence, ...input };
 }
 
 export function evidenceFromRow(row: Record<string, unknown>): EvidenceRecord {

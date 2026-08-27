@@ -22,6 +22,17 @@ const RESOURCE_CEILING_REASONS = new Map([
 const HASH = /^[a-f0-9]{64}$/;
 const isNonNegative = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const ACTIONABLE_FIELDS = ['Objective', 'Completed', 'First pending action', 'Blockers', 'Key files/checks'];
+const SUMMARY_FIELDS = [
+  'ordered_idempotency', 'supported_claims', 'unsupported_claims', 'cross_scope_rejection', 'version_precedence',
+  'no_auto_promotion', 'promoted_handoffs', 'checkpoint_content_events_expected', 'checkpoint_content_events_recorded',
+  'host_recoveries_expected', 'three_host_recovery', 'support_leakage',
+  'actionable_field_names', 'actionable_fields_expected', 'control_actionable_fields_recovered', 'candidate_actionable_fields_recovered',
+  'control_injected_code_points', 'candidate_injected_code_points', 'control_useful_content_code_points', 'candidate_useful_content_code_points',
+  'baseline_useful_content_ratio', 'summary_useful_content_ratio', 'useful_content_non_inferiority',
+  'control_selected_memory_ids', 'candidate_selected_summary_ids', 'candidate_selected_memory_ids', 'model_calls', 'network_calls',
+];
+const sameNumber = (left, right) => typeof left === 'number' && typeof right === 'number' && Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= 1e-12;
+const uniqueStrings = (value, length) => Array.isArray(value) && value.length === length && new Set(value).size === value.length && value.every((item) => typeof item === 'string' && item.length > 0);
 
 function percentile(samples, percentileValue) {
   const ordered = [...samples].sort((left, right) => left - right);
@@ -71,6 +82,28 @@ export function validateReport(report) {
   if (!continuity || continuity.evidence_ids_exposed !== 0) errors.push('continuity.evidence_leakage');
   if (!continuity || !Number.isInteger(continuity.injected_code_points) || continuity.injected_code_points <= 0 || continuity.injected_code_points > report?.budgets?.final_context_code_points || continuity.host_cap_compliance !== 1 || !Number.isInteger(continuity.injected_tokens) || continuity.injected_tokens !== Math.ceil(continuity.injected_code_points / 4) || report?.metrics?.resources?.injected_tokens !== continuity.injected_tokens) errors.push('continuity.host_cap');
   if (!continuity || !Number.isInteger(continuity.useful_content_code_points) || continuity.useful_content_code_points <= 0 || continuity.useful_content_code_points > continuity.injected_code_points || typeof continuity.useful_content_ratio !== 'number' || !Number.isFinite(continuity.useful_content_ratio) || continuity.useful_content_ratio < 0.5 || continuity.useful_content_ratio > 1) errors.push('continuity.useful_content');
+  const summary = report?.metrics?.summary;
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary) || Object.keys(summary).length !== SUMMARY_FIELDS.length || SUMMARY_FIELDS.some((key) => !Object.hasOwn(summary, key)) || Object.keys(summary).some((key) => !SUMMARY_FIELDS.includes(key))) errors.push('summary.shape');
+  if (!summary || summary.ordered_idempotency !== 1) errors.push('summary.idempotency');
+  if (!summary || summary.supported_claims !== 1 || summary.unsupported_claims !== 0) errors.push('summary.support');
+  if (!summary || summary.cross_scope_rejection !== 1) errors.push('summary.cross_scope');
+  if (!summary || summary.version_precedence !== 1) errors.push('summary.version_precedence');
+  if (!summary || summary.no_auto_promotion !== 1 || summary.promoted_handoffs !== 0) errors.push('summary.promotion');
+  if (!summary || summary.checkpoint_content_events_expected !== 3 || summary.checkpoint_content_events_recorded !== 3) errors.push('summary.checkpoint_capture');
+  if (!summary || summary.host_recoveries_expected !== 3 || summary.three_host_recovery !== 3 || !uniqueStrings(summary.control_selected_memory_ids, 3) || !uniqueStrings(summary.candidate_selected_summary_ids, 3)) errors.push('summary.recovery');
+  if (!summary || summary.support_leakage !== 0) errors.push('summary.support_leakage');
+  if (!summary || JSON.stringify(summary.actionable_field_names) !== JSON.stringify(ACTIONABLE_FIELDS) || summary.actionable_fields_expected !== ACTIONABLE_FIELDS.length || summary.control_actionable_fields_recovered !== ACTIONABLE_FIELDS.length || summary.candidate_actionable_fields_recovered !== ACTIONABLE_FIELDS.length) errors.push('summary.actionable_fields');
+  if (!summary || !Array.isArray(summary.candidate_selected_memory_ids) || summary.candidate_selected_memory_ids.length !== 0) errors.push('summary.contamination');
+  const validSummaryAccounting = summary
+    && Number.isInteger(summary.control_injected_code_points) && summary.control_injected_code_points > 0 && summary.control_injected_code_points <= report?.budgets?.final_context_code_points * summary.host_recoveries_expected
+    && Number.isInteger(summary.candidate_injected_code_points) && summary.candidate_injected_code_points > 0 && summary.candidate_injected_code_points <= report?.budgets?.final_context_code_points * summary.host_recoveries_expected
+    && Number.isInteger(summary.control_useful_content_code_points) && summary.control_useful_content_code_points > 0 && summary.control_useful_content_code_points <= summary.control_injected_code_points
+    && Number.isInteger(summary.candidate_useful_content_code_points) && summary.candidate_useful_content_code_points > 0 && summary.candidate_useful_content_code_points <= summary.candidate_injected_code_points
+    && sameNumber(summary.baseline_useful_content_ratio, summary.control_useful_content_code_points / summary.control_injected_code_points)
+    && sameNumber(summary.summary_useful_content_ratio, summary.candidate_useful_content_code_points / summary.candidate_injected_code_points);
+  if (!validSummaryAccounting) errors.push('summary.accounting');
+  if (!summary || summary.useful_content_non_inferiority !== 1 || typeof summary.summary_useful_content_ratio !== 'number' || typeof summary.baseline_useful_content_ratio !== 'number' || summary.summary_useful_content_ratio < summary.baseline_useful_content_ratio) errors.push('summary.non_inferiority');
+  if (!summary || summary.model_calls !== 0 || summary.network_calls !== 0) errors.push('summary.offline_execution');
   if (!isNonNegative(report?.provenance?.coverage) || report.provenance.coverage > 1 || !Array.isArray(report?.provenance?.source_ids) || report.provenance.source_ids.some((id) => typeof id !== 'string' || !id) || (report.provenance.coverage > 0 && report.provenance.source_ids.length === 0)) errors.push('provenance');
   const fallbackControls = report?.fallback_controls;
   const fallbackScenarios = new Set(Array.isArray(fallbackControls) ? fallbackControls.map((item) => item?.scenario) : []);

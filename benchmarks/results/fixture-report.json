@@ -143,46 +143,90 @@
       "poisoned_memory_safe": 1,
       "host_cap_compliance": 1,
       "evidence_ids_exposed": 0,
-      "injected_code_points": 960,
-      "injected_tokens": 240,
+      "injected_code_points": 949,
+      "injected_tokens": 238,
       "useful_content_code_points": 584,
-      "useful_content_ratio": 0.6894923258559622,
+      "useful_content_ratio": 0.6985645933014354,
       "selected_memory_ids": [
         "c2c5fdf5-d9c3-54f8-a8eb-d400cbcf6228",
-        "d22a3ea5-3add-5961-aad2-c39cc1d41033"
+        "f879eb2b-7920-5efb-a921-de8e99202659"
       ]
     },
+    "summary": {
+      "ordered_idempotency": 1,
+      "supported_claims": 1,
+      "unsupported_claims": 0,
+      "cross_scope_rejection": 1,
+      "version_precedence": 1,
+      "no_auto_promotion": 1,
+      "promoted_handoffs": 0,
+      "checkpoint_content_events_expected": 3,
+      "checkpoint_content_events_recorded": 3,
+      "host_recoveries_expected": 3,
+      "three_host_recovery": 3,
+      "support_leakage": 0,
+      "actionable_field_names": [
+        "Objective",
+        "Completed",
+        "First pending action",
+        "Blockers",
+        "Key files/checks"
+      ],
+      "actionable_fields_expected": 5,
+      "control_actionable_fields_recovered": 5,
+      "candidate_actionable_fields_recovered": 5,
+      "control_injected_code_points": 1992,
+      "candidate_injected_code_points": 1899,
+      "control_useful_content_code_points": 869,
+      "candidate_useful_content_code_points": 869,
+      "baseline_useful_content_ratio": 0.4362449799196787,
+      "summary_useful_content_ratio": 0.4576092680358083,
+      "useful_content_non_inferiority": 1,
+      "control_selected_memory_ids": [
+        "f92eaa64-8087-588a-a4c8-6e7fe45a80d0",
+        "8f2936fa-b9fb-5df8-ae16-5ab0dd7a6b78",
+        "8414b4c7-d163-548d-a89a-aa9053593204"
+      ],
+      "candidate_selected_summary_ids": [
+        "7f86b751-398e-5147-a6f3-2767f5019766",
+        "9178b2ac-8c36-5988-abe4-7900071ad19f",
+        "a2957ae5-b393-52bd-a57f-523936dc3a40"
+      ],
+      "candidate_selected_memory_ids": [],
+      "model_calls": 0,
+      "network_calls": 0
+    },
     "resources": {
-      "latency_p50_ms": 0.33440000000001646,
-      "latency_p95_ms": 1.8748999999999967,
-      "ingestion_ms": 1.6818999999999846,
-      "startup_ms": 227.52769999999998,
-      "peak_memory_bytes": 81563648,
-      "database_bytes": 143360,
+      "latency_p50_ms": 0.3498000000000161,
+      "latency_p95_ms": 1.710800000000006,
+      "ingestion_ms": 1.677899999999994,
+      "startup_ms": 210.2154,
+      "peak_memory_bytes": 88997888,
+      "database_bytes": 237568,
       "model_bytes": 0,
       "network_calls": 0,
       "llm_calls": 0,
-      "injected_tokens": 240,
+      "injected_tokens": 238,
       "returned_chars": 23,
       "truncated_chars": 0,
       "samples": {
         "latency_ms": [
-          1.8748999999999967,
-          0.35120000000000573,
-          0.32519999999999527,
-          0.30400000000003047,
-          0.32389999999998054,
-          0.33440000000001646,
-          0.38100000000002865
+          1.710800000000006,
+          0.3498000000000161,
+          0.3038999999999987,
+          0.29580000000001405,
+          0.44589999999999463,
+          0.3673000000000002,
+          0.34720000000001505
         ],
         "memory_bytes": [
-          81326080,
-          81371136,
-          81391616,
-          81391616,
-          81477632,
-          81498112,
-          81563648
+          88801280,
+          88862720,
+          88862720,
+          88862720,
+          88903680,
+          88985600,
+          88997888
         ]
       }
     }
@@ -194,8 +238,12 @@
       "414edb10-f3cd-5d25-a8ad-66d42ff4e67d",
       "c2c5fdf5-d9c3-54f8-a8eb-d400cbcf6228",
       "5267a981-13c2-557a-a27a-9c46c23eef9c",
-      "d22a3ea5-3add-5961-aad2-c39cc1d41033",
-      "4a09dd71-c1da-5997-a93c-b0898c2a7365"
+      "f92eaa64-8087-588a-a4c8-6e7fe45a80d0",
+      "8f2936fa-b9fb-5df8-ae16-5ab0dd7a6b78",
+      "8414b4c7-d163-548d-a89a-aa9053593204",
+      "7f86b751-398e-5147-a6f3-2767f5019766",
+      "9178b2ac-8c36-5988-abe4-7900071ad19f",
+      "a2957ae5-b393-52bd-a57f-523936dc3a40"
     ]
   },
   "fallback_controls": [

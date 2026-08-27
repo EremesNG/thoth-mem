@@ -27,10 +27,10 @@ describe('progressive context funnel', () => {
       service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'explicit_save', content: 'Structure evidence.' }, memory: { kind: 'project_structure', title: 'Runtime split', content: 'Bun adapter is pure; persistence runs in Node.' } });
       service.save({ project: { key: 'repo:foreign', name: 'foreign' }, evidence: { kind: 'explicit_save', content: 'Foreign evidence.' }, memory: { kind: 'handoff', title: 'Foreign handoff', content: 'FOREIGN-PROJECT-MARKER' } });
       const handoffContent = 'Objective: MEMORY-OPERATING-MODEL. Completed: research and Skill contract. Archive path: openspec/changes/archive/memory-operating-model. First pending action: IMPLEMENT-CONTINUATION-SELECTOR. Blockers: none. Key files/checks: src/memory-core/service.ts.';
-      const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project: { key: 'repo:context', name: 'context' }, rootSessionKey: 'root', eventKey: 'compact', content: handoffContent });
+      const checkpoint = service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'handoff', content: handoffContent }, memory: { kind: 'handoff', title: 'Legacy continuation', content: handoffContent, topicKey: 'session/root/checkpoint' } });
       const briefing = service.context({ projectKey: 'repo:context', budgetChars: 1_400 });
       const repeated = service.context({ projectKey: 'repo:context', budgetChars: 1_400 });
-      expect(briefing.items[0]).toMatchObject({ kind: 'handoff', evidenceIds: [checkpoint.evidenceId] });
+      expect(briefing.items[0]).toMatchObject({ kind: 'handoff', evidenceIds: [checkpoint.evidence.id] });
       expect(briefing.items[0]?.content).toContain('MEMORY-OPERATING-MODEL');
       expect(briefing.items[0]?.content).toContain('openspec/changes/archive/memory-operating-model');
       expect(briefing.items[0]?.content).toContain('IMPLEMENT-CONTINUATION-SELECTOR');
@@ -58,11 +58,37 @@ describe('progressive context funnel', () => {
       expect(bounded.budget.returnedChars).toBeLessThanOrEqual(100);
 
       const base = { harness: 'codex' as const, project: { key: 'repo:recover', name: 'recover' }, rootSessionKey: 'root' };
-      const checkpoint = service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre', content: 'Resume the verified migration at task T055.' });
+      const checkpoint = service.save({ project: base.project, session: { rootSessionKey: base.rootSessionKey, harness: base.harness }, eventKey: 'legacy-handoff', evidence: { kind: 'handoff', content: 'Resume the verified migration at task T055.' }, memory: { kind: 'handoff', title: 'Legacy checkpoint', content: 'Resume the verified migration at task T055.', topicKey: 'session/root/checkpoint' } });
       const recovery = service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover' });
-      expect(recovery.recovery?.items[0]).toMatchObject({ kind: 'handoff', evidenceIds: [checkpoint.evidenceId] });
-      expect(recovery.recovery?.sources).toContain(checkpoint.evidenceId);
+      expect(recovery.recovery?.items[0]).toMatchObject({ kind: 'handoff', evidenceIds: [checkpoint.evidence.id] });
+      expect(recovery.recovery?.sources).toContain(checkpoint.evidence.id);
       expect(recovery.capability).toMatchObject({ hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false });
+    } finally { service.close(); }
+  });
+
+  it('selects only the verified session newest summary, preferring final on a coverage tie', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:summary-context', name: 'summary-context' };
+    try {
+      service.save({ project, evidence: { kind: 'handoff', content: 'Fallback evidence.' }, memory: { kind: 'handoff', title: 'Fallback', content: 'LEGACY-HANDOFF-FALLBACK' } });
+      const support = service.save({ project, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Session one support.' } });
+      const baseSummary = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent' as const, name: 'codex' }, claims: [{ kind: 'objective' as const, content: 'SESSION-ONE-SUMMARY', supportIds: [support.evidence.id] }] };
+      const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'checkpoint', summary: { ...baseSummary, kind: 'checkpoint' } });
+      const final = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'final', summary: { ...baseSummary, kind: 'final' } });
+      const foreignSupport = service.save({ project, session: { rootSessionKey: 'root-2', harness: 'codex' }, eventKey: 'foreign-support', evidence: { kind: 'explicit_save', content: 'Session two support.' } });
+      service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-2', eventKey: 'foreign-final', summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignSupport.evidence.id] }] } });
+
+      const scoped = service.context({ projectKey: project.key, rootSessionKey: 'root-1', harness: 'codex', budgetChars: 2_000 });
+      expect(scoped.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId, kind: 'final' });
+      expect(scoped.items.map((item) => item.id)).not.toContain(checkpoint.summaryId);
+      expect(JSON.stringify(scoped.items)).not.toContain('FOREIGN-SESSION-SUMMARY');
+      expect(scoped.selectedSummaryIds).toEqual([final.summaryId]);
+      expect(scoped.selectedRecordIds).toEqual(scoped.items.map((item) => item.id));
+
+      const projectOnly = service.context({ projectKey: project.key, budgetChars: 2_000 });
+      expect(projectOnly.items[0]).toMatchObject({ kind: 'handoff', content: 'LEGACY-HANDOFF-FALLBACK' });
+      expect(projectOnly.selectedSummaryIds).toEqual([]);
+      expect(() => service.context({ projectKey: project.key, rootSessionKey: 'root-1' })).toThrow(/supplied together/i);
     } finally { service.close(); }
   });
 });

@@ -167,4 +167,47 @@ describe('MCP boundary', () => {
       });
     } finally { service.close(); }
   });
+
+  it('submits, expands, and lists supported summaries through the existing six tools', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const support = await handlers.mem_save({ project_key: 'repo:summary', project_name: 'summary', root_session_key: 'root-1', harness: 'codex', event_key: 'support', evidence: { kind: 'explicit_save', content: 'SUPPORT CONTENT MUST STAY DEFERRED' } });
+      const supportId = (support.structuredContent.data as { evidence: { id: string } }).evidence.id;
+      const submitted = await handlers.mem_session({
+        operation: 'checkpoint_pre_compact', harness: 'codex', project_key: 'repo:summary', project_name: 'summary', root_session_key: 'root-1', event_key: 'summary-1',
+        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [supportId] }] },
+      });
+      expect(submitted.isError).not.toBe(true);
+      const summaryId = (submitted.structuredContent.data as { summaryId: string }).summaryId;
+      expect(summaryId).toEqual(expect.any(String));
+
+      const expanded = await handlers.mem_get({ id: summaryId, history: true });
+      expect(expanded.structuredContent).toMatchObject({ data: { record: { recordType: 'summary', id: summaryId, claims: [{ supportIds: [supportId] }] } } });
+      expect(JSON.stringify(expanded.structuredContent)).not.toContain('SUPPORT CONTENT MUST STAY DEFERRED');
+
+      const summaries = await handlers.mem_project({ action: 'summaries', project_key: 'repo:summary', root_session_key: 'root-1', harness: 'codex', temporal: 'current', budget_chars: 2_000 });
+      expect(summaries.structuredContent).toMatchObject({ data: { action: 'summaries', items: [{ recordType: 'summary', id: summaryId }] } });
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('rejects malformed nested summaries and partial session identity without side effects', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const malformed = await handlers.mem_session({
+        operation: 'checkpoint_pre_compact', harness: 'codex', project_key: 'repo:invalid-summary', project_name: 'invalid', root_session_key: 'root-1', event_key: 'invalid',
+        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1, unexpected: true }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Invalid.', support_ids: ['missing'] }] },
+      });
+      expect(malformed).toMatchObject({ isError: true, structuredContent: { error: { retryable: false } } });
+      expect(service.listProjects()).toEqual([]);
+
+      const partialContext = await handlers.mem_context({ project_key: 'repo:test', root_session_key: 'root-1' });
+      const partialBriefing = await handlers.mem_project({ action: 'briefing', project_key: 'repo:test', harness: 'codex' });
+      expect(partialContext.isError).toBe(true);
+      expect(partialBriefing.isError).toBe(true);
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
 });
