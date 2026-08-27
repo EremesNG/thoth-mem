@@ -1,0 +1,98 @@
+[
+  {
+    "question_id": "q_multi_session",
+    "question_type": "multi-session",
+    "question": "SQLite source truth",
+    "answer": "LEAK_ONLY_ANSWER_MARKER SQLite and 1000 tokens",
+    "question_date": "2026-01-04T12:00:00Z",
+    "haystack_session_ids": ["session-storage", "session-budget", "session-noise", "session-noise"],
+    "haystack_dates": ["2026-01-01T09:00:00Z", "2026-01-02T09:00:00Z", "2026-01-03T09:00:00Z", "2026-01-03T10:00:00Z"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Which local storage engine should remain authoritative?"},
+        {"role": "assistant", "content": "SQLite is the only source of truth.", "has_answer": true}
+      ],
+      [
+        {"role": "user", "content": "Fix the final context budget at one thousand estimated tokens.", "has_answer": true},
+        {"role": "assistant", "content": "The final budget is 1000 estimated tokens."}
+      ],
+      [
+        {"role": "user", "content": "The office plants need watering on Friday."},
+        {"role": "assistant", "content": "I added a reminder for the plants."}
+      ],
+      [
+        {"role": "user", "content": "The duplicate source label belongs to a separate ordered occurrence."},
+        {"role": "assistant", "content": "Keep both occurrences without collapsing their shared session ID."}
+      ]
+    ],
+    "answer_session_ids": ["session-storage", "session-budget"]
+  },
+  {
+    "question_id": "q_assistant_evidence",
+    "question_type": "assistant-evidence",
+    "question": "canary phrase amber falcon",
+    "answer": "LEAK_ASSISTANT_ANSWER_MARKER amber falcon",
+    "question_date": "2026-02-03T12:00:00Z",
+    "haystack_session_ids": ["session-generic", "session-assistant-answer"],
+    "haystack_dates": ["2026-02-01T09:00:00Z", "2026-02-02T09:00:00Z"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "We should choose a deployment canary phrase."},
+        {"role": "assistant", "content": "Let us decide after checking the release notes."}
+      ],
+      [
+        {"role": "user", "content": "Which phrase do you recommend?"},
+        {"role": "assistant", "content": "Use the canary phrase amber falcon.", "has_answer": true}
+      ]
+    ],
+    "answer_session_ids": ["session-assistant-answer"]
+  },
+  {
+    "question_id": "q_irrelevant_query",
+    "question_type": "single-session-user",
+    "question": "Which telescope calibration value was chosen?",
+    "answer": "LEAK_NO_HIT_ANSWER_MARKER unknown",
+    "question_date": "2026-03-02T12:00:00Z",
+    "haystack_session_ids": ["session-cooking"],
+    "haystack_dates": ["2026-03-01T09:00:00Z"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "The soup recipe needs more basil."},
+        {"role": "assistant", "content": "Add two fresh basil leaves."}
+      ]
+    ],
+    "answer_session_ids": ["session-cooking"]
+  },
+  {
+    "question_id": "q_abstention_abs",
+    "question_type": "single-session-user_abs",
+    "question": "What was never discussed?",
+    "answer": "LEAK_ABSTENTION_ANSWER_MARKER",
+    "question_date": "2026-04-02T12:00:00Z",
+    "haystack_session_ids": ["session-abstention"],
+    "haystack_dates": ["2026-04-01T09:00:00Z"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "We discussed local build commands."},
+        {"role": "assistant", "content": "The build remains offline."}
+      ]
+    ],
+    "answer_session_ids": []
+  },
+  {
+    "question_id": "q_unresolved_gold",
+    "question_type": "invalid-fixture",
+    "question": "Which session is missing?",
+    "answer": "LEAK_UNRESOLVED_ANSWER_MARKER",
+    "question_date": "2026-05-02T12:00:00Z",
+    "haystack_session_ids": ["session-present"],
+    "haystack_dates": ["2026-05-01T09:00:00Z"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Only the present session exists."},
+        {"role": "assistant", "content": "No missing session is indexed."}
+      ]
+    ],
+    "answer_session_ids": ["session-missing"]
+  }
+]

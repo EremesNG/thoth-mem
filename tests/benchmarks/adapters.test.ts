@@ -16,7 +16,14 @@ describe('benchmark adapter manifest', () => {
     const contracts = manifest.lanes.map(describeLane);
     expect(contracts.map((lane) => [lane.id, lane.adapter, lane.metrics])).toEqual([
       ['fixture-lexical', 'fixture@1', ['retrieval.mrr', 'retrieval.recall_at_1', 'retrieval.hit_at_k']],
-      ['longmemeval-s', 'longmemeval-s@1', ['retrieval.mrr', 'retrieval.recall_at_1', 'answer.exact_match']],
+      ['longmemeval-s', 'longmemeval-s-retrieval@1', [
+        'retrieval.mrr_any', 'retrieval.ndcg_at_10',
+        'retrieval.recall_any_at_1', 'retrieval.recall_at_1', 'retrieval.recall_all_at_1',
+        'retrieval.recall_any_at_5', 'retrieval.recall_at_5', 'retrieval.recall_all_at_5',
+        'retrieval.recall_any_at_10', 'retrieval.recall_at_10', 'retrieval.recall_all_at_10',
+        'retrieval.recall_any_at_20', 'retrieval.recall_at_20', 'retrieval.recall_all_at_20',
+        'delivery.recall_any_at_20', 'delivery.recall_at_20', 'delivery.recall_all_at_20',
+      ]],
       ['locomo', 'locomo-deterministic@1', ['answer.exact_match', 'answer.f1']],
       ['amb-beam-100k', 'amb-beam@1', ['retrieval.mrr', 'evidence.recall']],
       ['amb-beam-1m', 'amb-beam@1', ['retrieval.mrr', 'evidence.recall']],
@@ -25,5 +32,6 @@ describe('benchmark adapter manifest', () => {
       ['sdebench', 'sdebench-hidden@1', ['agent.hidden_test_success']],
     ]);
     for (const lane of contracts.filter((item) => !item.available)) expect(lane.unavailable).toEqual({ id: lane.id, reason: expect.stringMatching(/^[a-z_]{3,64}$/) });
+    expect(manifest.lanes.find((lane) => lane.id === 'longmemeval-s')).toMatchObject({ available: false, reason: 'dataset_not_prepared', profile: 'retrieval-only' });
   });
 });

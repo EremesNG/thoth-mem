@@ -5,7 +5,7 @@
   "thresholds": {"relativePrimaryQuality": 0.05, "maxPrimaryRegression": 0, "provenanceCoverage": 1},
   "lanes": [
     {"id":"fixture-lexical","dataset":"committed-fixture","available":true},
-    {"id":"longmemeval-s","dataset":"LongMemEval-S","available":false,"reason":"dataset_not_prepared"},
+    {"id":"longmemeval-s","dataset":"LongMemEval-S cleaned","profile":"retrieval-only","available":false,"reason":"dataset_not_prepared"},
     {"id":"locomo","dataset":"LoCoMo deterministic","available":false,"reason":"dataset_not_prepared"},
     {"id":"amb-beam-100k","dataset":"AMB BEAM 100K","available":false,"reason":"runner_not_prepared"},
     {"id":"amb-beam-1m","dataset":"AMB BEAM 1M","available":false,"reason":"runner_not_prepared"},
