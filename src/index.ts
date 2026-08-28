@@ -7,6 +7,7 @@ import { createServer } from './server.js';
 
 export { MemoryService } from './memory-core/service.js';
 export * from './memory-core/contracts.js';
+export { buildFtsQueryPlan } from './memory-core/sqlite/fts.js';
 export { createServer } from './server.js';
 export { ALL_TOOLS, createToolHandlers } from './tools/index.js';
 

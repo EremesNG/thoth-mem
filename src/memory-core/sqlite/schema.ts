@@ -69,7 +69,17 @@ CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT 
 CREATE TABLE projects(id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, root_hint TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 `;
 
-function sharedSchemaSuffix(lifecycleSummaryColumn: string): string {
+function memoryFtsSchemaSql(ftsOptions = ''): string {
+  return `
+CREATE VIRTUAL TABLE memory_fts USING fts5(memory_id UNINDEXED, project_id UNINDEXED, title, content, topic_key, tokenize='unicode61 tokenchars _'${ftsOptions});
+CREATE TRIGGER memory_fts_insert AFTER INSERT ON memories BEGIN INSERT INTO memory_fts(memory_id,project_id,title,content,topic_key) VALUES(new.id,new.project_id,new.title,new.content,coalesce(new.topic_key,'')); INSERT INTO change_watermark(source_id,changed_at) VALUES(new.id,new.created_at); END;
+CREATE TRIGGER memory_fts_delete AFTER DELETE ON memories BEGIN DELETE FROM memory_fts WHERE memory_id=old.id; END;
+`;
+}
+
+export const REVISION_FIVE_FTS_SCHEMA_SQL = memoryFtsSchemaSql(", prefix='2 3 4 5 6 7 8 9 10 11 12'");
+
+function sharedSchemaSuffix(lifecycleSummaryColumn: string, ftsOptions = ''): string {
   return `
 CREATE TABLE evidence(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT REFERENCES sessions(id), kind TEXT NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL, source_ref TEXT, captured_at TEXT NOT NULL, metadata_json TEXT NOT NULL);
 CREATE TABLE memories(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), topic_key TEXT, kind TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN (${sqlValues(MEMORY_OUTCOME_VALUES)})), status TEXT NOT NULL CHECK(status IN (${sqlValues(MEMORY_STATUS_VALUES)})), valid_from TEXT NOT NULL, invalid_at TEXT, supersedes_id TEXT REFERENCES memories(id), created_at TEXT NOT NULL);
@@ -82,9 +92,7 @@ CREATE TABLE projection_state(projection_id TEXT PRIMARY KEY, config_hash TEXT N
 CREATE TABLE projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
 CREATE TABLE change_watermark(id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, changed_at TEXT NOT NULL);
-CREATE VIRTUAL TABLE memory_fts USING fts5(memory_id UNINDEXED, project_id UNINDEXED, title, content, topic_key, tokenize='unicode61 tokenchars _');
-CREATE TRIGGER memory_fts_insert AFTER INSERT ON memories BEGIN INSERT INTO memory_fts(memory_id,project_id,title,content,topic_key) VALUES(new.id,new.project_id,new.title,new.content,coalesce(new.topic_key,'')); INSERT INTO change_watermark(source_id,changed_at) VALUES(new.id,new.created_at); END;
-CREATE TRIGGER memory_fts_delete AFTER DELETE ON memories BEGIN DELETE FROM memory_fts WHERE memory_id=old.id; END;
+${memoryFtsSchemaSql(ftsOptions)}
 `;
 }
 
@@ -107,10 +115,19 @@ CREATE TABLE session_summary_claim_supports(claim_id TEXT NOT NULL REFERENCES se
 ${SESSION_PROJECTION_TRIGGER_SQL}
 `;
 
-export const CURRENT_SCHEMA_SQL = `
+export const REVISION_FOUR_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
 CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)')}
+${SESSION_PROJECTION_SCHEMA_SQL}
+${TAXONOMY_GUARD_SQL}
+${IMMUTABILITY_TRIGGER_SQL}
+`;
+
+export const CURRENT_SCHEMA_SQL = `
+${SHARED_SCHEMA_PREFIX}
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}

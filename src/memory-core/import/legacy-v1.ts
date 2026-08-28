@@ -6,10 +6,11 @@ import Database from 'better-sqlite3';
 
 import type { MemoryKind } from '../contracts.js';
 import { MemoryService } from '../service.js';
+import { SQLITE_SCHEMA_REVISION } from '../sqlite/migrations.js';
 
 export interface LegacyImportReport {
   schema: 'thoth-mem.import';
-  reportVersion: 2; sourceSchemaVersion: 'legacy-v1' | 'unknown'; targetSchemaVersion: 4; startedAt: string; finishedAt: string; committed: boolean;
+  reportVersion: 2; sourceSchemaVersion: 'legacy-v1' | 'unknown'; targetSchemaVersion: typeof SQLITE_SCHEMA_REVISION; startedAt: string; finishedAt: string; committed: boolean;
   sourcePath: string; targetPath: string; sourceHash: string; sourceUnchanged: boolean;
   imported: { sessions: number; prompts: number; observations: number };
   skipped: number; quarantined: number; failed: number;
@@ -34,7 +35,7 @@ function disposition() { return { imported: 0, skipped: 0, quarantined: 0, faile
 export function importLegacyV1(options: ImportOptions): LegacyImportReport {
   const sourcePath = resolve(options.sourcePath); const targetPath = resolve(options.targetPath);
   const sourceExists = existsSync(sourcePath); const sourceHash = sourceExists ? sha256(sourcePath) : ''; const deterministicTime = sourceExists ? statSync(sourcePath).mtime.toISOString() : new Date(0).toISOString(); let source: Database.Database | null = null; let service: MemoryService | null = null; const targetExisted = existsSync(targetPath); const stagingPath = join(dirname(targetPath), `.${basename(targetPath)}.importing-${randomUUID()}`); let activeType: keyof LegacyImportReport['dispositions'] | null = null;
-  const report: LegacyImportReport = { schema: 'thoth-mem.import', reportVersion: 2, sourceSchemaVersion: 'unknown', targetSchemaVersion: 4, startedAt: deterministicTime, finishedAt: deterministicTime, committed: false, sourcePath, targetPath, sourceHash, sourceUnchanged: false, imported: { sessions: 0, prompts: 0, observations: 0 }, skipped: 0, quarantined: 0, failed: 0, dispositions: { sessions: disposition(), prompts: disposition(), observations: disposition() }, dispositionReasons: [], ignoredDerived: { tables: [], rows: 0, byCategory: { graph: 0, vector: 0, operational: 0, other: 0 } }, integrity: { foreignKeys: false, fts: false }, errors: [] };
+  const report: LegacyImportReport = { schema: 'thoth-mem.import', reportVersion: 2, sourceSchemaVersion: 'unknown', targetSchemaVersion: SQLITE_SCHEMA_REVISION, startedAt: deterministicTime, finishedAt: deterministicTime, committed: false, sourcePath, targetPath, sourceHash, sourceUnchanged: false, imported: { sessions: 0, prompts: 0, observations: 0 }, skipped: 0, quarantined: 0, failed: 0, dispositions: { sessions: disposition(), prompts: disposition(), observations: disposition() }, dispositionReasons: [], ignoredDerived: { tables: [], rows: 0, byCategory: { graph: 0, vector: 0, operational: 0, other: 0 } }, integrity: { foreignKeys: false, fts: false }, errors: [] };
   try {
     if (sourcePath.toLocaleLowerCase() === targetPath.toLocaleLowerCase()) throw new Error('Legacy source and current target must be distinct paths');
     if (!sourceExists) throw new Error('Legacy source does not exist');

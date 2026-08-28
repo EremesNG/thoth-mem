@@ -7,6 +7,7 @@ import {
   CURRENT_SCHEMA_SQL,
   IMMUTABILITY_TRIGGER_SQL,
   REVISION_THREE_TAXONOMY_GUARD_SQL,
+  REVISION_FIVE_FTS_SCHEMA_SQL,
   SESSION_PROJECTION_SCHEMA_SQL,
   TAXONOMY_GUARD_SQL,
 } from './schema.js';
@@ -15,9 +16,10 @@ interface NameRow { name: string }
 interface VersionRow { version: number | null }
 interface KindRow { kind: string }
 
-export const SQLITE_SCHEMA_REVISION = 4;
+export const SQLITE_SCHEMA_REVISION = 5;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
 const ORDERED_SESSION_SCHEMA_REVISION = 3;
+const SESSION_PROJECTION_SCHEMA_REVISION = 4;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -104,6 +106,23 @@ function migrateRevisionThree(database: Database.Database): void {
     database.exec(IMMUTABILITY_TRIGGER_SQL);
     const foreignKeyFailures = database.pragma('foreign_key_check') as unknown[];
     if (foreignKeyFailures.length > 0) throw new Error('SQLite revision 4 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SESSION_PROJECTION_SCHEMA_REVISION, new Date().toISOString());
+  })();
+}
+
+function migrateRevisionFour(database: Database.Database): void {
+  database.transaction(() => {
+    database.exec(`
+      DROP TRIGGER IF EXISTS memory_fts_insert;
+      DROP TRIGGER IF EXISTS memory_fts_delete;
+      DROP TABLE memory_fts;
+    `);
+    database.exec(REVISION_FIVE_FTS_SCHEMA_SQL);
+    database.prepare("INSERT INTO memory_fts(memory_id,project_id,title,content,topic_key) SELECT id,project_id,title,content,coalesce(topic_key,'') FROM memories ORDER BY created_at,id").run();
+    const memoryCount = database.prepare('SELECT count(*) AS count FROM memories').get() as { count: number };
+    const ftsCount = database.prepare('SELECT count(*) AS count FROM memory_fts').get() as { count: number };
+    if (memoryCount.count !== ftsCount.count) throw new Error('SQLite revision 5 migration failed FTS row verification');
+    if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 5 migration failed foreign-key verification');
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
   })();
 }
@@ -126,10 +145,16 @@ export function migrateCurrentSchema(database: Database.Database): void {
   if (version.version === PRE_CONSTRAINT_SCHEMA_REVISION) {
     migrateRevisionTwo(database);
     migrateRevisionThree(database);
+    migrateRevisionFour(database);
     return;
   }
   if (version.version === ORDERED_SESSION_SCHEMA_REVISION) {
     migrateRevisionThree(database);
+    migrateRevisionFour(database);
+    return;
+  }
+  if (version.version === SESSION_PROJECTION_SCHEMA_REVISION) {
+    migrateRevisionFour(database);
     return;
   }
   throw new Error(`Unsupported memory SQLite schema revision: ${version.version}`);

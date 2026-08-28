@@ -57,7 +57,36 @@ export function evidenceFromRow(row: Record<string, unknown>): EvidenceRecord {
   return { id: String(row.id), projectId: String(row.project_id), sessionId: row.session_id === null ? null : String(row.session_id), kind: row.kind as EvidenceRecord['kind'], content: String(row.content), contentHash: String(row.content_hash), sourceRef: row.source_ref === null ? null : String(row.source_ref), capturedAt: String(row.captured_at), metadata: JSON.parse(String(row.metadata_json)) as Record<string, unknown> };
 }
 
-export function memoryFromRow(database: Database.Database, row: Record<string, unknown>): MemoryRecord {
-  const evidenceIds = (database.prepare('SELECT evidence_id FROM memory_evidence WHERE memory_id=? ORDER BY evidence_id').all(row.id) as Array<{ evidence_id: string }>).map((item) => item.evidence_id);
+function memoryRecordFromRow(row: Record<string, unknown>, evidenceIds: string[]): MemoryRecord {
   return { id: String(row.id), projectId: String(row.project_id), topicKey: row.topic_key === null ? null : String(row.topic_key), kind: row.kind as MemoryRecord['kind'], title: String(row.title), content: String(row.content), outcome: row.outcome as MemoryRecord['outcome'], status: row.status as MemoryRecord['status'], validFrom: String(row.valid_from), invalidAt: row.invalid_at === null ? null : String(row.invalid_at), supersedesId: row.supersedes_id === null ? null : String(row.supersedes_id), createdAt: String(row.created_at), evidenceIds };
+}
+
+export interface HydratedMemories {
+  records: Map<string, MemoryRecord>;
+  evidenceChars: number;
+  evidenceLinks: number;
+}
+
+export function hydrateMemoryRows(database: Database.Database, rows: Array<Record<string, unknown>>): HydratedMemories {
+  const ids = [...new Set(rows.map((row) => String(row.id)))];
+  if (ids.length === 0) return { records: new Map(), evidenceChars: 0, evidenceLinks: 0 };
+  const placeholders = ids.map(() => '?').join(',');
+  const evidenceRows = database.prepare(`SELECT me.memory_id,me.evidence_id,length(e.content) AS evidence_chars FROM memory_evidence me JOIN evidence e ON e.id=me.evidence_id WHERE me.memory_id IN (${placeholders}) ORDER BY me.memory_id,me.evidence_id`).all(...ids) as Array<{ memory_id: string; evidence_id: string; evidence_chars: number }>;
+  const evidenceByMemory = new Map(ids.map((id) => [id, [] as string[]]));
+  let evidenceChars = 0;
+  for (const evidence of evidenceRows) {
+    evidenceByMemory.get(evidence.memory_id)?.push(evidence.evidence_id);
+    evidenceChars += Number(evidence.evidence_chars);
+  }
+  return {
+    records: new Map(rows.map((row) => [String(row.id), memoryRecordFromRow(row, evidenceByMemory.get(String(row.id)) ?? [])])),
+    evidenceChars,
+    evidenceLinks: evidenceRows.length,
+  };
+}
+
+export function memoryFromRow(database: Database.Database, row: Record<string, unknown>): MemoryRecord {
+  const record = hydrateMemoryRows(database, [row]).records.get(String(row.id));
+  if (!record) throw new Error('Memory row hydration failed');
+  return record;
 }
