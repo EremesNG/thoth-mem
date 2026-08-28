@@ -4,25 +4,43 @@
 
 ### Requirement: Evals MUST Compare Equal-Budget Retrieval Lanes Against the Lexical Baseline
 
-All evaluated lanes MUST retain the canonical equal-budget comparison contract. The LongMemEval-S lexical baseline MUST additionally consume the official cleaned raw JSON at a pinned immutable revision and SHA-256, preserve original corpus and session order, exclude answer/oracle/gold-label data from ranking, make no model calls, and distinguish dataset preparation from offline evaluation.
+All evaluated lanes MUST retain the canonical equal-budget comparison contract. LongMemEval-S lexical query strategies MUST additionally share the pinned corpus, observed exclusions, query order, session granularity, ingestion mapping, Top-20 candidate budget, 4,000-UTF-16-unit delivery budget, scoring procedure, zero-model/zero-network evaluation boundary, diagnostic configuration, and timing boundaries so that optimized query execution is the only intended variable.
 
-#### Scenario: US1 - Prepare an immutable external corpus 1
+#### Scenario: US1 - Attribute relaxed retrieval cost 1
 
-- **GIVEN** the official cleaned LongMemEval-S file at the pinned revision
-- **WHEN** preparation verifies it
-- **THEN** the prepared manifest records the immutable source, SHA-256, record count, and corpus hash without modifying the source data
+- **GIVEN** the same project, memories, query, limit, and strategy
+- **WHEN** diagnostic measurement is enabled
+- **THEN** it identifies every executed plan stage in order and reports bounded latency and work indicators whose accounting reconciles with the total retrieval observation
 
-#### Scenario: US1 - Prepare an immutable external corpus 2
+#### Scenario: US1 - Attribute relaxed retrieval cost 2
 
-- **GIVEN** a file with the wrong digest, missing gold session IDs, misaligned session arrays, or reordered identifiers
-- **WHEN** preparation runs
-- **THEN** it fails before creating an available benchmark lane or report
+- **GIVEN** diagnostic measurement is disabled
+- **WHEN** normal MCP recall runs
+- **THEN** public response shape, candidate ordering, evidence lineage, payload budgets, telemetry semantics, and six-tool behavior remain unchanged
 
-#### Scenario: US1 - Prepare an immutable external corpus 3
+#### Scenario: US1 - Attribute relaxed retrieval cost 3
 
-- **GIVEN** no prepared external dataset
-- **WHEN** the committed fixture runs
-- **THEN** it remains offline and continues to report LongMemEval-S as unavailable
+- **GIVEN** an empty normalized query, an exact-only result, or a stage that cannot execute
+- **WHEN** measurements are assembled
+- **THEN** the omitted stage is explicit and no fabricated work or latency is reported
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 1
+
+- **GIVEN** the frozen corpus, exclusions, query order, ingestion mapping, budgets, and scoring
+- **WHEN** the optimized comparison runs
+- **THEN** query construction and its measured execution are the only intended lane differences and every diagnostic field reconciles with its lane and per-query evidence
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 2
+
+- **GIVEN** one unique relaxed candidate with at least the existing 0.05 absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, equal aggregate SQLite bytes, clean calls/errors/provenance, and p95 no greater than twice control
+- **WHEN** promotion is assessed
+- **THEN** that candidate becomes eligible to replace `all-prefix-v1`
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 3
+
+- **GIVEN** incomplete, incomparable, regressing, tied, or slower evidence
+- **WHEN** validation or promotion runs
+- **THEN** it fails closed with explicit reasons and the current runtime default does not change
 
 ### Requirement: External Metrics MUST Retain Their Published Meaning
 
@@ -54,59 +72,65 @@ All external metrics MUST retain their published labels and Top-K MUST remain a 
 
 ### Requirement: Provenance MUST Be Verified Across Every Evaluated Lane
 
-Every evaluated lane MUST retain stable authoritative source IDs and evidence lineage. For LongMemEval-S, every ingested and returned occurrence MUST additionally retain a deterministic auditable mapping between one unique occurrence source ID, its session index, the generated memory/evidence IDs, `question_id`, base `haystack_session_id`, and the evaluator-only `answer_session_ids`; missing, duplicate occurrence-source, or untraceable mappings MUST fail the lane, while repeated base session IDs remain valid.
+Every evaluated lane MUST retain stable authoritative source IDs and evidence lineage. A lexical comparison report MUST additionally bind every strategy result to its stable strategy ID, configuration hash, query expressions or their deterministic hashes, occurrence-source mappings, generated memory/evidence IDs, and per-question ranked and delivered source IDs.
 
-#### Scenario: US2 - Measure the lexical product baseline 1
+#### Scenario: US2 - Compare candidates under the official equal-budget contract 1
 
-- **GIVEN** one eligible LongMemEval-S question
-- **WHEN** the lexical lane runs
-- **THEN** it creates an isolated SQLite database, ingests each ordered session occurrence exactly once as one role-labelled full-dialogue retrieval unit, and maps every returned memory ID through a deterministic occurrence source ID to its authoritative `haystack_session_id` and session index
+- **GIVEN** the pinned prepared corpus
+- **WHEN** a comparison run starts
+- **THEN** every strategy consumes the same 470 eligible questions in the same order and ingests the same ordered session occurrences into isolated SQLite databases
 
-#### Scenario: US2 - Measure the lexical product baseline 2
+#### Scenario: US2 - Compare candidates under the official equal-budget contract 2
 
-- **GIVEN** the question text and its gold `answer_session_ids`
-- **WHEN** retrieval executes
-- **THEN** only the question and indexed session corpus influence ranking; the answer, `has_answer` flags, oracle corpus, and gold IDs are unavailable to the ranker
+- **GIVEN** control and candidate results
+- **WHEN** the report is assembled
+- **THEN** it records separate configuration hashes, per-question ranks, quality metrics, payload measurements, latency, memory, SQLite footprint, errors, and literal model/network-call counts for every strategy
 
-#### Scenario: US2 - Measure the lexical product baseline 3
+#### Scenario: US2 - Compare candidates under the official equal-budget contract 3
 
-- **GIVEN** one of the 30 `_abs` abstention records
-- **WHEN** the run is assembled
-- **THEN** it is excluded with that recorded reason; every non-abstention record must instead have nonempty `answer_session_ids` resolving to ingested sessions or preparation fails
-
-#### Scenario: US2 - Measure the lexical product baseline 4
-
-- **GIVEN** future candidate lanes
-- **WHEN** they are compared with this baseline
-- **THEN** they must reuse the same prepared corpus, query order, session granularity, candidate Top-20, final 1,000-token estimated context budget, and scoring contract
+- **GIVEN** a missing, interrupted, unequal-budget, provenance-invalid, or schema-invalid lane
+- **WHEN** comparison status is computed
+- **THEN** the report is incomplete and cannot select a runtime default
 
 ### Requirement: Reports MUST Include Quality and Resource Envelopes
 
-All durable reports MUST retain the canonical quality and resource envelope. A LongMemEval-S report MUST additionally include the pinned source revision and digests, corpus/profile/configuration hashes, observed and excluded denominators, query order, per-question source ranks and metrics, question-type aggregates, p50/p95 retrieval and ingestion latency, startup time, peak or explicitly bounded memory measurement, SQLite bytes, characters and estimated tokens, delivery/truncation, errors, and model/network-call counts.
+All durable reports MUST retain the canonical quality and resource envelope. A LongMemEval-S lexical comparison MUST additionally record strict, relaxed, merge/post-query, and total retrieval measurements with explicit units and privacy-safe work indicators sufficient to attribute candidate latency, while preserving the pinned source revision and digests, corpus/profile/configuration hashes, observed and excluded denominators, query order, per-question source ranks and metrics, question-type aggregates, ingestion/startup/memory/SQLite/text measurements, delivery/truncation, errors, and model/network-call counts.
 
-#### Scenario: US3 - Produce an auditable quality and resource report 1
+#### Scenario: US1 - Attribute relaxed retrieval cost 1
 
-- **GIVEN** multiple gold sessions
-- **WHEN** metrics are computed at K=1, 5, 10, and 20
-- **THEN** `recall_any`, fractional `recall`, and `recall_all` remain distinct and MRR uses the first gold rank while NDCG@10 uses binary relevance
+- **GIVEN** the same project, memories, query, limit, and strategy
+- **WHEN** diagnostic measurement is enabled
+- **THEN** it identifies every executed plan stage in order and reports bounded latency and work indicators whose accounting reconciles with the total retrieval observation
 
-#### Scenario: US3 - Produce an auditable quality and resource report 2
+#### Scenario: US1 - Attribute relaxed retrieval cost 2
 
-- **GIVEN** ranked Top-20 candidates
-- **WHEN** the fixed delivery budget of 4,000 UTF-16 code units under the product's 1,000-token estimate is applied
-- **THEN** ranking quality and delivered-context quality are reported separately rather than relabelling a budgeted delivery result as raw Recall@K
+- **GIVEN** diagnostic measurement is disabled
+- **WHEN** normal MCP recall runs
+- **THEN** public response shape, candidate ordering, evidence lineage, payload budgets, telemetry semantics, and six-tool behavior remain unchanged
 
-#### Scenario: US3 - Produce an auditable quality and resource report 3
+#### Scenario: US1 - Attribute relaxed retrieval cost 3
 
-- **GIVEN** a completed run
-- **WHEN** its report is persisted
-- **THEN** it includes per-question ranks and source IDs, aggregates by question type, dataset/configuration hashes, query order, exclusions, p50/p95 latency and ingestion time, SQLite and memory footprint, characters and estimated tokens, errors, and zero model/network calls during evaluation
+- **GIVEN** an empty normalized query, an exact-only result, or a stage that cannot execute
+- **WHEN** measurements are assembled
+- **THEN** the omitted stage is explicit and no fabricated work or latency is reported
 
-#### Scenario: US3 - Produce an auditable quality and resource report 4
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 1
 
-- **GIVEN** missing provenance, a different dataset hash, an unequal budget, incomplete resources, or a schema-invalid report
+- **GIVEN** the frozen corpus, exclusions, query order, ingestion mapping, budgets, and scoring
+- **WHEN** the optimized comparison runs
+- **THEN** query construction and its measured execution are the only intended lane differences and every diagnostic field reconciles with its lane and per-query evidence
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 2
+
+- **GIVEN** one unique relaxed candidate with at least the existing 0.05 absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, equal aggregate SQLite bytes, clean calls/errors/provenance, and p95 no greater than twice control
 - **WHEN** promotion is assessed
-- **THEN** the lane fails closed and cannot justify an optional module
+- **THEN** that candidate becomes eligible to replace `all-prefix-v1`
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 3
+
+- **GIVEN** incomplete, incomparable, regressing, tied, or slower evidence
+- **WHEN** validation or promotion runs
+- **THEN** it fails closed with explicit reasons and the current runtime default does not change
 
 ### Requirement: The Committed Fixture MUST Not Claim External Quality
 

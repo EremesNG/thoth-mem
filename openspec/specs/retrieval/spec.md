@@ -4,23 +4,47 @@
 
 ### Requirement: Core Retrieval MUST Be Lexical-First and Projection-Aware
 
-The default path MUST rank FTS5/BM25 and structured SQLite candidates without requiring optional projections. Optional evidence MAY participate only when enabled, source-current, attributed, healthy, and admitted by the evaluation gate.
+The default path MUST rank structured SQLite candidates and the evidence-admitted deterministic FTS5 strategy without requiring optional projections. Optional evidence MAY participate only when enabled, source-current, attributed, healthy, and admitted by the evaluation gate. `any-prefix-v1` MUST be the default selected by the unique complete round-4 winner; any future default change MUST likewise require one unique complete same-run candidate satisfying every frozen quality, latency, footprint, error, call, and provenance promotion gate.
 
-#### Scenario: Optional projection is absent
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 1
 
-- **GIVEN** authoritative memory and no optional projection
-- **WHEN** recall runs
-- **THEN** lexical and structured results remain available and lane metadata reports the absence truthfully
+- **GIVEN** the frozen corpus, exclusions, query order, ingestion mapping, budgets, and scoring
+- **WHEN** the optimized comparison runs
+- **THEN** query construction and its measured execution are the only intended lane differences and every diagnostic field reconciles with its lane and per-query evidence
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 2
+
+- **GIVEN** one unique relaxed candidate with at least the existing 0.05 absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, equal aggregate SQLite bytes, clean calls/errors/provenance, and p95 no greater than twice control
+- **WHEN** promotion is assessed
+- **THEN** that candidate becomes eligible to replace `all-prefix-v1`
+
+#### Scenario: US3 - Promote only an officially faster relaxed candidate 3
+
+- **GIVEN** incomplete, incomparable, regressing, tied, or slower evidence
+- **WHEN** validation or promotion runs
+- **THEN** it fails closed with explicit reasons and the current runtime default does not change
 
 ### Requirement: FTS5 Lexical Retrieval MUST Sanitize Untrusted Queries
 
-Retrieval MUST safely combine exact IDs or topic keys, phrase-capable BM25 search, and bounded prefix expansion without allowing punctuation-only input, code symbols, or FTS operators to fail global recall.
+Retrieval MUST safely combine exact IDs or topic keys with a selected deterministic lexical query strategy, including phrase-capable BM25 search and bounded prefix expansion, without allowing punctuation-only input, code symbols, repeated terms, overlong input, FTS operators, or a latency optimization to fail global recall or change declared query-plan identity.
 
-#### Scenario: Query contains FTS operators and punctuation
+#### Scenario: US2 - Reduce relaxed lexical work without quality drift 1
 
-- **GIVEN** an untrusted code-oriented query
-- **WHEN** recall normalizes it
-- **THEN** the query produces deterministic bounded results or an empty result without an SQLite syntax failure
+- **GIVEN** a relaxed strategy and a query whose broader stage is required
+- **WHEN** recall executes
+- **THEN** its versioned configuration applies a declared internal lexical-result cap no greater than the caller's requested limit, returns the corresponding deterministic BM25 prefix, and never represents the cap as a different public Top-K budget
+
+#### Scenario: US2 - Reduce relaxed lexical work without quality drift 2
+
+- **GIVEN** exact or strict results that overlap relaxed results
+- **WHEN** stages are merged
+- **THEN** precedence, deduplication, caller limit enforcement, source identity, snippet bounds, and evidence aggregation remain deterministic and exact authoritative matches are not discarded by the lexical cap
+
+#### Scenario: US2 - Reduce relaxed lexical work without quality drift 3
+
+- **GIVEN** a single term, phrase-like input, punctuation/operators, Unicode, repeated terms, or an overlong query
+- **WHEN** optimized retrieval executes
+- **THEN** query sanitization and stable plan hashes retain their declared meaning and SQLite produces no syntax failure
 
 ### Requirement: Recent Saves MUST Be Immediately Searchable by Core Retrieval
 
