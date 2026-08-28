@@ -26,7 +26,9 @@
     ".claude-plugin/marketplace.json",
     "benchmarks/manifest.json",
     "benchmarks/report.schema.json",
-    "benchmarks/retrieval-report.schema.json"
+    "benchmarks/retrieval-report.schema.json",
+    "benchmarks/lexical-comparison-report.schema.json",
+    "benchmarks/lexical-comparison-baseline.json"
   ],
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.mjs",
@@ -37,6 +39,7 @@
     "benchmark:fixture": "node benchmarks/run.mjs",
     "benchmark:prepare:longmemeval": "node benchmarks/longmemeval/prepare.mjs",
     "benchmark:longmemeval": "node benchmarks/longmemeval/run.mjs",
+    "benchmark:compare:longmemeval": "node benchmarks/longmemeval/compare.mjs",
     "test": "node scripts/build.mjs && vitest run --config vitest.config.ts",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "node scripts/build.mjs && vitest run --config vitest.integration.config.ts",

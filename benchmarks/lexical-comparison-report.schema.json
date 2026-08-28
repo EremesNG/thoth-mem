@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "thoth-mem lexical comparison report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "created_at", "shared", "archived_reference", "diagnostics", "lanes", "promotion"],
+  "properties": {
+    "schema": {"const": "thoth-mem.lexical-comparison-report.v2"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "shared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_sha256", "corpus_hash", "query_hash", "evaluated_count", "query_order_hash", "candidate_k", "candidate_payload_utf16_code_units", "delivery_utf16_code_units", "provenance_hash"],
+      "properties": {
+        "source_sha256": {"$ref": "#/$defs/hash"},
+        "corpus_hash": {"$ref": "#/$defs/hash"},
+        "query_hash": {"$ref": "#/$defs/hash"},
+        "evaluated_count": {"type": "integer", "minimum": 1},
+        "query_order_hash": {"$ref": "#/$defs/hash"},
+        "candidate_k": {"const": 20},
+        "candidate_payload_utf16_code_units": {"const": 20000},
+        "delivery_utf16_code_units": {"const": 4000},
+        "provenance_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "archived_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "quality_baseline", "quality_deltas"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/hash"},
+        "quality_baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"],
+          "properties": {
+            "all-prefix-v1": {"$ref": "#/$defs/qualityBaseline"},
+            "any-prefix-v1": {"$ref": "#/$defs/qualityBaseline"},
+            "all-then-any-prefix-v1": {"$ref": "#/$defs/qualityBaseline"}
+          }
+        },
+        "quality_deltas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["any-prefix-v1", "all-then-any-prefix-v1"],
+          "properties": {
+            "any-prefix-v1": {"$ref": "#/$defs/qualityDelta"},
+            "all-then-any-prefix-v1": {"$ref": "#/$defs/qualityDelta"}
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"],
+      "properties": {
+        "all-prefix-v1": {"$ref": "#/$defs/laneDiagnostics"},
+        "any-prefix-v1": {"$ref": "#/$defs/laneDiagnostics"},
+        "all-then-any-prefix-v1": {"$ref": "#/$defs/laneDiagnostics"}
+      }
+    },
+    "lanes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"],
+      "properties": {
+        "all-prefix-v1": {"$ref": "retrieval-report.schema.json"},
+        "any-prefix-v1": {"$ref": "retrieval-report.schema.json"},
+        "all-then-any-prefix-v1": {"$ref": "retrieval-report.schema.json"}
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "selected_strategy", "assessments", "reasons"],
+      "properties": {
+        "decision": {"enum": ["incomplete", "retain_control", "promote"]},
+        "selected_strategy": {"type": ["string", "null"], "enum": [null, "all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"]},
+        "assessments": {"type": "array", "items": {"$ref": "#/$defs/assessment"}},
+        "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "qualityDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recall_any_at_20", "recall_at_20", "ndcg_at_10"],
+      "properties": {
+        "recall_any_at_20": {"type": "number"},
+        "recall_at_20": {"type": "number"},
+        "ndcg_at_10": {"type": "number"}
+      }
+    },
+    "qualityBaseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recall_any_at_20", "recall_at_20", "ndcg_at_10", "sqlite_bytes_total"],
+      "properties": {
+        "recall_any_at_20": {"type": "number", "minimum": 0, "maximum": 1},
+        "recall_at_20": {"type": "number", "minimum": 0, "maximum": 1},
+        "ndcg_at_10": {"type": "number", "minimum": 0, "maximum": 1},
+        "sqlite_bytes_total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "laneDiagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_id", "config_hash", "max_lexical_results", "queries", "aggregate"],
+      "properties": {
+        "strategy_id": {"enum": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"]},
+        "config_hash": {"$ref": "#/$defs/hash"},
+        "max_lexical_results": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+        "queries": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/diagnostic"}},
+        "aggregate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total_elapsed_ms", "stage_elapsed_ms", "work"],
+          "properties": {
+            "total_elapsed_ms": {"$ref": "#/$defs/sampleSummary"},
+            "stage_elapsed_ms": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["exact", "strict", "relaxed", "post_query"],
+              "properties": {
+                "exact": {"$ref": "#/$defs/sampleSummary"},
+                "strict": {"$ref": "#/$defs/sampleSummary"},
+                "relaxed": {"$ref": "#/$defs/sampleSummary"},
+                "post_query": {"$ref": "#/$defs/sampleSummary"}
+              }
+            },
+            "work": {"$ref": "#/$defs/work"}
+          }
+        }
+      }
+    },
+    "sampleSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p50", "p95", "samples"],
+      "properties": {
+        "p50": {"type": "number", "minimum": 0},
+        "p95": {"type": "number", "minimum": 0},
+        "samples": {"type": "array", "items": {"type": "number", "minimum": 0}}
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ranked_fts_rows", "hydrated_memory_rows", "hydrated_evidence_links", "memory_hydration_statements", "evidence_hydration_statements", "snippet_token_checks", "returned_rows", "source_utf16_code_units", "evidence_utf16_code_units", "returned_utf16_code_units"],
+      "properties": {
+        "ranked_fts_rows": {"type": "integer", "minimum": 0},
+        "hydrated_memory_rows": {"type": "integer", "minimum": 0},
+        "hydrated_evidence_links": {"type": "integer", "minimum": 0},
+        "memory_hydration_statements": {"type": "integer", "minimum": 0, "maximum": 1},
+        "evidence_hydration_statements": {"type": "integer", "minimum": 0, "maximum": 1},
+        "snippet_token_checks": {"type": "integer", "minimum": 0},
+        "returned_rows": {"type": "integer", "minimum": 0},
+        "source_utf16_code_units": {"type": "integer", "minimum": 0},
+        "evidence_utf16_code_units": {"type": "integer", "minimum": 0},
+        "returned_utf16_code_units": {"type": "integer", "minimum": 0}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question_id", "strategy_id", "config_hash", "plan_hash", "total_elapsed_ms", "stages", "work", "result"],
+      "properties": {
+        "question_id": {"type": "string", "minLength": 1},
+        "strategy_id": {"enum": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1"]},
+        "config_hash": {"$ref": "#/$defs/hash"},
+        "plan_hash": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+        "total_elapsed_ms": {"type": "number", "minimum": 0},
+        "stages": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/stage"}},
+        "work": {"$ref": "#/$defs/work"},
+        "result": {"$ref": "#/$defs/diagnosticResult"}
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "executed", "elapsed_ms", "rows"],
+      "properties": {
+        "kind": {"enum": ["exact", "strict", "relaxed", "post_query"]},
+        "executed": {"type": "boolean"},
+        "elapsed_ms": {"type": "number", "minimum": 0},
+        "rows": {"type": "integer", "minimum": 0},
+        "reason": {"enum": ["not_planned", "limit_satisfied", "empty_query", "project_not_found"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"executed": {"const": false}}}, "then": {"required": ["reason"], "properties": {"elapsed_ms": {"const": 0}, "rows": {"const": 0}}}},
+        {"if": {"properties": {"executed": {"const": true}}}, "then": {"not": {"required": ["reason"]}}}
+      ]
+    },
+    "diagnosticResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_limit", "max_lexical_results", "returned_count", "budget"],
+      "properties": {
+        "requested_limit": {"type": "integer", "minimum": 1},
+        "max_lexical_results": {"type": ["integer", "null"], "minimum": 1},
+        "returned_count": {"type": "integer", "minimum": 0},
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requested_utf16_code_units", "source_utf16_code_units", "evidence_utf16_code_units", "returned_utf16_code_units"],
+          "properties": {
+            "requested_utf16_code_units": {"type": "integer", "minimum": 0},
+            "source_utf16_code_units": {"type": "integer", "minimum": 0},
+            "evidence_utf16_code_units": {"type": "integer", "minimum": 0},
+            "returned_utf16_code_units": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_id", "eligible", "reasons", "evidence"],
+      "properties": {
+        "strategy_id": {"enum": ["any-prefix-v1", "all-then-any-prefix-v1"]},
+        "eligible": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recall_any_at_20_gain", "ndcg_at_10_delta", "recall_at_20_delta", "control_retrieval_p95_ms", "candidate_retrieval_p95_ms", "control_sqlite_bytes_total", "candidate_sqlite_bytes_total"],
+          "properties": {
+            "recall_any_at_20_gain": {"type": "number"},
+            "ndcg_at_10_delta": {"type": "number"},
+            "recall_at_20_delta": {"type": "number"},
+            "control_retrieval_p95_ms": {"type": "number", "minimum": 0},
+            "candidate_retrieval_p95_ms": {"type": "number", "minimum": 0},
+            "control_sqlite_bytes_total": {"type": "number", "minimum": 0},
+            "candidate_sqlite_bytes_total": {"type": "number", "minimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

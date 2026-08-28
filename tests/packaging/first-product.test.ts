@@ -57,6 +57,8 @@ describe('first-product packed boundary', () => {
       'benchmarks/manifest.json',
       'benchmarks/report.schema.json',
       'benchmarks/retrieval-report.schema.json',
+      'benchmarks/lexical-comparison-report.schema.json',
+      'benchmarks/lexical-comparison-baseline.json',
     ]);
     const active = ['package.json', 'pnpm-workspace.yaml', 'config.schema.json', '.github/workflows/ci.yml', '.github/workflows/release.yml'].map((path) => readFileSync(path, 'utf8')).join('\n');
     expect(active).not.toMatch(deferred);

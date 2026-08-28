@@ -4,6 +4,7 @@ const K_VALUES = [1, 5, 10, 20];
 const METRIC_KEYS = [...K_VALUES.flatMap((k) => [`recall_any_at_${k}`, `recall_at_${k}`, `recall_all_at_${k}`]), 'mrr_any', 'ndcg_at_10'];
 const HASH = /^[a-f0-9]{64}$/u;
 const REVISION = /^[a-f0-9]{40}$/u;
+const LEXICAL_STRATEGY_IDS = new Set(['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1']);
 
 function exactKeys(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -156,8 +157,10 @@ export function validateRetrievalReport(report) {
     || dataset.exclusions.some((item) => !exactKeys(item, ['question_id', 'reason']) || typeof item.question_id !== 'string' || !item.question_id || item.reason !== 'abstention')
     || dataset.record_count !== dataset.evaluated_count + dataset.exclusions.length) errors.push('dataset');
 
+  const lexicalStrategy = report?.candidate?.config?.lexical_strategy;
   if (!exactKeys(report?.candidate, ['id', 'config_hash', 'config']) || typeof report.candidate.id !== 'string' || !report.candidate.id
     || !HASH.test(report.candidate.config_hash) || !report.candidate.config || typeof report.candidate.config !== 'object' || Array.isArray(report.candidate.config)
+    || !exactKeys(lexicalStrategy, ['id', 'config_hash']) || !LEXICAL_STRATEGY_IDS.has(lexicalStrategy?.id) || !HASH.test(lexicalStrategy?.config_hash)
     || report.candidate.config_hash !== hash(report.candidate.config)) errors.push('candidate');
   const conditions = report?.conditions;
   if (!exactKeys(conditions, ['query_order', 'query_order_hash', 'candidate_k', 'candidate_payload_utf16_code_units', 'delivery'])
@@ -175,9 +178,10 @@ export function validateRetrievalReport(report) {
     if (JSON.stringify(queries.map((query) => query?.question_id)) !== JSON.stringify(conditions?.query_order)) errors.push('query_order');
     if (new Set(queries.map((query) => query?.question_id)).size !== queries.length) errors.push('queries');
     for (const query of queries) {
-      const shapeValid = exactKeys(query, ['question_id', 'question_type', 'gold_session_ids', 'gold_source_ids', 'ranked_source_ids', 'ranked_session_ids', 'delivered_source_ids', 'delivered_session_ids', 'gold_ranks', 'ranking_budget', 'delivery_budget', 'ranking', 'delivery'])
+      const shapeValid = exactKeys(query, ['question_id', 'question_type', 'query_plan_hash', 'gold_session_ids', 'gold_source_ids', 'ranked_source_ids', 'ranked_session_ids', 'delivered_source_ids', 'delivered_session_ids', 'gold_ranks', 'ranking_budget', 'delivery_budget', 'ranking', 'delivery'])
         && typeof query.question_id === 'string' && Boolean(query.question_id)
         && typeof query.question_type === 'string' && Boolean(query.question_type)
+        && HASH.test(query.query_plan_hash)
         && uniqueNonemptyStrings(query.gold_session_ids, false) && uniqueNonemptyStrings(query.gold_source_ids, false)
         && query.gold_source_ids.length >= query.gold_session_ids.length
         && uniqueNonemptyStrings(query.ranked_source_ids) && Array.isArray(query.ranked_session_ids)

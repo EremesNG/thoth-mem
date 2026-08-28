@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { classifyRecord, inspectDataset, LONGMEMEVAL_SOURCE, normalizeSessions, streamJsonArray, validateRecord } from './contract.mjs';
 import { DEFAULT_LONGMEMEVAL_CACHE } from './prepare.mjs';
+import { aggregateLexicalDiagnostics } from '../lexical-comparison-report.mjs';
 import { aggregateScores, percentile, scoreRanking, validateRetrievalReport } from '../retrieval-report.mjs';
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,50 @@ function addBudgetTotals(total, budget) {
   total.truncated += budget.truncated_utf16_code_units;
 }
 
+function diagnosticWork(work) {
+  return {
+    ranked_fts_rows: work.rankedFtsRows,
+    hydrated_memory_rows: work.hydratedMemoryRows,
+    hydrated_evidence_links: work.hydratedEvidenceLinks,
+    memory_hydration_statements: work.memoryHydrationStatements,
+    evidence_hydration_statements: work.evidenceHydrationStatements,
+    snippet_token_checks: work.snippetTokenChecks,
+    returned_rows: work.returnedRows,
+    source_utf16_code_units: work.sourceChars,
+    evidence_utf16_code_units: work.evidenceChars,
+    returned_utf16_code_units: work.returnedChars,
+  };
+}
+
+function diagnosticQuery(questionId, observation) {
+  return {
+    question_id: questionId,
+    strategy_id: observation.strategyId,
+    config_hash: observation.configHash,
+    plan_hash: observation.planHash,
+    total_elapsed_ms: observation.totalElapsedMs,
+    stages: observation.stages.map((stage) => ({
+      kind: stage.kind,
+      executed: stage.executed,
+      elapsed_ms: stage.elapsedMs,
+      rows: stage.rows,
+      ...(stage.reason ? { reason: stage.reason } : {}),
+    })),
+    work: diagnosticWork(observation.work),
+    result: {
+      requested_limit: observation.result.requestedLimit,
+      max_lexical_results: observation.result.maxLexicalResults,
+      returned_count: observation.result.returnedCount,
+      budget: {
+        requested_utf16_code_units: observation.result.budget.requestedChars,
+        source_utf16_code_units: observation.result.budget.sourceChars,
+        evidence_utf16_code_units: observation.result.budget.evidenceChars,
+        returned_utf16_code_units: observation.result.budget.returnedChars,
+      },
+    },
+  };
+}
+
 function mapRecall(items, memoryToSource, questionId) {
   return items.map((item) => {
     const source = memoryToSource.get(item.id);
@@ -77,6 +122,7 @@ export async function runLongMemEval(options = {}) {
   const datasetPath = resolve(options.datasetPath ?? join(DEFAULT_LONGMEMEVAL_CACHE, LONGMEMEVAL_SOURCE.filename));
   const expectedSha256 = options.expectedSha256 ?? source.sha256;
   const outputPath = resolve(options.outputPath ?? resolve(moduleDirectory, '..', 'results', 'longmemeval-s-fts5-report.json'));
+  if (existsSync(outputPath)) throw new Error(`LongMemEval output already exists: ${outputPath}`);
   const ownsWorkDirectory = !options.workDirectory;
   const workDirectory = options.workDirectory
     ? resolve(options.workDirectory)
@@ -84,7 +130,14 @@ export async function runLongMemEval(options = {}) {
   mkdirSync(workDirectory, { recursive: true });
 
   const inspection = await inspectDataset(datasetPath, { expectedSha256 });
-  const { MemoryService } = await import('../../dist/index.js');
+  const { MemoryService, buildFtsQueryPlan } = await import('../../dist/index.js');
+  const lexicalStrategy = options.lexicalStrategy ?? 'all-prefix-v1';
+  const strategyProbe = buildFtsQueryPlan('lexical strategy configuration', lexicalStrategy);
+  if (!strategyProbe) throw new Error(`Unsupported lexical query strategy: ${lexicalStrategy}`);
+  const candidateConfig = Object.freeze({
+    ...CANDIDATE_CONFIG,
+    lexical_strategy: Object.freeze({ id: lexicalStrategy, config_hash: strategyProbe.configHash }),
+  });
   const queries = [];
   const mappings = [];
   const retrievalLatency = [];
@@ -93,6 +146,7 @@ export async function runLongMemEval(options = {}) {
   const startupSamples = [];
   const rssSamples = [];
   const sqliteSamples = [];
+  const diagnosticQueries = [];
   let corpusUtf16 = 0;
   let queryUtf16 = 0;
   const rankingText = { source: 0, evidence: 0, returned: 0, truncated: 0 };
@@ -105,9 +159,13 @@ export async function runLongMemEval(options = {}) {
       const questionDirectory = mkdtempSync(join(workDirectory, 'question-'));
       const databasePath = join(questionDirectory, 'memory.sqlite');
       let service;
+      let captureDiagnostic = false;
+      let capturedDiagnostic = null;
       try {
         const startupStart = performance.now();
-        service = new MemoryService({ databasePath });
+        service = new MemoryService({ databasePath, recallObserver: (observation) => {
+          if (captureDiagnostic) capturedDiagnostic = observation;
+        } });
         startupSamples.push(performance.now() - startupStart);
         const projectKey = `benchmark:longmemeval:${record.question_id}`;
         const memoryToSource = new Map();
@@ -135,10 +193,16 @@ export async function runLongMemEval(options = {}) {
         queryUtf16 += record.question.length;
 
         const retrievalStart = performance.now();
-        const ranked = service.recall({ projectKey, query: record.question, mode: 'compact', limit: CANDIDATE_K, budgetChars: CANDIDATE_PAYLOAD_UTF16 });
+        const queryPlan = buildFtsQueryPlan(record.question, lexicalStrategy);
+        const queryPlanHash = queryPlan?.planHash ?? hash({ strategyId: lexicalStrategy, configHash: strategyProbe.configHash, stages: [] });
+        captureDiagnostic = true;
+        const ranked = service.recall({ projectKey, query: record.question, mode: 'compact', limit: CANDIDATE_K, budgetChars: CANDIDATE_PAYLOAD_UTF16, lexicalStrategy });
+        captureDiagnostic = false;
         retrievalLatency.push(performance.now() - retrievalStart);
+        if (!capturedDiagnostic) throw new Error(`Missing ranking retrieval diagnostics for ${record.question_id}`);
+        diagnosticQueries.push(diagnosticQuery(record.question_id, capturedDiagnostic));
         const deliveryStart = performance.now();
-        const delivered = service.recall({ projectKey, query: record.question, mode: 'compact', limit: CANDIDATE_K, budgetChars: DELIVERY_UTF16 });
+        const delivered = service.recall({ projectKey, query: record.question, mode: 'compact', limit: CANDIDATE_K, budgetChars: DELIVERY_UTF16, lexicalStrategy });
         deliveryLatency.push(performance.now() - deliveryStart);
         const rankedSources = mapRecall(ranked.items, memoryToSource, record.question_id);
         const deliveredSources = mapRecall(delivered.items, memoryToSource, record.question_id);
@@ -155,6 +219,7 @@ export async function runLongMemEval(options = {}) {
         queries.push({
           question_id: record.question_id,
           question_type: record.question_type,
+          query_plan_hash: queryPlanHash,
           gold_session_ids: [...record.answer_session_ids],
           gold_source_ids: goldSourceIds,
           ranked_source_ids: rankedSources.map((source) => source.sourceId),
@@ -189,7 +254,7 @@ export async function runLongMemEval(options = {}) {
         evaluated_count: inspection.eligibleCount,
         exclusions: inspection.exclusions,
       },
-      candidate: { id: 'sqlite-fts5-bm25-session-full', config_hash: hash(CANDIDATE_CONFIG), config: CANDIDATE_CONFIG },
+      candidate: { id: 'sqlite-fts5-bm25-session-full', config_hash: hash(candidateConfig), config: candidateConfig },
       conditions: {
         query_order: queryOrder,
         query_order_hash: hash(queryOrder),
@@ -243,15 +308,26 @@ export async function runLongMemEval(options = {}) {
     const validation = validateRetrievalReport(report);
     if (!validation.valid) throw new Error(`Invalid LongMemEval report: ${validation.errors.join(', ')}`);
     mkdirSync(dirname(outputPath), { recursive: true });
-    if (existsSync(outputPath)) throw new Error(`LongMemEval output already exists: ${outputPath}`);
     const temporaryOutput = join(dirname(outputPath), `.${randomUUID()}.tmp`);
     try {
       writeFileSync(temporaryOutput, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
-      renameSync(temporaryOutput, outputPath);
+      try {
+        linkSync(temporaryOutput, outputPath);
+      } catch (error) {
+        if (error?.code === 'EEXIST') throw new Error(`LongMemEval output already exists: ${outputPath}`);
+        throw error;
+      }
     } finally {
       rmSync(temporaryOutput, { force: true });
     }
-    return { outputPath, report };
+    const diagnostics = {
+      strategy_id: lexicalStrategy,
+      config_hash: strategyProbe.configHash,
+      max_lexical_results: strategyProbe.maxLexicalResults,
+      queries: diagnosticQueries,
+      aggregate: aggregateLexicalDiagnostics(diagnosticQueries),
+    };
+    return { outputPath, report, diagnostics };
   } finally {
     if (ownsWorkDirectory) rmSync(workDirectory, { recursive: true, force: true });
   }

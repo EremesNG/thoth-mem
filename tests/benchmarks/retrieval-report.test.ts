@@ -48,7 +48,8 @@ function validReport() {
   const deliveryA = scoreRanking(['s2'], ['s1']);
   const deliveryB = rankingB;
   const queryOrder = ['q1', 'q2'];
-  const candidateConfig = { lexical: true, tokenizer: 'unicode61' };
+  const lexicalStrategy = { id: 'all-prefix-v1', config_hash: sourceHash('e') };
+  const candidateConfig = { lexical: true, tokenizer: 'unicode61', lexical_strategy: lexicalStrategy };
   return {
     schema: 'thoth-mem.retrieval-benchmark-report.v1',
     created_at: '2026-08-26T00:00:00.000Z',
@@ -107,8 +108,8 @@ function validReport() {
       ],
     },
     queries: [
-      { question_id: 'q1', question_type: 'single', gold_session_ids: ['s1'], gold_source_ids: ['0:s1'], ranked_source_ids: ['1:s2', '0:s1'], ranked_session_ids: ['s2', 's1'], delivered_source_ids: ['1:s2'], delivered_session_ids: ['s2'], gold_ranks: [2], ranking_budget: budget(20_000, 20, 100, 12), delivery_budget: budget(4_000, 10, 100, 12), ranking: rankingA, delivery: deliveryA },
-      { question_id: 'q2', question_type: 'assistant', gold_session_ids: ['s3'], gold_source_ids: ['0:s3'], ranked_source_ids: ['0:s3'], ranked_session_ids: ['s3'], delivered_source_ids: ['0:s3'], delivered_session_ids: ['s3'], gold_ranks: [1], ranking_budget: budget(20_000, 10, 60, 8), delivery_budget: budget(4_000, 10, 60, 8), ranking: rankingB, delivery: deliveryB },
+      { question_id: 'q1', question_type: 'single', query_plan_hash: sourceHash('f'), gold_session_ids: ['s1'], gold_source_ids: ['0:s1'], ranked_source_ids: ['1:s2', '0:s1'], ranked_session_ids: ['s2', 's1'], delivered_source_ids: ['1:s2'], delivered_session_ids: ['s2'], gold_ranks: [2], ranking_budget: budget(20_000, 20, 100, 12), delivery_budget: budget(4_000, 10, 100, 12), ranking: rankingA, delivery: deliveryA },
+      { question_id: 'q2', question_type: 'assistant', query_plan_hash: sourceHash('a'), gold_session_ids: ['s3'], gold_source_ids: ['0:s3'], ranked_source_ids: ['0:s3'], ranked_session_ids: ['s3'], delivered_source_ids: ['0:s3'], delivered_session_ids: ['s3'], gold_ranks: [1], ranking_budget: budget(20_000, 10, 60, 8), delivery_budget: budget(4_000, 10, 60, 8), ranking: rankingB, delivery: deliveryB },
     ],
     errors: [],
     promotion: { decision: 'incomplete', reasons: ['lexical_baseline_only_no_candidate_comparison'] },
@@ -179,7 +180,28 @@ describe('retrieval-only benchmark scoring', () => {
   it('validates a complete retrieval-only report independently from fixture continuity', () => {
     const schema = JSON.parse(readFileSync('benchmarks/retrieval-report.schema.json', 'utf8'));
     expect(schema.properties.schema.const).toBe('thoth-mem.retrieval-benchmark-report.v1');
+    expect(schema.properties.candidate.properties.config.required).toContain('lexical_strategy');
+    expect(schema.$defs.lexicalStrategy).toMatchObject({
+      additionalProperties: false,
+      required: ['id', 'config_hash'],
+    });
+    expect(schema.$defs.query.required).toContain('query_plan_hash');
+    expect(schema.$defs.query.properties.query_plan_hash).toEqual({ $ref: '#/$defs/hash' });
     expect(validateRetrievalReport(validReport())).toEqual({ valid: true, errors: [] });
+  });
+
+  it('requires a declared lexical strategy and a plan hash for every evaluated query', () => {
+    const missingStrategy = validReport();
+    deleteAt(missingStrategy, ['candidate', 'config', 'lexical_strategy']);
+    expect(validateRetrievalReport(missingStrategy).errors).toContain('candidate');
+
+    const unsupportedStrategy = validReport();
+    setAt(unsupportedStrategy, ['candidate', 'config', 'lexical_strategy', 'id'], 'unknown-v1');
+    expect(validateRetrievalReport(unsupportedStrategy).errors).toContain('candidate');
+
+    const missingPlanHash = validReport();
+    deleteAt(missingPlanHash, ['queries', 0, 'query_plan_hash']);
+    expect(validateRetrievalReport(missingPlanHash).errors).toContain('queries');
   });
 
   it('fails closed for ambiguous metrics, unequal units, leakage, broken provenance, resources, or promotion claims', () => {
