@@ -114,6 +114,7 @@ export function validateReport(report) {
   if (!Array.isArray(report?.unavailable) || report.unavailable.some((item) => typeof item?.id !== 'string' || !/^[a-z0-9-]{3,64}$/.test(item.id) || !/^[a-z_]{3,64}$/.test(item.reason))) errors.push('unavailable');
   if (!['promoted','rejected','incomplete'].includes(report?.promotion?.decision) || !Array.isArray(report?.promotion?.reasons)) errors.push('promotion');
   if (report?.promotion?.decision === 'promoted' && Array.isArray(report?.unavailable) && report.unavailable.length > 0) errors.push('external_quality_claim');
+  if (report?.observation_pipeline !== undefined && !validateObservationReport(report.observation_pipeline).valid) errors.push('observation_pipeline');
   return { valid: errors.length === 0, errors };
 }
 
@@ -149,3 +150,4 @@ export function evaluatePromotion(control, candidate) {
   if (reasons.length) return { decision: 'rejected', reasons };
   return { decision: 'promoted', reasons: ['quality_and_resource_gate_passed'] };
 }
+import { validateObservationReport } from './observation-pipeline/report.mjs';

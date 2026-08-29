@@ -18,7 +18,8 @@
     "fallback_controls": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"$ref": "#/$defs/fallbackControl"}},
     "operational_errors": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/operationalError"}},
     "unavailable": {"type": "array", "items": {"type": "object", "required": ["id", "reason"], "properties": {"id": {"type": "string", "pattern": "^[a-z0-9-]{3,64}$"}, "reason": {"type": "string", "pattern": "^[a-z_]{3,64}$"}}}},
-    "promotion": {"type": "object", "required": ["decision", "reasons"], "properties": {"decision": {"enum": ["promoted", "rejected", "incomplete"]}, "reasons": {"type": "array", "items": {"type": "string"}}}}
+    "promotion": {"type": "object", "required": ["decision", "reasons"], "properties": {"decision": {"enum": ["promoted", "rejected", "incomplete"]}, "reasons": {"type": "array", "items": {"type": "string"}}}},
+    "observation_pipeline": {"$ref": "./observation-pipeline/report.schema.json"}
   },
   "$defs": {
     "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

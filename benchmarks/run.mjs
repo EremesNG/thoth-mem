@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import manifest from './manifest.json' with { type: 'json' };
+import { runObservationPipelineFixture } from './observation-pipeline/run.mjs';
 import { validateReport } from './report.mjs';
 
 const SAMPLE_COUNT = 7;
@@ -328,6 +329,7 @@ try {
   service.close();
   service = undefined;
   const provenanceIds = [...new Set([saved.memory.id, ...saved.memory.evidenceIds, handoff.memory.id, ...handoff.memory.evidenceIds, ...controlSelectedMemoryIds, ...candidateSummaryIds, ...(restartRecovery.recovery?.sources ?? [])])];
+  const observationPipeline = await runObservationPipelineFixture();
   const report = {
     schema: 'thoth-mem.benchmark-report.v1',
     created_at: new Date(0).toISOString(),
@@ -385,6 +387,7 @@ try {
     operational_errors: operationalErrors,
     unavailable,
     promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
+    observation_pipeline: observationPipeline,
   };
   const validation = validateReport(report);
   if (!validation.valid) throw new Error(`Invalid report: ${validation.errors.join(',')}; summary ratios control=${summary.baseline_useful_content_ratio}, candidate=${summary.summary_useful_content_ratio}`);

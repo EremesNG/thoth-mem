@@ -58,6 +58,7 @@ describe('first-product packed boundary', () => {
       'benchmarks/report.schema.json',
       'benchmarks/retrieval-report.schema.json',
       'benchmarks/lexical-comparison-report.schema.json',
+      'benchmarks/observation-pipeline/report.schema.json',
       'benchmarks/lexical-comparison-baseline.json',
       'benchmarks/lexical-recall-at-5-baseline.json',
     ]);
@@ -92,5 +93,24 @@ describe('first-product packed boundary', () => {
     expect(Object.keys(inventory.harnesses).sort()).toEqual(['claude-code', 'codex', 'opencode']);
     for (const field of ['selectedSummaryIds', 'selectedMemoryIds', 'selectedRecordIds', "'summary' : 'memory'"]) expect(publicRunner).toContain(field);
     expect(readFileSync('integrations/shared/hook-runner.mjs', 'utf8')).toContain("readFileSync(0, 'utf8')");
+  });
+
+  it('ships one host-neutral explicit observation review and promotion policy', () => {
+    const paths = [
+      'plugin/skills/thoth-mem/SKILL.md',
+      'integrations/opencode/skills/thoth-mem/SKILL.md',
+      'integrations/codex/skills/thoth-mem/SKILL.md',
+      'integrations/claude-code/skills/thoth-mem/SKILL.md',
+    ];
+    const contents = paths.map((path) => readFileSync(path, 'utf8'));
+    expect(new Set(contents).size).toBe(1);
+    for (const content of contents) {
+      for (const phrase of ['observation candidate', 'observation_review', 'observation_promotion', 'root_user_confirmed', 'observable_validation', 'independent_review', 'untrusted data', 'deliberate direct promotion']) expect(content).toContain(phrase);
+      expect(content).toContain('six MCP tools');
+      expect(content).toContain('{ observation: ... }');
+      expect(content).not.toContain('mem_save.observation');
+      expect(content).not.toMatch(/^\+#{1,6}\s/mu);
+      expect(content).toContain('must not automatically');
+    }
   });
 });

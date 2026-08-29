@@ -84,6 +84,7 @@ describe('benchmark fixture runner', () => {
         },
       },
       promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
+      observation_pipeline: { decision: { status: 'pass', reasons: ['all_observation_gates_passed'] } },
     });
     expect(report.metrics.resources.samples.latency_ms).toHaveLength(7);
     expect(report.metrics.resources.samples.memory_bytes).toHaveLength(7);

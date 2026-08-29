@@ -197,12 +197,12 @@
       "network_calls": 0
     },
     "resources": {
-      "latency_p50_ms": 0.44980000000003884,
-      "latency_p95_ms": 2.221900000000005,
-      "ingestion_ms": 1.9822000000000344,
-      "startup_ms": 240.86450000000002,
-      "peak_memory_bytes": 92364800,
-      "database_bytes": 253952,
+      "latency_p50_ms": 0.580600000000004,
+      "latency_p95_ms": 2.579900000000009,
+      "ingestion_ms": 2.0302000000000078,
+      "startup_ms": 213.7008,
+      "peak_memory_bytes": 99385344,
+      "database_bytes": 364544,
       "model_bytes": 0,
       "network_calls": 0,
       "llm_calls": 0,
@@ -211,22 +211,22 @@
       "truncated_chars": 0,
       "samples": {
         "latency_ms": [
-          2.221900000000005,
-          0.47399999999998954,
-          0.45400000000000773,
-          0.42020000000002256,
-          0.43659999999999854,
-          0.44980000000003884,
-          0.40949999999998
+          2.579900000000009,
+          0.8566999999999894,
+          0.5803999999999974,
+          1.7764000000000237,
+          0.4936000000000149,
+          0.5080000000000382,
+          0.580600000000004
         ],
         "memory_bytes": [
-          92028928,
-          92094464,
-          92274688,
-          92291072,
-          92291072,
-          92299264,
-          92364800
+          99303424,
+          99303424,
+          99332096,
+          99303424,
+          99307520,
+          99311616,
+          99385344
         ]
       }
     }
@@ -351,5 +351,1827 @@
     "reasons": [
       "fixture_only_external_lanes_unavailable"
     ]
+  },
+  "observation_pipeline": {
+    "schema": "thoth-mem.observation-pipeline-report.v1",
+    "created_at": "1970-01-01T00:00:00.000Z",
+    "conditions": {
+      "seed": 17,
+      "sample_count": 31,
+      "top_k": 5,
+      "budget_chars": 1000,
+      "query": "local SQLite memory core",
+      "model_calls": 0,
+      "network_calls": 0
+    },
+    "control": {
+      "project_key": "benchmark:observation:control",
+      "memory": {
+        "kind": "architecture",
+        "title": "Local SQLite core",
+        "content": "Keep the persistent memory core fully local and SQLite-first.",
+        "topic_key": "core/local",
+        "outcome": "succeeded"
+      },
+      "topic_lineage": [
+        "core/local|superseded|Local file core|Keep the persistent memory core local.|succeeded",
+        "core/local|current|Local SQLite core|Keep the persistent memory core fully local and SQLite-first.|succeeded"
+      ],
+      "recall": {
+        "ordered_signatures": [
+          "architecture|Local SQLite core|Keep the persistent memory core fully local and SQLite-first."
+        ],
+        "returned_chars": 61,
+        "delivery_ratio": 0.2,
+        "useful_content_ratio": 1
+      },
+      "resources": {
+        "recall_latency_p95_ms": 0.5783199999999965,
+        "recall_latency_samples_ms": [
+          0.45859499999999687,
+          0.42227499999999624,
+          0.4578800000000001,
+          0.40738999999999803,
+          0.48595000000000255,
+          0.4923749999999984,
+          0.5522199999999998,
+          0.5783199999999965,
+          0.48551499999999803,
+          0.4327699999999993,
+          0.4578800000000001,
+          0.44931499999999575,
+          0.5288650000000018,
+          0.5016700000000014,
+          1.028280000000001,
+          0.43378000000000155,
+          0.45547000000000254,
+          0.4273249999999962,
+          0.40053500000000214,
+          0.41938500000000545,
+          0.4143199999999979,
+          0.4154700000000048,
+          0.4306699999999978,
+          0.41640500000000313,
+          0.39615999999999757,
+          0.5474350000000016,
+          0.46723499999999946,
+          0.5006200000000035,
+          0.4533149999999978,
+          0.4311850000000049,
+          0.43197999999999864
+        ],
+        "sqlite_bytes": 323584
+      },
+      "operations": [
+        {
+          "operation": "direct_promotion",
+          "outcome": "confirmed",
+          "source_ids": [
+            "9af71f36-65c7-5575-ae66-ec7aa73db361",
+            "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92",
+            "f2264881-c690-5482-a7b3-fcf0d0d6beb8"
+          ],
+          "record_ids": [
+            "9ee77662-1909-5dc9-a1ae-e297de0ebc90",
+            "6132f373-3cf7-5dc4-a887-740208344255"
+          ]
+        }
+      ],
+      "audit": {
+        "row_counts": {
+          "evidence": 3,
+          "events": 0,
+          "observations": 0,
+          "reviews": 0,
+          "promotions": 0,
+          "memories": 2,
+          "fts": 2
+        },
+        "project_id": "4b6404a9-9887-5dbd-af5d-f58d008c813c",
+        "evidence_ids": [
+          "9af71f36-65c7-5575-ae66-ec7aa73db361",
+          "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92",
+          "f2264881-c690-5482-a7b3-fcf0d0d6beb8"
+        ],
+        "evidence_rows": [
+          {
+            "id": "9af71f36-65c7-5575-ae66-ec7aa73db361",
+            "kind": "explicit_save",
+            "content_json": "The product requirement fixes the core to local SQLite storage.",
+            "content_hash": "d140abed41a7594be6a52e9b717b68d74daf469631aef0e0916d075a1311ba58",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.914Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92",
+            "kind": "explicit_save",
+            "content_json": "Preserve the initial local architecture before its SQLite refinement.",
+            "content_hash": "b67c2ebbbcb714e9fb0f4bde72a49013104588b1054019921b28fff567d84201",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.914Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "f2264881-c690-5482-a7b3-fcf0d0d6beb8",
+            "kind": "explicit_save",
+            "content_json": "Deliberately preserve the approved local SQLite architecture.",
+            "content_hash": "273116b074435b8f0c84c50520ac6b7aaaeea82bd8f631d9f9935b57e84ea565",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.915Z",
+            "metadata_json": "{}"
+          }
+        ],
+        "event_evidence_ids": [],
+        "observations": [],
+        "reviews": [],
+        "promotions": [],
+        "memories": [
+          {
+            "id": "6132f373-3cf7-5dc4-a887-740208344255",
+            "kind": "architecture",
+            "title": "Local SQLite core",
+            "content": "Keep the persistent memory core fully local and SQLite-first.",
+            "topic_key": "core/local",
+            "outcome": "succeeded",
+            "status": "current",
+            "supersedes_id": "9ee77662-1909-5dc9-a1ae-e297de0ebc90",
+            "valid_from": "2026-08-29T10:44:01.915Z",
+            "evidence_ids": [
+              "f2264881-c690-5482-a7b3-fcf0d0d6beb8"
+            ]
+          },
+          {
+            "id": "9ee77662-1909-5dc9-a1ae-e297de0ebc90",
+            "kind": "architecture",
+            "title": "Local file core",
+            "content": "Keep the persistent memory core local.",
+            "topic_key": "core/local",
+            "outcome": "succeeded",
+            "status": "superseded",
+            "supersedes_id": null,
+            "valid_from": "2026-08-29T10:44:01.914Z",
+            "evidence_ids": [
+              "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92"
+            ]
+          }
+        ],
+        "fts_memory_ids": [
+          "6132f373-3cf7-5dc4-a887-740208344255",
+          "9ee77662-1909-5dc9-a1ae-e297de0ebc90"
+        ],
+        "receipts": [],
+        "scenario_trace": [],
+        "trace_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "provenance": {
+        "valid": true,
+        "source_ids": [
+          "9af71f36-65c7-5575-ae66-ec7aa73db361",
+          "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92",
+          "f2264881-c690-5482-a7b3-fcf0d0d6beb8",
+          "9ee77662-1909-5dc9-a1ae-e297de0ebc90",
+          "6132f373-3cf7-5dc4-a887-740208344255"
+        ]
+      }
+    },
+    "candidate": {
+      "project_key": "benchmark:observation:candidate",
+      "memory": {
+        "kind": "architecture",
+        "title": "Local SQLite core",
+        "content": "Keep the persistent memory core fully local and SQLite-first.",
+        "topic_key": "core/local",
+        "outcome": "succeeded"
+      },
+      "topic_lineage": [
+        "core/local|superseded|Local file core|Keep the persistent memory core local.|succeeded",
+        "core/local|current|Local SQLite core|Keep the persistent memory core fully local and SQLite-first.|succeeded"
+      ],
+      "recall": {
+        "ordered_signatures": [
+          "architecture|Local SQLite core|Keep the persistent memory core fully local and SQLite-first."
+        ],
+        "returned_chars": 61,
+        "delivery_ratio": 0.2,
+        "useful_content_ratio": 1
+      },
+      "resources": {
+        "recall_latency_p95_ms": 0.5579300000000046,
+        "recall_latency_samples_ms": [
+          0.5550299999999992,
+          0.46061499999999567,
+          0.48437000000000124,
+          0.4519149999999968,
+          0.4670299999999997,
+          0.5364350000000002,
+          0.4762550000000033,
+          0.5579300000000046,
+          0.49595000000000483,
+          0.4992750000000001,
+          0.4651299999999992,
+          0.4609800000000007,
+          0.5026499999999998,
+          0.44364999999999666,
+          0.46242999999999485,
+          0.4845100000000002,
+          0.42575500000000377,
+          0.4315099999999973,
+          0.44273000000000023,
+          0.41250499999999873,
+          0.4813099999999963,
+          0.39468499999999834,
+          0.4572550000000035,
+          0.4129799999999989,
+          0.43247499999999944,
+          0.4865250000000003,
+          0.5032849999999996,
+          0.5663649999999961,
+          0.42982000000000653,
+          0.4561249999999973,
+          0.4499450000000024
+        ],
+        "sqlite_bytes": 335872
+      },
+      "operations": [
+        {
+          "operation": "candidate_submit",
+          "outcome": "confirmed",
+          "source_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "784f683e-789e-5646-a2fb-55bb2e6e2852"
+          ],
+          "record_ids": [
+            "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+          ]
+        },
+        {
+          "operation": "review_accept",
+          "outcome": "confirmed",
+          "source_ids": [
+            "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+            "f88a4895-bf84-57a0-a422-6ab4a42278b5"
+          ],
+          "record_ids": [
+            "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+          ]
+        },
+        {
+          "operation": "explicit_promotion",
+          "outcome": "confirmed",
+          "source_ids": [
+            "bb3a8ffd-f457-590d-a21b-5ad1fa018c29"
+          ],
+          "record_ids": [
+            "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+          ]
+        },
+        {
+          "operation": "unsupported_candidate_attempt",
+          "outcome": "blocked",
+          "source_ids": [],
+          "record_ids": []
+        },
+        {
+          "operation": "rejected_promotion_attempt",
+          "outcome": "blocked",
+          "source_ids": [],
+          "record_ids": []
+        },
+        {
+          "operation": "unreviewed_promotion_attempt",
+          "outcome": "blocked",
+          "source_ids": [],
+          "record_ids": []
+        }
+      ],
+      "lineage": {
+        "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+        "review_id": "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+        "promotion_evidence_id": "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+        "memory_id": "3ad3c49a-890a-58e2-af35-e220daf23ff2",
+        "original_support_ids": [
+          "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+        ],
+        "complete": true
+      },
+      "safety": {
+        "unsupported_promotions": 0,
+        "rejected_promotions": 0,
+        "unreviewed_promotions": 0,
+        "candidate_recall_leaks": 0
+      },
+      "attributable_writes": {
+        "submit": {
+          "operation": "candidate",
+          "event_key": "candidate:submit",
+          "payload_json": "{\"project\":{\"key\":\"benchmark:observation:candidate\",\"name\":\"observation-candidate\"},\"session\":{\"rootSessionKey\":\"benchmark-observation-root\",\"harness\":\"codex\"},\"eventKey\":\"candidate:submit\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local SQLite core\",\"claim\":\"The persistent memory core remains fully local and SQLite-first.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local SQLite core\",\"content\":\"Keep the persistent memory core fully local and SQLite-first.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"},\"predecessorId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}",
+          "payload_sha256": "333f9e23114ae0fbbb8e6de0dc36bdb983bf9a003bef6522c681dd0d58476561",
+          "receipt_payload_hash": "fda7f252ae45cd6d92cf5bd56df5fca61788a01aa24afa7114f332a48341eb3f",
+          "result_ids": [
+            "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "784f683e-789e-5646-a2fb-55bb2e6e2852"
+          ],
+          "row_counts_before": {
+            "evidence": 6,
+            "events": 6,
+            "observations": 1,
+            "reviews": 1,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "row_counts_after": {
+            "evidence": 7,
+            "events": 7,
+            "observations": 2,
+            "reviews": 1,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "latency_p50_ms": 1.3287000000000262,
+          "latency_p95_ms": 1.3287000000000262,
+          "latency_samples_ms": [
+            1.3287000000000262
+          ],
+          "sqlite_bytes_before": 729056,
+          "sqlite_bytes_after": 799096,
+          "sqlite_bytes_delta": 70040,
+          "payload_chars": 698
+        },
+        "review": {
+          "operation": "review",
+          "event_key": "candidate:review",
+          "payload_json": "{\"project\":{\"key\":\"benchmark:observation:candidate\",\"name\":\"observation-candidate\"},\"session\":{\"rootSessionKey\":\"benchmark-observation-root\",\"harness\":\"codex\"},\"eventKey\":\"candidate:review\",\"review\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Explicitly confirmed by the root user.\",\"supportIds\":[\"f11255f1-ec6f-5c67-abc2-27f114f430a8\"]}}",
+          "payload_sha256": "e653bd133c0209a6132ddc7e279ad2c57f982497f797cf56e252d5d1d802d851",
+          "receipt_payload_hash": "abad96cf1461d068d32af43a29577eda540ed8d44d4c6b61883a53876c5dff09",
+          "result_ids": [
+            "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+            "f88a4895-bf84-57a0-a422-6ab4a42278b5"
+          ],
+          "row_counts_before": {
+            "evidence": 7,
+            "events": 7,
+            "observations": 2,
+            "reviews": 1,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "row_counts_after": {
+            "evidence": 8,
+            "events": 8,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "latency_p50_ms": 1.0183000000000106,
+          "latency_p95_ms": 1.0183000000000106,
+          "latency_samples_ms": [
+            1.0183000000000106
+          ],
+          "sqlite_bytes_before": 799096,
+          "sqlite_bytes_after": 860896,
+          "sqlite_bytes_delta": 61800,
+          "payload_chars": 453
+        },
+        "promotion": {
+          "operation": "promotion",
+          "event_key": "candidate:promotion",
+          "payload_json": "{\"project\":{\"key\":\"benchmark:observation:candidate\",\"name\":\"observation-candidate\"},\"session\":{\"rootSessionKey\":\"benchmark-observation-root\",\"harness\":\"codex\"},\"eventKey\":\"candidate:promotion\",\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\"}",
+          "payload_sha256": "89c9eb548227e1590234fefd6f08e5be1eab6e8e9478fa01be622fd7aa4115c5",
+          "receipt_payload_hash": "21262f66e29cf370ee27ad5435f8704b35a8460900f5d11f83939b1839930a3e",
+          "result_ids": [
+            "3ad3c49a-890a-58e2-af35-e220daf23ff2",
+            "bb3a8ffd-f457-590d-a21b-5ad1fa018c29"
+          ],
+          "row_counts_before": {
+            "evidence": 8,
+            "events": 8,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "row_counts_after": {
+            "evidence": 9,
+            "events": 9,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "latency_p50_ms": 1.530300000000011,
+          "latency_p95_ms": 1.530300000000011,
+          "latency_samples_ms": [
+            1.530300000000011
+          ],
+          "sqlite_bytes_before": 860896,
+          "sqlite_bytes_after": 976256,
+          "sqlite_bytes_delta": 115360,
+          "payload_chars": 248
+        }
+      },
+      "scenario_results": [
+        {
+          "id": "poisoned",
+          "event_keys": [
+            "candidate:poisoned"
+          ],
+          "outcome": "blocked",
+          "harmful_promotions": 0,
+          "observation_ids": [],
+          "review_ids": [],
+          "memory_ids": [],
+          "support_ids": [],
+          "policy": null,
+          "row_counts_before": {
+            "evidence": 13,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "row_counts_after": {
+            "evidence": 13,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "negated",
+          "event_keys": [
+            "candidate:rejected",
+            "candidate:rejected:review",
+            "candidate:rejected:promotion"
+          ],
+          "outcome": "rejected",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "4ab3af9c-93e2-5931-acac-7a8deb770e2f"
+          ],
+          "review_ids": [
+            "9e76a358-f52f-5cee-a6a9-5a5092dbc35c"
+          ],
+          "memory_ids": [],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "bf719f16-3329-583b-a42f-11926357a585"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 11,
+            "events": 11,
+            "observations": 3,
+            "reviews": 2,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "row_counts_after": {
+            "evidence": 13,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "cross_scope",
+          "event_keys": [
+            "candidate:cross-scope"
+          ],
+          "outcome": "blocked",
+          "harmful_promotions": 0,
+          "observation_ids": [],
+          "review_ids": [],
+          "memory_ids": [],
+          "support_ids": [],
+          "policy": null,
+          "row_counts_before": {
+            "evidence": 14,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "row_counts_after": {
+            "evidence": 14,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "failed",
+          "event_keys": [
+            "candidate:failed",
+            "candidate:failed:validation",
+            "candidate:failed:review"
+          ],
+          "outcome": "accepted",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "78e86102-7e3f-5a20-a8c8-af55bc926fb2"
+          ],
+          "review_ids": [
+            "39522d2c-a5da-510e-a417-f24ca6562ce3"
+          ],
+          "memory_ids": [],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "20ee227e-c681-5ce9-a2a1-6104426afdaa"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 14,
+            "events": 13,
+            "observations": 4,
+            "reviews": 3,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "row_counts_after": {
+            "evidence": 17,
+            "events": 16,
+            "observations": 5,
+            "reviews": 4,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "changing_requirement",
+          "event_keys": [
+            "candidate:initial",
+            "candidate:initial:review",
+            "candidate:initial:promotion",
+            "candidate:confirmation",
+            "candidate:submit",
+            "candidate:review",
+            "candidate:promotion"
+          ],
+          "outcome": "promoted",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+          ],
+          "review_ids": [
+            "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+          ],
+          "memory_ids": [
+            "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+          ],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "13b4484f-2856-5761-a061-ccab3239c4cd",
+            "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 2,
+            "events": 2,
+            "observations": 0,
+            "reviews": 0,
+            "promotions": 0,
+            "memories": 0,
+            "fts": 0
+          },
+          "row_counts_after": {
+            "evidence": 9,
+            "events": 9,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "stale_procedure",
+          "event_keys": [
+            "candidate:stale",
+            "candidate:stale:review"
+          ],
+          "outcome": "rejected",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "756441b4-973b-5993-aebf-713ab2bb9e46"
+          ],
+          "review_ids": [
+            "3d61a300-8946-5ccd-a8e4-81108c03d8e2"
+          ],
+          "memory_ids": [],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "c681721a-3ccc-5395-ac97-af9d8a6ac7c2"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 18,
+            "events": 17,
+            "observations": 5,
+            "reviews": 4,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          },
+          "row_counts_after": {
+            "evidence": 20,
+            "events": 19,
+            "observations": 6,
+            "reviews": 5,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "correction",
+          "event_keys": [
+            "candidate:submit",
+            "candidate:review",
+            "candidate:promotion"
+          ],
+          "outcome": "promoted",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+          ],
+          "review_ids": [
+            "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+          ],
+          "memory_ids": [
+            "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+          ],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "13b4484f-2856-5761-a061-ccab3239c4cd",
+            "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 6,
+            "events": 6,
+            "observations": 1,
+            "reviews": 1,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "row_counts_after": {
+            "evidence": 9,
+            "events": 9,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        },
+        {
+          "id": "topic_supersession",
+          "event_keys": [
+            "candidate:submit",
+            "candidate:review",
+            "candidate:promotion"
+          ],
+          "outcome": "promoted",
+          "harmful_promotions": 0,
+          "observation_ids": [
+            "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+          ],
+          "review_ids": [
+            "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+          ],
+          "memory_ids": [
+            "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+          ],
+          "support_ids": [
+            "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "13b4484f-2856-5761-a061-ccab3239c4cd",
+            "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+          ],
+          "policy": {
+            "id": "benchmark",
+            "version": "1"
+          },
+          "row_counts_before": {
+            "evidence": 6,
+            "events": 6,
+            "observations": 1,
+            "reviews": 1,
+            "promotions": 1,
+            "memories": 1,
+            "fts": 1
+          },
+          "row_counts_after": {
+            "evidence": 9,
+            "events": 9,
+            "observations": 2,
+            "reviews": 2,
+            "promotions": 2,
+            "memories": 2,
+            "fts": 2
+          }
+        }
+      ],
+      "audit": {
+        "row_counts": {
+          "evidence": 19,
+          "events": 19,
+          "observations": 6,
+          "reviews": 5,
+          "promotions": 2,
+          "memories": 2,
+          "fts": 2
+        },
+        "project_id": "2c546b06-6fef-532a-af43-2d48e42f7a95",
+        "evidence_ids": [
+          "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+          "0b20d258-6d08-53ba-ab62-16806e1620ec",
+          "13b4484f-2856-5761-a061-ccab3239c4cd",
+          "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+          "20ee227e-c681-5ce9-a2a1-6104426afdaa",
+          "2a54c44a-a22d-5051-ad4c-cf2169b550f2",
+          "567ee69b-2588-505f-ad28-dbd1516475c2",
+          "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+          "6099b1c7-9049-5b7a-a05e-3f6a9b353bd2",
+          "658780b4-f3cc-566b-a0b3-7edad50fb157",
+          "784f683e-789e-5646-a2fb-55bb2e6e2852",
+          "9ad084da-db70-5088-a277-3fd15b30c858",
+          "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+          "beb5eb8e-f429-543c-a66d-b8d43a939252",
+          "bf719f16-3329-583b-a42f-11926357a585",
+          "c681721a-3ccc-5395-ac97-af9d8a6ac7c2",
+          "cd17ec34-6be9-5049-a1e5-27fb1295b33a",
+          "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+          "f88a4895-bf84-57a0-a422-6ab4a42278b5"
+        ],
+        "evidence_rows": [
+          {
+            "id": "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+            "kind": "observation_promotion",
+            "content_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\",\"promotion\":{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}",
+            "content_hash": "5114ddc5fcd56a5d78f0cfe3cd95b3f0b9b4772de59f11a19e47cba786a2778a",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.937Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\"}"
+          },
+          {
+            "id": "0b20d258-6d08-53ba-ab62-16806e1620ec",
+            "kind": "observation_review",
+            "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"756441b4-973b-5993-aebf-713ab2bb9e46\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The procedure is stale.\",\"supportIds\":[\"c681721a-3ccc-5395-ac97-af9d8a6ac7c2\"]}}",
+            "content_hash": "9356097c6a1c858234dd4fbe04c004b00022c4eab8521cd4d44265afa7da0c57",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.040Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
+          },
+          {
+            "id": "13b4484f-2856-5761-a061-ccab3239c4cd",
+            "kind": "root_prompt",
+            "content_json": "Confirm the initial local architecture.",
+            "content_hash": "3def84e73403125cdf314e05df2a1cf27ded6eb1bf5e92200fc611796dba8221",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.916Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+            "kind": "explicit_save",
+            "content_json": "The product requirement fixes the core to local SQLite storage.",
+            "content_hash": "d140abed41a7594be6a52e9b717b68d74daf469631aef0e0916d075a1311ba58",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.915Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "20ee227e-c681-5ce9-a2a1-6104426afdaa",
+            "kind": "explicit_save",
+            "content_json": "The failure was reproduced.",
+            "content_hash": "50d6367a1c027215d54b5aa542734319e6477274d442cb1f989e6d32146b3d28",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.023Z",
+            "metadata_json": "{\"observation_validation\":{\"observation_id\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"result\":\"passed\",\"method\":\"offline reproduction\"}}"
+          },
+          {
+            "id": "2a54c44a-a22d-5051-ad4c-cf2169b550f2",
+            "kind": "observation_review",
+            "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"verdict\":\"accepted\",\"basis\":\"observable_validation\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The failure is reproducible.\",\"supportIds\":[\"20ee227e-c681-5ce9-a2a1-6104426afdaa\"]}}",
+            "content_hash": "786d162ccb7a771445479a57fc4291cb4da814e56dbf4d998159ca71436d6844",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.023Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
+          },
+          {
+            "id": "567ee69b-2588-505f-ad28-dbd1516475c2",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"failure\",\"scope\":\"project\",\"title\":\"Observed failed check\",\"claim\":\"The compatibility check fails under the recorded fixture.\",\"proposedMemory\":{\"kind\":\"failure\",\"title\":\"Observed failed check\",\"content\":\"Remember the attributable failed compatibility check.\",\"outcome\":\"failed\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
+            "content_hash": "6970758f86a2a5c8987664703b537a77d85a714c8d2125024dc1a6b8ee4fa2a5",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.021Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+            "kind": "observation_review",
+            "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Initial local requirement confirmed.\",\"supportIds\":[\"13b4484f-2856-5761-a061-ccab3239c4cd\"]}}",
+            "content_hash": "823dee951cc75fef5c4380bba3f614b302ea5a722669176f846b3b95af34c1c5",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.935Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
+          },
+          {
+            "id": "6099b1c7-9049-5b7a-a05e-3f6a9b353bd2",
+            "kind": "observation_review",
+            "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"4ab3af9c-93e2-5931-acac-7a8deb770e2f\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Benchmark rejection fixture.\",\"supportIds\":[\"bf719f16-3329-583b-a42f-11926357a585\"]}}",
+            "content_hash": "71bdac240c8718b691bc5fa036478e6ded158fa1e68052042a4a4c11f9f53c7d",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.000Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
+          },
+          {
+            "id": "658780b4-f3cc-566b-a0b3-7edad50fb157",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Rejected fixture\",\"claim\":\"This rejected candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Rejected fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
+            "content_hash": "8d37a47bf0babec5507f08990c8e98c472601352c3556e0a387baddcdbaa024a",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.999Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "784f683e-789e-5646-a2fb-55bb2e6e2852",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local SQLite core\",\"claim\":\"The persistent memory core remains fully local and SQLite-first.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local SQLite core\",\"content\":\"Keep the persistent memory core fully local and SQLite-first.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"},\"predecessorId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}",
+            "content_hash": "fda7f252ae45cd6d92cf5bd56df5fca61788a01aa24afa7114f332a48341eb3f",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.948Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "9ad084da-db70-5088-a277-3fd15b30c858",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local file core\",\"claim\":\"The persistent memory core remains local.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local file core\",\"content\":\"Keep the persistent memory core local.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
+            "content_hash": "cabcc620d0e2cb67a5be176baff64c08284a913878e279d580413cffc077ad9d",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.934Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+            "kind": "observation_promotion",
+            "content_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\",\"promotion\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\"}}",
+            "content_hash": "bb4cd183d5f916395e49dd7cece7669afeb71a14a2c32e07e7be598a188b12d1",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.980Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\"}"
+          },
+          {
+            "id": "beb5eb8e-f429-543c-a66d-b8d43a939252",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Unreviewed fixture\",\"claim\":\"This unreviewed candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Unreviewed fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
+            "content_hash": "c8b19fc8fdf5fa8aa0b25a1ea7302a35ff4ea70c65d26eb18c0d0e3423aa4fb8",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.989Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "bf719f16-3329-583b-a42f-11926357a585",
+            "kind": "root_prompt",
+            "content_json": "Reject the benchmark-only invalid candidate.",
+            "content_hash": "b07930481e766eb649391ecb670204d1decc14879ebcac34d2851ae44295b322",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.990Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "c681721a-3ccc-5395-ac97-af9d8a6ac7c2",
+            "kind": "root_prompt",
+            "content_json": "Reject the stale procedure.",
+            "content_hash": "13ff26987c70263b8c022f058980ed29eb7125c64cfd42873dfb68a9d302f4e7",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.032Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "cd17ec34-6be9-5049-a1e5-27fb1295b33a",
+            "kind": "observation",
+            "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"procedure\",\"scope\":\"project\",\"title\":\"Stale procedure\",\"claim\":\"Use the superseded setup procedure.\",\"proposedMemory\":{\"kind\":\"convention\",\"title\":\"Stale procedure\",\"content\":\"Use the superseded setup procedure.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
+            "content_hash": "911e50f405ae1c2fbfe7ac2f5edc47437375e6b7768988f207873665cc209f18",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:02.039Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
+          },
+          {
+            "id": "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+            "kind": "root_prompt",
+            "content_json": "Confirm the local SQLite architecture as durable project memory.",
+            "content_hash": "e2f1aa84e7278354cb2c0f3473fa455fe176c0abf12f39f3fbe74e9414bd0547",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.938Z",
+            "metadata_json": "{}"
+          },
+          {
+            "id": "f88a4895-bf84-57a0-a422-6ab4a42278b5",
+            "kind": "observation_review",
+            "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Explicitly confirmed by the root user.\",\"supportIds\":[\"f11255f1-ec6f-5c67-abc2-27f114f430a8\"]}}",
+            "content_hash": "abad96cf1461d068d32af43a29577eda540ed8d44d4c6b61883a53876c5dff09",
+            "source_ref": null,
+            "captured_at": "2026-08-29T10:44:01.961Z",
+            "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
+          }
+        ],
+        "event_evidence_ids": [
+          "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+          "0b20d258-6d08-53ba-ab62-16806e1620ec",
+          "13b4484f-2856-5761-a061-ccab3239c4cd",
+          "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+          "20ee227e-c681-5ce9-a2a1-6104426afdaa",
+          "2a54c44a-a22d-5051-ad4c-cf2169b550f2",
+          "567ee69b-2588-505f-ad28-dbd1516475c2",
+          "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+          "6099b1c7-9049-5b7a-a05e-3f6a9b353bd2",
+          "658780b4-f3cc-566b-a0b3-7edad50fb157",
+          "784f683e-789e-5646-a2fb-55bb2e6e2852",
+          "9ad084da-db70-5088-a277-3fd15b30c858",
+          "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+          "beb5eb8e-f429-543c-a66d-b8d43a939252",
+          "bf719f16-3329-583b-a42f-11926357a585",
+          "c681721a-3ccc-5395-ac97-af9d8a6ac7c2",
+          "cd17ec34-6be9-5049-a1e5-27fb1295b33a",
+          "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+          "f88a4895-bf84-57a0-a422-6ab4a42278b5"
+        ],
+        "observations": [
+          {
+            "id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "submission_evidence_id": "9ad084da-db70-5088-a277-3fd15b30c858",
+            "predecessor_id": null,
+            "scope": "project",
+            "coverage": null,
+            "kind": "constraint",
+            "title": "Local file core",
+            "claim": "The persistent memory core remains local.",
+            "proposed_memory": {
+              "kind": "architecture",
+              "title": "Local file core",
+              "content": "Keep the persistent memory core local.",
+              "topic_key": "core/local",
+              "outcome": "succeeded"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          },
+          {
+            "id": "4ab3af9c-93e2-5931-acac-7a8deb770e2f",
+            "submission_evidence_id": "658780b4-f3cc-566b-a0b3-7edad50fb157",
+            "predecessor_id": null,
+            "scope": "project",
+            "coverage": null,
+            "kind": "fact",
+            "title": "Rejected fixture",
+            "claim": "This rejected candidate must never be promoted.",
+            "proposed_memory": {
+              "kind": "discovery",
+              "title": "Rejected fixture",
+              "content": "This content must remain outside recall.",
+              "topic_key": null,
+              "outcome": "unknown"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          },
+          {
+            "id": "6347812c-ddbd-568d-a649-9649312c3188",
+            "submission_evidence_id": "beb5eb8e-f429-543c-a66d-b8d43a939252",
+            "predecessor_id": null,
+            "scope": "project",
+            "coverage": null,
+            "kind": "fact",
+            "title": "Unreviewed fixture",
+            "claim": "This unreviewed candidate must never be promoted.",
+            "proposed_memory": {
+              "kind": "discovery",
+              "title": "Unreviewed fixture",
+              "content": "This content must remain outside recall.",
+              "topic_key": null,
+              "outcome": "unknown"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          },
+          {
+            "id": "756441b4-973b-5993-aebf-713ab2bb9e46",
+            "submission_evidence_id": "cd17ec34-6be9-5049-a1e5-27fb1295b33a",
+            "predecessor_id": null,
+            "scope": "project",
+            "coverage": null,
+            "kind": "procedure",
+            "title": "Stale procedure",
+            "claim": "Use the superseded setup procedure.",
+            "proposed_memory": {
+              "kind": "convention",
+              "title": "Stale procedure",
+              "content": "Use the superseded setup procedure.",
+              "topic_key": null,
+              "outcome": "unknown"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          },
+          {
+            "id": "78e86102-7e3f-5a20-a8c8-af55bc926fb2",
+            "submission_evidence_id": "567ee69b-2588-505f-ad28-dbd1516475c2",
+            "predecessor_id": null,
+            "scope": "project",
+            "coverage": null,
+            "kind": "failure",
+            "title": "Observed failed check",
+            "claim": "The compatibility check fails under the recorded fixture.",
+            "proposed_memory": {
+              "kind": "failure",
+              "title": "Observed failed check",
+              "content": "Remember the attributable failed compatibility check.",
+              "topic_key": null,
+              "outcome": "failed"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          },
+          {
+            "id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "submission_evidence_id": "784f683e-789e-5646-a2fb-55bb2e6e2852",
+            "predecessor_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "scope": "project",
+            "coverage": null,
+            "kind": "constraint",
+            "title": "Local SQLite core",
+            "claim": "The persistent memory core remains fully local and SQLite-first.",
+            "proposed_memory": {
+              "kind": "architecture",
+              "title": "Local SQLite core",
+              "content": "Keep the persistent memory core fully local and SQLite-first.",
+              "topic_key": "core/local",
+              "outcome": "succeeded"
+            },
+            "generator": {
+              "kind": "root_agent",
+              "name": "benchmark",
+              "version": null,
+              "config_hash": null
+            },
+            "concepts": [],
+            "files": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e"
+            ]
+          }
+        ],
+        "reviews": [
+          {
+            "id": "39522d2c-a5da-510e-a417-f24ca6562ce3",
+            "observation_id": "78e86102-7e3f-5a20-a8c8-af55bc926fb2",
+            "review_evidence_id": "2a54c44a-a22d-5051-ad4c-cf2169b550f2",
+            "verdict": "accepted",
+            "basis": "observable_validation",
+            "reason": "The failure is reproducible.",
+            "policy_id": "benchmark",
+            "policy_version": "1",
+            "support_ids": [
+              "20ee227e-c681-5ce9-a2a1-6104426afdaa"
+            ]
+          },
+          {
+            "id": "3d61a300-8946-5ccd-a8e4-81108c03d8e2",
+            "observation_id": "756441b4-973b-5993-aebf-713ab2bb9e46",
+            "review_evidence_id": "0b20d258-6d08-53ba-ab62-16806e1620ec",
+            "verdict": "rejected",
+            "basis": "root_user_confirmed",
+            "reason": "The procedure is stale.",
+            "policy_id": "benchmark",
+            "policy_version": "1",
+            "support_ids": [
+              "c681721a-3ccc-5395-ac97-af9d8a6ac7c2"
+            ]
+          },
+          {
+            "id": "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "observation_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "review_evidence_id": "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+            "verdict": "accepted",
+            "basis": "root_user_confirmed",
+            "reason": "Initial local requirement confirmed.",
+            "policy_id": "benchmark",
+            "policy_version": "1",
+            "support_ids": [
+              "13b4484f-2856-5761-a061-ccab3239c4cd"
+            ]
+          },
+          {
+            "id": "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+            "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "review_evidence_id": "f88a4895-bf84-57a0-a422-6ab4a42278b5",
+            "verdict": "accepted",
+            "basis": "root_user_confirmed",
+            "reason": "Explicitly confirmed by the root user.",
+            "policy_id": "benchmark",
+            "policy_version": "1",
+            "support_ids": [
+              "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+            ]
+          },
+          {
+            "id": "9e76a358-f52f-5cee-a6a9-5a5092dbc35c",
+            "observation_id": "4ab3af9c-93e2-5931-acac-7a8deb770e2f",
+            "review_evidence_id": "6099b1c7-9049-5b7a-a05e-3f6a9b353bd2",
+            "verdict": "rejected",
+            "basis": "root_user_confirmed",
+            "reason": "Benchmark rejection fixture.",
+            "policy_id": "benchmark",
+            "policy_version": "1",
+            "support_ids": [
+              "bf719f16-3329-583b-a42f-11926357a585"
+            ]
+          }
+        ],
+        "promotions": [
+          {
+            "observation_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "promotion_evidence_id": "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+            "memory_id": "33aeab00-b3d9-5414-ab07-39e3d40d5b48"
+          },
+          {
+            "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "promotion_evidence_id": "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+            "memory_id": "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+          }
+        ],
+        "memories": [
+          {
+            "id": "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "kind": "architecture",
+            "title": "Local file core",
+            "content": "Keep the persistent memory core local.",
+            "topic_key": "core/local",
+            "outcome": "succeeded",
+            "status": "superseded",
+            "supersedes_id": null,
+            "valid_from": "2026-08-29T10:44:01.937Z",
+            "evidence_ids": [
+              "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+              "13b4484f-2856-5761-a061-ccab3239c4cd",
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+              "9ad084da-db70-5088-a277-3fd15b30c858"
+            ]
+          },
+          {
+            "id": "3ad3c49a-890a-58e2-af35-e220daf23ff2",
+            "kind": "architecture",
+            "title": "Local SQLite core",
+            "content": "Keep the persistent memory core fully local and SQLite-first.",
+            "topic_key": "core/local",
+            "outcome": "succeeded",
+            "status": "current",
+            "supersedes_id": "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "valid_from": "2026-08-29T10:44:01.980Z",
+            "evidence_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "784f683e-789e-5646-a2fb-55bb2e6e2852",
+              "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+              "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+              "f88a4895-bf84-57a0-a422-6ab4a42278b5"
+            ]
+          }
+        ],
+        "fts_memory_ids": [
+          "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+          "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+        ],
+        "receipts": [
+          {
+            "operation": "save",
+            "event_key": "candidate:confirmation",
+            "payload_hash": "e91f499a2d18be66b5b9d0cfb2d01b0aed65551db9fa8880a85a3bedccf4ec77",
+            "evidence_id": "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+            "observation_id": null,
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"evidence\":{\"kind\":\"root_prompt\",\"content\":\"Confirm the local SQLite architecture as durable project memory.\"},\"memory\":null}"
+          },
+          {
+            "operation": "save",
+            "event_key": "candidate:failed:validation",
+            "payload_hash": "68d8e64419653a4e9a4420bb4e8cd5818d3e47346adce3d8d53b3e4658f0b5a9",
+            "evidence_id": "20ee227e-c681-5ce9-a2a1-6104426afdaa",
+            "observation_id": null,
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"evidence\":{\"kind\":\"explicit_save\",\"content\":\"The failure was reproduced.\",\"metadata\":{\"observation_validation\":{\"observation_id\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"result\":\"passed\",\"method\":\"offline reproduction\"}}},\"memory\":null}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:failed",
+            "payload_hash": "6970758f86a2a5c8987664703b537a77d85a714c8d2125024dc1a6b8ee4fa2a5",
+            "evidence_id": "567ee69b-2588-505f-ad28-dbd1516475c2",
+            "observation_id": "78e86102-7e3f-5a20-a8c8-af55bc926fb2",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"failure\",\"scope\":\"project\",\"title\":\"Observed failed check\",\"claim\":\"The compatibility check fails under the recorded fixture.\",\"proposedMemory\":{\"kind\":\"failure\",\"title\":\"Observed failed check\",\"content\":\"Remember the attributable failed compatibility check.\",\"outcome\":\"failed\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}"
+          },
+          {
+            "operation": "review",
+            "event_key": "candidate:failed:review",
+            "payload_hash": "786d162ccb7a771445479a57fc4291cb4da814e56dbf4d998159ca71436d6844",
+            "evidence_id": "2a54c44a-a22d-5051-ad4c-cf2169b550f2",
+            "observation_id": "78e86102-7e3f-5a20-a8c8-af55bc926fb2",
+            "review_id": "39522d2c-a5da-510e-a417-f24ca6562ce3",
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"verdict\":\"accepted\",\"basis\":\"observable_validation\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The failure is reproducible.\",\"supportIds\":[\"20ee227e-c681-5ce9-a2a1-6104426afdaa\"]}}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:initial",
+            "payload_hash": "cabcc620d0e2cb67a5be176baff64c08284a913878e279d580413cffc077ad9d",
+            "evidence_id": "9ad084da-db70-5088-a277-3fd15b30c858",
+            "observation_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local file core\",\"claim\":\"The persistent memory core remains local.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local file core\",\"content\":\"Keep the persistent memory core local.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}"
+          },
+          {
+            "operation": "promotion",
+            "event_key": "candidate:initial:promotion",
+            "payload_hash": "3252eb2b57a0b1d8f2eccaccdaa32cb227db86eebfd13045c06e942fe7643cf3",
+            "evidence_id": "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
+            "observation_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "review_id": "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "memory_id": "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+            "canonical_payload_json": "{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}"
+          },
+          {
+            "operation": "review",
+            "event_key": "candidate:initial:review",
+            "payload_hash": "823dee951cc75fef5c4380bba3f614b302ea5a722669176f846b3b95af34c1c5",
+            "evidence_id": "58dd5bca-a3a7-58b3-aee4-7f7b1aad339a",
+            "observation_id": "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+            "review_id": "81a94602-d91d-52b5-a731-2f3e55233cdf",
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Initial local requirement confirmed.\",\"supportIds\":[\"13b4484f-2856-5761-a061-ccab3239c4cd\"]}}"
+          },
+          {
+            "operation": "promotion",
+            "event_key": "candidate:promotion",
+            "payload_hash": "21262f66e29cf370ee27ad5435f8704b35a8460900f5d11f83939b1839930a3e",
+            "evidence_id": "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+            "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "review_id": "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+            "memory_id": "3ad3c49a-890a-58e2-af35-e220daf23ff2",
+            "canonical_payload_json": "{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\"}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:rejected",
+            "payload_hash": "8d37a47bf0babec5507f08990c8e98c472601352c3556e0a387baddcdbaa024a",
+            "evidence_id": "658780b4-f3cc-566b-a0b3-7edad50fb157",
+            "observation_id": "4ab3af9c-93e2-5931-acac-7a8deb770e2f",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Rejected fixture\",\"claim\":\"This rejected candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Rejected fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}"
+          },
+          {
+            "operation": "review",
+            "event_key": "candidate:rejected:review",
+            "payload_hash": "71bdac240c8718b691bc5fa036478e6ded158fa1e68052042a4a4c11f9f53c7d",
+            "evidence_id": "6099b1c7-9049-5b7a-a05e-3f6a9b353bd2",
+            "observation_id": "4ab3af9c-93e2-5931-acac-7a8deb770e2f",
+            "review_id": "9e76a358-f52f-5cee-a6a9-5a5092dbc35c",
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"4ab3af9c-93e2-5931-acac-7a8deb770e2f\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Benchmark rejection fixture.\",\"supportIds\":[\"bf719f16-3329-583b-a42f-11926357a585\"]}}"
+          },
+          {
+            "operation": "review",
+            "event_key": "candidate:review",
+            "payload_hash": "abad96cf1461d068d32af43a29577eda540ed8d44d4c6b61883a53876c5dff09",
+            "evidence_id": "f88a4895-bf84-57a0-a422-6ab4a42278b5",
+            "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "review_id": "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Explicitly confirmed by the root user.\",\"supportIds\":[\"f11255f1-ec6f-5c67-abc2-27f114f430a8\"]}}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:stale",
+            "payload_hash": "911e50f405ae1c2fbfe7ac2f5edc47437375e6b7768988f207873665cc209f18",
+            "evidence_id": "cd17ec34-6be9-5049-a1e5-27fb1295b33a",
+            "observation_id": "756441b4-973b-5993-aebf-713ab2bb9e46",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"procedure\",\"scope\":\"project\",\"title\":\"Stale procedure\",\"claim\":\"Use the superseded setup procedure.\",\"proposedMemory\":{\"kind\":\"convention\",\"title\":\"Stale procedure\",\"content\":\"Use the superseded setup procedure.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}"
+          },
+          {
+            "operation": "review",
+            "event_key": "candidate:stale:review",
+            "payload_hash": "9356097c6a1c858234dd4fbe04c004b00022c4eab8521cd4d44265afa7da0c57",
+            "evidence_id": "0b20d258-6d08-53ba-ab62-16806e1620ec",
+            "observation_id": "756441b4-973b-5993-aebf-713ab2bb9e46",
+            "review_id": "3d61a300-8946-5ccd-a8e4-81108c03d8e2",
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"756441b4-973b-5993-aebf-713ab2bb9e46\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The procedure is stale.\",\"supportIds\":[\"c681721a-3ccc-5395-ac97-af9d8a6ac7c2\"]}}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:submit",
+            "payload_hash": "fda7f252ae45cd6d92cf5bd56df5fca61788a01aa24afa7114f332a48341eb3f",
+            "evidence_id": "784f683e-789e-5646-a2fb-55bb2e6e2852",
+            "observation_id": "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local SQLite core\",\"claim\":\"The persistent memory core remains fully local and SQLite-first.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local SQLite core\",\"content\":\"Keep the persistent memory core fully local and SQLite-first.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"},\"predecessorId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}"
+          },
+          {
+            "operation": "candidate",
+            "event_key": "candidate:unreviewed",
+            "payload_hash": "c8b19fc8fdf5fa8aa0b25a1ea7302a35ff4ea70c65d26eb18c0d0e3423aa4fb8",
+            "evidence_id": "beb5eb8e-f429-543c-a66d-b8d43a939252",
+            "observation_id": "6347812c-ddbd-568d-a649-9649312c3188",
+            "review_id": null,
+            "memory_id": null,
+            "canonical_payload_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Unreviewed fixture\",\"claim\":\"This unreviewed candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Unreviewed fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}"
+          }
+        ],
+        "scenario_trace": [
+          {
+            "id": "poisoned",
+            "event_keys": [
+              "candidate:poisoned"
+            ],
+            "outcome": "blocked",
+            "harmful_promotions": 0,
+            "observation_ids": [],
+            "review_ids": [],
+            "memory_ids": [],
+            "support_ids": [],
+            "policy": null,
+            "row_counts_before": {
+              "evidence": 13,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "row_counts_after": {
+              "evidence": 13,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "c441c8aefe079a26e6b16a48cfec84cee43e61eca6f6807f9d6d82d79dc2082b"
+          },
+          {
+            "id": "negated",
+            "event_keys": [
+              "candidate:rejected",
+              "candidate:rejected:review",
+              "candidate:rejected:promotion"
+            ],
+            "outcome": "rejected",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "4ab3af9c-93e2-5931-acac-7a8deb770e2f"
+            ],
+            "review_ids": [
+              "9e76a358-f52f-5cee-a6a9-5a5092dbc35c"
+            ],
+            "memory_ids": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "bf719f16-3329-583b-a42f-11926357a585"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 11,
+              "events": 11,
+              "observations": 3,
+              "reviews": 2,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "row_counts_after": {
+              "evidence": 13,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "0154f69e95782c61d568616f622429c4dc7f078935cd3140f2da5a145af17da6"
+          },
+          {
+            "id": "cross_scope",
+            "event_keys": [
+              "candidate:cross-scope"
+            ],
+            "outcome": "blocked",
+            "harmful_promotions": 0,
+            "observation_ids": [],
+            "review_ids": [],
+            "memory_ids": [],
+            "support_ids": [],
+            "policy": null,
+            "row_counts_before": {
+              "evidence": 14,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "row_counts_after": {
+              "evidence": 14,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "c25f7aae29232c7cb6f0c97f692b4449c250cb507df50893b2e70abb40499b7f"
+          },
+          {
+            "id": "failed",
+            "event_keys": [
+              "candidate:failed",
+              "candidate:failed:validation",
+              "candidate:failed:review"
+            ],
+            "outcome": "accepted",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "78e86102-7e3f-5a20-a8c8-af55bc926fb2"
+            ],
+            "review_ids": [
+              "39522d2c-a5da-510e-a417-f24ca6562ce3"
+            ],
+            "memory_ids": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "20ee227e-c681-5ce9-a2a1-6104426afdaa"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 14,
+              "events": 13,
+              "observations": 4,
+              "reviews": 3,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "row_counts_after": {
+              "evidence": 17,
+              "events": 16,
+              "observations": 5,
+              "reviews": 4,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "fa6d751bd6e665361b16f359bd947f4386f6f1297444427bb37937d2d92a619b"
+          },
+          {
+            "id": "changing_requirement",
+            "event_keys": [
+              "candidate:initial",
+              "candidate:initial:review",
+              "candidate:initial:promotion",
+              "candidate:confirmation",
+              "candidate:submit",
+              "candidate:review",
+              "candidate:promotion"
+            ],
+            "outcome": "promoted",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+              "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+            ],
+            "review_ids": [
+              "81a94602-d91d-52b5-a731-2f3e55233cdf",
+              "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+            ],
+            "memory_ids": [
+              "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+              "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+            ],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "13b4484f-2856-5761-a061-ccab3239c4cd",
+              "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 2,
+              "events": 2,
+              "observations": 0,
+              "reviews": 0,
+              "promotions": 0,
+              "memories": 0,
+              "fts": 0
+            },
+            "row_counts_after": {
+              "evidence": 9,
+              "events": 9,
+              "observations": 2,
+              "reviews": 2,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "3193e4e544be0eba4f1bd38fb40065ef70108fafe24e96e53a967e7906303bce"
+          },
+          {
+            "id": "stale_procedure",
+            "event_keys": [
+              "candidate:stale",
+              "candidate:stale:review"
+            ],
+            "outcome": "rejected",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "756441b4-973b-5993-aebf-713ab2bb9e46"
+            ],
+            "review_ids": [
+              "3d61a300-8946-5ccd-a8e4-81108c03d8e2"
+            ],
+            "memory_ids": [],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "c681721a-3ccc-5395-ac97-af9d8a6ac7c2"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 18,
+              "events": 17,
+              "observations": 5,
+              "reviews": 4,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "row_counts_after": {
+              "evidence": 20,
+              "events": 19,
+              "observations": 6,
+              "reviews": 5,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "aa6423ada9ed41ffc19032a9181dbae8927322977d10140e640fa848ef667301"
+          },
+          {
+            "id": "correction",
+            "event_keys": [
+              "candidate:submit",
+              "candidate:review",
+              "candidate:promotion"
+            ],
+            "outcome": "promoted",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+              "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+            ],
+            "review_ids": [
+              "81a94602-d91d-52b5-a731-2f3e55233cdf",
+              "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+            ],
+            "memory_ids": [
+              "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+              "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+            ],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "13b4484f-2856-5761-a061-ccab3239c4cd",
+              "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 6,
+              "events": 6,
+              "observations": 1,
+              "reviews": 1,
+              "promotions": 1,
+              "memories": 1,
+              "fts": 1
+            },
+            "row_counts_after": {
+              "evidence": 9,
+              "events": 9,
+              "observations": 2,
+              "reviews": 2,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "74d5655f1dc3d3a03e9b3cb056555dc4eaaadf5eadb423ee62a829347eb848a9"
+          },
+          {
+            "id": "topic_supersession",
+            "event_keys": [
+              "candidate:submit",
+              "candidate:review",
+              "candidate:promotion"
+            ],
+            "outcome": "promoted",
+            "harmful_promotions": 0,
+            "observation_ids": [
+              "3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50",
+              "cafa83e8-31ee-5c3f-ad72-46800ce86ddb"
+            ],
+            "review_ids": [
+              "81a94602-d91d-52b5-a731-2f3e55233cdf",
+              "8ce12522-1200-50c6-af2f-1be3dc5b19da"
+            ],
+            "memory_ids": [
+              "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
+              "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+            ],
+            "support_ids": [
+              "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+              "13b4484f-2856-5761-a061-ccab3239c4cd",
+              "f11255f1-ec6f-5c67-abc2-27f114f430a8"
+            ],
+            "policy": {
+              "id": "benchmark",
+              "version": "1"
+            },
+            "row_counts_before": {
+              "evidence": 6,
+              "events": 6,
+              "observations": 1,
+              "reviews": 1,
+              "promotions": 1,
+              "memories": 1,
+              "fts": 1
+            },
+            "row_counts_after": {
+              "evidence": 9,
+              "events": 9,
+              "observations": 2,
+              "reviews": 2,
+              "promotions": 2,
+              "memories": 2,
+              "fts": 2
+            },
+            "entry_sha256": "ca177403fe403d2eddda35bfa9c3faba4a7882231043751bf6b3379acbaa767b"
+          }
+        ],
+        "trace_sha256": "a9a4e7851d961815905015299623c6a44c669924c155a37ab060f156e3f1787c"
+      },
+      "provenance": {
+        "valid": true,
+        "source_ids": [
+          "2025523b-3149-5b6a-a84b-6b3cbc80226e",
+          "f11255f1-ec6f-5c67-abc2-27f114f430a8",
+          "784f683e-789e-5646-a2fb-55bb2e6e2852",
+          "f88a4895-bf84-57a0-a422-6ab4a42278b5",
+          "bb3a8ffd-f457-590d-a21b-5ad1fa018c29",
+          "cafa83e8-31ee-5c3f-ad72-46800ce86ddb",
+          "8ce12522-1200-50c6-af2f-1be3dc5b19da",
+          "3ad3c49a-890a-58e2-af35-e220daf23ff2"
+        ]
+      }
+    },
+    "comparison": {
+      "final_memory_equal": true,
+      "topic_lineage_equal": true,
+      "recall_order_equal": true,
+      "recall_payload_equal": true,
+      "delivery_ratio_equal": true,
+      "useful_content_ratio_equal": true,
+      "recall_latency_p95_ratio": 0.9647427030018121,
+      "sqlite_bytes_ratio": 1.0379746835443038
+    },
+    "errors": [],
+    "decision": {
+      "status": "pass",
+      "reasons": [
+        "all_observation_gates_passed"
+      ]
+    }
   }
 }
