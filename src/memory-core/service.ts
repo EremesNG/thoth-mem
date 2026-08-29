@@ -29,6 +29,7 @@ import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSumm
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
 import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
+import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
 
 export type RecallDiagnosticStageKind = 'exact' | 'strict' | 'relaxed' | 'post_query';
@@ -48,6 +49,7 @@ export interface RecallDiagnostic {
   stages: RecallDiagnosticStage[];
   work: {
     rankedFtsRows: number;
+    fusedLexicalRows: number;
     hydratedMemoryRows: number;
     hydratedEvidenceLinks: number;
     memoryHydrationStatements: number;
@@ -211,7 +213,7 @@ export class MemoryService {
       stages.push({ kind: 'relaxed', executed: false, elapsedMs: 0, rows: 0, reason: 'project_not_found' });
       stages.push({ kind: 'post_query', executed: false, elapsedMs: 0, rows: 0, reason: 'project_not_found' });
       const result = { items: [], budget: measure(requested, 0, 0, 0), lanes: { lexical: 'ready' as const, ...this.projections.effectiveStates() }, warnings: [], correlationId };
-      this.recallObserver?.({ strategyId, configHash: plan?.configHash ?? null, planHash: plan?.planHash ?? null, totalElapsedMs: performance.now() - totalStart, stages, work: { rankedFtsRows: 0, hydratedMemoryRows: 0, hydratedEvidenceLinks: 0, memoryHydrationStatements: 0, evidenceHydrationStatements: 0, snippetTokenChecks: 0, returnedRows: 0, sourceChars: 0, evidenceChars: 0, returnedChars: 0 }, result: { requestedLimit: limit, maxLexicalResults: plan?.maxLexicalResults ?? null, returnedCount: 0, budget: result.budget } });
+      this.recallObserver?.({ strategyId, configHash: plan?.configHash ?? null, planHash: plan?.planHash ?? null, totalElapsedMs: performance.now() - totalStart, stages, work: { rankedFtsRows: 0, fusedLexicalRows: 0, hydratedMemoryRows: 0, hydratedEvidenceLinks: 0, memoryHydrationStatements: 0, evidenceHydrationStatements: 0, snippetTokenChecks: 0, returnedRows: 0, sourceChars: 0, evidenceChars: 0, returnedChars: 0 }, result: { requestedLimit: limit, maxLexicalResults: plan?.maxLexicalResults ?? null, returnedCount: 0, budget: result.budget } });
       return result;
     }
     const exact = this.database.prepare(`SELECT m.id,m.created_at,1000 AS raw_score,'structured' AS lane FROM memories m WHERE m.project_id=? AND (m.id=? OR m.topic_key=?) ${input.history ? '' : "AND m.status='current'"} ORDER BY m.created_at DESC,m.id ASC LIMIT ?`).all(project.id, input.query, input.query, limit) as Array<Record<string, unknown>>;
@@ -222,30 +224,57 @@ export class MemoryService {
       unique.set(String(row.id), row);
     }
     let rankedFtsRows = 0;
-    for (const kind of ['strict', 'relaxed'] as const) {
-      const stage = plan?.stages.find((candidate) => candidate.kind === kind);
-      if (!stage) {
-        stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: plan ? 'not_planned' : 'empty_query' });
-        continue;
+    if (plan?.fusion) {
+      const exactIds = [...unique.keys()];
+      const lexicalLists = new Map<'strict' | 'relaxed', Array<Record<string, unknown>>>();
+      for (const kind of ['strict', 'relaxed'] as const) {
+        const stage = plan.stages.find((candidate) => candidate.kind === kind);
+        if (!stage) {
+          stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'not_planned' });
+          continue;
+        }
+        if (unique.size === limit) {
+          stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'limit_satisfied' });
+          continue;
+        }
+        const stageStart = performance.now();
+        const exclusionSql = exactIds.length > 0 ? `AND m.id NOT IN (${exactIds.map(() => '?').join(',')})` : '';
+        const stageLimit = Math.min(limit - unique.size, plan.maxStageResults ?? limit);
+        const lexical = this.database.prepare(`SELECT m.id,m.created_at,-bm25(memory_fts) AS raw_score,'lexical' AS lane FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND m.project_id=? ${input.history ? '' : "AND m.status='current'"} ${exclusionSql} ORDER BY raw_score DESC,m.created_at DESC,m.id ASC LIMIT ?`).all(stage.query, project.id, ...exactIds, stageLimit) as Array<Record<string, unknown>>;
+        rankedFtsRows += lexical.length;
+        lexicalLists.set(kind, lexical);
+        stages.push({ kind, executed: true, elapsedMs: performance.now() - stageStart, rows: lexical.length });
       }
-      if (unique.size === limit) {
-        stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'limit_satisfied' });
-        continue;
-      }
-      const stageStart = performance.now();
-      const excludedIds = [...unique.keys()];
-      const exclusionSql = excludedIds.length > 0 ? `AND m.id NOT IN (${excludedIds.map(() => '?').join(',')})` : '';
-      const stageLimit = Math.min(limit - unique.size, plan?.maxLexicalResults ?? limit);
-      const lexical = this.database.prepare(`SELECT m.id,m.created_at,-bm25(memory_fts) AS raw_score,'lexical' AS lane FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND m.project_id=? ${input.history ? '' : "AND m.status='current'"} ${exclusionSql} ORDER BY raw_score DESC,m.created_at DESC,m.id ASC LIMIT ?`).all(stage.query, project.id, ...excludedIds, stageLimit) as Array<Record<string, unknown>>;
-      rankedFtsRows += lexical.length;
-      stages.push({ kind, executed: true, elapsedMs: performance.now() - stageStart, rows: lexical.length });
-      for (const row of lexical) {
-        if (unique.size === limit) break;
-        if (!unique.has(String(row.id))) unique.set(String(row.id), row);
+
+      const lexicalLimit = Math.min(limit - unique.size, plan.maxLexicalResults ?? limit);
+      for (const row of fuseLexicalRanks(lexicalLists, plan.fusion, lexicalLimit)) unique.set(String(row.id), row);
+    } else {
+      for (const kind of ['strict', 'relaxed'] as const) {
+        const stage = plan?.stages.find((candidate) => candidate.kind === kind);
+        if (!stage) {
+          stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: plan ? 'not_planned' : 'empty_query' });
+          continue;
+        }
+        if (unique.size === limit) {
+          stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'limit_satisfied' });
+          continue;
+        }
+        const stageStart = performance.now();
+        const excludedIds = [...unique.keys()];
+        const exclusionSql = excludedIds.length > 0 ? `AND m.id NOT IN (${excludedIds.map(() => '?').join(',')})` : '';
+        const stageLimit = Math.min(limit - unique.size, plan?.maxLexicalResults ?? limit);
+        const lexical = this.database.prepare(`SELECT m.id,m.created_at,-bm25(memory_fts) AS raw_score,'lexical' AS lane FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND m.project_id=? ${input.history ? '' : "AND m.status='current'"} ${exclusionSql} ORDER BY raw_score DESC,m.created_at DESC,m.id ASC LIMIT ?`).all(stage.query, project.id, ...excludedIds, stageLimit) as Array<Record<string, unknown>>;
+        rankedFtsRows += lexical.length;
+        stages.push({ kind, executed: true, elapsedMs: performance.now() - stageStart, rows: lexical.length });
+        for (const row of lexical) {
+          if (unique.size === limit) break;
+          if (!unique.has(String(row.id))) unique.set(String(row.id), row);
+        }
       }
     }
     const postStart = performance.now();
     const rankedRows = [...unique.values()];
+    const fusedLexicalRows = rankedRows.filter((row) => row.lane === 'lexical').length;
     const selectedIds = rankedRows.map((row) => String(row.id));
     const selectedRows = selectedIds.length === 0
       ? []
@@ -276,7 +305,7 @@ export class MemoryService {
       planHash: plan?.planHash ?? null,
       totalElapsedMs: performance.now() - totalStart,
       stages,
-      work: { rankedFtsRows, hydratedMemoryRows: selectedRows.length, hydratedEvidenceLinks: hydration.evidenceLinks, memoryHydrationStatements: selectedRows.length > 0 ? 1 : 0, evidenceHydrationStatements: selectedRows.length > 0 ? 1 : 0, snippetTokenChecks, returnedRows: items.length, sourceChars, evidenceChars, returnedChars: returned },
+      work: { rankedFtsRows, fusedLexicalRows, hydratedMemoryRows: selectedRows.length, hydratedEvidenceLinks: hydration.evidenceLinks, memoryHydrationStatements: selectedRows.length > 0 ? 1 : 0, evidenceHydrationStatements: selectedRows.length > 0 ? 1 : 0, snippetTokenChecks, returnedRows: items.length, sourceChars, evidenceChars, returnedChars: returned },
       result: { requestedLimit: limit, maxLexicalResults: plan?.maxLexicalResults ?? null, returnedCount: items.length, budget: result.budget },
     });
     return result;

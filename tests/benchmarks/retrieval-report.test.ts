@@ -204,6 +204,34 @@ describe('retrieval-only benchmark scoring', () => {
     expect(validateRetrievalReport(missingPlanHash).errors).toContain('queries');
   });
 
+  it('admits only the declared E0 strategy while retaining historical v1 lane validity', () => {
+    const e0 = validReport();
+    setAt(e0, ['candidate', 'config', 'lexical_strategy', 'id'], 'strict-selected-any-cap5-rrf-v1');
+    setAt(e0, ['candidate', 'config_hash'], hash(e0.candidate.config));
+    expect(validateRetrievalReport(e0)).toEqual({ valid: true, errors: [] });
+
+    const unknown = validReport();
+    setAt(unknown, ['candidate', 'config', 'lexical_strategy', 'id'], 'unknown-v1');
+    setAt(unknown, ['candidate', 'config_hash'], hash(unknown.candidate.config));
+    expect(validateRetrievalReport(unknown).errors).toContain('candidate');
+
+    const schema = JSON.parse(readFileSync('benchmarks/retrieval-report.schema.json', 'utf8'));
+    expect(schema.$defs.lexicalStrategy.properties.id.enum).toEqual([
+      'all-prefix-v1',
+      'any-prefix-v1',
+      'all-then-any-prefix-v1',
+      'strict-selected-any-cap5-rrf-v1',
+    ]);
+
+    for (const path of [
+      'benchmarks/results/longmemeval-s-lexical-comparison-report.json',
+      'benchmarks/results/longmemeval-s-lexical-latency-report-r4.json',
+    ]) {
+      const archived = JSON.parse(readFileSync(path, 'utf8'));
+      for (const lane of Object.values(archived.lanes)) expect(validateRetrievalReport(lane)).toEqual({ valid: true, errors: [] });
+    }
+  });
+
   it('fails closed for ambiguous metrics, unequal units, leakage, broken provenance, resources, or promotion claims', () => {
     const cases = [
       { mutate: (report: unknown) => deleteAt(report, ['metrics', 'ranking', 'overall', 'recall_all_at_20']), error: 'metrics.ranking' },

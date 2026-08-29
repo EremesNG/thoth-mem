@@ -68,6 +68,7 @@ function addBudgetTotals(total, budget) {
 function diagnosticWork(work) {
   return {
     ranked_fts_rows: work.rankedFtsRows,
+    fused_lexical_rows: work.fusedLexicalRows,
     hydrated_memory_rows: work.hydratedMemoryRows,
     hydrated_evidence_links: work.hydratedEvidenceLinks,
     memory_hydration_statements: work.memoryHydrationStatements,
@@ -320,12 +321,14 @@ export async function runLongMemEval(options = {}) {
     } finally {
       rmSync(temporaryOutput, { force: true });
     }
+    const aggregateDiagnostics = aggregateLexicalDiagnostics(diagnosticQueries);
+    aggregateDiagnostics.work.fused_lexical_rows = diagnosticQueries.reduce((sum, query) => sum + query.work.fused_lexical_rows, 0);
     const diagnostics = {
       strategy_id: lexicalStrategy,
       config_hash: strategyProbe.configHash,
       max_lexical_results: strategyProbe.maxLexicalResults,
       queries: diagnosticQueries,
-      aggregate: aggregateLexicalDiagnostics(diagnosticQueries),
+      aggregate: aggregateDiagnostics,
     };
     return { outputPath, report, diagnostics };
   } finally {

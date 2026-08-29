@@ -5,10 +5,11 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { validateLexicalComparisonReport } from '../../benchmarks/lexical-comparison-report.mjs';
-import { DEFAULT_LEXICAL_LATENCY_REPORT, runLongMemEvalComparison } from '../../benchmarks/longmemeval/compare.mjs';
+import { LEXICAL_RECALL_AT_5_BASELINE, validateLexicalComparisonReport } from '../../benchmarks/lexical-comparison-report.mjs';
+import { DEFAULT_LEXICAL_RECALL_AT_5_REPORT, runLongMemEvalComparison } from '../../benchmarks/longmemeval/compare.mjs';
 
-const STRATEGY_IDS = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1'] as const;
+const STRATEGY_IDS = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1'] as const;
+const REFERENCE_STRATEGY_IDS = STRATEGY_IDS.slice(0, 3);
 const fixture = JSON.parse(readFileSync('benchmarks/fixtures/longmemeval-s-mini.json', 'utf8')) as Array<Record<string, unknown>>;
 
 function setup(root: string) {
@@ -16,20 +17,35 @@ function setup(root: string) {
   const datasetPath = join(root, 'dataset.json');
   const sha256 = createHash('sha256').update(content).digest('hex');
   writeFileSync(datasetPath, content);
+  const recallAt5Archived = {
+    path: LEXICAL_RECALL_AT_5_BASELINE.report.path,
+    sha256: LEXICAL_RECALL_AT_5_BASELINE.report.sha256,
+    report: {
+      schema: LEXICAL_RECALL_AT_5_BASELINE.report.schema,
+      lanes: Object.fromEntries(REFERENCE_STRATEGY_IDS.map((id) => {
+        const baseline = LEXICAL_RECALL_AT_5_BASELINE.quality_baseline[id];
+        return [id, {
+          candidate: { config: { lexical_strategy: { id, config_hash: baseline.config_hash } } },
+          metrics: { ranking: { overall: baseline }, resources: { sqlite_bytes: { total: baseline.sqlite_bytes_total } } },
+        }];
+      })),
+    },
+  };
   return {
     datasetPath,
     sha256,
+    recallAt5Archived,
     source: { dataset: 'test/longmemeval-cleaned', filename: 'dataset.json', revision: 'a'.repeat(40), sha256, bytes: Buffer.byteLength(content), license: 'MIT' },
   };
 }
 
 describe('LongMemEval-S lexical comparison runner', () => {
   it('uses a distinct create-only default path for latency evidence', () => {
-    expect(DEFAULT_LEXICAL_LATENCY_REPORT).toMatch(/longmemeval-s-lexical-latency-report\.json$/u);
-    expect(DEFAULT_LEXICAL_LATENCY_REPORT).not.toMatch(/lexical-comparison-report\.json$/u);
+    expect(DEFAULT_LEXICAL_RECALL_AT_5_REPORT).toMatch(/longmemeval-s-lexical-recall-at-5-report\.json$/u);
+    expect(DEFAULT_LEXICAL_RECALL_AT_5_REPORT).not.toMatch(/lexical-(comparison|latency)-report\.json$/u);
   });
 
-  it('evaluates the three real lanes sequentially and atomically publishes one offline report', async () => {
+  it('evaluates the four real lanes sequentially and atomically publishes one offline v3 report', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-longmem-compare-'));
     const workDirectory = join(root, 'work');
     const outputPath = join(root, 'comparison.json');
@@ -40,6 +56,7 @@ describe('LongMemEval-S lexical comparison runner', () => {
       expect(result.outputPath).toBe(outputPath);
       expect(validateLexicalComparisonReport(result.report)).toEqual({ valid: true, errors: [] });
       expect(JSON.parse(readFileSync(outputPath, 'utf8'))).toEqual(result.report);
+      expect(result.report.schema).toBe('thoth-mem.lexical-comparison-report.v3');
       expect(Object.keys(result.report.lanes)).toEqual(STRATEGY_IDS);
       const created = STRATEGY_IDS.map((id) => Date.parse(result.report.lanes[id].created_at));
       expect(created).toEqual([...created].sort((left, right) => left - right));
@@ -47,6 +64,8 @@ describe('LongMemEval-S lexical comparison runner', () => {
         expect(result.report.lanes[id].candidate.config.lexical_strategy.id).toBe(id);
         expect(result.report.lanes[id].metrics.resources).toMatchObject({ network_calls: 0, model_calls: 0, llm_calls: 0 });
       }
+      expect(result.report.recall_at_5_reference.sha256).toBe(LEXICAL_RECALL_AT_5_BASELINE.report.sha256);
+      expect(result.report.diagnostics['strict-selected-any-cap5-rrf-v1'].max_lexical_results).toBe(5);
       expect(readdirSync(workDirectory)).toEqual([]);
       expect(readdirSync(root).filter((name) => name.includes('.tmp'))).toEqual([]);
     } finally {

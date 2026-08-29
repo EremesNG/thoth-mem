@@ -1,0 +1,37 @@
+{
+  "schema": "thoth-mem.lexical-recall-at-5-baseline.v1",
+  "report": {
+    "path": "benchmarks/results/longmemeval-s-lexical-latency-report-r4.json",
+    "schema": "thoth-mem.lexical-comparison-report.v2",
+    "sha256": "842805cc423cc48d33cf07b05e73c25967f532b79e24131b44407d87b1e6fe36"
+  },
+  "quality_baseline": {
+    "all-prefix-v1": {
+      "config_hash": "e792c3009bbab297d654684da8b4ad1b6463277716aed860f765f9dbc38714e6",
+      "recall_any_at_5": 0.12978723404255318,
+      "recall_at_5": 0.09801418439716311,
+      "recall_all_at_5": 0.06595744680851064,
+      "ndcg_at_10": 0.10450544310213,
+      "mrr_any": 0.12872340425531914,
+      "sqlite_bytes_total": 1519955968
+    },
+    "any-prefix-v1": {
+      "config_hash": "d31ca3f7d1a0fd6662af2148cd51d1f3149b681012f8f756629d6bdd67aeb553",
+      "recall_any_at_5": 0.825531914893617,
+      "recall_at_5": 0.6770212765957448,
+      "recall_all_at_5": 0.5404255319148936,
+      "ndcg_at_10": 0.6965441169016003,
+      "mrr_any": 0.7946808510638298,
+      "sqlite_bytes_total": 1519955968
+    },
+    "all-then-any-prefix-v1": {
+      "config_hash": "40cd3522257085172694037746cc7cd720ded68f65c5d6bae1f514cf273eb443",
+      "recall_any_at_5": 0.948936170212766,
+      "recall_at_5": 0.8792553191489364,
+      "recall_all_at_5": 0.7872340425531915,
+      "ndcg_at_10": 0.8538289016145295,
+      "mrr_any": 0.8716652534643773,
+      "sqlite_bytes_total": 1519955968
+    }
+  }
+}

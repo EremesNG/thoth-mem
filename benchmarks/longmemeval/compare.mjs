@@ -7,16 +7,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   LEXICAL_COMPARISON_STRATEGY_IDS,
   LEXICAL_COMPARISON_BASELINE,
+  LEXICAL_RECALL_AT_5_BASELINE,
+  LEXICAL_RECALL_AT_5_STRATEGY_IDS,
   createLexicalComparisonReport,
   validateLexicalComparisonReport,
+  validateLexicalRecallAt5Baseline,
 } from '../lexical-comparison-report.mjs';
 import { LONGMEMEVAL_SOURCE } from './contract.mjs';
 import { DEFAULT_LONGMEMEVAL_CACHE } from './prepare.mjs';
 import { runLongMemEval } from './run.mjs';
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_LEXICAL_LATENCY_REPORT = resolve(moduleDirectory, '..', 'results', 'longmemeval-s-lexical-latency-report.json');
+export const DEFAULT_LEXICAL_RECALL_AT_5_REPORT = resolve(moduleDirectory, '..', 'results', 'longmemeval-s-lexical-recall-at-5-report.json');
 const ARCHIVED_LEXICAL_COMPARISON_REPORT = resolve(moduleDirectory, '..', 'results', 'longmemeval-s-lexical-comparison-report.json');
+const ARCHIVED_LEXICAL_RECALL_AT_5_REPORT = resolve(moduleDirectory, '..', 'results', 'longmemeval-s-lexical-latency-report-r4.json');
 
 function archivedEvidence(options) {
   const bytes = options.archived ? null : readFileSync(ARCHIVED_LEXICAL_COMPARISON_REPORT);
@@ -38,11 +42,26 @@ function archivedEvidence(options) {
   return { sha256, lanes: report.lanes };
 }
 
+function recallAt5Evidence(options) {
+  let reference = options.recallAt5Archived;
+  if (!reference) {
+    const bytes = readFileSync(ARCHIVED_LEXICAL_RECALL_AT_5_REPORT);
+    reference = {
+      path: LEXICAL_RECALL_AT_5_BASELINE.report.path,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      report: JSON.parse(bytes.toString('utf8')),
+    };
+  }
+  const validation = validateLexicalRecallAt5Baseline(LEXICAL_RECALL_AT_5_BASELINE, reference);
+  if (!validation.valid) throw new Error(`Archived lexical Recall@5 report is invalid: ${validation.errors.join(', ')}`);
+  return reference;
+}
+
 export async function runLongMemEvalComparison(options = {}) {
   const source = options.source ?? LONGMEMEVAL_SOURCE;
   const datasetPath = resolve(options.datasetPath ?? join(DEFAULT_LONGMEMEVAL_CACHE, LONGMEMEVAL_SOURCE.filename));
   const expectedSha256 = options.expectedSha256 ?? source.sha256;
-  const outputPath = resolve(options.outputPath ?? DEFAULT_LEXICAL_LATENCY_REPORT);
+  const outputPath = resolve(options.outputPath ?? DEFAULT_LEXICAL_RECALL_AT_5_REPORT);
   if (existsSync(outputPath)) throw new Error(`LongMemEval comparison output already exists: ${outputPath}`);
 
   let workDirectory;
@@ -59,7 +78,7 @@ export async function runLongMemEvalComparison(options = {}) {
     const laneWorkDirectory = join(workDirectory, 'work');
     const lanes = {};
     const diagnostics = {};
-    for (const lexicalStrategy of LEXICAL_COMPARISON_STRATEGY_IDS) {
+    for (const lexicalStrategy of LEXICAL_RECALL_AT_5_STRATEGY_IDS) {
       const result = await runLongMemEval({
         datasetPath,
         expectedSha256,
@@ -72,7 +91,11 @@ export async function runLongMemEvalComparison(options = {}) {
       diagnostics[lexicalStrategy] = result.diagnostics;
     }
 
-    const report = createLexicalComparisonReport(lanes, { diagnostics, archived: archivedEvidence(options) });
+    const report = createLexicalComparisonReport(lanes, {
+      diagnostics,
+      archived: archivedEvidence(options),
+      recallAt5Archived: recallAt5Evidence(options),
+    });
     const validation = validateLexicalComparisonReport(report);
     if (!validation.valid) throw new Error(`Invalid LongMemEval lexical comparison report: ${validation.errors.join(', ')}`);
     mkdirSync(dirname(outputPath), { recursive: true });
