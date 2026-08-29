@@ -4,71 +4,47 @@
 
 ### Requirement: Evals MUST Compare Equal-Budget Retrieval Lanes Against the Lexical Baseline
 
-All evaluated lanes MUST retain the canonical equal-budget comparison contract. LongMemEval-S lexical query strategies MUST additionally share the pinned corpus, observed exclusions, query order, session granularity, ingestion mapping, Top-20 candidate budget, 4,000-UTF-16-unit delivery budget, scoring procedure, zero-model/zero-network evaluation boundary, diagnostic configuration, and timing boundaries so that optimized query execution is the only intended variable.
+The immutable four-lane LongMemEval-S evidence MUST remain valid and unchanged, while runtime lexical-default decisions MUST compare embeddings-free candidates against the common-subset agentmemory BM25-only reference and the frozen thoth-mem latency, footprint, provenance, and zero-call contracts. A historical decision produced by the former hybrid-parity policy MUST remain attributable to that policy and MUST NOT prevent a later explicit lexical-only product decision.
 
-#### Scenario: US1 - Attribute relaxed retrieval cost 1
+#### Scenario: US2 - Compare lexical systems against lexical evidence 1
 
-- **GIVEN** the same project, memories, query, limit, and strategy
-- **WHEN** diagnostic measurement is enabled
-- **THEN** it identifies every executed plan stage in order and reports bounded latency and work indicators whose accounting reconciles with the total retrieval observation
+- **GIVEN** agentmemory's published LongMemEval-S results
+- **WHEN** thoth-mem states lexical parity
+- **THEN** it compares against BM25-only (`86.2%` published; `409/470 = 87.021%` on the common subset), not BM25+Vector
 
-#### Scenario: US1 - Attribute relaxed retrieval cost 2
+#### Scenario: US2 - Compare lexical systems against lexical evidence 2
 
-- **GIVEN** diagnostic measurement is disabled
-- **WHEN** normal MCP recall runs
-- **THEN** public response shape, candidate ordering, evidence lineage, payload budgets, telemetry semantics, and six-tool behavior remain unchanged
+- **GIVEN** the immutable E0 report with `419/470`, p95 `2.0552 ms`, equal SQLite bytes, and zero errors/calls
+- **WHEN** the lexical default decision is evaluated
+- **THEN** E0 is accepted without mutating that report's historical `retain_default` field or weakening its original validator
 
-#### Scenario: US1 - Attribute relaxed retrieval cost 3
+#### Scenario: US2 - Compare lexical systems against lexical evidence 3
 
-- **GIVEN** an empty normalized query, an exact-only result, or a stage that cannot execute
-- **WHEN** measurements are assembled
-- **THEN** the omitted stage is explicit and no fabricated work or latency is reported
-
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 1
-
-- **GIVEN** the frozen corpus, exclusions, query order, ingestion mapping, budgets, and scoring
-- **WHEN** the optimized comparison runs
-- **THEN** query construction and its measured execution are the only intended lane differences and every diagnostic field reconciles with its lane and per-query evidence
-
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 2
-
-- **GIVEN** one unique relaxed candidate with at least the existing 0.05 absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, equal aggregate SQLite bytes, clean calls/errors/provenance, and p95 no greater than twice control
-- **WHEN** promotion is assessed
-- **THEN** that candidate becomes eligible to replace `all-prefix-v1`
-
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 3
-
-- **GIVEN** incomplete, incomparable, regressing, tied, or slower evidence
-- **WHEN** validation or promotion runs
-- **THEN** it fails closed with explicit reasons and the current runtime default does not change
+- **GIVEN** a future proposal to add embeddings
+- **WHEN** its acceptance target is defined
+- **THEN** agentmemory BM25+Vector `95.2%` is the relevant comparison and requires a new SDD with explicit latency and footprint budgets
 
 ### Requirement: External Metrics MUST Retain Their Published Meaning
 
-All external metrics MUST retain their published labels and Top-K MUST remain a positional budget. For LongMemEval-S at K=1, 5, 10, and 20, reports MUST separately label any-gold hit/`recall_any`, fractional Recall@K, and all-gold/`recall_all` over distinct gold session IDs; they MUST also report first-gold MRR over candidate positions and occurrence-level binary-relevance NDCG@10 without deduplicating repeated session IDs or relabelling Top-K as a score.
+Reports and documentation MUST distinguish agentmemory BM25-only (`86.2%` RecallAny@5 over 500; recomputed `409/470` on the common subset) from BM25+Vector (`95.2%` over 500; `447/470` on the common subset), MUST state that the published retrieval benchmark uses embeddings but no LLM in the retrieval loop, and MUST reserve the hybrid figure for a future semantic phase rather than a current lexical promotion gate.
 
-#### Scenario: US3 - Produce an auditable quality and resource report 1
+#### Scenario: US2 - Compare lexical systems against lexical evidence 1
 
-- **GIVEN** multiple gold sessions
-- **WHEN** metrics are computed at K=1, 5, 10, and 20
-- **THEN** `recall_any`, fractional `recall`, and `recall_all` remain distinct and MRR uses the first gold rank while NDCG@10 uses binary relevance
+- **GIVEN** agentmemory's published LongMemEval-S results
+- **WHEN** thoth-mem states lexical parity
+- **THEN** it compares against BM25-only (`86.2%` published; `409/470 = 87.021%` on the common subset), not BM25+Vector
 
-#### Scenario: US3 - Produce an auditable quality and resource report 2
+#### Scenario: US2 - Compare lexical systems against lexical evidence 2
 
-- **GIVEN** ranked Top-20 candidates
-- **WHEN** the fixed delivery budget of 4,000 UTF-16 code units under the product's 1,000-token estimate is applied
-- **THEN** ranking quality and delivered-context quality are reported separately rather than relabelling a budgeted delivery result as raw Recall@K
+- **GIVEN** the immutable E0 report with `419/470`, p95 `2.0552 ms`, equal SQLite bytes, and zero errors/calls
+- **WHEN** the lexical default decision is evaluated
+- **THEN** E0 is accepted without mutating that report's historical `retain_default` field or weakening its original validator
 
-#### Scenario: US3 - Produce an auditable quality and resource report 3
+#### Scenario: US2 - Compare lexical systems against lexical evidence 3
 
-- **GIVEN** a completed run
-- **WHEN** its report is persisted
-- **THEN** it includes per-question ranks and source IDs, aggregates by question type, dataset/configuration hashes, query order, exclusions, p50/p95 latency and ingestion time, SQLite and memory footprint, characters and estimated tokens, errors, and zero model/network calls during evaluation
-
-#### Scenario: US3 - Produce an auditable quality and resource report 4
-
-- **GIVEN** missing provenance, a different dataset hash, an unequal budget, incomplete resources, or a schema-invalid report
-- **WHEN** promotion is assessed
-- **THEN** the lane fails closed and cannot justify an optional module
+- **GIVEN** a future proposal to add embeddings
+- **WHEN** its acceptance target is defined
+- **THEN** agentmemory BM25+Vector `95.2%` is the relevant comparison and requires a new SDD with explicit latency and footprint budgets
 
 ### Requirement: Provenance MUST Be Verified Across Every Evaluated Lane
 

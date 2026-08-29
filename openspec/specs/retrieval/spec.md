@@ -4,47 +4,47 @@
 
 ### Requirement: Core Retrieval MUST Be Lexical-First and Projection-Aware
 
-The default path MUST rank structured SQLite candidates and the evidence-admitted deterministic FTS5 strategy without requiring optional projections. Optional evidence MAY participate only when enabled, source-current, attributed, healthy, and admitted by the evaluation gate. `any-prefix-v1` MUST be the default selected by the unique complete round-4 winner; any future default change MUST likewise require one unique complete same-run candidate satisfying every frozen quality, latency, footprint, error, call, and provenance promotion gate.
+The default path MUST use the versioned `strict-selected-any-cap5-rrf-v1` E0 strategy, rank authoritative structured SQLite matches before deterministic fused FTS5 candidates, preserve caller limits and evidence lineage, and require no optional projection, embedding, vector extension, semantic index, schema migration, projection row, or new runtime dependency.
 
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 1
+#### Scenario: US1 - Use the strongest bounded lexical default 1
 
-- **GIVEN** the frozen corpus, exclusions, query order, ingestion mapping, budgets, and scoring
-- **WHEN** the optimized comparison runs
-- **THEN** query construction and its measured execution are the only intended lane differences and every diagnostic field reconciles with its lane and per-query evidence
+- **GIVEN** a non-empty lexical query and no internal strategy override
+- **WHEN** `MemoryService.recall` executes
+- **THEN** it uses `strict-selected-any-cap5-rrf-v1`, preserves exact priority, and admits at most five fused lexical rows subject to the caller limit
 
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 2
+#### Scenario: US1 - Use the strongest bounded lexical default 2
 
-- **GIVEN** one unique relaxed candidate with at least the existing 0.05 absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, equal aggregate SQLite bytes, clean calls/errors/provenance, and p95 no greater than twice control
-- **WHEN** promotion is assessed
-- **THEN** that candidate becomes eligible to replace `all-prefix-v1`
+- **GIVEN** benchmark or test code explicitly selecting any existing lexical strategy
+- **WHEN** recall executes
+- **THEN** the selected plan, configuration hash, ranking semantics, and immutable historical evidence remain unchanged
 
-#### Scenario: US3 - Promote only an officially faster relaxed candidate 3
+#### Scenario: US1 - Use the strongest bounded lexical default 3
 
-- **GIVEN** incomplete, incomparable, regressing, tied, or slower evidence
-- **WHEN** validation or promotion runs
-- **THEN** it fails closed with explicit reasons and the current runtime default does not change
+- **GIVEN** public MCP clients
+- **WHEN** they inspect or invoke the six tools
+- **THEN** no strategy selector, diagnostic field, seventh tool, model, network path, embedding, vector state, or persistence migration is exposed
 
 ### Requirement: FTS5 Lexical Retrieval MUST Sanitize Untrusted Queries
 
-Retrieval MUST safely combine exact IDs or topic keys with a selected deterministic lexical query strategy, including phrase-capable BM25 search and bounded prefix expansion, without allowing punctuation-only input, code symbols, repeated terms, overlong input, FTS operators, or a latency optimization to fail global recall or change declared query-plan identity.
+Retrieval MUST safely combine exact IDs or topic keys with a selected deterministic lexical query strategy, including phrase-capable BM25 search, bounded prefix expansion, and declared stable rank fusion, without allowing punctuation-only input, code symbols, repeated terms, overlong input, FTS operators, or a Top-5 optimization to fail global recall or change declared query-plan identity.
 
-#### Scenario: US2 - Reduce relaxed lexical work without quality drift 1
+#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 1
 
-- **GIVEN** a relaxed strategy and a query whose broader stage is required
-- **WHEN** recall executes
-- **THEN** its versioned configuration applies a declared internal lexical-result cap no greater than the caller's requested limit, returns the corresponding deterministic BM25 prefix, and never represents the cap as a different public Top-K budget
+- **GIVEN** a query with more than five eligible lexical memories
+- **WHEN** the E0 candidate runs with a caller limit of at least five
+- **THEN** it selects the same three longest sanitized terms as the current default, admits at most five lexical rows, and returns a deterministic fused order
 
-#### Scenario: US2 - Reduce relaxed lexical work without quality drift 2
+#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 2
 
-- **GIVEN** exact or strict results that overlap relaxed results
-- **WHEN** stages are merged
-- **THEN** precedence, deduplication, caller limit enforcement, source identity, snippet bounds, and evidence aggregation remain deterministic and exact authoritative matches are not discarded by the lexical cap
+- **GIVEN** exact, strict, or relaxed candidates that overlap
+- **WHEN** the result lists are fused
+- **THEN** exact authoritative matches remain first, memory IDs are deduplicated, rank ties use declared stable rules, and the caller limit is never exceeded
 
-#### Scenario: US2 - Reduce relaxed lexical work without quality drift 3
+#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 3
 
-- **GIVEN** a single term, phrase-like input, punctuation/operators, Unicode, repeated terms, or an overlong query
-- **WHEN** optimized retrieval executes
-- **THEN** query sanitization and stable plan hashes retain their declared meaning and SQLite produces no syntax failure
+- **GIVEN** a limit below five, punctuation-only input, Unicode, repeated terms, FTS operators, phrase-like input, or an empty normalized query
+- **WHEN** recall runs
+- **THEN** the candidate remains bounded, syntax-safe, deterministic, and honest about skipped stages and work; an empty normalized query retains the existing null-plan contract with null configuration/plan hashes
 
 ### Requirement: Recent Saves MUST Be Immediately Searchable by Core Retrieval
 
