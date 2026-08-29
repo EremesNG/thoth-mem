@@ -16,5 +16,8 @@ Use the verified project from the identity block when present; otherwise derive 
 
 - Pass the exact native root session as `root_session_key` and set `harness` to `claude` when saving session-attributed memory.
 - Use the resolved repository identity as `project_key` and its display name as `project_name`.
+- Use that same verified root session pair for the `mem_save` `observation_review`
+  and `observation_promotion` branches. A project-scoped observation candidate
+  may omit session attribution, but review and promotion may not.
 
 Never substitute an agent/subagent ID, prompt/message/tool-call/hook-event ID, transcript path, or delegated session. If only delegated traffic or ambiguous nearby identifiers are visible, report degraded identity and do not invent continuity.

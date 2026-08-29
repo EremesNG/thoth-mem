@@ -19,5 +19,10 @@ Only if the native tool is not registered, reuse a complete model-visible line s
 - Pass the exact verified root ID as `root_session_key` and set `harness` to `opencode` when saving session-attributed memory.
 - Use the resolved workspace identity as `project_key` and its display name as `project_name`.
 - Honor `authorization`; knowing the root ID never upgrades a delegated caller to root lifecycle ownership.
+- Use the verified root pair for the `mem_save` `observation_review` and
+  `observation_promotion` branches only when the caller is root with
+  `authorization: "root_lifecycle"`. A project-scoped observation candidate may
+  omit session attribution; a delegated or degraded caller must never review or
+  promote by borrowing the root ID.
 
 Never substitute an agent/subagent ID, message/part/tool-call/event ID, or child session. Unknown schema, malformed JSON, inconsistent authorization, ambiguous ancestry, or unprovable project identity is degraded.

@@ -17,5 +17,8 @@ Derive the memory project from the current repository/workspace represented by v
 
 - Pass the exact Codex task/thread ID as `root_session_key` and set `harness` to `codex` when saving session-attributed memory.
 - Use the resolved repository identity as `project_key` and its display name as `project_name`.
+- Use that same verified root session pair for the `mem_save` `observation_review`
+  and `observation_promotion` branches. A project-scoped observation candidate
+  may omit session attribution, but review and promotion may not.
 
 Never substitute `turn_id`, an agent/subagent ID, message/tool-call ID, `POSH_SESSION_ID`, a visualization token, or Codex `projectId`. Do not dump the full environment. If the targeted source is empty or the current task is ambiguous, report degraded identity and do not invent continuity.

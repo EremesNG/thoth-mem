@@ -58,6 +58,7 @@ describe('canonical integration package inventory', () => {
     expect(opencode).toMatch(/thoth_mem_root_identity/);
     expect(opencode).toMatch(/root_session_key/);
     expect(opencode).toMatch(/authorization/);
+    expect(opencode).toMatch(/observation_review[\s\S]*observation_promotion[\s\S]*root_lifecycle/u);
 
     for (const [harness, reference, expected] of [
       ['codex', 'codex.md', /CODEX_THREAD_ID[\s\S]*list_threads[\s\S]*root_session_key/],
@@ -65,6 +66,7 @@ describe('canonical integration package inventory', () => {
     ] as const) {
       const canonical = readFileSync(join('integrations', harness, 'skills', 'thoth-mem', 'references', reference), 'utf8');
       expect(canonical).toMatch(expected);
+      expect(canonical).toMatch(/observation_review[\s\S]*observation_promotion[\s\S]*review and promotion may not/u);
       expect(readFileSync(join('plugin', 'skills', 'thoth-mem', 'references', reference), 'utf8')).toBe(canonical);
     }
   });
