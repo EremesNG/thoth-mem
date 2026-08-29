@@ -6,6 +6,12 @@ import {
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
   MEMORY_STATUS_VALUES,
+  OBSERVATION_GENERATOR_KIND_VALUES,
+  OBSERVATION_KIND_VALUES,
+  OBSERVATION_REVIEW_BASIS_VALUES,
+  OBSERVATION_REVIEW_VERDICT_VALUES,
+  OBSERVATION_SCOPE_VALUES,
+  OBSERVATION_SUPPORT_RELATION_VALUES,
   PRIVACY_CLASS_VALUES,
   RETENTION_CLASS_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
@@ -124,11 +130,155 @@ ${TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
 `;
 
+export const REVISION_FIVE_SCHEMA_SQL = `
+${SHARED_SCHEMA_PREFIX}
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
+${SESSION_PROJECTION_SCHEMA_SQL}
+${taxonomyGuardSql([...REVISION_THREE_EVIDENCE_KIND_VALUES, 'session_summary'])}
+${IMMUTABILITY_TRIGGER_SQL}
+`;
+
+export const OBSERVATION_PROJECTION_SCHEMA_SQL = `
+CREATE TABLE observations(
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  session_id TEXT REFERENCES sessions(id),
+  submission_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+  predecessor_id TEXT UNIQUE REFERENCES observations(id),
+  scope TEXT NOT NULL CHECK(scope IN (${sqlValues(OBSERVATION_SCOPE_VALUES)})),
+  source_sequence_from INTEGER CHECK(source_sequence_from IS NULL OR source_sequence_from > 0),
+  source_sequence_to INTEGER CHECK(source_sequence_to IS NULL OR source_sequence_to >= source_sequence_from),
+  kind TEXT NOT NULL CHECK(kind IN (${sqlValues(OBSERVATION_KIND_VALUES)})),
+  title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 500),
+  claim TEXT NOT NULL CHECK(length(claim) BETWEEN 1 AND 4000),
+  proposed_memory_kind TEXT NOT NULL CHECK(proposed_memory_kind IN (${sqlValues(MEMORY_KIND_VALUES)})),
+  proposed_memory_title TEXT NOT NULL CHECK(length(proposed_memory_title) BETWEEN 1 AND 500),
+  proposed_memory_content TEXT NOT NULL CHECK(length(proposed_memory_content) BETWEEN 1 AND 8000),
+  proposed_topic_key TEXT,
+  proposed_outcome TEXT NOT NULL CHECK(proposed_outcome IN (${sqlValues(MEMORY_OUTCOME_VALUES)})),
+  generator_kind TEXT NOT NULL CHECK(generator_kind IN (${sqlValues(OBSERVATION_GENERATOR_KIND_VALUES)})),
+  generator_name TEXT NOT NULL CHECK(length(generator_name) BETWEEN 1 AND 200),
+  generator_version TEXT CHECK(generator_version IS NULL OR length(generator_version) BETWEEN 1 AND 200),
+  generator_config_hash TEXT CHECK(generator_config_hash IS NULL OR generator_config_hash GLOB '[0-9a-f]*' AND length(generator_config_hash)=64),
+  created_at TEXT NOT NULL,
+  CHECK((scope='session' AND session_id IS NOT NULL AND source_sequence_from IS NOT NULL AND source_sequence_to IS NOT NULL) OR (scope='project' AND source_sequence_from IS NULL AND source_sequence_to IS NULL))
+);
+CREATE INDEX observations_queue ON observations(project_id,created_at,id);
+CREATE INDEX observations_session ON observations(session_id,created_at,id);
+CREATE TABLE observation_facets(
+  observation_id TEXT NOT NULL REFERENCES observations(id),
+  facet_type TEXT NOT NULL CHECK(facet_type IN ('concept','file')),
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  value TEXT NOT NULL CHECK(length(value) BETWEEN 1 AND 500),
+  PRIMARY KEY(observation_id,facet_type,ordinal),
+  UNIQUE(observation_id,facet_type,value)
+);
+CREATE TABLE observation_supports(
+  observation_id TEXT NOT NULL REFERENCES observations(id),
+  evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  relation TEXT NOT NULL CHECK(relation IN (${sqlValues(OBSERVATION_SUPPORT_RELATION_VALUES)})),
+  PRIMARY KEY(observation_id,evidence_id)
+);
+CREATE TABLE observation_reviews(
+  id TEXT PRIMARY KEY,
+  observation_id TEXT NOT NULL UNIQUE REFERENCES observations(id),
+  review_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+  reviewer_session_id TEXT NOT NULL REFERENCES sessions(id),
+  actor TEXT NOT NULL CHECK(actor='agent'),
+  authority TEXT NOT NULL CHECK(authority='root_user'),
+  verdict TEXT NOT NULL CHECK(verdict IN (${sqlValues(OBSERVATION_REVIEW_VERDICT_VALUES)})),
+  basis TEXT NOT NULL CHECK(basis IN (${sqlValues(OBSERVATION_REVIEW_BASIS_VALUES)})),
+  policy_id TEXT NOT NULL CHECK(length(policy_id) BETWEEN 1 AND 200),
+  policy_version TEXT NOT NULL CHECK(length(policy_version) BETWEEN 1 AND 200),
+  reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 1000),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE observation_review_supports(
+  review_id TEXT NOT NULL REFERENCES observation_reviews(id),
+  evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  relation TEXT NOT NULL CHECK(relation IN (${sqlValues(OBSERVATION_SUPPORT_RELATION_VALUES)})),
+  PRIMARY KEY(review_id,evidence_id)
+);
+CREATE TABLE observation_promotions(
+  observation_id TEXT PRIMARY KEY REFERENCES observations(id),
+  promotion_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id),
+  memory_id TEXT NOT NULL UNIQUE REFERENCES memories(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE observation_receipts(
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  operation TEXT NOT NULL CHECK(operation IN ('candidate','review','promotion')),
+  event_key TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  operation_evidence_id TEXT NOT NULL REFERENCES evidence(id),
+  observation_id TEXT NOT NULL REFERENCES observations(id),
+  review_id TEXT REFERENCES observation_reviews(id),
+  memory_id TEXT REFERENCES memories(id),
+  PRIMARY KEY(project_id,operation,event_key)
+);
+CREATE TRIGGER observation_scope_guard BEFORE INSERT ON observations
+WHEN NOT EXISTS (
+  SELECT 1 FROM evidence e
+  WHERE e.id=new.submission_evidence_id AND e.project_id=new.project_id AND e.kind='observation'
+    AND ((new.scope='session' AND e.session_id=new.session_id) OR (new.scope='project'))
+) OR (new.predecessor_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM observations p JOIN evidence pe ON pe.id=p.submission_evidence_id JOIN evidence ne ON ne.id=new.submission_evidence_id
+  WHERE p.id=new.predecessor_id AND p.project_id=new.project_id AND pe.rowid<ne.rowid
+))
+BEGIN SELECT RAISE(ABORT, 'observation scope or predecessor mismatch'); END;
+CREATE TRIGGER observation_support_scope_guard BEFORE INSERT ON observation_supports
+WHEN NOT EXISTS (
+  SELECT 1 FROM observations o JOIN evidence e ON e.id=new.evidence_id
+  LEFT JOIN session_events se ON se.evidence_id=e.id
+  WHERE o.id=new.observation_id AND e.project_id=o.project_id AND e.id<>o.submission_evidence_id
+    AND (o.scope='project' OR (e.session_id=o.session_id AND se.sequence BETWEEN o.source_sequence_from AND o.source_sequence_to))
+)
+BEGIN SELECT RAISE(ABORT, 'observation support scope mismatch'); END;
+CREATE TRIGGER observation_review_scope_guard BEFORE INSERT ON observation_reviews
+WHEN NOT EXISTS (
+  SELECT 1 FROM observations o JOIN evidence e ON e.id=new.review_evidence_id JOIN sessions s ON s.id=new.reviewer_session_id
+  WHERE o.id=new.observation_id AND e.project_id=o.project_id AND e.session_id=new.reviewer_session_id
+    AND e.kind='observation_review' AND s.project_id=o.project_id AND s.harness<>'import'
+)
+BEGIN SELECT RAISE(ABORT, 'observation review scope mismatch'); END;
+CREATE TRIGGER observation_review_support_scope_guard BEFORE INSERT ON observation_review_supports
+WHEN NOT EXISTS (
+  SELECT 1 FROM observation_reviews r JOIN observations o ON o.id=r.observation_id JOIN evidence e ON e.id=new.evidence_id
+  JOIN evidence re ON re.id=r.review_evidence_id
+  WHERE r.id=new.review_id AND e.project_id=o.project_id AND e.id<>r.review_evidence_id AND e.id<>o.submission_evidence_id AND e.rowid<re.rowid
+)
+BEGIN SELECT RAISE(ABORT, 'observation review support scope mismatch'); END;
+CREATE TRIGGER observation_promotion_scope_guard BEFORE INSERT ON observation_promotions
+WHEN NOT EXISTS (
+  SELECT 1 FROM observations o JOIN observation_reviews r ON r.observation_id=o.id
+  JOIN evidence e ON e.id=new.promotion_evidence_id JOIN memories m ON m.id=new.memory_id
+  WHERE o.id=new.observation_id AND r.verdict='accepted' AND e.project_id=o.project_id
+    AND e.kind='observation_promotion' AND m.project_id=o.project_id
+)
+BEGIN SELECT RAISE(ABORT, 'observation promotion scope mismatch'); END;
+CREATE TRIGGER observation_immutable_update BEFORE UPDATE ON observations BEGIN SELECT RAISE(ABORT, 'observation is immutable'); END;
+CREATE TRIGGER observation_immutable_delete BEFORE DELETE ON observations BEGIN SELECT RAISE(ABORT, 'observation is immutable'); END;
+CREATE TRIGGER observation_facet_immutable_update BEFORE UPDATE ON observation_facets BEGIN SELECT RAISE(ABORT, 'observation facet is immutable'); END;
+CREATE TRIGGER observation_facet_immutable_delete BEFORE DELETE ON observation_facets BEGIN SELECT RAISE(ABORT, 'observation facet is immutable'); END;
+CREATE TRIGGER observation_support_immutable_update BEFORE UPDATE ON observation_supports BEGIN SELECT RAISE(ABORT, 'observation support is immutable'); END;
+CREATE TRIGGER observation_support_immutable_delete BEFORE DELETE ON observation_supports BEGIN SELECT RAISE(ABORT, 'observation support is immutable'); END;
+CREATE TRIGGER observation_review_immutable_update BEFORE UPDATE ON observation_reviews BEGIN SELECT RAISE(ABORT, 'observation review is immutable'); END;
+CREATE TRIGGER observation_review_immutable_delete BEFORE DELETE ON observation_reviews BEGIN SELECT RAISE(ABORT, 'observation review is immutable'); END;
+CREATE TRIGGER observation_review_support_immutable_update BEFORE UPDATE ON observation_review_supports BEGIN SELECT RAISE(ABORT, 'observation review support is immutable'); END;
+CREATE TRIGGER observation_review_support_immutable_delete BEFORE DELETE ON observation_review_supports BEGIN SELECT RAISE(ABORT, 'observation review support is immutable'); END;
+CREATE TRIGGER observation_promotion_immutable_update BEFORE UPDATE ON observation_promotions BEGIN SELECT RAISE(ABORT, 'observation promotion is immutable'); END;
+CREATE TRIGGER observation_promotion_immutable_delete BEFORE DELETE ON observation_promotions BEGIN SELECT RAISE(ABORT, 'observation promotion is immutable'); END;
+CREATE TRIGGER observation_receipt_immutable_update BEFORE UPDATE ON observation_receipts BEGIN SELECT RAISE(ABORT, 'observation receipt is immutable'); END;
+CREATE TRIGGER observation_receipt_immutable_delete BEFORE DELETE ON observation_receipts BEGIN SELECT RAISE(ABORT, 'observation receipt is immutable'); END;
+`;
+
 export const CURRENT_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
 CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
+${OBSERVATION_PROJECTION_SCHEMA_SQL}
 ${TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
 `;

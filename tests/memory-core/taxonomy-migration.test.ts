@@ -91,7 +91,7 @@ describe('SQLite taxonomy migration', () => {
 
     const migrated = new Database(fixture.path);
     try {
-      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
       expect(migrated.prepare('SELECT id,kind FROM evidence ORDER BY id').all()).toEqual(fixture.evidenceIds.slice().sort().map((id) => ({ id, kind: 'explicit_save' })));
       expect(migrated.prepare('SELECT kind FROM memories WHERE id=?').get(fixture.memoryId)).toEqual({ kind: 'convention' });
       expect(authoritativeSnapshot(migrated)).toEqual(before);

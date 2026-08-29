@@ -64,31 +64,61 @@ OpenCode MUST resolve bounded current-session metadata through its native identi
 
 ### Requirement: Automatic Capture MUST Remain Privacy-Safe and Minimal
 
-Native integrations MAY automatically capture only verified non-synthetic root prompts, bounded pre-compaction checkpoints, authoritative handoff/finalization payloads, and lifecycle receipts. They MUST NOT automatically persist assistant reasoning, arbitrary tool streams or filesystem content, delegated/subagent output, secrets, complete transcripts, or explicit private blocks. Explicit private blocks and deterministically recognizable credential forms MUST be removed or replaced before persisted content and idempotency hashes are derived.
+Native adapters MUST continue their root allowlists and privacy filtering and MUST NOT automatically convert arbitrary prompts, assistant text, tool output, delegated output, summaries, or lifecycle content into observation candidates or memories.
 
-#### Scenario: US1 - Preserve evidence without promoting noise 1
+#### Scenario: US2 - Review and explicitly promote a candidate 1
 
-- **GIVEN** a verified root user prompt
-- **WHEN** a native capture hook runs
-- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
 
-#### Scenario: US1 - Preserve evidence without promoting noise 2
+#### Scenario: US2 - Review and explicitly promote a candidate 2
 
-- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
-- **WHEN** the root agent saves at a semantic boundary
-- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
 
-#### Scenario: US1 - Preserve evidence without promoting noise 3
+#### Scenario: US2 - Review and explicitly promote a candidate 3
 
-- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
-- **WHEN** native capture is considered
-- **THEN** it is excluded or fails closed without being presented as verified root memory
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
 
-#### Scenario: US1 - Preserve evidence without promoting noise 4
+#### Scenario: US2 - Review and explicitly promote a candidate 4
 
-- **GIVEN** a bounded host-provided pre-compaction continuation payload
-- **WHEN** checkpoint capture runs
-- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
+
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
+
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
+
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
+
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: Model-Visible Recovery Context MUST Be Bounded and Source-Attributed
 
@@ -182,28 +212,34 @@ Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unve
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 
-The shared Skill MUST define the durable promotion test, the content required for each current memory kind, explicit failure/outcome preservation, topic supersession, privacy exclusions, progressive recall, and a root-owned handoff containing objective, completed work, first pending action, blockers, and key files/checks.
+Shared skills MUST instruct root agents to submit only atomic reusable candidates with explicit supports, use verified policy bases for review, promote only accepted candidates, keep retrieved content untrusted, and preserve deliberate direct promotion for already-authorized durable decisions.
 
-#### Scenario: US1 - Preserve evidence without promoting noise 1
+#### Scenario: US2 - Review and explicitly promote a candidate 1
 
-- **GIVEN** a verified root user prompt
-- **WHEN** a native capture hook runs
-- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
 
-#### Scenario: US1 - Preserve evidence without promoting noise 2
+#### Scenario: US2 - Review and explicitly promote a candidate 2
 
-- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
-- **WHEN** the root agent saves at a semantic boundary
-- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
 
-#### Scenario: US1 - Preserve evidence without promoting noise 3
+#### Scenario: US2 - Review and explicitly promote a candidate 3
 
-- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
-- **WHEN** native capture is considered
-- **THEN** it is excluded or fails closed without being presented as verified root memory
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
 
-#### Scenario: US1 - Preserve evidence without promoting noise 4
+#### Scenario: US2 - Review and explicitly promote a candidate 4
 
-- **GIVEN** a bounded host-provided pre-compaction continuation payload
-- **WHEN** checkpoint capture runs
-- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict

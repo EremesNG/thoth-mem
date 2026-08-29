@@ -11,6 +11,7 @@ pnpm run build
 pnpm test
 pnpm run integration:verify
 pnpm run integration:smoke
+pnpm run benchmark:observation
 pnpm run benchmark:fixture
 pnpm run prepublishOnly
 git diff --check
@@ -63,6 +64,16 @@ pnpm exec vitest run tests/memory-core/context.test.ts tests/memory-core/continu
 pnpm exec vitest run tests/integration/lifecycle.test.ts tests/integration/adapters.test.ts tests/integration/opencode-native-plugin.test.ts tests/integration/public-plugin-runner.test.ts --config vitest.unit.config.ts
 pnpm exec vitest run tests/benchmarks/report.test.ts tests/benchmarks/runner.test.ts tests/packaging/first-product.test.ts --config vitest.unit.config.ts
 ```
+
+Observation candidates, authority review, promotion, rebuild, and isolation add this focused lane:
+
+```sh
+pnpm exec vitest run tests/memory-core/contracts.test.ts tests/memory-core/schema-migration.test.ts tests/memory-core/observations.test.ts tests/memory-core/observation-promotion.test.ts tests/memory-core/observation-schema.test.ts tests/memory-core/retrieval.test.ts tests/tools/mcp.test.ts tests/benchmarks/observation-pipeline.test.ts --config vitest.unit.config.ts
+pnpm exec vitest run tests/integration/lifecycle.test.ts tests/packaging/first-product.test.ts --config vitest.integration.config.ts
+pnpm run benchmark:observation
+```
+
+`benchmark:observation` is an offline isolated control/candidate fixture. Both lanes use the current schema, identical final promoted-memory content and topic lineage, query, Top-K, and character budget. The candidate lane records blocked poisoned/cross-scope cases, rejected negated/stale-procedure cases, an accepted attributable failure, and promoted changing-requirement/correction/topic-supersession cases. It must prove complete candidate/review/promotion lineage, zero harmful/unsupported/rejected/unreviewed promotions, zero pre-promotion recall leakage, identical final recall order/payload/delivery/useful-content ratio, p95 normal-recall latency no greater than 2× control, aggregate SQLite bytes no greater than 2× control, and literal zero model/network calls. Submit, review, and promotion each report canonical payload JSON, recomputed evidence and service-receipt hashes, exact output IDs, projection counts, p50/p95 samples, payload characters, and SQLite before/after/delta. Every receipt evidence ID is re-derived from its audited project, operation, and event key; observation and review IDs are likewise re-derived from their canonical evidence IDs. Candidate envelopes reconcile their complete closed projection—including claim, scope, coverage, generator, facets, supports, predecessor, and proposed memory—while save/review envelopes reconcile their complete persisted semantics and promotion requires both the exact operation envelope and canonical promotion evidence. Structured validation or attestation metadata must agree with the linked review observation and verdict. All five scenario candidates and reviews match code-owned assertion/review manifests; the rejected, failed, and stale candidates additionally match complete semantic manifests. A separate support manifest fixes each candidate/review to its expected support event identity and fixes the support evidence kind/content/structured validation method. Report-local bundles therefore cannot redefine the fixture or redirect its provenance merely by rehashing themselves. Complete audited memory rows derive final memory and topic lineage. Every scenario is reconciled through a hashed semantic trace against receipts, project-scoped SQLite/FTS rows, an exact operation window and row delta, the exact union of observation/review supports, review policy, and complete predecessor/current review-promotion-memory lineage. `benchmarks/observation-pipeline/report.mjs` recomputes every gate and rejects coherent linked-evidence mutations unless the entire self-contained report is replaced; `report.schema.json` closes the envelope. The normal `benchmark:fixture` report embeds this validated outcome while leaving immutable LongMemEval-S reports untouched.
 
 The committed summary outcome fixture is offline and deterministic. For each OpenCode, Codex, and Claude-shaped harness it uses isolated control and candidate projects, identical five-field actionable source values, and the same 1,000-code-point delivery cap. It requires ordered idempotency, same-scope claim support, version precedence, three-host recovery, non-empty checkpoint capture, zero automatic handoff promotion, zero support leakage, zero mixed candidate memories, zero model/network calls, and a candidate useful-content ratio no lower than the handoff control. `benchmarks/report.mjs` and `benchmarks/report.schema.json` close that summary envelope; missing, extra, incoherent, contaminated, or non-inferior-by-assertion-only reports fail validation.
 

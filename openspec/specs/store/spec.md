@@ -4,173 +4,485 @@
 
 ### Requirement: SQLite Memory Ledger MUST Be the Sole Source of Truth
 
-The system MUST extend the authoritative local ledger with database-ordered session evidence and immutable summary-submission events while keeping session summaries non-authoritative derived state whose content, version, coverage, generator, and support lineage can be reconstructed from the ledger.
+The system MUST preserve canonical observation, review, and promotion submissions as immutable local evidence and materialize rebuildable candidate, verdict, support, and promotion state without treating derived observations as authoritative truth.
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 1
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a verified root session with no prior events
-- **WHEN** allowed root prompts and lifecycle checkpoints commit
-- **THEN** each new evidence event receives the next database-assigned session sequence and canonical actor, authority, retention, and privacy metadata in the same transaction
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 2
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
 
-- **GIVEN** the same stable event key is replayed
-- **WHEN** the write repeats
-- **THEN** it returns the original evidence ID and session sequence without allocating a gap or duplicate event
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 3
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
 
-- **GIVEN** assistant reasoning, arbitrary tool streams, delegated-agent output, a private block, or an unverifiable caller
-- **WHEN** automatic capture is considered
-- **THEN** it remains excluded or fails closed without advancing the durable session sequence
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 4
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
 
-- **GIVEN** a project-only explicit save with no verified session
-- **WHEN** it commits
-- **THEN** it remains valid evidence without a fabricated session sequence or authority claim
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 1
+
+- **GIVEN** a valid file-backed current database
+- **WHEN** the observation schema upgrade starts
+- **THEN** a verified recoverable backup exists before the forward transaction commits and all prior authoritative rows and memory FTS state remain intact
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 2
+
+- **GIVEN** legacy observations, imported `legacy_observation` evidence, summaries, handoffs, or promoted memories
+- **WHEN** migration completes
+- **THEN** no candidate, support, review, policy basis, or promotion is inferred for historical data
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 3
+
+- **GIVEN** canonical observation/review/promotion submission evidence
+- **WHEN** projection rebuild runs
+- **THEN** it deterministically recreates the same candidates, verdicts, promotion mappings, and current states or fails closed without replacing a valid projection
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 4
+
+- **GIVEN** an injected backup, taxonomy, lineage, rebuild, or transaction failure
+- **WHEN** startup reports the error
+- **THEN** the source database remains recoverable at its prior revision with no partial observation state
 
 ### Requirement: Raw Evidence and Promoted Memory MUST Remain Distinct
 
-Automatic capture MUST keep prompts/checkpoints as evidence, MUST represent supplied session summaries outside `memories`, and MUST NOT promote a handoff or any other memory merely because checkpoint, compaction, or finalization occurred.
+Observation candidates and reviews MUST remain distinct from both raw evidence and promoted memories; no candidate may enter normal recall or become memory without a verified terminal acceptance and explicit promotion.
 
-#### Scenario: US3 - Resume from the newest truthful session projection 1
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a current supported session summary and current promoted project memories
-- **WHEN** start/resume or post-compaction recovery runs
-- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
 
-#### Scenario: US3 - Resume from the newest truthful session projection 2
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
 
-- **GIVEN** no eligible summary after migration
-- **WHEN** recovery runs
-- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
 
-#### Scenario: US3 - Resume from the newest truthful session projection 3
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
 
-- **GIVEN** a selected summary
-- **WHEN** host-visible context renders
-- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
 
-#### Scenario: US3 - Resume from the newest truthful session projection 4
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
 
-- **GIVEN** a pre-compaction checkpoint after this change
-- **WHEN** it is captured
-- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
 
 ### Requirement: Memory Records MUST Preserve Provenance and Temporal State
 
-Memories MUST retain project/session provenance, creation time, validity, outcome, and supersession or retraction lineage so current guidance and historical mistakes remain distinguishable.
+A memory promoted from an observation MUST preserve provenance to the accepted candidate, immutable review/promotion evidence, original supporting evidence, outcome, validity, and existing topic supersession/retraction lineage.
 
-#### Scenario: Correct a failed decision
+#### Scenario: US2 - Review and explicitly promote a candidate 1
 
-- **GIVEN** a current failed decision
-- **WHEN** a correction supersedes it
-- **THEN** the prior validity interval closes, the correction becomes current, and the original remains historically reachable
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
 
 ### Requirement: SQLite Ledger MUST Enforce Canonical Taxonomies
 
-Service and SQLite write boundaries MUST enforce the same closed evidence kinds, memory kinds, outcomes, harnesses, statuses, and lifecycle operations before committing durable state.
+Public, service, rebuild, and SQLite boundaries MUST enforce the same closed observation kinds, scopes, states, generator kinds, support relations, review verdicts, policy bases, actors, authorities, and promotion transitions before committing state.
 
-#### Scenario: Reject an unknown memory kind
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a save using a non-canonical kind
-- **WHEN** it reaches a public, service, or direct-SQL boundary
-- **THEN** it fails with zero evidence, memory, receipt, relationship, or FTS side effects
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
+
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
+
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
+
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 1
+
+- **GIVEN** a valid file-backed current database
+- **WHEN** the observation schema upgrade starts
+- **THEN** a verified recoverable backup exists before the forward transaction commits and all prior authoritative rows and memory FTS state remain intact
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 2
+
+- **GIVEN** legacy observations, imported `legacy_observation` evidence, summaries, handoffs, or promoted memories
+- **WHEN** migration completes
+- **THEN** no candidate, support, review, policy basis, or promotion is inferred for historical data
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 3
+
+- **GIVEN** canonical observation/review/promotion submission evidence
+- **WHEN** projection rebuild runs
+- **THEN** it deterministically recreates the same candidates, verdicts, promotion mappings, and current states or fails closed without replacing a valid projection
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 4
+
+- **GIVEN** an injected backup, taxonomy, lineage, rebuild, or transaction failure
+- **WHEN** startup reports the error
+- **THEN** the source database remains recoverable at its prior revision with no partial observation state
 
 ### Requirement: Save Paths MUST Use One Explicit Identity Contract
 
-Every verified session-attributed evidence write MUST receive an atomic database-assigned sequence plus canonical actor, authority, retention, and privacy classifications; project-only writes MUST remain valid without fabricated session identity or ordering.
+Session-attributed candidate submissions and root reviews/promotions MUST use verified project/session identity and database-ordered evidence events, while valid project-scoped candidates MAY cite same-project evidence across sessions without fabricating one session identity.
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 1
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a verified root session with no prior events
-- **WHEN** allowed root prompts and lifecycle checkpoints commit
-- **THEN** each new evidence event receives the next database-assigned session sequence and canonical actor, authority, retention, and privacy metadata in the same transaction
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 2
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
 
-- **GIVEN** the same stable event key is replayed
-- **WHEN** the write repeats
-- **THEN** it returns the original evidence ID and session sequence without allocating a gap or duplicate event
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 3
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
 
-- **GIVEN** assistant reasoning, arbitrary tool streams, delegated-agent output, a private block, or an unverifiable caller
-- **WHEN** automatic capture is considered
-- **THEN** it remains excluded or fails closed without advancing the durable session sequence
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
 
-#### Scenario: US1 - Record authoritative session events in deterministic order 4
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
 
-- **GIVEN** a project-only explicit save with no verified session
-- **WHEN** it commits
-- **THEN** it remains valid evidence without a fabricated session sequence or authority claim
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
 
 ### Requirement: Startup Migrations MUST Be Structured and Idempotent
 
-The current-schema migration MUST upgrade revision 3 forward in one transaction, create and verify a recoverable pre-upgrade backup for file-backed databases before commit, preserve existing authoritative data and FTS integrity, perform no inferred summary/metadata backfill, and reopen idempotently at the new revision.
+The current-schema migration MUST create and verify a recoverable pre-upgrade backup for file-backed databases, upgrade transactionally, preserve authoritative rows and memory FTS integrity, perform no observation backfill, roll back cleanly, and reopen idempotently.
 
-#### Scenario: US4 - Upgrade the current ledger without inventing history 1
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 1
 
-- **GIVEN** a valid file-backed revision-3 database
-- **WHEN** startup first upgrades it
-- **THEN** a verified pre-upgrade backup exists before the forward-only migration commits and all existing authoritative data remains valid
+- **GIVEN** a valid file-backed current database
+- **WHEN** the observation schema upgrade starts
+- **THEN** a verified recoverable backup exists before the forward transaction commits and all prior authoritative rows and memory FTS state remain intact
 
-#### Scenario: US4 - Upgrade the current ledger without inventing history 2
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 2
 
-- **GIVEN** existing checkpoint evidence and handoff memories
+- **GIVEN** legacy observations, imported `legacy_observation` evidence, summaries, handoffs, or promoted memories
 - **WHEN** migration completes
-- **THEN** they remain unchanged and no observation, summary, sequence, actor, authority, retention, or privacy value is inferred for historical rows
+- **THEN** no candidate, support, review, policy basis, or promotion is inferred for historical data
 
-#### Scenario: US4 - Upgrade the current ledger without inventing history 3
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 3
 
-- **GIVEN** a migration failure before commit
+- **GIVEN** canonical observation/review/promotion submission evidence
+- **WHEN** projection rebuild runs
+- **THEN** it deterministically recreates the same candidates, verdicts, promotion mappings, and current states or fails closed without replacing a valid projection
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 4
+
+- **GIVEN** an injected backup, taxonomy, lineage, rebuild, or transaction failure
 - **WHEN** startup reports the error
-- **THEN** the original database remains at revision 3, no partial new-schema state is visible, and the verified backup can restore the pre-upgrade bytes
-
-#### Scenario: US4 - Upgrade the current ledger without inventing history 4
-
-- **GIVEN** an in-memory or clean database
-- **WHEN** schema initialization runs
-- **THEN** it creates the current schema directly without requiring a filesystem backup
+- **THEN** the source database remains recoverable at its prior revision with no partial observation state
 
 ### Requirement: Confirmed Saves and FTS Visibility MUST Commit Atomically
 
-A save MUST NOT report success until its authoritative rows, support relationships, lifecycle receipt when applicable, and FTS visibility commit together.
+Candidate submission, terminal review, and explicit promotion MUST report success only after their evidence, events, receipts, lineage, state, resulting memory, topic transition, and memory FTS visibility commit atomically as applicable.
 
-#### Scenario: Fail during FTS update
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** an injected failure before FTS commit
-- **WHEN** a save transaction runs
-- **THEN** the complete transaction rolls back and immediate recall returns no partial record
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
+
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
+
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
+
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
 
 ### Requirement: Optional Projection Lineage MUST Be Rebuildable and Traceable
 
-Session summary projections MUST preserve kind, current/superseded version state, inclusive source sequence coverage, immutable submission source, external generator descriptor, atomic material claims, per-claim support IDs, and deterministic source/version mappings without becoming authoritative truth.
+Observation candidates, supports, terminal reviews, and promotion mappings MUST be deterministically rebuildable from canonical immutable submission evidence with generator, scope, policy, predecessor, and source lineage preserved.
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 1
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a verified root session and ordered supporting evidence
-- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
-- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
 
-- **GIVEN** an existing current summary of the same session and summary kind
-- **WHEN** a later valid version commits
-- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
 
-- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
-- **WHEN** validation runs
-- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
 
-- **GIVEN** an unavailable model or generator
-- **WHEN** ordinary save, recall, or recovery executes
-- **THEN** the SQLite core remains available and never attempts a model or network call
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 1
+
+- **GIVEN** a valid file-backed current database
+- **WHEN** the observation schema upgrade starts
+- **THEN** a verified recoverable backup exists before the forward transaction commits and all prior authoritative rows and memory FTS state remain intact
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 2
+
+- **GIVEN** legacy observations, imported `legacy_observation` evidence, summaries, handoffs, or promoted memories
+- **WHEN** migration completes
+- **THEN** no candidate, support, review, policy basis, or promotion is inferred for historical data
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 3
+
+- **GIVEN** canonical observation/review/promotion submission evidence
+- **WHEN** projection rebuild runs
+- **THEN** it deterministically recreates the same candidates, verdicts, promotion mappings, and current states or fails closed without replacing a valid projection
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 4
+
+- **GIVEN** an injected backup, taxonomy, lineage, rebuild, or transaction failure
+- **WHEN** startup reports the error
+- **THEN** the source database remains recoverable at its prior revision with no partial observation state
 
 ### Requirement: Legacy Import MUST Preserve Source Data and Report Disposition
 

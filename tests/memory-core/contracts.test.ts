@@ -5,6 +5,14 @@ import {
   EVENT_AUTHORITY_VALUES,
   EVIDENCE_KIND_VALUES,
   MEMORY_PROTOCOL_VERSION,
+  OBSERVATION_GENERATOR_KIND_VALUES,
+  OBSERVATION_KIND_VALUES,
+  OBSERVATION_REVIEW_BASIS_VALUES,
+  OBSERVATION_REVIEW_VERDICT_VALUES,
+  OBSERVATION_SCOPE_VALUES,
+  OBSERVATION_STATE_VALUES,
+  OBSERVATION_SUPPORT_RELATION_VALUES,
+  requireObservationSupportMetadata,
   PRIVACY_CLASS_VALUES,
   RETENTION_CLASS_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
@@ -25,6 +33,7 @@ describe('memory protocol contracts', () => {
     expect(EVIDENCE_KIND_VALUES).toEqual([
       'root_prompt', 'explicit_save', 'checkpoint', 'handoff',
       'legacy_prompt', 'legacy_observation', 'session_summary',
+      'observation', 'observation_review', 'observation_promotion',
     ]);
     expect(EVENT_ACTOR_VALUES).toEqual(['user', 'system', 'agent', 'tool']);
     expect(EVENT_AUTHORITY_VALUES).toEqual(['root_user', 'harness', 'agent', 'tool', 'untrusted_external']);
@@ -49,6 +58,44 @@ describe('memory protocol contracts', () => {
       maxSupportsPerClaim: 16,
       maxCanonicalUtf16Units: 20_000,
     });
+  });
+
+  it('publishes the closed observation promotion taxonomies', () => {
+    expect(OBSERVATION_KIND_VALUES).toEqual([
+      'decision', 'constraint', 'fact', 'procedure', 'result', 'failure', 'preference',
+    ]);
+    expect(OBSERVATION_SCOPE_VALUES).toEqual(['session', 'project']);
+    expect(OBSERVATION_STATE_VALUES).toEqual(['pending', 'accepted', 'rejected', 'promoted']);
+    expect(OBSERVATION_REVIEW_VERDICT_VALUES).toEqual(['accepted', 'rejected']);
+    expect(OBSERVATION_REVIEW_BASIS_VALUES).toEqual([
+      'root_user_confirmed', 'observable_validation', 'independent_review',
+    ]);
+    expect(OBSERVATION_SUPPORT_RELATION_VALUES).toEqual(['supports']);
+    expect(OBSERVATION_GENERATOR_KIND_VALUES).toEqual(['root_agent', 'harness', 'model']);
+  });
+
+  it('accepts only exact bounded structured observation support metadata', () => {
+    expect(requireObservationSupportMetadata('explicit_save', {
+      observation_validation: { observation_id: ' observation-1 ', result: 'passed', method: ' vitest ' },
+    })).toEqual({
+      observation_validation: { observation_id: 'observation-1', result: 'passed', method: 'vitest' },
+    });
+    expect(requireObservationSupportMetadata('handoff', {
+      observation_review_attestation: {
+        observation_id: 'observation-1', verdict: 'accepted', reviewer: 'oracle-1', method: 'artifact review',
+      },
+    })).toEqual({
+      observation_review_attestation: {
+        observation_id: 'observation-1', verdict: 'accepted', reviewer: 'oracle-1', method: 'artifact review',
+      },
+    });
+    expect(() => requireObservationSupportMetadata('explicit_save', {
+      observation_validation: { observation_id: 'observation-1', result: 'passed', method: 'vitest', authority: 'root_user' },
+    })).toThrow(/exact keys/i);
+    expect(() => requireObservationSupportMetadata('handoff', {
+      observation_validation: { observation_id: 'observation-1', result: 'passed', method: 'vitest' },
+    })).toThrow(/observation_review_attestation/i);
+    expect(() => requireObservationSupportMetadata('checkpoint', {})).toThrow(/does not support observation metadata/i);
   });
 
   it('supports discriminated event, summary, and context records', () => {

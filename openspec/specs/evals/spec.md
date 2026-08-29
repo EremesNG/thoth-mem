@@ -148,28 +148,28 @@ An optional module MAY become a default only when complete same-budget external 
 
 ### Requirement: Evals MUST Measure Compaction Recovery and Coding Outcomes
 
-Product evaluation MUST additionally measure ordered-event idempotency, summary claim support coverage, rejection of unsupported/cross-scope claims, version precedence, no automatic memory promotion, three-host restart/post-compaction fidelity, equal-budget fallback, injected characters, and zero core model/network calls.
+Product evaluation MUST additionally measure observation write fidelity, support/identity validation, policy-grounded review, harmful or unsupported promotion, correction/supersession, recall contamination, equal-budget final-memory equivalence, latency, footprint, payload, provenance, and literal model/network-call counts.
 
-#### Scenario: US3 - Resume from the newest truthful session projection 1
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 1
 
-- **GIVEN** a current supported session summary and current promoted project memories
-- **WHEN** start/resume or post-compaction recovery runs
-- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
+- **GIVEN** control and observation-pipeline projects with identical supported durable outcomes
+- **WHEN** the committed fixture runs
+- **THEN** both expose the same final current memory content, topic lineage, recall order, delivery budget, and useful-content ratio
 
-#### Scenario: US3 - Resume from the newest truthful session projection 2
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 2
 
-- **GIVEN** no eligible summary after migration
-- **WHEN** recovery runs
-- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+- **GIVEN** unsupported, poisoned, negated, cross-scope, failed, changing-requirement, and stale-procedure cases
+- **WHEN** observation review executes
+- **THEN** the report distinguishes accepted, rejected, blocked, and promoted candidates and records zero unsupported or unreviewed promoted memories
 
-#### Scenario: US3 - Resume from the newest truthful session projection 3
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 3
 
-- **GIVEN** a selected summary
-- **WHEN** host-visible context renders
-- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+- **GIVEN** a complete run
+- **WHEN** its report is validated
+- **THEN** it reconciles operation counts, stable IDs, supports, review policy, memory/FTS rows, p50/p95 latency, SQLite bytes, payload characters, errors, and literal zero model/network calls
 
-#### Scenario: US3 - Resume from the newest truthful session projection 4
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 4
 
-- **GIVEN** a pre-compaction checkpoint after this change
-- **WHEN** it is captured
-- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
+- **GIVEN** incomplete, unequal-budget, lineage-invalid, recall-regressing, contaminated, or schema-invalid evidence
+- **WHEN** readiness is assessed
+- **THEN** the pipeline fails its outcome gate without changing the existing direct-save or retrieval defaults

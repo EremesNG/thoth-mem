@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { migrateCurrentSchema, preV4BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
-import { REVISION_FOUR_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
+import { migrateCurrentSchema, preV4BackupPath, preV6BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
+import { REVISION_FIVE_SCHEMA_SQL, REVISION_FOUR_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
 
 const roots: string[] = [];
 
@@ -47,19 +47,78 @@ function createRevisionFourFixture(path: string): void {
   } finally { database.close(); }
 }
 
+function createRevisionFiveFixture(path: string): void {
+  const database = new Database(path);
+  const timestamp = '2026-08-28T00:00:00.000Z';
+  try {
+    database.pragma('foreign_keys = ON');
+    database.exec(REVISION_FIVE_SCHEMA_SQL);
+    database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(5, timestamp);
+    database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
+    database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', null, 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
+    database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run('memory-1', 'project-1', 'fixture/topic', 'decision', 'Fixture decision', 'searchable revision five marker', 'succeeded', 'current', timestamp, null, null, timestamp);
+    database.prepare('INSERT INTO memory_evidence VALUES(?,?,?)').run('memory-1', 'evidence-1', 'supports');
+  } finally { database.close(); }
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe('SQLite revision 5 migration', () => {
-  it('creates revision 5 directly with shared prefix indexes for clean file and in-memory databases', () => {
+describe('SQLite revision 6 migration', () => {
+  it('upgrades revision 5 with a verified backup, empty observation state, and unchanged memory FTS', () => {
+    const path = fixturePath();
+    createRevisionFiveFixture(path);
+    const database = new Database(path);
+    try {
+      migrateCurrentSchema(database);
+      expect(SQLITE_SCHEMA_REVISION).toBe(6);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 5 }, { version: 6 }]);
+      expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('observations','observation_facets','observation_supports','observation_reviews','observation_review_supports','observation_promotions','observation_receipts') ORDER BY name").all()).toHaveLength(7);
+      for (const table of ['observations', 'observation_facets', 'observation_supports', 'observation_reviews', 'observation_review_supports', 'observation_promotions', 'observation_receipts']) {
+        expect(database.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+      }
+      expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'revision' ").all()).toEqual([{ memory_id: 'memory-1' }]);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      expect(() => migrateCurrentSchema(database)).not.toThrow();
+    } finally { database.close(); }
+
+    const backup = new Database(preV6BackupPath(path), { readonly: true, fileMustExist: true });
+    try {
+      expect(backup.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+      expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 5 });
+      expect(backup.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name='observations'").get()).toEqual({ count: 0 });
+      expect(backup.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'revision'").all()).toEqual([{ memory_id: 'memory-1' }]);
+    } finally { backup.close(); }
+  });
+
+  it('rolls back a failed revision-6 projection migration and leaves revision 5 searchable', () => {
+    const path = fixturePath();
+    createRevisionFiveFixture(path);
+    const setup = new Database(path);
+    setup.exec("CREATE TRIGGER reject_revision_six BEFORE INSERT ON schema_migrations WHEN new.version=6 BEGIN SELECT RAISE(ABORT, 'blocked revision six'); END;");
+    setup.close();
+
+    const database = new Database(path);
+    try { expect(() => migrateCurrentSchema(database)).toThrow(/blocked revision six/i); } finally { database.close(); }
+
+    const source = new Database(path, { readonly: true });
+    try {
+      expect(source.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 5 });
+      expect(source.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name='observations'").get()).toEqual({ count: 0 });
+      expect(source.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'revision'").all()).toEqual([{ memory_id: 'memory-1' }]);
+      expect(source.prepare('SELECT content FROM evidence WHERE id=?').get('evidence-1')).toEqual({ content: 'source evidence' });
+    } finally { source.close(); }
+    expect(existsSync(preV6BackupPath(path))).toBe(true);
+  });
+  it('creates revision 6 directly with observation projections and shared prefix indexes', () => {
     const path = fixturePath();
     for (const target of [path, ':memory:']) {
       const database = new Database(target);
       try {
         migrateCurrentSchema(database);
-        expect(SQLITE_SCHEMA_REVISION).toBe(5);
-        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 5 });
+        expect(SQLITE_SCHEMA_REVISION).toBe(6);
+        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 6 });
         expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_events','session_summaries','session_summary_claims','session_summary_claim_supports') ORDER BY name").all()).toHaveLength(4);
         expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_fts'").get()).toMatchObject({ sql: expect.stringContaining("prefix='2 3 4 5 6 7 8 9 10 11 12'") });
       } finally { database.close(); }
@@ -74,7 +133,7 @@ describe('SQLite revision 5 migration', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
       expect(database.prepare('SELECT next_event_sequence FROM sessions WHERE id=?').get('session-1')).toEqual({ next_event_sequence: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_events').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
@@ -98,7 +157,7 @@ describe('SQLite revision 5 migration', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }, { version: 6 }]);
       expect(database.prepare('SELECT id,content FROM memories').get()).toEqual({ id: 'memory-1', content: 'searchable migration marker café' });
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'migra*'").all()).toEqual([{ memory_id: 'memory-1' }]);
       expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_fts'").get()).toMatchObject({ sql: expect.stringContaining("prefix='2 3 4 5 6 7 8 9 10 11 12'") });

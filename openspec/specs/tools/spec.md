@@ -4,135 +4,255 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; summary submission, selection, inspection, and history MUST extend those workflow tools through closed current schemas rather than adding stage-specific tools.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; observation submission, review, promotion, queue, and expansion MUST extend those workflow tools through closed schemas.
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 1
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
 
-- **GIVEN** a verified root session and ordered supporting evidence
-- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
-- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
 
-- **GIVEN** an existing current summary of the same session and summary kind
-- **WHEN** a later valid version commits
-- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
 
-- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
-- **WHEN** validation runs
-- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
 
-- **GIVEN** an unavailable model or generator
-- **WHEN** ordinary save, recall, or recovery executes
-- **THEN** the SQLite core remains available and never attempts a model or network call
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 
-All tool inputs and outputs MUST use closed validated schemas under `thoth-mem.mcp.<tool>` or `thoth-mem.mcp.error`; unknown nested taxonomy values and removed generation namespaces MUST fail without durable side effects.
+Observation inputs and outputs, including typed validation/independent-review support evidence, MUST use closed discriminated schemas and bounded error envelopes; unknown nested fields, arbitrary public metadata, partial identity, invalid transitions, or stale replay payloads MUST commit nothing.
 
-#### Scenario: Save with an invalid nested value
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** an otherwise valid `mem_save` request with an unknown memory kind
-- **WHEN** handler validation runs
-- **THEN** it returns a bounded non-retryable error envelope and commits nothing
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
+
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
+
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
+
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
+
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
+
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
+
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
+
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: mem_save MUST Persist Evidence Before Optional Memory
 
-`mem_save` MUST accept immutable evidence and MAY atomically promote a linked memory with topic, outcome, and supersession semantics while reporting confirmed IDs only after commit.
+`mem_save` MUST preserve deliberate metadata-free direct evidence-plus-memory saves, add strict direct evidence-only variants that create attributable observation validation/review supports, and support idempotent candidate submission, verified root review, and accepted-candidate promotion as explicit mutually discriminated operations whose confirmed IDs are returned only after commit.
 
-#### Scenario: Save evidence and a promoted convention
+#### Scenario: US1 - Preserve a source-supported observation candidate 1
 
-- **GIVEN** a valid project and save request
-- **WHEN** `mem_save` succeeds
-- **THEN** it reports the evidence and memory IDs, support link, project bounds, and duplicate truth
+- **GIVEN** a verified project or root session and one or more eligible source-evidence IDs
+- **WHEN** `mem_save` receives a valid atomic observation candidate
+- **THEN** it records a canonical immutable submission, generator identity, scope, supports, advisory file/concept facets, proposed memory interpretation, and one pending derived record before reporting success
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 2
+
+- **GIVEN** a session-scoped candidate
+- **WHEN** a support belongs to another project/session or falls outside declared ordered coverage
+- **THEN** the entire transaction fails without evidence, event, observation, receipt, relationship, watermark, or FTS side effects
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 3
+
+- **GIVEN** a project-scoped candidate supported by evidence from multiple sessions in the same project
+- **WHEN** validation succeeds
+- **THEN** it preserves every support ID without fabricating one session identity or sequence range
+
+#### Scenario: US1 - Preserve a source-supported observation candidate 4
+
+- **GIVEN** the same stable event identity and payload
+- **WHEN** the submission is replayed
+- **THEN** it returns the original candidate and durable IDs; a changed payload under that identity fails closed
+
+#### Scenario: US2 - Review and explicitly promote a candidate 1
+
+- **GIVEN** a pending candidate
+- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
+- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+
+#### Scenario: US2 - Review and explicitly promote a candidate 2
+
+- **GIVEN** a pending candidate
+- **WHEN** it is rejected
+- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+
+#### Scenario: US2 - Review and explicitly promote a candidate 3
+
+- **GIVEN** an accepted candidate
+- **WHEN** explicit promotion succeeds
+- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+
+#### Scenario: US2 - Review and explicitly promote a candidate 4
+
+- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
+- **WHEN** promotion is attempted
+- **THEN** it fails with zero durable or FTS side effects
+
+#### Scenario: US2 - Review and explicitly promote a candidate 5
+
+- **GIVEN** a later correction or contradiction
+- **WHEN** it is recorded
+- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
 
 ### Requirement: mem_recall, mem_context, and mem_get MUST Form a Progressive Funnel
 
-Compact context and recovery MUST expose stable selected summary IDs without raw support payloads, and `mem_get` MUST expand an explicitly selected summary into its structured claims, coverage, generator, version lineage, and support IDs without returning unrelated records.
+Compact recall and context MUST continue to exclude observations, while `mem_get` MUST expand only an explicitly selected observation into bounded candidate, support-ID, review, promotion, and temporal-memory lineage without returning raw support payloads.
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 1
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
 
-- **GIVEN** a verified root session and ordered supporting evidence
-- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
-- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
 
-- **GIVEN** an existing current summary of the same session and summary kind
-- **WHEN** a later valid version commits
-- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
 
-- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
-- **WHEN** validation runs
-- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
 
-- **GIVEN** an unavailable model or generator
-- **WHEN** ordinary save, recall, or recovery executes
-- **THEN** the SQLite core remains available and never attempts a model or network call
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: mem_project MUST Keep Project Operations Bounded
 
-Project operations MUST support bounded current and historical session-summary inspection within verified project/session scope while briefing continues to delegate to the shared continuation selector and no seventh tool or optional model/vector/graph dependency is introduced.
+`mem_project` MUST add a bounded observation inspection action supporting verified project/session/status/current-history filters, non-branching correction lineage, and a total stable queue order without becoming a mutation, consolidation, or automatic-promotion surface.
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 1
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
 
-- **GIVEN** a verified root session and ordered supporting evidence
-- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
-- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
 
-- **GIVEN** an existing current summary of the same session and summary kind
-- **WHEN** a later valid version commits
-- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
 
-- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
-- **WHEN** validation runs
-- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
 
-- **GIVEN** an unavailable model or generator
-- **WHEN** ordinary save, recall, or recovery executes
-- **THEN** the SQLite core remains available and never attempts a model or network call
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: mem_session MUST Handle Only Verified Root Lifecycle
 
-`mem_session` MUST allow an externally generated structured summary only on the declared verified checkpoint/final lifecycle boundary, validate its identity, ordering, coverage, generator, claims, and supports atomically with the lifecycle receipt, and remain idempotent by stable event identity.
+`mem_session` MUST remain limited to verified lifecycle and session-summary workflows and MUST NOT infer, review, or promote observations from checkpoint, finalization, compaction, or recovery content.
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 1
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
 
-- **GIVEN** a verified root session and ordered supporting evidence
-- **WHEN** `mem_session` receives a valid structured checkpoint or final summary
-- **THEN** it records the external generator, source coverage, atomic claims, support IDs, version lineage, and one immutable submission event before reporting success
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 2
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
 
-- **GIVEN** an existing current summary of the same session and summary kind
-- **WHEN** a later valid version commits
-- **THEN** the prior version becomes superseded, the newer version becomes current, and both remain inspectable with their source lineage
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 3
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
 
-- **GIVEN** a material claim with no support, support from another project/session, or support outside the declared sequence range
-- **WHEN** validation runs
-- **THEN** the entire summary transaction fails with no evidence, projection, receipt, or watermark side effect
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
 
-#### Scenario: US2 - Preserve a source-supported versioned session summary 4
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
 
-- **GIVEN** an unavailable model or generator
-- **WHEN** ordinary save, recall, or recovery executes
-- **THEN** the SQLite core remains available and never attempts a model or network call
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
 
 ### Requirement: Tooling MUST Signal Optional Projection State Without Degrading Core
 

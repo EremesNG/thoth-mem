@@ -210,4 +210,72 @@ describe('MCP boundary', () => {
       expect(ALL_TOOLS).toHaveLength(6);
     } finally { service.close(); }
   });
+
+  it('submits, reviews, promotes, lists, and expands observations through the existing six tools', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const identity = { project_key: 'repo:observation-mcp', project_name: 'observation-mcp', root_session_key: 'root-1', harness: 'codex' as const };
+      const source = await handlers.mem_save({ ...identity, event_key: 'source', evidence: { kind: 'explicit_save', content: 'RAW SOURCE MUST STAY DEFERRED' } });
+      const confirmation = await handlers.mem_save({ ...identity, event_key: 'confirmation', evidence: { kind: 'root_prompt', content: 'Confirm the local-only constraint.' } });
+      const sourceId = (source.structuredContent.data as { evidence: { id: string } }).evidence.id;
+      const confirmationId = (confirmation.structuredContent.data as { evidence: { id: string } }).evidence.id;
+      const submitted = await handlers.mem_save({
+        ...identity, event_key: 'candidate',
+        observation: {
+          kind: 'constraint', scope: 'project', title: 'Local only', claim: 'The memory core remains local only.',
+          proposed_memory: { kind: 'architecture', title: 'Local-only core', content: 'Keep the memory core fully local.', topic_key: 'core/local' },
+          support_ids: [sourceId], generator: { kind: 'root_agent', name: 'codex' }, concepts: ['local'], files: ['src/memory-core'],
+        },
+      });
+      expect(submitted.isError).not.toBe(true);
+      const observationId = (submitted.structuredContent.data as { observation: { id: string } }).observation.id;
+      const privateSupport = await handlers.mem_save({
+        ...identity, event_key: 'private-support',
+        evidence: { kind: 'explicit_save', content: 'Validation result.', metadata: { observation_validation: { observation_id: observationId, result: 'passed', method: '<private>secret method</private>' } } },
+      });
+      expect(privateSupport.isError).toBe(true);
+      const reviewed = await handlers.mem_save({
+        ...identity, event_key: 'review',
+        observation_review: {
+          observation_id: observationId, verdict: 'accepted', basis: 'root_user_confirmed',
+          policy: { id: 'durable-memory', version: '1' }, reason: 'Confirmed by root user.', support_ids: [confirmationId],
+        },
+      });
+      expect(reviewed).toMatchObject({ structuredContent: { data: { operation: 'review', observation: { state: 'accepted' } } } });
+      const promoted = await handlers.mem_save({ ...identity, event_key: 'promotion', observation_promotion: { observation_id: observationId } });
+      expect(promoted).toMatchObject({ structuredContent: { data: { operation: 'promotion', observation: { state: 'promoted' } } } });
+
+      const queue = await handlers.mem_project({ action: 'observations', project_key: identity.project_key, temporal: 'current', budget_chars: 2_000 });
+      expect(queue).toMatchObject({ structuredContent: { data: { action: 'observations', items: [{ id: observationId, state: 'promoted' }] } } });
+      const expanded = await handlers.mem_get({ id: observationId, history: true });
+      expect(expanded).toMatchObject({ structuredContent: { data: { record: { recordType: 'observation', id: observationId, supportIds: [sourceId] } } } });
+      expect(JSON.stringify(queue.structuredContent)).not.toContain('RAW SOURCE MUST STAY DEFERRED');
+      expect(JSON.stringify(expanded.structuredContent)).not.toContain('RAW SOURCE MUST STAY DEFERRED');
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('rejects ambiguous observation branches and untyped support metadata before persistence', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const identity = { project_key: 'repo:strict-observations', project_name: 'strict-observations', root_session_key: 'root-1', harness: 'codex' as const, event_key: 'invalid' };
+      const candidate = {
+        kind: 'fact', scope: 'project', title: 'Candidate', claim: 'Candidate claim.',
+        proposed_memory: { kind: 'discovery', title: 'Candidate', content: 'Candidate claim.' },
+        support_ids: ['missing'], generator: { kind: 'root_agent', name: 'codex' },
+      };
+      const ambiguous = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.' }, observation: candidate });
+      const arbitraryMetadata = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.', metadata: { arbitrary: true } } });
+      const wrongPair = await handlers.mem_save({ ...identity, evidence: { kind: 'handoff', content: 'Source.', metadata: { observation_validation: { observation_id: 'missing', result: 'passed', method: 'vitest' } } } });
+      const supportWithMemory = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.', metadata: { observation_validation: { observation_id: 'missing', result: 'passed', method: 'vitest' } } }, memory: { kind: 'discovery', title: 'No', content: 'No' } });
+      const implicitSupersession = await handlers.mem_save({ ...identity, observation: { ...candidate, proposed_memory: { ...candidate.proposed_memory, supersedes_id: 'memory:old' } } });
+      const partialIdentity = await handlers.mem_save({ project_key: identity.project_key, project_name: identity.project_name, root_session_key: 'root-1', event_key: 'partial', observation_review: { observation_id: 'missing', verdict: 'accepted', basis: 'root_user_confirmed', policy: { id: 'policy', version: '1' }, reason: 'No.', support_ids: ['missing'] } });
+
+      for (const result of [ambiguous, arbitraryMetadata, wrongPair, supportWithMemory, implicitSupersession, partialIdentity]) expect(result.isError).toBe(true);
+      expect(service.listProjects()).toEqual([]);
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
 });

@@ -4,25 +4,79 @@
 
 ### Requirement: Core Retrieval MUST Be Lexical-First and Projection-Aware
 
-The default path MUST use the versioned `strict-selected-any-cap5-rrf-v1` E0 strategy, rank authoritative structured SQLite matches before deterministic fused FTS5 candidates, preserve caller limits and evidence lineage, and require no optional projection, embedding, vector extension, semantic index, schema migration, projection row, or new runtime dependency.
+Core retrieval MUST continue to query current/historical promoted memories only; pending, accepted-but-unpromoted, and rejected observations MUST remain outside memory FTS and automatic context, while any explicit review-time candidate surfacing remains bounded, advisory, and failure-isolated.
 
-#### Scenario: US1 - Use the strongest bounded lexical default 1
+#### Scenario: US3 - Inspect candidates without contaminating recall 1
 
-- **GIVEN** a non-empty lexical query and no internal strategy override
-- **WHEN** `MemoryService.recall` executes
-- **THEN** it uses `strict-selected-any-cap5-rrf-v1`, preserves exact priority, and admits at most five fused lexical rows subject to the caller limit
+- **GIVEN** pending, accepted, rejected, and promoted observations
+- **WHEN** `mem_project` requests observations with project/session/status bounds
+- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US1 - Use the strongest bounded lexical default 2
+#### Scenario: US3 - Inspect candidates without contaminating recall 2
 
-- **GIVEN** benchmark or test code explicitly selecting any existing lexical strategy
-- **WHEN** recall executes
-- **THEN** the selected plan, configuration hash, ranking semantics, and immutable historical evidence remain unchanged
+- **GIVEN** one selected observation ID
+- **WHEN** `mem_get` expands it
+- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US1 - Use the strongest bounded lexical default 3
+#### Scenario: US3 - Inspect candidates without contaminating recall 3
 
-- **GIVEN** public MCP clients
-- **WHEN** they inspect or invoke the six tools
-- **THEN** no strategy selector, diagnostic field, seventh tool, model, network path, embedding, vector state, or persistence migration is exposed
+- **GIVEN** any unpromoted observation
+- **WHEN** compact recall, context, briefing, or native recovery runs
+- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
+
+#### Scenario: US3 - Inspect candidates without contaminating recall 4
+
+- **GIVEN** candidate similarity or related-memory surfacing during explicit review
+- **WHEN** lexical scoring runs
+- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 1
+
+- **GIVEN** a valid file-backed current database
+- **WHEN** the observation schema upgrade starts
+- **THEN** a verified recoverable backup exists before the forward transaction commits and all prior authoritative rows and memory FTS state remain intact
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 2
+
+- **GIVEN** legacy observations, imported `legacy_observation` evidence, summaries, handoffs, or promoted memories
+- **WHEN** migration completes
+- **THEN** no candidate, support, review, policy basis, or promotion is inferred for historical data
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 3
+
+- **GIVEN** canonical observation/review/promotion submission evidence
+- **WHEN** projection rebuild runs
+- **THEN** it deterministically recreates the same candidates, verdicts, promotion mappings, and current states or fails closed without replacing a valid projection
+
+#### Scenario: US4 - Upgrade and rebuild without inventing observations 4
+
+- **GIVEN** an injected backup, taxonomy, lineage, rebuild, or transaction failure
+- **WHEN** startup reports the error
+- **THEN** the source database remains recoverable at its prior revision with no partial observation state
+
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 1
+
+- **GIVEN** control and observation-pipeline projects with identical supported durable outcomes
+- **WHEN** the committed fixture runs
+- **THEN** both expose the same final current memory content, topic lineage, recall order, delivery budget, and useful-content ratio
+
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 2
+
+- **GIVEN** unsupported, poisoned, negated, cross-scope, failed, changing-requirement, and stale-procedure cases
+- **WHEN** observation review executes
+- **THEN** the report distinguishes accepted, rejected, blocked, and promoted candidates and records zero unsupported or unreviewed promoted memories
+
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 3
+
+- **GIVEN** a complete run
+- **WHEN** its report is validated
+- **THEN** it reconciles operation counts, stable IDs, supports, review policy, memory/FTS rows, p50/p95 latency, SQLite bytes, payload characters, errors, and literal zero model/network calls
+
+#### Scenario: US5 - Demonstrate useful promotion under an equal budget 4
+
+- **GIVEN** incomplete, unequal-budget, lineage-invalid, recall-regressing, contaminated, or schema-invalid evidence
+- **WHEN** readiness is assessed
+- **THEN** the pipeline fails its outcome gate without changing the existing direct-save or retrieval defaults
 
 ### Requirement: FTS5 Lexical Retrieval MUST Sanitize Untrusted Queries
 

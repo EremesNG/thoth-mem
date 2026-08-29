@@ -139,6 +139,28 @@ describe('lexical query plans', () => {
 });
 
 describe('lexical-first retrieval', () => {
+  it('keeps pending, accepted, and rejected observations outside memory FTS and automatic context', () => {
+    const control = new MemoryService({ databasePath: ':memory:' });
+    const candidate = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:observation-isolation', name: 'observation-isolation' };
+    try {
+      for (const service of [control, candidate]) {
+        service.save({ project, eventKey: 'memory', evidence: { kind: 'explicit_save', content: 'Stable promoted source.' }, memory: { kind: 'decision', title: 'Stable guidance', content: 'Keep stable promoted guidance.', topicKey: 'stable/guidance' } });
+      }
+      const support = candidate.save({ project, eventKey: 'observation-support', evidence: { kind: 'explicit_save', content: 'UNPROMOTED OBSERVATION SENTINEL' } });
+      candidate.submitObservation({ project, eventKey: 'observation', observation: {
+        kind: 'fact', scope: 'project', title: 'Unpromoted sentinel', claim: 'UNPROMOTED OBSERVATION SENTINEL',
+        proposedMemory: { kind: 'discovery', title: 'Unpromoted sentinel', content: 'UNPROMOTED OBSERVATION SENTINEL' },
+        supportIds: [support.evidence.id], generator: { kind: 'root_agent', name: 'codex' },
+      } });
+
+      const recallInput = { projectKey: project.key, query: 'stable guidance sentinel', correlationId: 'observation-isolation' };
+      expect(candidate.recall(recallInput)).toEqual(control.recall(recallInput));
+      expect(candidate.context({ projectKey: project.key, correlationId: 'observation-context' })).toEqual(control.context({ projectKey: project.key, correlationId: 'observation-context' }));
+      expect(candidate.recall({ projectKey: project.key, query: 'UNPROMOTED OBSERVATION SENTINEL' }).items).toEqual([]);
+    } finally { control.close(); candidate.close(); }
+  });
+
   it.each(CANDIDATE_STRATEGIES)('returns no plan or result for empty normalized input with %s', (lexicalStrategy) => {
     expect(buildFtsQueryPlan('!!! "" (((', lexicalStrategy)).toBeNull();
     const service = new MemoryService({ databasePath: ':memory:' });

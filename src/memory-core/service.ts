@@ -8,6 +8,7 @@ import {
   LIFECYCLE_OPERATION_VALUES,
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
+  requireObservationSupportMetadata,
   requireCanonicalValue,
   type BudgetMeasurement,
   type ContextResult,
@@ -15,15 +16,26 @@ import {
   type LifecycleInput,
   type LifecycleResult,
   type MemoryRecord,
+  type ListObservationsInput,
+  type ListObservationsResult,
+  type ObservationRecord,
+  type ObservationSupportMetadata,
+  type PromoteObservationInput,
+  type PromoteObservationResult,
   type RecallItem,
   type RecallResult,
+  type ReviewObservationInput,
+  type ReviewObservationResult,
   type SaveMemoryInput,
   type SaveMemoryResult,
+  type SubmitObservationInput,
+  type SubmitObservationResult,
   type SessionEventInput,
   type SessionSummaryRecord,
   type SummaryContextItem,
 } from './contracts.js';
 import { renderContinuation } from './continuation.js';
+import { canonicalizeObservation, canonicalizeObservationReview, insertObservationProjection, insertObservationReviewProjection, listObservationRecords, observationFromId } from './observations.js';
 import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
@@ -85,6 +97,27 @@ function validateSaveTaxonomy(input: SaveMemoryInput): void {
     if (input.memory.outcome !== undefined) requireCanonicalValue('memory.outcome', MEMORY_OUTCOME_VALUES, input.memory.outcome);
   }
 }
+function canonicalizeObservationSupportMetadata(kind: SaveMemoryInput['evidence']['kind'], metadata: Record<string, unknown>): ObservationSupportMetadata {
+  const parsed = requireObservationSupportMetadata(kind, metadata);
+  const sanitizeMetadataText = (value: string, label: string): string => {
+    const sanitized = sanitizePrivateContent(value).normalize('NFC').trim();
+    if (!sanitized) throw new Error(`${label} is required after privacy filtering`);
+    return sanitized;
+  };
+  if ('observation_validation' in parsed) {
+    const validation = parsed.observation_validation;
+    return requireObservationSupportMetadata(kind, { observation_validation: {
+      ...validation,
+      method: sanitizeMetadataText(validation.method, 'evidence.metadata.observation_validation.method'),
+    } });
+  }
+  const attestation = parsed.observation_review_attestation;
+  return requireObservationSupportMetadata(kind, { observation_review_attestation: {
+    ...attestation,
+    reviewer: sanitizeMetadataText(attestation.reviewer, 'evidence.metadata.observation_review_attestation.reviewer'),
+    method: sanitizeMetadataText(attestation.method, 'evidence.metadata.observation_review_attestation.method'),
+  } });
+}
 
 function sessionEventDefaults(input: SaveMemoryInput): SessionEventInput | null {
   if (!input.session || input.session.harness === 'import' || input.evidence.kind === 'legacy_prompt' || input.evidence.kind === 'legacy_observation') return null;
@@ -135,8 +168,24 @@ export class MemoryService {
 
   save(input: SaveMemoryInput): SaveMemoryResult {
     validateSaveTaxonomy(input);
-    return this.database.transaction(() => {
+    const hasStructuredSupport = input.evidence.metadata !== undefined
+      && (Object.hasOwn(input.evidence.metadata, 'observation_validation') || Object.hasOwn(input.evidence.metadata, 'observation_review_attestation'));
+    const structuredSupport: ObservationSupportMetadata | null = hasStructuredSupport
+      ? canonicalizeObservationSupportMetadata(input.evidence.kind, input.evidence.metadata!)
+      : null;
+    const persistedMetadata = structuredSupport ?? input.evidence.metadata ?? {};
+    if (structuredSupport && (!input.session || !input.eventKey || input.memory || input.session.harness === 'import')) {
+      throw new Error('Structured observation support requires verified session identity, event key, and evidence without memory');
+    }
+    return this.database.transaction((): SaveMemoryResult => {
       const projectId = ensureProject(this.database, input.project);
+      if (structuredSupport) {
+        const observationId = 'observation_validation' in structuredSupport
+          ? structuredSupport.observation_validation.observation_id
+          : structuredSupport.observation_review_attestation.observation_id;
+        const observation = observationFromId(this.database, observationId);
+        if (!observation || observation.projectId !== projectId) throw new Error('Structured support requires an existing same-project observation');
+      }
       const evidenceContent = sanitizePrivateContent(input.evidence.content);
       const filteredMemory = input.memory ? {
         ...input.memory,
@@ -144,7 +193,7 @@ export class MemoryService {
         content: sanitizePrivateContent(input.memory.content),
       } : null;
       const payloadHash = hashContent(JSON.stringify({
-        evidence: { ...input.evidence, content: evidenceContent },
+        evidence: { ...input.evidence, content: evidenceContent, ...(Object.keys(persistedMetadata).length ? { metadata: persistedMetadata } : {}) },
         memory: filteredMemory,
       }));
       const sessionId = input.session ? ensureSession(this.database, projectId, input.session) : null;
@@ -161,7 +210,7 @@ export class MemoryService {
       const at = input.evidence.capturedAt ?? now();
       if (!evidenceContent.trim()) throw new Error('Evidence content is required after privacy filtering');
       const evidenceId = input.eventKey ? stableUuid(`evidence:${projectId}:${input.eventKey}`) : randomUUID();
-      this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceId, projectId, sessionId, input.evidence.kind, evidenceContent, hashContent(evidenceContent), input.evidence.sourceRef ?? null, at, JSON.stringify(input.evidence.metadata ?? {}));
+      this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(evidenceId, projectId, sessionId, input.evidence.kind, evidenceContent, hashContent(evidenceContent), input.evidence.sourceRef ?? null, at, JSON.stringify(persistedMetadata));
       const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
       const eventDefaults = sessionEventDefaults(input);
       const event = sessionId && eventDefaults ? appendSessionEvent(this.database, sessionId, evidenceId, eventDefaults) : null;
@@ -181,6 +230,148 @@ export class MemoryService {
       if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,?)').run(projectId, input.eventKey, payloadHash, evidenceId, memoryId);
       const memory = memoryFromRow(this.database, this.database.prepare('SELECT * FROM memories WHERE id=?').get(memoryId) as Record<string, unknown>);
       return { evidence, memory, event, projectId, sessionId, duplicate: false };
+    })();
+  }
+
+  submitObservation(input: SubmitObservationInput): SubmitObservationResult {
+    const canonical = canonicalizeObservation(input.observation);
+    if (!input.eventKey.trim()) throw new Error('Observation event key is required');
+    if (canonical.input.scope === 'session' && !input.session) throw new Error('Session-scoped observation requires verified session identity');
+    if (input.session?.harness === 'import') throw new Error('Import sessions cannot submit observations');
+    return this.database.transaction((): SubmitObservationResult => {
+      const projectId = ensureProject(this.database, input.project);
+      const sessionId = input.session ? ensureSession(this.database, projectId, input.session) : null;
+      const payloadHash = hashContent(canonical.canonicalJson);
+      const receipt = this.database.prepare("SELECT payload_hash,operation_evidence_id,observation_id FROM observation_receipts WHERE project_id=? AND operation='candidate' AND event_key=?").get(projectId, input.eventKey) as { payload_hash: string; operation_evidence_id: string; observation_id: string } | undefined;
+      if (receipt) {
+        const observation = observationFromId(this.database, receipt.observation_id);
+        if (!observation) throw new Error('Observation receipt points to missing state');
+        if (observation.sessionId !== sessionId) throw new Error('Observation event key was reused with a different session identity');
+        if (receipt.payload_hash !== payloadHash) throw new Error('Observation event key was reused with a different payload');
+        const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(receipt.operation_evidence_id) as Record<string, unknown>);
+        return { operation: 'candidate', observation, evidence, event: eventForEvidence(this.database, evidence.id), projectId, sessionId, duplicate: true };
+      }
+      const at = now();
+      const evidenceId = stableUuid(`observation-evidence:${projectId}:${input.eventKey}`);
+      this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(
+        evidenceId, projectId, sessionId, 'observation', canonical.canonicalJson, hashContent(canonical.canonicalJson), null, at,
+        JSON.stringify({ schema: 'thoth-mem.observation.v1' }),
+      );
+      const event = sessionId ? appendSessionEvent(this.database, sessionId, evidenceId, {
+        actor: 'agent', authority: 'root_user', retentionClass: canonical.input.scope === 'session' ? 'session' : 'project', privacyClass: 'standard',
+      }) : null;
+      const observation = insertObservationProjection(this.database, {
+        projectId, sessionId, submissionEvidenceId: evidenceId, observation: canonical.input, createdAt: at,
+      });
+      this.database.prepare("INSERT INTO observation_receipts(project_id,operation,event_key,payload_hash,operation_evidence_id,observation_id,review_id,memory_id) VALUES(?,'candidate',?,?,?,?,NULL,NULL)").run(
+        projectId, input.eventKey, payloadHash, evidenceId, observation.id,
+      );
+      const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
+      return { operation: 'candidate', observation, evidence, event, projectId, sessionId, duplicate: false };
+    })();
+  }
+
+  listObservations(input: ListObservationsInput): ListObservationsResult {
+    return listObservationRecords(this.database, input);
+  }
+
+  reviewObservation(input: ReviewObservationInput): ReviewObservationResult {
+    const canonical = canonicalizeObservationReview(input.review);
+    if (!input.eventKey.trim()) throw new Error('Observation review event key is required');
+    if (input.session.harness === 'import') throw new Error('Import sessions cannot review observations');
+    return this.database.transaction((): ReviewObservationResult => {
+      const projectId = ensureProject(this.database, input.project);
+      const sessionId = ensureSession(this.database, projectId, input.session);
+      const payloadHash = hashContent(canonical.canonicalJson);
+      const receipt = this.database.prepare("SELECT payload_hash,operation_evidence_id,observation_id,review_id FROM observation_receipts WHERE project_id=? AND operation='review' AND event_key=?").get(projectId, input.eventKey) as { payload_hash: string; operation_evidence_id: string; observation_id: string; review_id: string } | undefined;
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new Error('Observation review event key was reused with a different payload');
+        const observation = observationFromId(this.database, receipt.observation_id);
+        if (!observation?.review || observation.review.id !== receipt.review_id || observation.review.reviewerSessionId !== sessionId) throw new Error('Observation review receipt identity is inconsistent');
+        const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(receipt.operation_evidence_id) as Record<string, unknown>);
+        const event = eventForEvidence(this.database, evidence.id);
+        if (!event) throw new Error('Observation review receipt is missing its ordered event');
+        return { operation: 'review', observation, evidence, event, projectId, sessionId, duplicate: true };
+      }
+      const at = now();
+      const evidenceId = stableUuid(`observation-review-evidence:${projectId}:${input.eventKey}`);
+      this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(
+        evidenceId, projectId, sessionId, 'observation_review', canonical.canonicalJson, hashContent(canonical.canonicalJson), null, at,
+        JSON.stringify({ schema: 'thoth-mem.observation-review.v1' }),
+      );
+      const event = appendSessionEvent(this.database, sessionId, evidenceId, { actor: 'agent', authority: 'root_user', retentionClass: 'project', privacyClass: 'standard' });
+      const observation = insertObservationReviewProjection(this.database, {
+        projectId, reviewerSessionId: sessionId, reviewEvidenceId: evidenceId, review: canonical.input, createdAt: at,
+      });
+      this.database.prepare("INSERT INTO observation_receipts(project_id,operation,event_key,payload_hash,operation_evidence_id,observation_id,review_id,memory_id) VALUES(?,'review',?,?,?,?,?,NULL)").run(
+        projectId, input.eventKey, payloadHash, evidenceId, observation.id, observation.review!.id,
+      );
+      const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
+      return { operation: 'review', observation, evidence, event, projectId, sessionId, duplicate: false };
+    })();
+  }
+
+  promoteObservation(input: PromoteObservationInput): PromoteObservationResult {
+    if (!input.eventKey.trim() || !input.observationId.trim()) throw new Error('Observation promotion requires event and observation IDs');
+    if (input.session.harness === 'import') throw new Error('Import sessions cannot promote observations');
+    return this.database.transaction((): PromoteObservationResult => {
+      const projectId = ensureProject(this.database, input.project);
+      const sessionId = ensureSession(this.database, projectId, input.session);
+      const session = this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string } | undefined;
+      if (!session || session.state === 'degraded') throw new Error('Observation promotion requires verified root identity');
+      const payloadHash = hashContent(JSON.stringify({ observationId: input.observationId }));
+      const receipt = this.database.prepare("SELECT payload_hash,operation_evidence_id,observation_id,memory_id FROM observation_receipts WHERE project_id=? AND operation='promotion' AND event_key=?").get(projectId, input.eventKey) as { payload_hash: string; operation_evidence_id: string; observation_id: string; memory_id: string } | undefined;
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new Error('Observation promotion event key was reused with a different payload');
+        const observation = observationFromId(this.database, receipt.observation_id);
+        if (!observation?.review || observation.promotedMemoryId !== receipt.memory_id) throw new Error('Observation promotion receipt is inconsistent');
+        const memoryRow = this.database.prepare('SELECT * FROM memories WHERE id=?').get(receipt.memory_id) as Record<string, unknown> | undefined;
+        if (!memoryRow) throw new Error('Observation promotion receipt points to missing memory');
+        const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(receipt.operation_evidence_id) as Record<string, unknown>);
+        const event = eventForEvidence(this.database, evidence.id);
+        if (!event) throw new Error('Observation promotion receipt is missing its ordered event');
+        if (event.sessionId !== sessionId) throw new Error('Observation promotion event key was reused with a different session identity');
+        return { operation: 'promotion', observation, review: observation.review, memory: memoryFromRow(this.database, memoryRow), evidence, event, projectId, sessionId, duplicate: true };
+      }
+      const observation = observationFromId(this.database, input.observationId);
+      if (!observation || observation.projectId !== projectId) throw new Error('Observation promotion requires an existing same-project candidate');
+      if (!observation.review || observation.review.verdict !== 'accepted') throw new Error('Only a terminally accepted observation can be promoted');
+      if (observation.promotedMemoryId) throw new Error('Observation is already promoted under a different event key');
+      const at = now();
+      const canonicalPromotion = JSON.stringify({ schema: 'thoth-mem.observation-promotion.v1', promotion: { observationId: observation.id } });
+      const evidenceId = stableUuid(`observation-promotion-evidence:${projectId}:${input.eventKey}`);
+      this.database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(
+        evidenceId, projectId, sessionId, 'observation_promotion', canonicalPromotion, hashContent(canonicalPromotion), null, at,
+        JSON.stringify({ schema: 'thoth-mem.observation-promotion.v1' }),
+      );
+      const event = appendSessionEvent(this.database, sessionId, evidenceId, { actor: 'agent', authority: 'root_user', retentionClass: 'project', privacyClass: 'standard' });
+      const proposed = observation.proposedMemory;
+      let supersedesId: string | null = null;
+      if (!supersedesId && proposed.topicKey) {
+        supersedesId = (this.database.prepare("SELECT id FROM memories WHERE project_id=? AND topic_key=? AND status='current'").get(projectId, proposed.topicKey) as { id: string } | undefined)?.id ?? null;
+      }
+      if (supersedesId) {
+        const changed = this.database.prepare("UPDATE memories SET status='superseded',invalid_at=? WHERE id=? AND project_id=? AND status='current'").run(at, supersedesId, projectId);
+        if (changed.changes !== 1) throw new Error('Superseded memory is not current in this project');
+      }
+      const memoryId = stableUuid(`observation-memory:${observation.id}`);
+      this.database.prepare('INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
+        memoryId, projectId, proposed.topicKey ?? null, proposed.kind, proposed.title, proposed.content, proposed.outcome ?? 'unknown', 'current', at, null, supersedesId, at,
+      );
+      for (const supportId of [...observation.supportIds, ...observation.review.supportIds]) {
+        this.database.prepare("INSERT OR IGNORE INTO memory_evidence VALUES(?,?,'supports')").run(memoryId, supportId);
+      }
+      for (const sourceId of [observation.submissionEvidenceId, observation.review.evidenceId, evidenceId]) {
+        this.database.prepare("INSERT OR IGNORE INTO memory_evidence VALUES(?,?,'derived_from')").run(memoryId, sourceId);
+      }
+      this.database.prepare('INSERT INTO observation_promotions VALUES(?,?,?,?)').run(observation.id, evidenceId, memoryId, at);
+      this.database.prepare("INSERT INTO observation_receipts(project_id,operation,event_key,payload_hash,operation_evidence_id,observation_id,review_id,memory_id) VALUES(?,'promotion',?,?,?,?,?,?)").run(
+        projectId, input.eventKey, payloadHash, evidenceId, observation.id, observation.review.id, memoryId,
+      );
+      const promoted = observationFromId(this.database, observation.id)!;
+      const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
+      const memory = memoryFromRow(this.database, this.database.prepare('SELECT * FROM memories WHERE id=?').get(memoryId) as Record<string, unknown>);
+      return { operation: 'promotion', observation: promoted, review: promoted.review!, memory, evidence, event, projectId, sessionId, duplicate: false };
     })();
   }
 
@@ -311,7 +502,21 @@ export class MemoryService {
     return result;
   }
 
-  get(input: { id: string; history?: boolean }): { record: MemoryRecord | EvidenceRecord | SessionSummaryRecord; lineage: Array<MemoryRecord | SessionSummaryRecord> } {
+  get(input: { id: string; history?: boolean }): { record: MemoryRecord | EvidenceRecord | SessionSummaryRecord | ObservationRecord; lineage: Array<MemoryRecord | SessionSummaryRecord | ObservationRecord> } {
+    const observation = observationFromId(this.database, input.id);
+    if (observation) {
+      const lineage: ObservationRecord[] = [observation];
+      if (input.history) {
+        let id = observation.predecessorId;
+        while (id) {
+          const item = observationFromId(this.database, id);
+          if (!item) break;
+          lineage.push(item);
+          id = item.predecessorId;
+        }
+      }
+      return { record: observation, lineage };
+    }
     const summary = sessionSummaryFromId(this.database, input.id);
     if (summary) {
       const lineage: SessionSummaryRecord[] = [summary];

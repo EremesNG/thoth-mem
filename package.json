@@ -28,6 +28,7 @@
     "benchmarks/report.schema.json",
     "benchmarks/retrieval-report.schema.json",
     "benchmarks/lexical-comparison-report.schema.json",
+    "benchmarks/observation-pipeline/report.schema.json",
     "benchmarks/lexical-comparison-baseline.json",
     "benchmarks/lexical-recall-at-5-baseline.json"
   ],
@@ -38,6 +39,7 @@
     "integration:sync": "node scripts/sync-plugin-distribution.mjs",
     "integration:smoke": "node scripts/verify-packed-plugins.mjs",
     "benchmark:fixture": "node benchmarks/run.mjs",
+    "benchmark:observation": "node benchmarks/observation-pipeline/run.mjs",
     "benchmark:prepare:longmemeval": "node benchmarks/longmemeval/prepare.mjs",
     "benchmark:longmemeval": "node benchmarks/longmemeval/run.mjs",
     "benchmark:compare:longmemeval": "node benchmarks/longmemeval/compare.mjs",

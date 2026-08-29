@@ -69,6 +69,7 @@ describe('host-neutral lifecycle', () => {
       service.lifecycle({ operation: 'enroll', harness: 'codex', project: { key: 'repo:passive', name: 'passive' }, rootSessionKey: 'root', eventKey: 'enroll' });
       expect(service.context({ projectKey: 'repo:passive' }).items).toEqual([]);
       expect(service.recall({ projectKey: 'repo:passive', query: 'tool subagent' }).items).toEqual([]);
+      expect(service.listObservations({ projectKey: 'repo:passive' }).items).toEqual([]);
     } finally { service.close(); }
   });
 
@@ -101,6 +102,7 @@ describe('host-neutral lifecycle', () => {
       expect(service.get({ id: checkpoint.evidenceId! }).record).toMatchObject({ kind: 'checkpoint', content: checkpointInput.content });
       expect(service.context({ projectKey: 'repo:layers' }).items).toEqual([]);
       expect(service.recall({ projectKey: 'repo:layers', query: 'continuity' }).items).toEqual([]);
+      expect(service.listObservations({ projectKey: 'repo:layers' }).items).toEqual([]);
     } finally { service.close(); }
   });
 

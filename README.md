@@ -2,7 +2,7 @@
 
 SQLite-first persistent memory for OpenCode, Codex, and Claude Code.
 
-The product has one local SQLite/FTS5 source of truth, immutable evidence, database-ordered session events, source-supported versioned session summaries, promoted temporal memories, and exactly six MCP tools: `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. OpenCode additionally exposes one read-only native `thoth_mem_root_identity` tool for active-session metadata; it is not an MCP memory operation. Codex and Claude obtain the same root identity from verified native lifecycle context. It requires no embedding model, vector extension, graph engine, LLM, network service, HTTP server, or dashboard.
+The product has one local SQLite/FTS5 source of truth, immutable evidence, database-ordered session events, source-supported versioned session summaries, reviewed observation candidates, promoted temporal memories, and exactly six MCP tools: `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. OpenCode additionally exposes one read-only native `thoth_mem_root_identity` tool for active-session metadata; it is not an MCP memory operation. Codex and Claude obtain the same root identity from verified native lifecycle context. It requires no embedding model, vector extension, graph engine, LLM, network service, HTTP server, or dashboard.
 
 ## Use
 
@@ -12,7 +12,7 @@ pnpm run build
 node dist/index.js mcp --data-dir ./memory-data
 ```
 
-Recall is progressive: `mem_recall mode=compact`, then `mode=context`, then `mem_get` only when full content is needed. `mem_context` is a separate bounded project/session recovery briefing, and `mem_project action=summaries` provides bounded summary inspection. The exact six-tool surface does not change.
+Recall is progressive: `mem_recall mode=compact`, then `mode=context`, then `mem_get` only when full content is needed. `mem_context` is a separate bounded project/session recovery briefing; `mem_project action=summaries` and `action=observations` provide bounded explicit inspection. Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory. Rejection is terminal, corrections append successors, and normal lifecycle capture never infers a candidate, review, or promotion. The exact six-tool surface does not change.
 
 Verified session saves return an ordered event sequence. At `checkpoint_pre_compact` or `finalize`, `mem_session` may accept an externally produced structured summary whose every claim cites in-range evidence from the same project and root session. The core validates and versions it but never generates it or promotes a handoff automatically. A minimal checkpoint submission uses the evidence ID and event sequence returned by an earlier session-scoped `mem_save`:
 
@@ -120,11 +120,12 @@ The runtime also does not guess, rename, copy, or dual-read a database created u
 pnpm test
 pnpm run integration:verify
 pnpm run integration:smoke
+pnpm run benchmark:observation
 pnpm run benchmark:fixture
 pnpm run prepublishOnly
 ```
 
-The committed fixture is an offline contract check, not evidence that optional retrieval lanes should be promoted. External LongMemEval-S, LoCoMo, AMB, and SDEBench lanes remain explicitly unavailable until separately prepared equal-budget runs produce complete reports.
+The observation benchmark is an offline equal-budget control/candidate check over the real SQLite service. It requires identical final memory, topic lineage, and recall delivery; complete candidate/review/promotion lineage; explicit poisoned, negated, cross-scope, failed, changing-requirement, stale-procedure, correction, and topic-supersession outcomes; canonical payload JSON with recomputed evidence/receipt hashes, exact output IDs, and exact per-scenario projection windows carried in a hashed semantic trace. Final memory and topic lineage derive from complete audited SQLite rows; receipt targets derive from their canonical evidence and projection relationships; scenario identity, supports, policies, predecessor/current reviews and both promotion mappings reconcile with receipts, FTS, and attributable writes. The gate also requires zero invalid promotions or pre-promotion recall leakage, p95 recall and aggregate SQLite footprint at most 2× control, and zero model/network calls. The general committed fixture embeds that outcome; neither command is evidence that optional retrieval lanes should be promoted. External LongMemEval-S, LoCoMo, AMB, and SDEBench lanes remain explicitly unavailable until separately prepared equal-budget runs produce complete reports.
 
 LongMemEval-S is the first opt-in external retrieval baseline. Preparation is the only networked step; it downloads the official cleaned S file from an immutable Hugging Face revision, verifies SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`, validates its records, and stores it under the gitignored `benchmarks/.cache/longmemeval/` directory. Evaluation re-verifies the file and runs offline:
 
