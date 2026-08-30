@@ -36,13 +36,31 @@ Plan mode MUST NOT write configuration, Skills, provider state, receipts, backup
 
 ### Requirement: Setup MUST Merge Only Managed Configuration
 
-OpenCode setup MUST own only exact thoth-mem plugin entries, the thoth-mem Skill tree, provider configuration fields, and its receipt. Codex and Claude setup MUST use native managers and MUST NOT edit their caches directly.
+OpenCode setup MUST own only exact thoth-mem plugin entries, the thoth-mem Skill tree, provider configuration fields, and its receipt. Codex and Claude Code setup MUST use their native managers. Managed Codex setup MUST add, inspect, install, enable or repair, verify, and roll back only marketplace `thoth-mem-codex` and plugin `thoth-mem@thoth-mem-codex`; managed Claude Code setup MUST do the same only for marketplace `thoth-mem-claude` and plugin `thoth-mem@thoth-mem-claude`; neither host setup may edit manager caches directly or delete legacy/unrelated state by name alone.
 
-#### Scenario: Preserve unrelated configuration
+#### Scenario: US1 - Manage each native host identity safely 1
+
+- **GIVEN** a Codex manager with no thoth-mem marketplace or plugin
+- **WHEN** managed setup installs the package
+- **THEN** it adds marketplace `thoth-mem-codex`, installs and verifies `thoth-mem@thoth-mem-codex`, and never edits the manager cache directly
+
+#### Scenario: US1 - Manage each native host identity safely 2
+
+- **GIVEN** a Claude Code manager with no thoth-mem marketplace or plugin
+- **WHEN** managed setup installs the package
+- **THEN** it adds marketplace `thoth-mem-claude`, installs and verifies `thoth-mem@thoth-mem-claude`, and never edits the manager cache directly
+
+#### Scenario: US1 - Manage each native host identity safely 3
 
 - **GIVEN** unrelated plugins, Skills, comments, and provider fields
 - **WHEN** setup installs or repairs thoth-mem
 - **THEN** unrelated state remains byte-identical
+
+#### Scenario: US1 - Manage each native host identity safely 4
+
+- **GIVEN** a real existing native installation
+- **WHEN** this repository change is verified
+- **THEN** no marketplace, plugin, cache, receipt, or home state is mutated without separate explicit authorization
 
 ### Requirement: Mutating Setup MUST Be Atomic, Receipt-Owned, and Verifiable
 

@@ -52,14 +52,14 @@ Codex users can add the repository marketplace and install the public plugin:
 
 ```sh
 codex plugin marketplace add EremesNG/thoth-mem
-codex plugin add thoth-mem@thoth-mem
+codex plugin add thoth-mem@thoth-mem-codex
 ```
 
 Claude Code users can use the corresponding repository marketplace:
 
 ```sh
 claude plugin marketplace add EremesNG/thoth-mem
-claude plugin install thoth-mem@thoth-mem
+claude plugin install thoth-mem@thoth-mem-claude
 ```
 
 Both public plugins load the exact published `thoth-mem` npm version declared by the repository distribution. They include native hooks, one six-tool MCP registration, and the shared memory Skill.

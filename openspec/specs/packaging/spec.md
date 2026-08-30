@@ -38,13 +38,25 @@ The packed release MUST keep one coherent OpenCode, Codex, and Claude distributi
 
 ### Requirement: NPM Tarball MUST Match One Canonical Integration Inventory
 
-Every packaged native asset MUST appear exactly once under one harness owner or the declared shared owner, and package, setup, and smoke verification MUST consume the same inventory.
+Every packaged native asset MUST appear exactly once under one harness owner or the declared shared owner, and package, setup, and smoke verification MUST consume the same inventory. Within that inventory, the Codex and Claude Code marketplace descriptors MUST identify marketplaces `thoth-mem-codex` and `thoth-mem-claude` respectively, MUST retain plugin and Skill identifier `thoth-mem`, and MUST make each marketplace/plugin cache segment pair distinct.
 
-#### Scenario: Inventory references a missing asset
+#### Scenario: US2 - Resolve every packaged native Skill unambiguously 1
 
-- **GIVEN** a declared path absent from the tarball
+- **GIVEN** the packed Codex and Claude Code marketplace descriptors
+- **WHEN** either host derives its cache topology
+- **THEN** each marketplace segment is host-specific, each plugin segment is `thoth-mem`, and the Skill remains named `thoth-mem`
+
+#### Scenario: US2 - Resolve every packaged native Skill unambiguously 2
+
+- **GIVEN** a declared inventory path absent from the tarball
 - **WHEN** integration verification runs
 - **THEN** packaging fails before publication or host installation
+
+#### Scenario: US2 - Resolve every packaged native Skill unambiguously 3
+
+- **GIVEN** one later separately authorized installation per host
+- **WHEN** each host restarts and catalogs thoth-mem
+- **THEN** Codex resolves `cache/thoth-mem-codex/thoth-mem/<version>/skills/thoth-mem/SKILL.md` and Claude resolves `cache/thoth-mem-claude/thoth-mem/<version>/skills/thoth-mem/SKILL.md` without collapsing a segment
 
 ### Requirement: OpenCode MUST Keep SQLite Behind a Literal Node Boundary
 

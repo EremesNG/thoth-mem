@@ -49,7 +49,7 @@ describe('public plugin marketplace distribution', () => {
     try {
       const marketplace = spawnSync(codexCommand, ['plugin', 'marketplace', 'add', repository, '--json'], options);
       expect(marketplace.status, `${marketplace.stdout}\n${marketplace.stderr}`).toBe(0);
-      const installation = spawnSync(codexCommand, ['plugin', 'add', 'thoth-mem@thoth-mem', '--json'], options);
+      const installation = spawnSync(codexCommand, ['plugin', 'add', 'thoth-mem@thoth-mem-codex', '--json'], options);
       expect(installation.status, `${installation.stdout}\n${installation.stderr}`).toBe(0);
       const installedPath = (JSON.parse(installation.stdout) as { installedPath: string }).installedPath;
       expect(resolve(installedPath).startsWith(resolve(codexHome))).toBe(true);
@@ -69,7 +69,7 @@ describe('public plugin marketplace distribution', () => {
       plugins: Array<{ name: string; source: { source: string; path: string } }>;
     }>(join(repository, '.agents', 'plugins', 'marketplace.json'));
 
-    expect(marketplace.name).toBe('thoth-mem');
+    expect(marketplace.name).toBe('thoth-mem-codex');
     expect(marketplace.plugins).toHaveLength(1);
     expect(marketplace.plugins[0]).toMatchObject({
       name: 'thoth-mem',
@@ -95,6 +95,11 @@ describe('public plugin marketplace distribution', () => {
     expect(manifest).not.toHaveProperty('hooks');
     expect(manifest).not.toHaveProperty('displayName');
     expect(manifest).not.toHaveProperty('category');
+    expect(marketplace.name).not.toBe(manifest.name);
+    expect(join('cache', marketplace.name, manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
+      'cache/thoth-mem-codex/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+    );
+    expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of ['./hooks/hooks.json', manifest.mcpServers, manifest.skills]) {
       expect(existsSync(resolve(pluginRoot, component)), component).toBe(true);
     }
@@ -121,7 +126,7 @@ describe('public plugin marketplace distribution', () => {
       name: string;
       plugins: Array<{ name: string; version: string; source: string }>;
     }>(join(repository, '.claude-plugin', 'marketplace.json'));
-    expect(marketplace.name).toBe('thoth-mem');
+    expect(marketplace.name).toBe('thoth-mem-claude');
     expect(marketplace.plugins).toEqual([
       expect.objectContaining({ name: 'thoth-mem', version: '0.4.13', source: './plugin' }),
     ]);
@@ -141,6 +146,11 @@ describe('public plugin marketplace distribution', () => {
       mcpServers: './.mcp.json',
       skills: './skills/',
     });
+    expect(marketplace.name).not.toBe(manifest.name);
+    expect(join('cache', marketplace.name, manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
+      'cache/thoth-mem-claude/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+    );
+    expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of [manifest.hooks, manifest.mcpServers, manifest.skills]) {
       expect(existsSync(resolve(pluginRoot, component)), component).toBe(true);
     }
