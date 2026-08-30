@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "thoth-mem",
+  "name": "thoth-mem-claude",
   "description": "SQLite-first persistent memory for coding agents.",
   "owner": {
     "name": "thoth-mem contributors"

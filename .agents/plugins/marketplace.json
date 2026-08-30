@@ -1,5 +1,5 @@
 {
-  "name": "thoth-mem",
+  "name": "thoth-mem-codex",
   "interface": {
     "displayName": "thoth-mem Persistent Memory"
   },

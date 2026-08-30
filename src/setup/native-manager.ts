@@ -9,6 +9,9 @@ import { atomicWriteText } from './transaction.js';
 
 export type NativeManagerHost = 'codex' | 'claude';
 
+const PLUGIN_NAME = 'thoth-mem';
+type MarketplaceName = `${typeof PLUGIN_NAME}-${NativeManagerHost}`;
+
 export interface ManagerCommandResult {
   status: number | null;
   stdout: string;
@@ -57,10 +60,17 @@ interface ManagerState {
   residue: boolean;
 }
 
+interface ManagerIdentity {
+  marketplaceName: MarketplaceName;
+  pluginId: `${typeof PLUGIN_NAME}@${MarketplaceName}`;
+}
+
 interface ManagerJournal {
-  schemaVersion: 1;
+  schemaVersion: 2;
   operationId: string;
   host: NativeManagerHost;
+  marketplaceName: ManagerIdentity['marketplaceName'];
+  pluginId: ManagerIdentity['pluginId'];
   source: string;
   version: string;
   before: Pick<ManagerState, 'marketplace' | 'plugin' | 'enabled'>;
@@ -101,6 +111,11 @@ function commandFor(host: NativeManagerHost, explicit?: string): string {
   return explicit ?? (host === 'codex' ? 'codex' : 'claude');
 }
 
+function managerIdentity(host: NativeManagerHost): ManagerIdentity {
+  const marketplaceName: MarketplaceName = `${PLUGIN_NAME}-${host}`;
+  return { marketplaceName, pluginId: `${PLUGIN_NAME}@${marketplaceName}` };
+}
+
 function managerEnvironment(options: NativeManagerSetupOptions): NodeJS.ProcessEnv {
   const environment = { ...(options.env ?? process.env) };
   if (!options.homeDir) return environment;
@@ -127,8 +142,8 @@ function recordArray(value: unknown, key?: string): Array<Record<string, unknown
   return Array.isArray(candidate) ? candidate.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : [];
 }
 
-function marketplaceMatches(item: Record<string, unknown>, source: string): boolean {
-  if (item.name !== 'thoth-mem') return false;
+function marketplaceMatches(item: Record<string, unknown>, source: string, marketplaceName: string): boolean {
+  if (item.name !== marketplaceName) return false;
   const marketplaceSource = item.marketplaceSource && typeof item.marketplaceSource === 'object' ? item.marketplaceSource as Record<string, unknown> : null;
   const observed = [item.repo, item.source, marketplaceSource?.source].filter((value): value is string => typeof value === 'string').join('\n').replaceAll('\\', '/').toLowerCase();
   if (!observed) return true;
@@ -137,15 +152,16 @@ function marketplaceMatches(item: Record<string, unknown>, source: string): bool
 }
 
 function inspectManager(host: NativeManagerHost, executor: NativeManagerExecutor, command: string, version: string, source: string): ManagerState {
+  const identity = managerIdentity(host);
   const marketplaceValue = parseJson(executor.run(command, ['plugin', 'marketplace', 'list', '--json']), `${host} marketplace inspection`);
   const pluginValue = parseJson(executor.run(command, ['plugin', 'list', '--json']), `${host} plugin inspection`);
   const marketplaces = recordArray(marketplaceValue, host === 'codex' ? 'marketplaces' : undefined);
-  const namedMarketplaces = marketplaces.filter((item) => item.name === 'thoth-mem');
-  const marketplace = namedMarketplaces.some((item) => marketplaceMatches(item, source));
+  const namedMarketplaces = marketplaces.filter((item) => item.name === identity.marketplaceName);
+  const marketplace = namedMarketplaces.some((item) => marketplaceMatches(item, source, identity.marketplaceName));
   const marketplaceAmbiguous = namedMarketplaces.length > 0 && !marketplace;
   const plugins = recordArray(pluginValue, host === 'codex' ? 'installed' : undefined);
-  const target = plugins.find((item) => item.pluginId === 'thoth-mem@thoth-mem' || item.id === 'thoth-mem@thoth-mem' || (item.name === 'thoth-mem' && item.marketplaceName === 'thoth-mem'));
-  const residue = plugins.some((item) => item.name === 'thoth-mem' && item !== target);
+  const target = plugins.find((item) => item.pluginId === identity.pluginId || item.id === identity.pluginId || (item.name === PLUGIN_NAME && item.marketplaceName === identity.marketplaceName));
+  const residue = plugins.some((item) => item.name === PLUGIN_NAME && item !== target);
   return {
     marketplace,
     marketplaceAmbiguous,
@@ -179,10 +195,10 @@ function journalPaths(options: NativeManagerSetupOptions): { journalPath: string
   return { journalPath: join(receipts, `${options.host}.in-progress.json`), receiptPath: join(receipts, `${options.host}.json`), providerConfigPath };
 }
 
-function loadJournal(path: string, host: NativeManagerHost, source: string, providerConfigPath: string): ManagerJournal | null {
+function loadJournal(path: string, host: NativeManagerHost, identity: ManagerIdentity, source: string, providerConfigPath: string): ManagerJournal | null {
   if (!existsSync(path)) return null;
   const value = JSON.parse(readFileSync(path, 'utf8')) as ManagerJournal;
-  if (value.schemaVersion !== 1 || value.host !== host || value.source !== source || value.providerConfigPath !== providerConfigPath || !Array.isArray(value.outcomes)) {
+  if (value.schemaVersion !== 2 || value.host !== host || value.marketplaceName !== identity.marketplaceName || value.pluginId !== identity.pluginId || value.source !== source || value.providerConfigPath !== providerConfigPath || !Array.isArray(value.outcomes)) {
     throw new Error(`${host} in-progress manager receipt is invalid`);
   }
   return value;
@@ -197,6 +213,7 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
   const version = executingVersion(packageRoot);
   const wantedRuntimeEntry = options.packageRoot ? localRuntimeEntry(packageRoot) : null;
   const source = managerSource(options);
+  const identity = managerIdentity(options.host);
   const command = commandFor(options.host, options.command);
   const executor = options.executor ?? new ProcessManagerExecutor(managerEnvironment(options));
   const versionResult = executor.run(command, ['--version']);
@@ -213,8 +230,8 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
   const installWord = options.host === 'codex' ? 'add' : 'install';
   const actions = [
     `${command} plugin marketplace add ${source}${options.host === 'claude' ? ' --scope user' : ' --json'}`,
-    `${command} plugin ${installWord} thoth-mem@thoth-mem${options.host === 'claude' ? ' --scope user' : ' --json'}`,
-    'verify marketplace and enabled thoth-mem@thoth-mem state',
+    `${command} plugin ${installWord} ${identity.pluginId}${options.host === 'claude' ? ' --scope user' : ' --json'}`,
+    `verify marketplace ${identity.marketplaceName} and enabled ${identity.pluginId} state`,
     ...(wantedRuntimeEntry ? [`bind local runtime ${wantedRuntimeEntry}`] : []),
     `restart ${options.host === 'codex' ? 'Codex' : 'Claude Code'}`,
   ];
@@ -227,7 +244,7 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
     return { ...resultBase(options, source, version, state, actions), status: 'unsupported', changed: false, strategy: 'unsupported', receiptPath: null, recovered: false, restartRequired: false, warnings: [], diagnostics: [diagnostic] };
   }
   if (state.marketplaceAmbiguous) {
-    return { ...resultBase(options, source, version, state, actions), status: 'requires-user-action', changed: false, strategy: 'plugin_manager', receiptPath: null, recovered: false, restartRequired: false, warnings: [], diagnostics: ['A thoth-mem marketplace with different provenance already exists; no manager mutation was attempted.'] };
+    return { ...resultBase(options, source, version, state, actions), status: 'requires-user-action', changed: false, strategy: 'plugin_manager', receiptPath: null, recovered: false, restartRequired: false, warnings: [], diagnostics: [`A ${identity.marketplaceName} marketplace with different provenance already exists; no manager mutation was attempted.`] };
   }
   const warnings = forcedOverride ? [`A forced Codex version override bypassed the 0.147.x gate after the complete safe manager capability contract was verified (${observedVersion}).`] : [];
   const diagnostics = state.residue ? ['Additional externally owned thoth-mem manager state was observed and preserved.'] : [];
@@ -236,7 +253,7 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
   }
 
   const { journalPath, receiptPath, providerConfigPath } = journalPaths(options);
-  const previousJournal = loadJournal(journalPath, options.host, source, providerConfigPath);
+  const previousJournal = loadJournal(journalPath, options.host, identity, source, providerConfigPath);
   const recovered = previousJournal !== null;
   const wantedDataDir = options.dataDir ? resolve(options.dataDir) : null;
   const runtime = loadRuntimeConfig(options);
@@ -256,9 +273,11 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
 
   const providerExisted = existsSync(providerConfigPath);
   const journal: ManagerJournal = previousJournal ?? {
-    schemaVersion: 1,
+    schemaVersion: 2,
     operationId: randomUUID(),
     host: options.host,
+    marketplaceName: identity.marketplaceName,
+    pluginId: identity.pluginId,
     source,
     version,
     before: { marketplace: state.marketplace, plugin: state.plugin, enabled: state.enabled },
@@ -285,8 +304,8 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
   }
   if (state.marketplace && (!state.plugin || !state.enabled || !state.versionExact)) {
     const args = state.plugin && !state.enabled && options.host === 'claude'
-      ? ['plugin', 'enable', 'thoth-mem@thoth-mem']
-      : ['plugin', installWord, 'thoth-mem@thoth-mem', ...(options.host === 'codex' ? ['--json'] : ['--scope', 'user'])];
+      ? ['plugin', 'enable', identity.pluginId]
+      : ['plugin', installWord, identity.pluginId, ...(options.host === 'codex' ? ['--json'] : ['--scope', 'user'])];
     const outcome = executor.run(command, args);
     journal.outcomes.push({ operation: state.plugin ? 'plugin-enable-or-repair' : 'plugin-install', status: outcome.status });
     writeJournal(journalPath, journal);
@@ -297,11 +316,11 @@ export function setupNativeManager(options: NativeManagerSetupOptions): NativeMa
   const finalComplete = state.marketplace && state.plugin && state.enabled && state.versionExact;
   if (!finalComplete) {
     if (!journal.before.plugin && state.plugin) {
-      executor.run(command, ['plugin', options.host === 'codex' ? 'remove' : 'uninstall', 'thoth-mem@thoth-mem', ...(options.host === 'claude' ? ['--scope', 'user', '--yes'] : ['--json'])]);
+      executor.run(command, ['plugin', options.host === 'codex' ? 'remove' : 'uninstall', identity.pluginId, ...(options.host === 'claude' ? ['--scope', 'user', '--yes'] : ['--json'])]);
     }
     state = inspectManager(options.host, executor, command, version, source);
     if (!journal.before.marketplace && state.marketplace && !state.plugin) {
-      executor.run(command, ['plugin', 'marketplace', 'remove', 'thoth-mem', ...(options.host === 'claude' ? ['--scope', 'user'] : [])]);
+      executor.run(command, ['plugin', 'marketplace', 'remove', identity.marketplaceName, ...(options.host === 'claude' ? ['--scope', 'user'] : [])]);
     }
     if (journal.providerChanged) {
       if (journal.providerExisted && journal.providerBeforeText !== null) atomicWriteText(providerConfigPath, journal.providerBeforeText);
