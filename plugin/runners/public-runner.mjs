@@ -53,6 +53,24 @@ function windowsInvocation(command, arguments_) {
   };
 }
 
+function validatedRuntimeEntry(value, runtime, label) {
+  if (typeof value !== 'string' || !isAbsolute(value)) throw new Error(`${label} must be an absolute path`);
+  const entry = resolve(value);
+  if (!existsSync(entry) || !statSync(entry).isFile()) throw new Error(`${label} is not a regular file`);
+  const packageRoot = dirname(dirname(entry));
+  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+  if (manifest?.name !== runtime.package || manifest?.version !== runtime.version) {
+    throw new Error(`${label} package identity does not match the plugin runtime`);
+  }
+  return entry;
+}
+
+function embeddedRuntimeEntry(runtime) {
+  return runtime.entry === undefined
+    ? undefined
+    : validatedRuntimeEntry(runtime.entry, runtime, 'plugin runtime entry');
+}
+
 function providerRuntimeEntry(runtime) {
   const configRoot = process.env.XDG_CONFIG_HOME?.trim() ? resolve(process.env.XDG_CONFIG_HOME) : join(homedir(), '.config');
   const configPath = join(configRoot, 'thoth-mem', 'config.json');
@@ -64,21 +82,11 @@ function providerRuntimeEntry(runtime) {
     throw new Error('provider configuration is invalid: JSON parsing failed');
   }
   if (provider?.runtimeEntry === undefined) return undefined;
-  if (typeof provider.runtimeEntry !== 'string' || !isAbsolute(provider.runtimeEntry)) {
-    throw new Error('provider runtimeEntry must be an absolute path');
-  }
-  const entry = resolve(provider.runtimeEntry);
-  if (!existsSync(entry) || !statSync(entry).isFile()) throw new Error('provider runtimeEntry is not a regular file');
-  const packageRoot = dirname(dirname(entry));
-  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
-  if (manifest?.name !== runtime.package || manifest?.version !== runtime.version) {
-    throw new Error('provider runtimeEntry package identity does not match the plugin runtime');
-  }
-  return entry;
+  return validatedRuntimeEntry(provider.runtimeEntry, runtime, 'provider runtimeEntry');
 }
 
 function runtimeInvocation(runtime, runtimeArguments) {
-  const localEntry = providerRuntimeEntry(runtime);
+  const localEntry = embeddedRuntimeEntry(runtime) ?? providerRuntimeEntry(runtime);
   if (localEntry) return { command: process.execPath, arguments: [localEntry, ...runtimeArguments] };
   const command = process.env.THOTH_MEM_PUBLIC_NPX_COMMAND ?? (process.platform === 'win32' ? 'npx.cmd' : 'npx');
   const arguments_ = ['--yes', `${runtime.package}@${runtime.version}`, ...runtimeArguments];

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +94,37 @@ writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
 }
 
 describe('public plugin runner', () => {
+  it('starts MCP from the runtime entry embedded in a copied local plugin', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth embedded local runner '));
+    try {
+      const local = createLocalRuntime(root);
+      const installedPlugin = join(root, 'installed plugin');
+      cpSync(join(process.cwd(), 'plugin'), installedPlugin, { recursive: true });
+      writeFileSync(join(installedPlugin, 'runtime.json'), `${JSON.stringify({
+        package: 'thoth-mem',
+        version: '0.4.13',
+        entry: local.entry,
+      }, null, 2)}\n`);
+
+      const result = spawnSync(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--mcp'], {
+        cwd: tmpdir(),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          XDG_CONFIG_HOME: join(root, 'empty config'),
+          CAPTURE_PATH: local.capture,
+          THOTH_MEM_PUBLIC_NPX_COMMAND: join(root, 'must-not-run-npx'),
+        },
+        windowsHide: true,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(local.capture, 'utf8'))).toEqual(['mcp', '--no-http']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('starts MCP from the explicit validated local runtime instead of the published package', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth local runner space '));
     try {
