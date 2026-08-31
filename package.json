@@ -33,6 +33,7 @@
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.mjs",
     "dev": "tsx watch src/index.ts",
+    "setup:codex:local": "pnpm run build && node scripts/setup-codex-local.mjs",
     "integration:verify": "node scripts/verify-integration-package.mjs",
     "integration:sync": "node scripts/sync-plugin-distribution.mjs",
     "integration:smoke": "node scripts/verify-packed-plugins.mjs",

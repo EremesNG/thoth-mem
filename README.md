@@ -91,7 +91,15 @@ node dist/index.js setup opencode \
 
 The local entry is the canonical absolute URL for `dist/opencode.js`. OpenCode loads the thin native adapter inside Bun; SQLite-backed lifecycle calls cross bounded JSON stdio to literal `node` and the package-relative `dist/index.js lifecycle` entry, while MCP starts through the same package-relative Node entry. The adapter preserves user `skills.paths`, keeps changing recovered memory in one tagged trailing prompt region, and degrades without rejecting the host prompt if the Node lifecycle process is unavailable. Setup owns only the exact thoth-mem plugin entries, global `skills/thoth-mem` tree, provider config, and its bounded receipts.
 
-Local Codex or Claude development uses the same explicit checkout provenance. The native manager still owns plugin installation; thoth-mem records the verified built `dist/index.js` entry outside the manager cache so the bundle runner uses the checkout instead of the published npm package:
+For Codex development through a personal marketplace, keep its local entry pointed at `./plugins/thoth-mem` and synchronize the payload from this checkout with:
+
+```sh
+pnpm run setup:codex:local
+```
+
+The command builds the checkout, replaces `~/plugins/thoth-mem`, gives the copied manifests a cache-busting local version, and makes both its MCP registration and lifecycle runner execute this checkout's absolute `dist/index.js`. It does not edit `~/.agents/plugins/marketplace.json`, install or uninstall a plugin, or change the shared memory database. Manage the public/local plugin selection in Codex and restart Codex after synchronizing a new build.
+
+The native manager setup remains available when explicit checkout provenance is preferred without a personal marketplace:
 
 ```sh
 node dist/index.js setup codex --local-package-root /absolute/path/to/thoth-mem --data-dir /absolute/path/to/shared-memory
