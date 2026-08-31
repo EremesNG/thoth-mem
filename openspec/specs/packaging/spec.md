@@ -38,25 +38,19 @@ The packed release MUST keep one coherent OpenCode, Codex, and Claude distributi
 
 ### Requirement: NPM Tarball MUST Match One Canonical Integration Inventory
 
-Every packaged native asset MUST appear exactly once under one harness owner or the declared shared owner, and package, setup, and smoke verification MUST consume the same inventory. Within that inventory, the Codex and Claude Code marketplace descriptors MUST identify marketplaces `thoth-mem-codex` and `thoth-mem-claude` respectively, MUST retain plugin and Skill identifier `thoth-mem`, and MUST make each marketplace/plugin cache segment pair distinct.
+Every packaged native asset MUST continue to appear exactly once under one harness owner or the declared shared owner, and package, setup, and smoke verification MUST consume the same plugin inventory. Marketplace descriptors MUST have exactly one canonical owner in the `thoth-plugins` repository, MUST retain plugin and Skill identifiers `thoth-mem` and `thoth-agents`, and MUST keep each `thoth-plugins/<plugin>` cache segment pair distinct. Plugin package tarballs MUST NOT publish competing per-repository marketplace catalogs.
 
-#### Scenario: US2 - Resolve every packaged native Skill unambiguously 1
+#### Scenario: US1 - Resolve an installed Skill on the first path 1
 
-- **GIVEN** the packed Codex and Claude Code marketplace descriptors
-- **WHEN** either host derives its cache topology
-- **THEN** each marketplace segment is host-specific, each plugin segment is `thoth-mem`, and the Skill remains named `thoth-mem`
+- **GIVEN** marketplace `thoth-plugins`, plugin `thoth-mem`, and version `0.4.13`
+- **WHEN** Codex derives the installed Skill path
+- **THEN** it resolves `cache/thoth-plugins/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md` without first probing a path that omits the plugin segment
 
-#### Scenario: US2 - Resolve every packaged native Skill unambiguously 2
+#### Scenario: US1 - Resolve an installed Skill on the first path 2
 
-- **GIVEN** a declared inventory path absent from the tarball
-- **WHEN** integration verification runs
-- **THEN** packaging fails before publication or host installation
-
-#### Scenario: US2 - Resolve every packaged native Skill unambiguously 3
-
-- **GIVEN** one later separately authorized installation per host
-- **WHEN** each host restarts and catalogs thoth-mem
-- **THEN** Codex resolves `cache/thoth-mem-codex/thoth-mem/<version>/skills/thoth-mem/SKILL.md` and Claude resolves `cache/thoth-mem-claude/thoth-mem/<version>/skills/thoth-mem/SKILL.md` without collapsing a segment
+- **GIVEN** marketplace `thoth-plugins`, plugin `thoth-agents`, and an independently selected plugin version
+- **WHEN** Codex or Claude Code installs it
+- **THEN** the host retains `thoth-plugins` and `thoth-agents` as separate adjacent cache segments
 
 ### Requirement: OpenCode MUST Keep SQLite Behind a Literal Node Boundary
 
@@ -107,3 +101,25 @@ Release verification MUST import the native OpenCode entry, execute the CLI, val
 - **GIVEN** a freshly built tarball and disposable homes
 - **WHEN** integration smoke runs
 - **THEN** OpenCode, Codex, and Claude inventories and lifecycle fixtures pass with exactly six MCP tools
+
+### Requirement: Plugin Releases MUST Publish Their Catalog Version
+
+Each plugin repository's `release:patch`, `release:minor`, and `release:major` flow MUST push and verify the new source tag before updating the central catalog, MUST update only that plugin's Codex and Claude Code entries to the exact released version and tag, and MUST provide an idempotent catalog-only retry command that does not create a new plugin version. A catalog publication failure MUST be reported as an incomplete release operation.
+
+#### Scenario: US3 - Publish a plugin version without manual catalog drift 1
+
+- **GIVEN** thoth-mem and thoth-agents at different versions
+- **WHEN** thoth-mem completes `release:patch`
+- **THEN** the source tag is pushed first and both central descriptors advance only the thoth-mem entry to that exact version and tag
+
+#### Scenario: US3 - Publish a plugin version without manual catalog drift 2
+
+- **GIVEN** the plugin tag or packaged plugin manifest is absent or inconsistent
+- **WHEN** catalog synchronization runs
+- **THEN** it fails before committing or pushing a central catalog change
+
+#### Scenario: US3 - Publish a plugin version without manual catalog drift 3
+
+- **GIVEN** the plugin tag was pushed but central publication failed
+- **WHEN** the maintainer runs the dedicated catalog synchronization command again
+- **THEN** it converges idempotently without creating another plugin version or tag
