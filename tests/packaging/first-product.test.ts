@@ -52,8 +52,6 @@ describe('first-product packed boundary', () => {
       'README.md',
       'integrations',
       'plugin',
-      '.agents/plugins/marketplace.json',
-      '.claude-plugin/marketplace.json',
       'benchmarks/manifest.json',
       'benchmarks/report.schema.json',
       'benchmarks/retrieval-report.schema.json',

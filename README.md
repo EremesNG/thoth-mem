@@ -48,23 +48,23 @@ npx --yes thoth-mem@0.4.13 setup opencode --plan --json
 npx --yes thoth-mem@0.4.13 setup opencode
 ```
 
-Codex users can add the repository marketplace and install the public plugin:
+Codex users can add the central Thoth marketplace and install the public plugin:
 
 ```sh
-codex plugin marketplace add EremesNG/thoth-mem
-codex plugin add thoth-mem@thoth-mem-codex
+codex plugin marketplace add https://github.com/EremesNG/thoth-plugins.git
+codex plugin add thoth-mem@thoth-plugins
 ```
 
-Claude Code users can use the corresponding repository marketplace:
+Claude Code users can use the same central marketplace:
 
 ```sh
-claude plugin marketplace add EremesNG/thoth-mem
-claude plugin install thoth-mem@thoth-mem-claude
+claude plugin marketplace add https://github.com/EremesNG/thoth-plugins.git --scope user
+claude plugin install thoth-mem@thoth-plugins --scope user
 ```
 
 Both public plugins load the exact published `thoth-mem` npm version declared by the repository distribution. They include native hooks, one six-tool MCP registration, and the shared memory Skill.
 
-The same operations are available through the package CLI. Codex `0.147.x` is the supported unforced manager contract; another Codex version fails closed unless `--force-version` verifies the complete safe manager surface first. Claude setup can verify marketplace, plugin, hooks, MCP, Skill, and runtime structure without claiming paid-model use.
+The same operations are available through the package CLI. Codex `0.151.x` is the supported unforced manager contract; another Codex version fails closed unless `--force-version` verifies the complete safe manager surface first. Claude setup can verify marketplace, plugin, hooks, MCP, Skill, and runtime structure without claiming paid-model use.
 
 ```sh
 npx --yes thoth-mem@0.4.13 setup codex --plan --json
@@ -73,7 +73,7 @@ npx --yes thoth-mem@0.4.13 setup claude --plan --json
 npx --yes thoth-mem@0.4.13 setup claude
 ```
 
-Setup is global/user-native only. Project scope, copied plugin bundles, direct manager-cache edits, legacy fallback, and fragment migration are intentionally unsupported.
+Setup is global/user-native only. Project scope, copied plugin bundles, broad manager-cache edits, legacy fallback, and fragment migration are intentionally unsupported. With Codex closed, setup makes one bounded migration exception after verifying `thoth-mem@thoth-plugins`: it retires only the two documented thoth-mem legacy identities and their exact preflight-approved cache/snapshot roots. It never scans for deletion targets or treats restart as cache garbage collection.
 
 ## Local OpenCode development
 

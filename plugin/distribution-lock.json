@@ -1,8 +1,6 @@
 {
   "schemaVersion": 1,
   "assets": {
-    ".agents/plugins/marketplace.json": "4e695cf9844154354cbed3e1fec2ba8ee2dd7f74a2bc94dea923c2f937dde7a2",
-    ".claude-plugin/marketplace.json": "35de3134cc11b0c2e6511ff7072fc52a183d85f4f292eb513223218f356be4ac",
     "plugin/.claude-plugin/plugin.json": "a3ad7c5e13c4d84f2192adab45d9c94c18371257af56ba82bf08981361773a2a",
     "plugin/.codex-plugin/plugin.json": "6d3d0bfaf80de8497554d88a4993fa1be902dd5653a136c5b5b48a7196863d04",
     "plugin/.mcp.json": "cfc3916b1d3533c1512a16d0d1b28e44bed188cdbae18c28eeea2271d13a0487",

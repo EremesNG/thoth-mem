@@ -116,16 +116,9 @@ process.stdout.write('native-open-code-ok');
     'skills/thoth-mem/SKILL.md',
     'runners/public-runner.mjs',
   ]) assert(existsSync(join(publicPluginRoot, path)), `Packed native manager bundle is missing ${path}.`);
-  const codexMarketplace = json(join(packageRoot, '.agents', 'plugins', 'marketplace.json'));
-  const claudeMarketplace = json(join(packageRoot, '.claude-plugin', 'marketplace.json'));
-  assert(codexMarketplace.name === 'thoth-mem-codex', 'Packed Codex marketplace is invalid.');
-  assert(claudeMarketplace.name === 'thoth-mem-claude', 'Packed Claude marketplace is invalid.');
-  for (const [host, marketplace] of [['Codex', codexMarketplace], ['Claude', claudeMarketplace]]) {
-    const pluginName = marketplace.plugins?.[0]?.name;
-    assert(pluginName === 'thoth-mem', `Packed ${host} plugin identity is invalid.`);
-    assert(marketplace.name !== pluginName, `Packed ${host} marketplace repeats its plugin cache segment.`);
-    assert(existsSync(join(publicPluginRoot, 'skills', pluginName, 'SKILL.md')), `Packed ${host} marketplace does not resolve its Skill.`);
-  }
+  assert(!existsSync(join(packageRoot, '.agents', 'plugins', 'marketplace.json')), 'Packed package still owns a Codex marketplace.');
+  assert(!existsSync(join(packageRoot, '.claude-plugin', 'marketplace.json')), 'Packed package still owns a Claude marketplace.');
+  assert(existsSync(join(publicPluginRoot, 'skills', 'thoth-mem', 'SKILL.md')), 'Packed plugin does not contain its Skill.');
 
   const installedPlugin = join(scratch, 'installed plugin with spaces');
   cpSync(publicPluginRoot, installedPlugin, { recursive: true });

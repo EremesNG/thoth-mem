@@ -22,8 +22,6 @@
     "README.md",
     "integrations",
     "plugin",
-    ".agents/plugins/marketplace.json",
-    ".claude-plugin/marketplace.json",
     "benchmarks/manifest.json",
     "benchmarks/report.schema.json",
     "benchmarks/retrieval-report.schema.json",
@@ -49,9 +47,10 @@
     "test:watch": "vitest --config vitest.config.ts",
     "prepublishOnly": "pnpm run integration:verify && pnpm run build && pnpm test",
     "version": "pnpm run integration:sync && pnpm run integration:verify",
-    "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags",
-    "release:minor": "npm version minor --ignore-scripts=false && git push --follow-tags",
-    "release:major": "npm version major --ignore-scripts=false && git push --follow-tags"
+    "release:marketplace": "node scripts/publish-marketplace.mjs",
+    "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace",
+    "release:minor": "npm version minor --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace",
+    "release:major": "npm version major --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace"
   },
   "engines": {
     "node": ">=22.12.0"

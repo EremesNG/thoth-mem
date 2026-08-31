@@ -9,10 +9,6 @@
     "claude-code": ["manifest.json", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "runner.mjs", "skills/thoth-mem/SKILL.md", "skills/thoth-mem/references/claude-code.md"]
   },
   "publicDistribution": {
-    "marketplaces": {
-      "codex": ".agents/plugins/marketplace.json",
-      "claude-code": ".claude-plugin/marketplace.json"
-    },
     "assets": [
       ".codex-plugin/plugin.json",
       ".claude-plugin/plugin.json",

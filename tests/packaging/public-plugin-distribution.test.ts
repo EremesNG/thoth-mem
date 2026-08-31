@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -8,10 +8,8 @@ import { describe, expect, it } from 'vitest';
 const repository = process.cwd();
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8')) as T;
 const codexValidator = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'skills', '.system', 'plugin-creator', 'scripts', 'validate_plugin.py');
-const codexCommand = process.platform === 'win32' ? 'codex.exe' : 'codex';
-const codexAvailable = spawnSync(codexCommand, ['--version'], { encoding: 'utf8', windowsHide: true }).status === 0;
 
-describe('public plugin marketplace distribution', () => {
+describe('public plugin distribution', () => {
   it('keeps one Skill body across all hosts while preserving host-specific identity references', () => {
     const canonical = readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'SKILL.md'), 'utf8');
     for (const harness of ['opencode', 'codex', 'claude-code']) {
@@ -38,45 +36,13 @@ describe('public plugin marketplace distribution', () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
 
-  it.runIf(codexAvailable)('installs the repository marketplace through an isolated Codex manager', () => {
-    const codexHome = mkdtempSync(join(tmpdir(), 'thoth-codex-marketplace-'));
-    const options = {
-      cwd: repository,
-      encoding: 'utf8' as const,
-      env: { ...process.env, CODEX_HOME: codexHome },
-      windowsHide: true,
-    };
-    try {
-      const marketplace = spawnSync(codexCommand, ['plugin', 'marketplace', 'add', repository, '--json'], options);
-      expect(marketplace.status, `${marketplace.stdout}\n${marketplace.stderr}`).toBe(0);
-      const installation = spawnSync(codexCommand, ['plugin', 'add', 'thoth-mem@thoth-mem-codex', '--json'], options);
-      expect(installation.status, `${installation.stdout}\n${installation.stderr}`).toBe(0);
-      const installedPath = (JSON.parse(installation.stdout) as { installedPath: string }).installedPath;
-      expect(resolve(installedPath).startsWith(resolve(codexHome))).toBe(true);
-      expect(readJson(join(installedPath, '.codex-plugin', 'plugin.json'))).toEqual(readJson(join(repository, 'plugin', '.codex-plugin', 'plugin.json')));
-      if (existsSync(codexValidator)) {
-        const validation = spawnSync('python', [codexValidator, installedPath], options);
-        expect(validation.status, `${validation.stdout}\n${validation.stderr}`).toBe(0);
-      }
-    } finally {
-      rmSync(codexHome, { recursive: true, force: true });
-    }
-  }, 30_000);
+  it('leaves marketplace ownership to the central catalog repository', () => {
+    expect(existsSync(join(repository, '.agents', 'plugins', 'marketplace.json'))).toBe(false);
+    expect(existsSync(join(repository, '.claude-plugin', 'marketplace.json'))).toBe(false);
+  });
 
   it('exposes one contained Codex plugin with current hooks, MCP, and Skill paths', () => {
-    const marketplace = readJson<{
-      name: string;
-      plugins: Array<{ name: string; source: { source: string; path: string } }>;
-    }>(join(repository, '.agents', 'plugins', 'marketplace.json'));
-
-    expect(marketplace.name).toBe('thoth-mem-codex');
-    expect(marketplace.plugins).toHaveLength(1);
-    expect(marketplace.plugins[0]).toMatchObject({
-      name: 'thoth-mem',
-      source: { source: 'local', path: './plugin' },
-    });
-
-    const pluginRoot = resolve(repository, marketplace.plugins[0]!.source.path);
+    const pluginRoot = resolve(repository, 'plugin');
     expect(pluginRoot.startsWith(`${repository}\\`) || pluginRoot.startsWith(`${repository}/`)).toBe(true);
     const manifest = readJson<{
       name: string;
@@ -95,9 +61,8 @@ describe('public plugin marketplace distribution', () => {
     expect(manifest).not.toHaveProperty('hooks');
     expect(manifest).not.toHaveProperty('displayName');
     expect(manifest).not.toHaveProperty('category');
-    expect(marketplace.name).not.toBe(manifest.name);
-    expect(join('cache', marketplace.name, manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
-      'cache/thoth-mem-codex/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+    expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
+      'cache/thoth-plugins/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of ['./hooks/hooks.json', manifest.mcpServers, manifest.skills]) {
@@ -121,17 +86,8 @@ describe('public plugin marketplace distribution', () => {
     });
   });
 
-  it('exposes the same contained plugin through a strict Claude marketplace contract', () => {
-    const marketplace = readJson<{
-      name: string;
-      plugins: Array<{ name: string; version: string; source: string }>;
-    }>(join(repository, '.claude-plugin', 'marketplace.json'));
-    expect(marketplace.name).toBe('thoth-mem-claude');
-    expect(marketplace.plugins).toEqual([
-      expect.objectContaining({ name: 'thoth-mem', version: '0.4.13', source: './plugin' }),
-    ]);
-
-    const pluginRoot = resolve(repository, marketplace.plugins[0]!.source);
+  it('exposes the same contained plugin through a strict Claude plugin contract', () => {
+    const pluginRoot = resolve(repository, 'plugin');
     const manifest = readJson<{
       name: string;
       version: string;
@@ -146,9 +102,8 @@ describe('public plugin marketplace distribution', () => {
       mcpServers: './.mcp.json',
       skills: './skills/',
     });
-    expect(marketplace.name).not.toBe(manifest.name);
-    expect(join('cache', marketplace.name, manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
-      'cache/thoth-mem-claude/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+    expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
+      'cache/thoth-plugins/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of [manifest.hooks, manifest.mcpServers, manifest.skills]) {

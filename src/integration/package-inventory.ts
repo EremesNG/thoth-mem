@@ -1,5 +1,5 @@
 export type PackageHarness = 'opencode' | 'codex' | 'claude-code';
-export interface PublicDistributionInventory { marketplaces: Record<'codex' | 'claude-code', string>; assets: string[] }
+export interface PublicDistributionInventory { assets: string[] }
 export interface IntegrationInventory { schemaVersion: number; lifecycleProtocolVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
 
 export const CANONICAL_PLUGIN_INVENTORY: Record<PackageHarness, string[]> = {
@@ -37,7 +37,7 @@ export function validateIntegrationInventory(value: unknown): IntegrationInvento
   }
   const distribution = inventory.publicDistribution;
   if (!distribution || typeof distribution !== 'object') throw new Error('Missing public plugin distribution');
-  if (JSON.stringify(distribution.marketplaces) !== JSON.stringify({ codex: '.agents/plugins/marketplace.json', 'claude-code': '.claude-plugin/marketplace.json' })) throw new Error('Public marketplace anchors are invalid');
+  if (Object.keys(distribution).join(',') !== 'assets') throw new Error('Public plugin distribution must own only plugin assets');
   if (!Array.isArray(distribution.assets) || new Set(distribution.assets).size !== distribution.assets.length) throw new Error('Public plugin assets are missing or duplicate');
   if (distribution.assets.some((path) => path.includes('..') || path.startsWith('/') || /dashboard|http|graph|vector|hyde/i.test(path))) throw new Error('Invalid or deferred public plugin asset');
   if ([...distribution.assets].sort().join('\0') !== [...CANONICAL_PUBLIC_PLUGIN_INVENTORY].sort().join('\0')) throw new Error('Incomplete public plugin inventory');

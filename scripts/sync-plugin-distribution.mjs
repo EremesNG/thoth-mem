@@ -24,11 +24,6 @@ for (const path of ['plugin/.codex-plugin/plugin.json', 'plugin/.claude-plugin/p
   writeJson(path, manifest);
 }
 
-const marketplace = readJson('.claude-plugin/marketplace.json');
-if (!Array.isArray(marketplace.plugins) || marketplace.plugins.length !== 1) throw new Error('Claude marketplace must contain exactly one plugin.');
-marketplace.plugins[0].version = version;
-writeJson('.claude-plugin/marketplace.json', marketplace);
-
 writeJson('plugin/runtime.json', { package: packageManifest.name, version });
 const claudeMcp = readJson('plugin/.mcp.json');
 claudeMcp.mcpServers['thoth-mem'] = { cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] };
@@ -47,7 +42,6 @@ for (const [source, destination] of [
 
 const inventory = readJson('integrations/inventory.json');
 const lockedPaths = [
-  ...Object.values(inventory.publicDistribution.marketplaces),
   ...inventory.publicDistribution.assets
     .filter((path) => path !== 'distribution-lock.json')
     .map((path) => `plugin/${path}`),

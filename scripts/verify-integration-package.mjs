@@ -5,14 +5,12 @@ import { resolve } from 'node:path';
 const root = resolve(process.env.THOTH_MEM_VERIFY_ROOT ?? resolve(import.meta.dirname, '..')); const inventory = JSON.parse(readFileSync(resolve(root, 'integrations/inventory.json'), 'utf8'));
 const errors = [];
 for (const [harness, assets] of Object.entries(inventory.harnesses)) for (const asset of assets) { const path = resolve(root, 'integrations', harness, asset); if (!existsSync(path)) errors.push(`${harness}:${asset}`); }
-for (const [harness, path] of Object.entries(inventory.publicDistribution?.marketplaces ?? {})) if (!existsSync(resolve(root, path))) errors.push(`public-marketplace:${harness}:${path}`);
 for (const asset of inventory.publicDistribution?.assets ?? []) if (!existsSync(resolve(root, 'plugin', asset))) errors.push(`public-plugin:${asset}`);
 const packageManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 const versioned = [
   ['plugin/runtime.json', JSON.parse(readFileSync(resolve(root, 'plugin/runtime.json'), 'utf8')).version],
   ['plugin/.codex-plugin/plugin.json', JSON.parse(readFileSync(resolve(root, 'plugin/.codex-plugin/plugin.json'), 'utf8')).version],
   ['plugin/.claude-plugin/plugin.json', JSON.parse(readFileSync(resolve(root, 'plugin/.claude-plugin/plugin.json'), 'utf8')).version],
-  ['.claude-plugin/marketplace.json', JSON.parse(readFileSync(resolve(root, '.claude-plugin/marketplace.json'), 'utf8')).plugins?.[0]?.version],
 ];
 for (const [path, version] of versioned) if (version !== packageManifest.version) errors.push(`stale-version:${path}:${version ?? 'missing'}`);
 const publicMcp = JSON.parse(readFileSync(resolve(root, 'plugin/.mcp.json'), 'utf8')).mcpServers?.['thoth-mem'];
@@ -21,7 +19,6 @@ if (publicMcp?.cwd !== '.' || publicMcp?.command !== 'node' || JSON.stringify(pu
 }
 const lock = JSON.parse(readFileSync(resolve(root, 'plugin/distribution-lock.json'), 'utf8'));
 const expectedLockedPaths = [
-  ...Object.values(inventory.publicDistribution.marketplaces),
   ...inventory.publicDistribution.assets
     .filter((path) => path !== 'distribution-lock.json')
     .map((path) => `plugin/${path}`),

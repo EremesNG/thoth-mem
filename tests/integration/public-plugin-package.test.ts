@@ -15,7 +15,7 @@ const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8')) 
 
 const copyPublicReleaseFixture = (): string => {
   const root = mkdtempSync(join(tmpdir(), 'thoth-public-stale-'));
-  for (const path of ['package.json', 'integrations', 'plugin', '.agents', '.claude-plugin']) {
+  for (const path of ['package.json', 'integrations', 'plugin']) {
     cpSync(path, join(root, path), { recursive: true });
   }
   return root;
@@ -47,15 +47,13 @@ describe('public plugin release inventory', () => {
     ]) expect(skill, required).toContain(required);
   });
 
-  it('owns exactly two marketplace anchors and one complete shared plugin root', () => {
+  it('owns zero package marketplaces and one complete shared plugin root', () => {
     const inventory = validateIntegrationInventory(readJson<IntegrationInventory>('integrations/inventory.json'));
-    expect(inventory.publicDistribution.marketplaces).toEqual({
-      codex: '.agents/plugins/marketplace.json',
-      'claude-code': '.claude-plugin/marketplace.json',
-    });
+    expect(inventory.publicDistribution).not.toHaveProperty('marketplaces');
     expect(inventory.publicDistribution.assets).toEqual(CANONICAL_PUBLIC_PLUGIN_INVENTORY);
-    for (const path of Object.values(inventory.publicDistribution.marketplaces)) expect(existsSync(path), path).toBe(true);
     for (const path of inventory.publicDistribution.assets) expect(existsSync(join('plugin', path)), path).toBe(true);
+    expect(existsSync('.agents/plugins/marketplace.json')).toBe(false);
+    expect(existsSync('.claude-plugin/marketplace.json')).toBe(false);
   });
 
   it('keeps every public version and pinned runtime synchronized with the package', () => {
@@ -63,11 +61,12 @@ describe('public plugin release inventory', () => {
     const runtime = readJson<{ package: string; version: string }>('plugin/runtime.json');
     const codex = readJson<{ version: string }>('plugin/.codex-plugin/plugin.json');
     const claude = readJson<{ version: string }>('plugin/.claude-plugin/plugin.json');
-    const claudeMarketplace = readJson<{ plugins: Array<{ version: string }> }>('.claude-plugin/marketplace.json');
     const claudeMcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>('plugin/.mcp.json');
-    expect([runtime.version, codex.version, claude.version, claudeMarketplace.plugins[0]!.version]).toEqual(Array(4).fill(packageManifest.version));
+    expect([runtime.version, codex.version, claude.version]).toEqual(Array(3).fill(packageManifest.version));
     expect(claudeMcp.mcpServers['thoth-mem']).toEqual({ cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] });
-    expect(packageManifest.files).toEqual(expect.arrayContaining(['plugin', '.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']));
+    expect(packageManifest.files).toContain('plugin');
+    expect(packageManifest.files).not.toContain('.agents/plugins/marketplace.json');
+    expect(packageManifest.files).not.toContain('.claude-plugin/marketplace.json');
     expect(packageManifest.scripts.version).toContain('integration:sync');
     expect(packageManifest.scripts.prepublishOnly).toContain('integration:verify');
   });
@@ -86,7 +85,6 @@ describe('public plugin release inventory', () => {
   });
 
   it.each([
-    ['marketplace', '.agents/plugins/marketplace.json', '"./plugin"', '"./stale-plugin"'],
     ['manifest', 'plugin/.codex-plugin/plugin.json', '"./.mcp.json"', '"./stale.mcp.json"'],
     ['MCP descriptor', 'plugin/.mcp.json', './runners/public-runner.mjs', './runners/stale-runner.mjs'],
     ['hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
