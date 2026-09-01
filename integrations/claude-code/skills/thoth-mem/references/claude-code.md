@@ -6,7 +6,7 @@ Use this reference only in Claude Code. Lifecycle hooks may execute before MCP c
 
 Use the first confirmed source that applies:
 
-1. Reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project=<name>`. It contains the normalized identity already accepted by native lifecycle handling.
+1. Reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project_key=<opaque-key>; project_name=<display-name>`. Copy the key verbatim; the name is persisted display metadata.
 2. Code executing inside a Claude Code command hook uses the official payload `session_id` as the root session and `cwd` as project context. Root lifecycle events must not contain delegated-agent evidence.
 3. Outside a hook, use only identity explicitly supplied by verified lifecycle context or the root runtime. Do not invent `CLAUDE_SESSION_ID` or another environment convention.
 
@@ -15,7 +15,7 @@ Use the verified project from the identity block when present; otherwise derive 
 ## Map to memory tools
 
 - Pass the exact native root session as `root_session_key` and set `harness` to `claude` when saving session-attributed memory.
-- Use the resolved repository identity as `project_key` and its display name as `project_name`.
+- Copy the verified `project_key` exactly and use the persisted `project_name`. Paths, basenames, remotes, branches, and worktree names never substitute for the key.
 - Use that same verified root session pair for the `mem_save` `observation_review`
   and `observation_promotion` branches. A project-scoped observation candidate
   may omit session attribution, but review and promotion may not.

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,9 +102,55 @@ function isSafeIdentityValue(value) {
     && !UNSAFE_IDENTITY_HEADER_CHARACTERS.test(value);
 }
 
-function verifiedIdentity(identity) {
-  if (!isSafeIdentityValue(identity?.root_session_id) || !isSafeIdentityValue(identity?.project)) return undefined;
-  const header = `thoth-mem verified identity: root_session_id=${identity.root_session_id}; project=${identity.project}`;
+function normalizeProjectPath(directory) {
+  return directory.replaceAll('\\', '/').replace(/\/$/u, '');
+}
+
+function localGitState(directory) {
+  const inside = spawnSync('git', ['-C', directory, 'rev-parse', '--is-inside-work-tree'], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    windowsHide: true,
+  });
+  if (inside.error) return { kind: 'unavailable' };
+  if (inside.status !== 0) {
+    const diagnostic = `${inside.stderr}\n${inside.stdout}`;
+    return /not a git repository|outside repository/iu.test(diagnostic) ? { kind: 'non-git' } : { kind: 'unavailable' };
+  }
+  if (inside.stdout.trim() !== 'true') return { kind: 'non-git' };
+
+  const common = spawnSync('git', ['-C', directory, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    windowsHide: true,
+  });
+  if (common.error || common.status !== 0) return { kind: 'unavailable' };
+  const commonDirectory = resolve(directory, common.stdout.trim());
+  if (!existsSync(commonDirectory) || !statSync(commonDirectory).isDirectory()) return { kind: 'unavailable' };
+  return { kind: 'git', commonDirectory: realpathSync(commonDirectory) };
+}
+
+function localProjectKey(payload) {
+  if (!isSafeIdentityValue(payload?.cwd)) return undefined;
+  const directory = resolve(payload.cwd);
+  if (!existsSync(directory)) return `path:${normalizeProjectPath(directory)}`;
+  const root = realpathSync(directory);
+  if (!statSync(root).isDirectory()) return undefined;
+  const git = localGitState(root);
+  if (git.kind === 'unavailable') return undefined;
+  if (git.kind === 'non-git') return `path:${normalizeProjectPath(root)}`;
+  const marker = join(git.commonDirectory, 'thoth-mem.project-id');
+  if (!existsSync(marker)) return undefined;
+  const markerState = lstatSync(marker);
+  if (!markerState.isFile() || markerState.isSymbolicLink()) return undefined;
+  const uuid = readFileSync(marker, 'utf8');
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n$/u.test(uuid) ? `git:${uuid.trim()}` : undefined;
+}
+
+function verifiedIdentity(identity, data, payload) {
+  if (!isSafeIdentityValue(identity?.root_session_id) || !isSafeIdentityValue(identity?.project_key) || !isSafeIdentityValue(identity?.project_name)) return undefined;
+  if (identity.root_session_id !== payload?.session_id || identity.project_key !== localProjectKey(payload) || data?.projectKey !== identity.project_key || data?.projectName !== identity.project_name) return undefined;
+  const header = `thoth-mem verified identity: root_session_id=${identity.root_session_id}; project_key=${identity.project_key}; project_name=${identity.project_name}`;
   return Array.from(header).length <= MAX_HOST_OUTPUT_CODE_POINTS ? header : undefined;
 }
 
@@ -153,7 +199,7 @@ function verifiedRecovery(lifecycle, identity) {
 }
 
 function renderHostOutput(payload, lifecycle) {
-  const identity = verifiedIdentity(lifecycle?.identity);
+  const identity = verifiedIdentity(lifecycle?.identity, lifecycle?.data, payload);
   const additionalContext = verifiedRecovery(lifecycle, identity);
   return payload?.hook_event_name === 'SessionStart' && additionalContext
     ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } }

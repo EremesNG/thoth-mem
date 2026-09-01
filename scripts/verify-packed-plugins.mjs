@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -72,18 +72,20 @@ try {
   assert(localConfig.length === 1 && localConfig[0] === localSetup.plugin, 'Packed local OpenCode configuration contains duplicate activation.');
   assert(existsSync(join(localHome.env.OPENCODE_CONFIG_DIR, 'skills', 'thoth-mem', 'SKILL.md')), 'Packed OpenCode Skill was not synchronized.');
 
+  const nativeProject = join(scratch, 'project with spaces');
+  mkdirSync(nativeProject, { recursive: true });
   const nativeSmokePath = join(scratch, 'native-open-code-smoke.mjs');
   writeFileSync(nativeSmokePath, `
 const pluginModule = await import(${JSON.stringify(pathToFileURL(nativeMain).href)});
 if (typeof pluginModule.default !== 'function') throw new Error('missing default Plugin export');
 if (Object.keys(pluginModule).join(',') !== 'default') throw new Error('native entry exports non-plugin runtime values');
-const hooks = await pluginModule.default({ directory: ${JSON.stringify(join(scratch, 'project with spaces'))} });
+const hooks = await pluginModule.default({ directory: ${JSON.stringify(nativeProject)} });
 if (Object.keys(hooks.tool ?? {}).join(',') !== 'thoth_mem_root_identity') throw new Error('missing native OpenCode identity tool');
 const resolvedConfig = { skills: { paths: ['user-path'] }, mcp: { user: { type: 'remote', url: 'https://example.test' } } };
 await hooks.config(resolvedConfig);
 if (JSON.stringify(resolvedConfig.skills.paths) !== '["user-path"]') throw new Error('changed user skill paths');
 if (resolvedConfig.mcp['thoth-mem'].command[0] !== 'node' || resolvedConfig.mcp['thoth-mem'].command[1] !== ${JSON.stringify(cli)}) throw new Error('wrong package-relative MCP entry');
-await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'packed-root', directory: ${JSON.stringify(join(scratch, 'project with spaces'))} } } } });
+await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'packed-root', directory: ${JSON.stringify(nativeProject)} } } } });
 await hooks['experimental.session.compacting']({ sessionID: 'packed-root' }, { context: ['Packed lifecycle checkpoint.'], prompt: undefined });
 await hooks.event({ event: { type: 'session.compacted', properties: { sessionID: 'packed-root' } } });
 const transformed = { system: ['stable-prefix'] };
@@ -141,7 +143,7 @@ process.stdout.write('native-open-code-ok');
       env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: managerData },
     });
     const hostOutput = JSON.parse(runner.stdout);
-    assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=${harness}-root; project=project with spaces`), `Packed ${harness} runner omitted verified identity.`);
+    assert(hostOutput.hookSpecificOutput?.additionalContext?.startsWith(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=${harness}-root; project_key=path:`) && hostOutput.hookSpecificOutput.additionalContext.includes('; project_name=project with spaces'), `Packed ${harness} runner omitted verified identity.`);
     if (harness === 'claude') {
       const support = jsonOutput(run(process.execPath, [cli, 'lifecycle', '--harness', 'claude', '--data-dir', managerData], {
         cwd: tmpdir(),
@@ -171,7 +173,7 @@ process.stdout.write('native-open-code-ok');
         env: { ...process.env, THOTH_MEM_PUBLIC_NPX_COMMAND: npxShim, THOTH_MEM_DATA_DIR: managerData },
       });
       const compactOutput = JSON.parse(compactRunner.stdout).hookSpecificOutput?.additionalContext;
-      assert(compactOutput?.startsWith('<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-root; project=project with spaces\n\n'), 'Packed Claude compact recovery omitted verified identity.');
+  assert(compactOutput?.startsWith('<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-root; project_key=path:') && compactOutput.includes('; project_name=project with spaces'), 'Packed Claude compact recovery omitted verified identity.');
       assert(compactOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude compact recovery omitted the pre-compaction checkpoint.');
       assert(compactOutput.includes('(summary:') && !compactOutput.includes('(memory:'), 'Packed Claude compact recovery did not isolate the supported summary.');
     }

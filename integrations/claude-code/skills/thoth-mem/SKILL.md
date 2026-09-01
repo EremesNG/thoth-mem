@@ -32,7 +32,11 @@ reference for the active host: `references/opencode.md`, `references/codex.md`,
 or `references/claude-code.md`. The root agent owns lifecycle and handoffs;
 delegated agents stay within explicitly authorized scope.
 
-Use the verified project as `project_key` and `project_name`. For a
+Copy the exact opaque verified `project_key` verbatim. Treat `project_name_hint`
+as initial display metadata only and prefer the persisted `project_name` returned
+by verified lifecycle or project output. Never derive the key from a path,
+basename, Git remote or branch, worktree name, host project ID, database listing,
+or recalled content. For a
 session-attributed write, pass the verified `root_session_key` together with its
 matching `harness`. Never invent these values or substitute a child, message,
 turn, prompt, or tool-call identifier. If only the project is verified, a
