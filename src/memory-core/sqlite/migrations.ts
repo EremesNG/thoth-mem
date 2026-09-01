@@ -7,6 +7,7 @@ import {
   CURRENT_SCHEMA_SQL,
   IMMUTABILITY_TRIGGER_SQL,
   OBSERVATION_PROJECTION_SCHEMA_SQL,
+  PROJECT_ALIAS_SCHEMA_SQL,
   REVISION_THREE_TAXONOMY_GUARD_SQL,
   REVISION_FIVE_FTS_SCHEMA_SQL,
   SESSION_PROJECTION_SCHEMA_SQL,
@@ -17,11 +18,12 @@ interface NameRow { name: string }
 interface VersionRow { version: number | null }
 interface KindRow { kind: string }
 
-export const SQLITE_SCHEMA_REVISION = 6;
+export const SQLITE_SCHEMA_REVISION = 7;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
 const ORDERED_SESSION_SCHEMA_REVISION = 3;
 const SESSION_PROJECTION_SCHEMA_REVISION = 4;
 const PREFIX_FTS_SCHEMA_REVISION = 5;
+const OBSERVATION_SCHEMA_REVISION = 6;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -175,6 +177,59 @@ function migrateRevisionFive(database: Database.Database): void {
     const observationCount = database.prepare('SELECT count(*) AS count FROM observations').get() as { count: number };
     if (observationCount.count !== 0) throw new Error('SQLite revision 6 migration inferred observation history');
     if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 6 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(OBSERVATION_SCHEMA_REVISION, new Date().toISOString());
+  })();
+}
+
+export function preV7BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v7.bak`;
+}
+
+function verifyRevisionSixBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v7 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v7 backup failed foreign-key verification');
+    const version = backup.prepare('SELECT max(version) AS version FROM schema_migrations').get() as VersionRow;
+    if (version.version !== OBSERVATION_SCHEMA_REVISION) throw new Error('SQLite pre-v7 backup has an unexpected schema revision');
+  } finally { backup.close(); }
+}
+
+function ensureRevisionSixBackup(database: Database.Database): void {
+  const databasePath = database.name;
+  if (!databasePath || databasePath === ':memory:') return;
+  const backupPath = preV7BackupPath(databasePath);
+  if (existsSync(backupPath)) {
+    verifyRevisionSixBackup(backupPath);
+    return;
+  }
+  const temporaryPath = `${backupPath}.tmp`;
+  if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  try {
+    database.prepare('VACUUM INTO ?').run(temporaryPath);
+    verifyRevisionSixBackup(temporaryPath);
+    renameSync(temporaryPath, backupPath);
+  } finally {
+    if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  }
+}
+
+function migrateRevisionSix(database: Database.Database): void {
+  ensureRevisionSixBackup(database);
+  database.transaction(() => {
+    const projectCount = database.prepare('SELECT count(*) AS count FROM projects').get() as { count: number };
+    const evidenceCount = database.prepare('SELECT count(*) AS count FROM evidence').get() as { count: number };
+    const memoryCount = database.prepare('SELECT count(*) AS count FROM memories').get() as { count: number };
+    const ftsCount = database.prepare('SELECT count(*) AS count FROM memory_fts').get() as { count: number };
+    database.exec(PROJECT_ALIAS_SCHEMA_SQL);
+    if ((database.prepare('SELECT count(*) AS count FROM projects').get() as { count: number }).count !== projectCount.count
+      || (database.prepare('SELECT count(*) AS count FROM evidence').get() as { count: number }).count !== evidenceCount.count
+      || (database.prepare('SELECT count(*) AS count FROM memories').get() as { count: number }).count !== memoryCount.count
+      || (database.prepare('SELECT count(*) AS count FROM memory_fts').get() as { count: number }).count !== ftsCount.count) {
+      throw new Error('SQLite revision 7 migration changed authoritative rows');
+    }
+    if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 7 migration failed foreign-key verification');
     database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
   })();
 }
@@ -199,21 +254,29 @@ export function migrateCurrentSchema(database: Database.Database): void {
     migrateRevisionThree(database);
     migrateRevisionFour(database);
     migrateRevisionFive(database);
+    migrateRevisionSix(database);
     return;
   }
   if (version.version === ORDERED_SESSION_SCHEMA_REVISION) {
     migrateRevisionThree(database);
     migrateRevisionFour(database);
     migrateRevisionFive(database);
+    migrateRevisionSix(database);
     return;
   }
   if (version.version === SESSION_PROJECTION_SCHEMA_REVISION) {
     migrateRevisionFour(database);
     migrateRevisionFive(database);
+    migrateRevisionSix(database);
     return;
   }
   if (version.version === PREFIX_FTS_SCHEMA_REVISION) {
     migrateRevisionFive(database);
+    migrateRevisionSix(database);
+    return;
+  }
+  if (version.version === OBSERVATION_SCHEMA_REVISION) {
+    migrateRevisionSix(database);
     return;
   }
   throw new Error(`Unsupported memory SQLite schema revision: ${version.version}`);

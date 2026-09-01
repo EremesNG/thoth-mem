@@ -4,13 +4,34 @@ import { join, resolve } from 'node:path';
 import { loadRuntimeConfig } from './config/runtime.js';
 import { normalizeAdapterEvent, normalizeNativePayload, type AdapterEvent } from './integration/adapters/index.js';
 import { importLegacyV1, LegacyImportFailure } from './memory-core/import/legacy-v1.js';
-import { MemoryService } from './memory-core/service.js';
+import { MemoryService, projectSelectorExists, validateProjectRenameInput } from './memory-core/service.js';
 import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
 
-const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  import-legacy --source <legacy.sqlite> --target <memory.sqlite> [--report <report.json>]\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy --source <legacy.sqlite> --target <memory.sqlite> [--report <report.json>]\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
+
+function projectRenameArguments(args: string[], commandIndex: number): { selector: string; name: string; dataDir?: string } | null {
+  const parsed: Partial<{ selector: string; name: string; dataDir: string }> = {};
+  const options = new Map([
+    ['--project', 'selector' as const],
+    ['--name', 'name' as const],
+    ['--data-dir', 'dataDir' as const],
+  ]);
+  for (let index = commandIndex + 2; index < args.length; index += 1) {
+    const token = args[index]!;
+    const equals = token.indexOf('=');
+    const option = equals >= 0 ? token.slice(0, equals) : token;
+    const property = options.get(option);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
+  }
+  if (!parsed.selector || !parsed.name) return null;
+  return { selector: parsed.selector, name: parsed.name, ...(parsed.dataDir ? { dataDir: parsed.dataDir } : {}) };
+}
 
 export async function runCli(args: string[]): Promise<number> {
   const command = args.find((arg) => !arg.startsWith('-'));
@@ -24,10 +45,32 @@ export async function runCli(args: string[]): Promise<number> {
       try {
         const normalized = nativeHarness ? normalizeNativePayload(nativeHarness, event) : normalizeAdapterEvent(event);
         const data = service.lifecycle(normalized);
-        process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: { root_session_id: normalized.rootSessionKey, project: normalized.project.name }, data })}\n`);
+        process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: { root_session_id: normalized.rootSessionKey, project_key: data.projectKey, project_name: data.projectName }, data })}\n`);
       } finally { service.close(); }
       return 0;
     } catch (error) { process.stderr.write(`Lifecycle failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
+  }
+  if (command === 'project') {
+    const commandIndex = args.indexOf(command);
+    const subcommand = args[commandIndex + 1];
+    if (subcommand !== 'rename') { process.stderr.write(`Unknown project command: ${subcommand ?? ''}\n`); return 2; }
+    const parsed = projectRenameArguments(args, commandIndex);
+    if (!parsed) { process.stderr.write('project rename requires exact --project and --name values with no unknown options\n'); return 2; }
+    let rename;
+    try { rename = validateProjectRenameInput({ selector: parsed.selector, name: parsed.name }); }
+    catch (error) { process.stderr.write(`Invalid project rename: ${error instanceof Error ? error.message : String(error)}\n`); return 2; }
+    try {
+      const dataDir = loadRuntimeConfig({ explicitDataDir: parsed.dataDir }).dataDir;
+      const databasePath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(databasePath) || !projectSelectorExists(databasePath, rename.selector)) {
+        process.stderr.write('Project rename failed: Project selector did not match a project\n');
+        return 1;
+      }
+      const service = new MemoryService({ databasePath });
+      try { process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.project.rename.v1', data: service.renameProject(rename) })}\n`); }
+      finally { service.close(); }
+      return 0;
+    } catch (error) { process.stderr.write(`Project rename failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
   }
   if (command === 'setup') {
     const commandIndex = args.indexOf(command); const harness = args.slice(commandIndex + 1).find((arg) => !arg.startsWith('-'));

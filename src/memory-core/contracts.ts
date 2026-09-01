@@ -143,7 +143,7 @@ export function requireObservationSupportMetadata(kind: EvidenceKind, value: unk
   throw new Error(`Evidence kind ${kind} does not support observation metadata`);
 }
 
-export interface ProjectIdentityInput { key: string; name: string; rootHint?: string | null }
+export interface ProjectIdentityInput { key: string; name: string; aliases?: string[]; rootHint?: string | null }
 export interface SessionIdentityInput { rootSessionKey: string; harness: Harness }
 export interface EvidenceInput { kind: EvidenceKind; content: string; sourceRef?: string | null; capturedAt?: string; metadata?: Record<string, unknown> }
 export interface PromotedMemoryInput { kind: MemoryKind; title: string; content: string; topicKey?: string | null; outcome?: MemoryOutcome; supersedesId?: string | null }
@@ -376,4 +376,4 @@ export interface LifecycleInput { operation: LifecycleOperation; harness: Harnes
 export interface LifecycleCapability { hookExecuted: boolean; memoryConfirmed: boolean; contextDelivered: boolean; modelConsumed: boolean }
 export interface LifecycleRendering { maxCodePoints: number; totalCodePoints: number; contentCodePoints: number; usefulContentRatio: number }
 export interface LifecycleRecovery { context: string; items: ContextItem[]; selectedSummaryIds: string[]; selectedMemoryIds: string[]; selectedRecordIds: string[]; sources: string[]; budget: BudgetMeasurement; rendering: LifecycleRendering }
-export interface LifecycleResult { outcome: 'confirmed' | 'degraded' | 'failed'; duplicate: boolean; projectId: string; sessionId: string; evidenceId: string | null; event: SessionEventRecord | null; summaryId: string | null; recovery?: LifecycleRecovery; capability: LifecycleCapability }
+export interface LifecycleResult { outcome: 'confirmed' | 'degraded' | 'failed'; duplicate: boolean; projectId: string; projectKey: string; projectName: string; sessionId: string; evidenceId: string | null; event: SessionEventRecord | null; summaryId: string | null; recovery?: LifecycleRecovery; capability: LifecycleCapability }

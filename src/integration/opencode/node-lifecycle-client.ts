@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
 import type { AdapterEvent, LifecycleIntent } from '../adapters/index.js';
+import { resolveLocalProjectIdentity } from '../project-identity.js';
 import {
   isCanonicalValue,
   MEMORY_KIND_VALUES,
@@ -142,6 +143,8 @@ function lifecycleResult(value: unknown): value is LifecycleResult {
     && (data.outcome === 'confirmed' || data.outcome === 'degraded' || data.outcome === 'failed')
     && typeof data.duplicate === 'boolean'
     && typeof data.projectId === 'string'
+    && typeof data.projectKey === 'string'
+    && typeof data.projectName === 'string'
     && typeof data.sessionId === 'string'
     && (data.evidenceId === null || typeof data.evidenceId === 'string')
     && (data.summaryId === null || typeof data.summaryId === 'string')
@@ -196,22 +199,23 @@ function parseEnvelope(value: string, event: AdapterEvent): EnvelopeParseResult 
   const identity = record(envelope?.identity);
   if (envelope?.schema !== 'thoth-mem.lifecycle'
     || typeof identity?.root_session_id !== 'string'
-    || typeof identity.project !== 'string') return { diagnostic: 'node_lifecycle_invalid_envelope' };
-  if (identity.root_session_id !== event.rootSessionKey || identity.project !== event.projectName) return { diagnostic: 'node_lifecycle_identity_mismatch' };
+    || typeof identity.project_key !== 'string'
+    || typeof identity.project_name !== 'string') return { diagnostic: 'node_lifecycle_invalid_envelope' };
+  if (identity.root_session_id !== event.rootSessionKey || identity.project_key !== event.projectKey) return { diagnostic: 'node_lifecycle_identity_mismatch' };
   if (hasInvalidRecoveryTaxonomy(envelope.data)) return { diagnostic: 'node_lifecycle_invalid_recovery_taxonomy' };
   if (!lifecycleResult(envelope.data)) return { diagnostic: 'node_lifecycle_invalid_envelope' };
+  if (envelope.data.projectKey !== identity.project_key || envelope.data.projectName !== identity.project_name) return { diagnostic: 'node_lifecycle_identity_mismatch' };
   return { result: envelope.data };
 }
 
 function adapterEvent(input: OpenCodeLifecycleDispatchInput): AdapterEvent {
-  const normalizedDirectory = input.directory.replaceAll('\\', '/').replace(/\/$/u, '');
-  const projectName = normalizedDirectory.split('/').filter(Boolean).at(-1) ?? normalizedDirectory;
+  const project = resolveLocalProjectIdentity(input.directory);
   return {
     version: 3,
     harness: 'opencode',
     intent: INTENTS[input.operation],
-    projectKey: `path:${normalizedDirectory}`,
-    projectName,
+    projectKey: project.key,
+    projectName: project.name,
     rootSessionKey: input.rootSessionKey,
     eventKey: input.eventKey,
     ...(input.content?.trim() ? { content: input.content.slice(0, 20_000) } : {}),

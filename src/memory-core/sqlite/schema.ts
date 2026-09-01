@@ -75,6 +75,17 @@ CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT 
 CREATE TABLE projects(id TEXT PRIMARY KEY, identity_key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, root_hint TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 `;
 
+export const PROJECT_ALIAS_SCHEMA_SQL = `
+CREATE TABLE project_aliases(
+  alias_key TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  alias_kind TEXT NOT NULL CHECK(alias_kind='path'),
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+CREATE INDEX project_aliases_project ON project_aliases(project_id,alias_kind,alias_key);
+`;
+
 function memoryFtsSchemaSql(ftsOptions = ''): string {
   return `
 CREATE VIRTUAL TABLE memory_fts USING fts5(memory_id UNINDEXED, project_id UNINDEXED, title, content, topic_key, tokenize='unicode61 tokenchars _'${ftsOptions});
@@ -273,8 +284,19 @@ CREATE TRIGGER observation_receipt_immutable_update BEFORE UPDATE ON observation
 CREATE TRIGGER observation_receipt_immutable_delete BEFORE DELETE ON observation_receipts BEGIN SELECT RAISE(ABORT, 'observation receipt is immutable'); END;
 `;
 
+export const REVISION_SIX_SCHEMA_SQL = `
+${SHARED_SCHEMA_PREFIX}
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
+${SESSION_PROJECTION_SCHEMA_SQL}
+${OBSERVATION_PROJECTION_SCHEMA_SQL}
+${TAXONOMY_GUARD_SQL}
+${IMMUTABILITY_TRIGGER_SQL}
+`;
+
 export const CURRENT_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
+${PROJECT_ALIAS_SCHEMA_SQL}
 CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}

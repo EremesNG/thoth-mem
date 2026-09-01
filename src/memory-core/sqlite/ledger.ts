@@ -8,13 +8,80 @@ export function hashContent(value: string): string { return createHash('sha256')
 export function stableUuid(value: string): string { const hex = hashContent(value); return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`; }
 export function now(): string { return new Date().toISOString(); }
 
+export interface StoredProjectIdentity { id: string; key: string; name: string }
+
+const PROHIBITED_PROJECT_IDENTITY_CHARACTERS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+export function resolveProjectIdentityKey(database: Database.Database, key: string): StoredProjectIdentity | undefined {
+  const alias = database.prepare(`
+    SELECT p.id,p.identity_key AS key,p.display_name AS name
+    FROM project_aliases a JOIN projects p ON p.id=a.project_id
+    WHERE a.alias_key=?
+  `).get(key) as StoredProjectIdentity | undefined;
+  if (alias) return alias;
+  return database.prepare('SELECT id,identity_key AS key,display_name AS name FROM projects WHERE identity_key=?').get(key) as StoredProjectIdentity | undefined;
+}
+
+export function projectIdentityFromId(database: Database.Database, id: string): StoredProjectIdentity {
+  const project = database.prepare('SELECT id,identity_key AS key,display_name AS name FROM projects WHERE id=?').get(id) as StoredProjectIdentity | undefined;
+  if (!project) throw new Error('Verified project identity is required');
+  return project;
+}
+
+function canonicalAliases(input: ProjectIdentityInput): string[] {
+  const aliases = [...new Set(input.aliases ?? [])];
+  if (aliases.some((alias) => !alias.startsWith('path:') || !alias.trim() || Array.from(alias).length > 4096 || PROHIBITED_PROJECT_IDENTITY_CHARACTERS.test(alias))) {
+    throw new Error('Project path alias is invalid');
+  }
+  return aliases;
+}
+
+function bindAliases(database: Database.Database, projectId: string, aliases: string[], at: string): void {
+  for (const alias of aliases) {
+    const existing = database.prepare('SELECT project_id FROM project_aliases WHERE alias_key=?').get(alias) as { project_id: string } | undefined;
+    if (existing && existing.project_id !== projectId) throw new Error('Project alias is already bound to another project');
+    if (existing) database.prepare('UPDATE project_aliases SET last_seen_at=? WHERE alias_key=?').run(at, alias);
+    else database.prepare("INSERT INTO project_aliases(alias_key,project_id,alias_kind,first_seen_at,last_seen_at) VALUES(?,?,'path',?,?)").run(alias, projectId, at, at);
+  }
+}
+
 export function ensureProject(database: Database.Database, input: ProjectIdentityInput): string {
-  const key = input.key.trim();
-  if (!key || !input.name.trim()) throw new Error('Verified project identity is required');
-  const found = database.prepare('SELECT id FROM projects WHERE identity_key=?').get(key) as { id: string } | undefined;
-  if (found) return found.id;
-  const id = stableUuid(`project:${key}`); const at = now();
+  const key = input.key;
+  if (!key.trim() || Array.from(key).length > 4096 || PROHIBITED_PROJECT_IDENTITY_CHARACTERS.test(key) || !input.name.trim()) throw new Error('Verified project identity is required');
+  const aliases = canonicalAliases(input);
+  const at = now();
+  const found = resolveProjectIdentityKey(database, key);
+  if (found) {
+    bindAliases(database, found.id, aliases, at);
+    return found.id;
+  }
+
+  let adopted: StoredProjectIdentity | undefined;
+  if (key.startsWith('git:')) {
+    for (const alias of aliases) {
+      const bound = database.prepare(`
+        SELECT p.id,p.identity_key AS key,p.display_name AS name
+        FROM project_aliases a JOIN projects p ON p.id=a.project_id
+        WHERE a.alias_key=?
+      `).get(alias) as StoredProjectIdentity | undefined;
+      if (bound) {
+        if (bound.key.startsWith('git:') && bound.key !== key) throw new Error('Project alias is already bound to another project');
+        adopted = bound;
+        break;
+      }
+      const exact = database.prepare('SELECT id,identity_key AS key,display_name AS name FROM projects WHERE identity_key=?').get(alias) as StoredProjectIdentity | undefined;
+      if (exact) { adopted = exact; break; }
+    }
+  }
+  if (adopted) {
+    database.prepare('UPDATE projects SET identity_key=?,updated_at=? WHERE id=?').run(key, at, adopted.id);
+    bindAliases(database, adopted.id, aliases, at);
+    return adopted.id;
+  }
+
+  const id = stableUuid(`project:${key}`);
   database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run(id, key, input.name.trim(), input.rootHint ?? null, at, at);
+  bindAliases(database, id, aliases, at);
   return id;
 }
 

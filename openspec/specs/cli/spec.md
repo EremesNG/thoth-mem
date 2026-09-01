@@ -4,25 +4,25 @@
 
 ### Requirement: CLI MUST Provide Managed Setup for OpenCode, Codex, and Claude Code
 
-The CLI MUST retain scoped managed setup and expose only the current commands `mcp`, `lifecycle`, and `import-legacy`; removed generation-labelled commands MUST remain unavailable without compatibility aliases.
+The CLI MUST retain existing managed setup and current runtime/import commands while adding only `project rename` for exact local display-name administration; rename MUST leave canonical identity and related records unchanged.
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 1
+#### Scenario: US4 - Rename the project display name explicitly 1
 
-- **GIVEN** a clean installation
-- **WHEN** the MCP and native lifecycle paths execute
-- **THEN** their public envelopes and commands use the current unversioned thoth-mem contract and persist to `memory.sqlite`
+- **GIVEN** one exact project UUID or unambiguous exact alias and a valid new display name
+- **WHEN** `project rename` runs
+- **THEN** it updates one project name and reports the unchanged canonical key
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 2
+#### Scenario: US4 - Rename the project display name explicitly 2
 
-- **GIVEN** an invocation using a removed transitional command or namespace
-- **WHEN** it reaches the current package
-- **THEN** it fails explicitly instead of entering a compatibility shim
+- **GIVEN** an unknown, ambiguous, blank, unsafe, or oversized selector/name
+- **WHEN** rename is requested
+- **THEN** it performs zero durable changes and returns a bounded nonzero result
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 3
+#### Scenario: US4 - Rename the project display name explicitly 3
 
-- **GIVEN** a legacy database selected for import
-- **WHEN** the operator runs the current importer
-- **THEN** `import-legacy` writes a distinct current database and preserves the source without describing the target as a replacement generation
+- **GIVEN** a successful rename repeated with the same target name
+- **WHEN** the CLI runs again
+- **THEN** it reports an idempotent no-op
 
 ### Requirement: Plan-Only Setup MUST Perform Zero Writes
 
@@ -120,13 +120,25 @@ A repeated setup request MUST return `changed=false` and request no restart only
 
 ### Requirement: CLI Command Surface MUST Use Current Product Names
 
-The CLI MUST expose `setup`, `mcp`, `lifecycle`, and `import-legacy` and MUST reject removed generation-labelled commands without compatibility aliases.
+The CLI MUST expose a bounded `project rename` administration command in addition to setup, MCP, lifecycle, and explicit legacy import, and MUST reject unknown project subcommands without compatibility aliases.
 
-#### Scenario: Invoke a removed command
+#### Scenario: US4 - Rename the project display name explicitly 1
 
-- **GIVEN** a removed transitional command name
-- **WHEN** it is passed to the current CLI
-- **THEN** the CLI returns the deterministic unknown-command exit code and performs no durable operation
+- **GIVEN** one exact project UUID or unambiguous exact alias and a valid new display name
+- **WHEN** `project rename` runs
+- **THEN** it updates one project name and reports the unchanged canonical key
+
+#### Scenario: US4 - Rename the project display name explicitly 2
+
+- **GIVEN** an unknown, ambiguous, blank, unsafe, or oversized selector/name
+- **WHEN** rename is requested
+- **THEN** it performs zero durable changes and returns a bounded nonzero result
+
+#### Scenario: US4 - Rename the project display name explicitly 3
+
+- **GIVEN** a successful rename repeated with the same target name
+- **WHEN** the CLI runs again
+- **THEN** it reports an idempotent no-op
 
 ### Requirement: Legacy Import MUST Be Explicit and Non-Destructive
 

@@ -77,6 +77,27 @@ describe('native adapters', () => {
     expect(rotatedCredential.content).toBe(firstCredential.content);
   });
 
+  it.each(['codex', 'claude'] as const)('derives content-aware sanitized %s prompt keys', (harness) => {
+    const base = {
+      hook_event_name: 'UserPromptSubmit',
+      session_id: `${harness}-root`,
+      transcript_path: `C:/repo/.${harness}/transcript.jsonl`,
+      cwd: 'C:/repo',
+      ...(harness === 'codex' ? { turn_id: 'turn-in-progress' } : {}),
+    };
+    const first = normalizeNativePayload(harness, { ...base, prompt: 'First steer.' });
+    const retry = normalizeNativePayload(harness, { ...base, prompt: 'First steer.' });
+    const second = normalizeNativePayload(harness, { ...base, prompt: 'Second steer.' });
+    const privateFirst = normalizeNativePayload(harness, { ...base, prompt: 'Keep this. <private>secret one</private>' });
+    const privateSecond = normalizeNativePayload(harness, { ...base, prompt: 'Keep this. <private>secret two</private>' });
+
+    expect(retry.eventKey).toBe(first.eventKey);
+    expect(second.eventKey).not.toBe(first.eventKey);
+    expect(privateSecond.eventKey).toBe(privateFirst.eventKey);
+    expect(privateFirst.content).toBe('Keep this. ');
+    expect(privateFirst.eventKey).not.toContain('secret');
+  });
+
   it('degrades unsupported capabilities and rejects delegated or inconsistent native identity', () => {
     expect(() => normalizeNativePayload('codex', { hook_event_name: 'Unknown', session_id: 'root', cwd: '/repo' })).toThrow(/unsupported/i);
     expect(() => normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'child', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'child', parentID: 'root' }, message: { role: 'user', sessionID: 'child', content: 'child' } } })).toThrow(/delegated/i);

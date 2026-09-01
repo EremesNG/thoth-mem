@@ -33,6 +33,8 @@ type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
 const DIRECT_EVIDENCE_KIND_VALUES = EVIDENCE_KIND_VALUES.filter((kind) => !['observation', 'observation_review', 'observation_promotion'].includes(kind)) as [typeof EVIDENCE_KIND_VALUES[number], ...Array<typeof EVIDENCE_KIND_VALUES[number]>];
+const projectKeySchema = z.string().min(1).describe('Exact opaque project_key copied verbatim from verified native identity; never derive it from a display name, path hint, remote, branch, worktree name, host ID, listing, or recalled content.');
+const projectNameSchema = z.string().min(1).describe('Creation/display metadata only; never participates in project identity equality. Prefer the database-persisted name returned by lifecycle or project output.');
 const plainEvidenceInputSchema = z.object({
   kind: z.enum(DIRECT_EVIDENCE_KIND_VALUES),
   content: z.string().min(1),
@@ -96,8 +98,8 @@ const observationReviewSchema = z.object({
 }).strict();
 const observationPromotionSchema = z.object({ observation_id: z.string().min(1).max(200) }).strict();
 const memSaveBaseInputSchema = z.object({
-  project_key: z.string().min(1),
-  project_name: z.string().min(1),
+  project_key: projectKeySchema,
+  project_name: projectNameSchema,
   root_session_key: z.string().optional(),
   harness: z.enum(HARNESS_VALUES).optional(),
   event_key: z.string().optional(),
@@ -144,15 +146,15 @@ const sessionSummarySchema = z.object({
 const memSessionInputSchema = z.object({
   operation: z.enum(LIFECYCLE_OPERATION_VALUES),
   harness: z.enum(HARNESS_VALUES),
-  project_key: z.string().min(1),
-  project_name: z.string().min(1),
+  project_key: projectKeySchema,
+  project_name: projectNameSchema,
   root_session_key: z.string().min(1),
   event_key: z.string().min(1),
   content: z.string().optional(),
   summary: sessionSummarySchema.optional(),
 }).strict();
 const memContextInputSchema = z.object({
-  project_key: z.string().min(1),
+  project_key: projectKeySchema,
   root_session_key: z.string().min(1).optional(),
   harness: z.enum(HARNESS_VALUES).optional(),
   budget_chars: z.number().optional(),
@@ -160,8 +162,8 @@ const memContextInputSchema = z.object({
   finalize_answer: z.boolean().optional(),
 }).strict();
 const memProjectInputSchema = z.object({
-  action: z.enum(['list', 'briefing', 'history', 'summaries', 'observations']),
-  project_key: z.string().min(1).optional(),
+  action: z.enum(['list', 'briefing', 'history', 'summaries', 'observations']).describe('Project view action. list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.'),
+  project_key: projectKeySchema.optional(),
   id: z.string().min(1).optional(),
   root_session_key: z.string().min(1).optional(),
   harness: z.enum(HARNESS_VALUES).optional(),
@@ -284,7 +286,7 @@ export function registerTools(server: McpServer, service: MemoryService): void {
   const handlers = createToolHandlers(service);
   const schemas: Record<MemoryToolName, Record<string, z.ZodType>> = {
     mem_save: memSaveBaseInputSchema.shape,
-    mem_recall: { project_key: z.string(), query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
+    mem_recall: { project_key: projectKeySchema, query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
     mem_context: memContextInputSchema.shape,
     mem_get: { id: z.string(), history: z.boolean().optional(), correlation_id: z.string().optional() },
     mem_project: memProjectInputSchema.shape,

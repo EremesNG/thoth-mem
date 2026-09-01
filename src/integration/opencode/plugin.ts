@@ -13,13 +13,14 @@ import {
   renderContinuation,
 } from '../../memory-core/continuation.js';
 import { sanitizePrivateContent } from '../../memory-core/privacy.js';
+import { resolveLocalProjectIdentity } from '../project-identity.js';
 import {
   dispatchOpenCodeLifecycleThroughNode,
   type OpenCodeLifecycleDispatchInput,
 } from './node-lifecycle-client.js';
 
 export { RECOVERY_TAG_END, RECOVERY_TAG_START };
-const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v1';
+const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v2';
 const MAX_IDENTITY_CODE_POINTS = 128;
 const MAX_IDENTITY_PARENT_DEPTH = 16;
 const UNSAFE_IDENTITY_HEADER_CHARACTERS = /[;=\p{Cc}\p{Zl}\p{Zp}]/u;
@@ -80,10 +81,11 @@ function stableLifecycleEventKey(parts: unknown[]): string {
 }
 
 function identityOnlyRecovery(rootSessionKey: string, directory: string): string | undefined {
-  const project = projectName(directory);
-  if (!isBoundedIdentifier(rootSessionKey) || !project) return undefined;
+  let project;
+  try { project = resolveLocalProjectIdentity(directory); } catch { return undefined; }
+  if (!isBoundedIdentifier(rootSessionKey)) return undefined;
   try {
-    return renderContinuation({ rootSessionKey, projectName: project, items: [] }).context;
+    return renderContinuation({ rootSessionKey, projectKey: project.key, projectName: project.name, items: [] }).context;
   } catch {
     return undefined;
   }
@@ -91,15 +93,16 @@ function identityOnlyRecovery(rootSessionKey: string, directory: string): string
 
 function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: string, directory: string): string | undefined {
   const fallback = identityOnlyRecovery(rootSessionKey, directory);
-  const project = projectName(directory);
+  let localProject;
+  try { localProject = resolveLocalProjectIdentity(directory); } catch { return fallback; }
   const recovery = result?.recovery;
-  if (!fallback || !project || !recovery) return fallback;
+  if (!fallback || !recovery || result.projectKey !== localProject.key || !projectName(result.projectName)) return fallback;
   const context = recovery.context;
   const codePointLength = Array.from(context).length;
   const selectedIds = recovery.items.map((item) => item.id);
   const selectedSummaryIds = recovery.items.filter((item) => 'recordType' in item && item.recordType === 'summary').map((item) => item.id);
   const selectedMemoryIds = recovery.items.filter((item) => !('recordType' in item && item.recordType === 'summary')).map((item) => item.id);
-  const identity = `thoth-mem verified identity: root_session_id=${rootSessionKey}; project=${project}`;
+  const identity = `thoth-mem verified identity: root_session_id=${rootSessionKey}; project_key=${result.projectKey}; project_name=${result.projectName}`;
   if (
     !isOwnedRecoveryBlock(context) ||
     context.split(RECOVERY_TAG_START).length !== 2 ||
@@ -179,10 +182,10 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
             if (!isBoundedIdentifier(context.sessionID)) return degradedIdentity('invalid_caller_session');
             const resolution = await resolveRootSession(context.sessionID, context.directory);
             if ('reason' in resolution) return degradedIdentity(resolution.reason);
-            const project = projectName(context.worktree || context.directory);
-            if (!project) return degradedIdentity('project_unavailable');
+            let project;
+            try { project = resolveLocalProjectIdentity(context.worktree || context.directory); } catch { return degradedIdentity('project_unavailable'); }
             const callerIsRoot = resolution.rootSessionID === context.sessionID;
-            return identityResult({ status: 'verified', root_session_id: resolution.rootSessionID, caller_session_id: context.sessionID, caller_role: callerIsRoot ? 'root' : 'delegated', project, authorization: callerIsRoot ? 'root_lifecycle' : 'none' });
+            return identityResult({ status: 'verified', root_session_id: resolution.rootSessionID, caller_session_id: context.sessionID, caller_role: callerIsRoot ? 'root' : 'delegated', project_key: project.key, project_name_hint: project.name, authorization: callerIsRoot ? 'root_lifecycle' : 'none' });
           },
         }),
       },

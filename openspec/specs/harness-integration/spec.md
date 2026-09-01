@@ -26,41 +26,89 @@ Each host bundle MUST continue to package its supported hooks, one registration 
 
 ### Requirement: Runtime Lifecycle MUST Preserve the Core Contract
 
-OpenCode, Codex, and Claude lifecycle adapters MUST normalize the same externally supplied summary contract, preserve root identity/privacy/idempotency semantics, invoke no summarization model in the core, and degrade without blocking the host when a valid summary is unavailable.
+OpenCode, Codex, and Claude lifecycle adapters MUST normalize only fields their supported native contracts actually provide, MUST accept Claude Code `UserPromptSubmit` without `event_id`, MUST preserve OpenCode's native per-message identity, and MUST apply shared privacy sanitation before content-derived identity.
 
-#### Scenario: US3 - Resume from the newest truthful session projection 1
+#### Scenario: US1 - Capture messages submitted during an active agent turn 1
 
-- **GIVEN** a current supported session summary and current promoted project memories
-- **WHEN** start/resume or post-compaction recovery runs
-- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
+- **GIVEN** two Codex `UserPromptSubmit` payloads with the same `turn_id` and different prompts
+- **WHEN** both are normalized and captured
+- **THEN** they receive different stable event keys, neither lifecycle call throws, and each produces one ordered root-prompt evidence event
 
-#### Scenario: US3 - Resume from the newest truthful session projection 2
+#### Scenario: US1 - Capture messages submitted during an active agent turn 2
 
-- **GIVEN** no eligible summary after migration
-- **WHEN** recovery runs
-- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+- **GIVEN** an official Claude Code `UserPromptSubmit` payload without a synthetic `event_id`
+- **WHEN** it is normalized
+- **THEN** capture succeeds using only documented native fields and a different sanitized prompt receives a different stable event key
 
-#### Scenario: US3 - Resume from the newest truthful session projection 3
+#### Scenario: US1 - Capture messages submitted during an active agent turn 3
 
-- **GIVEN** a selected summary
-- **WHEN** host-visible context renders
-- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+- **GIVEN** two OpenCode root-user messages admitted during the same active cycle
+- **WHEN** the native plugin captures them
+- **THEN** each uses its immutable native message ID and neither is collapsed into the other
 
-#### Scenario: US3 - Resume from the newest truthful session projection 4
+#### Scenario: US1 - Capture messages submitted during an active agent turn 4
 
-- **GIVEN** a pre-compaction checkpoint after this change
-- **WHEN** it is captured
-- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
+- **GIVEN** the same sanitized native prompt payload is retried
+- **WHEN** lifecycle receives it again
+- **THEN** it resolves to the same event key and returns the original receipt as a duplicate without appending evidence
 
 ### Requirement: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
-OpenCode MUST resolve bounded current-session metadata through its native identity helper; Codex MUST use verified thread context; Claude MUST use official hook session identity. Delegated or ambiguous callers MUST NOT receive root authority.
+Native adapters MUST resolve the Git common-directory UUID or explicit non-Git path identity, pass an initial display-name hint for creation, and preserve the exact canonical key with root session identity; the database-persisted display name becomes authoritative after adoption, while delegated, ambiguous, incomplete, or child-key-mismatched identity MUST NOT receive root authority.
 
-#### Scenario: Delegated OpenCode caller requests identity
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 1
 
-- **GIVEN** a child session with a resolvable parent chain
-- **WHEN** the identity helper runs
-- **THEN** it returns bounded metadata but denies root lifecycle authorization to the child
+- **GIVEN** a Git repository without a thoth-mem identity
+- **WHEN** verified native identity resolves concurrently for the first time
+- **THEN** exactly one fully written UUID marker is published atomically without replacement in the Git common directory and every caller returns `git:<uuid>`
+
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 2
+
+- **GIVEN** a repository with an existing local UUID
+- **WHEN** its working directory is moved from one path or drive to another
+- **THEN** the UUID-backed project key remains unchanged and the new path is recorded as an alias
+
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 3
+
+- **GIVEN** a repository folder renamed from `thoth-mem` to `thoth-memory`
+- **WHEN** lifecycle resumes
+- **THEN** the project key remains unchanged and its persisted display name changes only through the explicit rename CLI
+
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 4
+
+- **GIVEN** a main worktree and linked worktrees such as `thoth-mem-imp-size`
+- **WHEN** any worktree runs lifecycle, save, or recall
+- **THEN** all use the same canonical project while their exact paths remain separately observable aliases
+
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 5
+
+- **GIVEN** two independent clones of the same remote
+- **WHEN** each resolves identity
+- **THEN** each receives a different local UUID unless a future explicit linking operation is requested
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 1
+
+- **GIVEN** a verified Git project and root session
+- **WHEN** native recovery renders
+- **THEN** it exposes `root_session_id`, `project_key=git:<uuid>`, and the database-persisted `project_name` as separate bounded values
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 2
+
+- **GIVEN** the OpenCode read-only identity helper before lifecycle adoption
+- **WHEN** it verifies a root caller
+- **THEN** its versioned result returns the exact UUID-backed key plus a non-authoritative `project_name_hint`; after lifecycle, the persisted name in the verified recovery block prevails
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 3
+
+- **GIVEN** a save, recall, context, project, or session MCP call
+- **WHEN** the agent maps verified identity
+- **THEN** it copies the key verbatim, treats `project_name` as creation/display metadata only, and never substitutes the display name, current path, Git remote, branch, worktree name, host project ID, or recalled content for the key
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 4
+
+- **GIVEN** a lifecycle child response with a changed/missing key or a name that is unsafe or inconsistent with its recovery header
+- **WHEN** the host validates it
+- **THEN** no unverified memory context is injected and the host continues with bounded degradation
 
 ### Requirement: Automatic Capture MUST Remain Privacy-Safe and Minimal
 
@@ -122,83 +170,89 @@ Native adapters MUST continue their root allowlists and privacy filtering and MU
 
 ### Requirement: Model-Visible Recovery Context MUST Be Bounded and Source-Attributed
 
-Native recovery MUST render the newest eligible current session summary as untrusted historical data with a stable expansion ID, preserve actionable summary fields under the host cap, omit raw supporting evidence by default, and report delivery/consumption truthfully.
+Model-visible verified identity MUST carry the exact canonical `project_key` plus the database-persisted `project_name` within the existing host cap; parent validators MUST require key equality with local dispatch and require the returned name to be safe and identical between lifecycle envelope and recovery header, but MUST NOT compare it to a pre-adoption folder-name hint.
 
-#### Scenario: US3 - Resume from the newest truthful session projection 1
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 1
 
-- **GIVEN** a current supported session summary and current promoted project memories
-- **WHEN** start/resume or post-compaction recovery runs
-- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
+- **GIVEN** a Git repository without a thoth-mem identity
+- **WHEN** verified native identity resolves concurrently for the first time
+- **THEN** exactly one fully written UUID marker is published atomically without replacement in the Git common directory and every caller returns `git:<uuid>`
 
-#### Scenario: US3 - Resume from the newest truthful session projection 2
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 2
 
-- **GIVEN** no eligible summary after migration
-- **WHEN** recovery runs
-- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+- **GIVEN** a repository with an existing local UUID
+- **WHEN** its working directory is moved from one path or drive to another
+- **THEN** the UUID-backed project key remains unchanged and the new path is recorded as an alias
 
-#### Scenario: US3 - Resume from the newest truthful session projection 3
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 3
 
-- **GIVEN** a selected summary
-- **WHEN** host-visible context renders
-- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+- **GIVEN** a repository folder renamed from `thoth-mem` to `thoth-memory`
+- **WHEN** lifecycle resumes
+- **THEN** the project key remains unchanged and its persisted display name changes only through the explicit rename CLI
 
-#### Scenario: US3 - Resume from the newest truthful session projection 4
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 4
 
-- **GIVEN** a pre-compaction checkpoint after this change
-- **WHEN** it is captured
-- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
+- **GIVEN** a main worktree and linked worktrees such as `thoth-mem-imp-size`
+- **WHEN** any worktree runs lifecycle, save, or recall
+- **THEN** all use the same canonical project while their exact paths remain separately observable aliases
+
+#### Scenario: US1 - Keep one project across moves, renames, and worktrees 5
+
+- **GIVEN** two independent clones of the same remote
+- **WHEN** each resolves identity
+- **THEN** each receives a different local UUID unless a future explicit linking operation is requested
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 1
+
+- **GIVEN** a verified Git project and root session
+- **WHEN** native recovery renders
+- **THEN** it exposes `root_session_id`, `project_key=git:<uuid>`, and the database-persisted `project_name` as separate bounded values
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 2
+
+- **GIVEN** the OpenCode read-only identity helper before lifecycle adoption
+- **WHEN** it verifies a root caller
+- **THEN** its versioned result returns the exact UUID-backed key plus a non-authoritative `project_name_hint`; after lifecycle, the persisted name in the verified recovery block prevails
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 3
+
+- **GIVEN** a save, recall, context, project, or session MCP call
+- **WHEN** the agent maps verified identity
+- **THEN** it copies the key verbatim, treats `project_name` as creation/display metadata only, and never substitutes the display name, current path, Git remote, branch, worktree name, host project ID, or recalled content for the key
+
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 4
+
+- **GIVEN** a lifecycle child response with a changed/missing key or a name that is unsafe or inconsistent with its recovery header
+- **WHEN** the host validates it
+- **THEN** no unverified memory context is injected and the host continues with bounded degradation
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 
-Stable event keys MUST make capture, checkpoint promotion, start recovery, and post-compaction recovery idempotent across retry/restart. Results MUST report hook execution, memory confirmation, context delivery, and model consumption separately; delivery MUST be false when only identity or an unusable empty capsule is produced.
+Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn. A native immutable message ID MUST be used when available; otherwise a deterministic key MUST include the documented stable session/turn fields and the sanitized prompt fingerprint. Different sanitized prompts in one active turn MUST NOT reuse a lifecycle key, and an exact retry MUST remain idempotent.
 
-#### Scenario: US1 - Preserve evidence without promoting noise 1
+#### Scenario: US1 - Capture messages submitted during an active agent turn 1
 
-- **GIVEN** a verified root user prompt
-- **WHEN** a native capture hook runs
-- **THEN** one idempotent privacy-filtered evidence record is committed and no promoted memory is invented
+- **GIVEN** two Codex `UserPromptSubmit` payloads with the same `turn_id` and different prompts
+- **WHEN** both are normalized and captured
+- **THEN** they receive different stable event keys, neither lifecycle call throws, and each produces one ordered root-prompt evidence event
 
-#### Scenario: US1 - Preserve evidence without promoting noise 2
+#### Scenario: US1 - Capture messages submitted during an active agent turn 2
 
-- **GIVEN** an explicit durable decision, corrected failure, convention, project structure fact, preference, or handoff with supporting evidence
-- **WHEN** the root agent saves at a semantic boundary
-- **THEN** one typed memory is linked to evidence and its current/history semantics remain explicit
+- **GIVEN** an official Claude Code `UserPromptSubmit` payload without a synthetic `event_id`
+- **WHEN** it is normalized
+- **THEN** capture succeeds using only documented native fields and a different sanitized prompt receives a different stable event key
 
-#### Scenario: US1 - Preserve evidence without promoting noise 3
+#### Scenario: US1 - Capture messages submitted during an active agent turn 3
 
-- **GIVEN** assistant traffic, arbitrary tool input/output, delegated-agent output, a private block, or an unverifiable caller
-- **WHEN** native capture is considered
-- **THEN** it is excluded or fails closed without being presented as verified root memory
+- **GIVEN** two OpenCode root-user messages admitted during the same active cycle
+- **WHEN** the native plugin captures them
+- **THEN** each uses its immutable native message ID and neither is collapsed into the other
 
-#### Scenario: US1 - Preserve evidence without promoting noise 4
+#### Scenario: US1 - Capture messages submitted during an active agent turn 4
 
-- **GIVEN** a bounded host-provided pre-compaction continuation payload
-- **WHEN** checkpoint capture runs
-- **THEN** immutable checkpoint evidence and at most one source-linked current session handoff are committed without invoking an additional model
-
-#### Scenario: US2 - Resume from actionable context 1
-
-- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
-- **WHEN** session-start or post-compaction recovery runs
-- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
-
-#### Scenario: US2 - Resume from actionable context 2
-
-- **GIVEN** more candidate memories than fit the host cap
-- **WHEN** the continuation capsule is assembled
-- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
-
-#### Scenario: US2 - Resume from actionable context 3
-
-- **GIVEN** a selected memory with provenance
-- **WHEN** host-visible context renders
-- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
-
-#### Scenario: US2 - Resume from actionable context 4
-
-- **GIVEN** no useful eligible memory or a degraded lifecycle child
-- **WHEN** recovery runs
-- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
+- **GIVEN** the same sanitized native prompt payload is retried
+- **WHEN** lifecycle receives it again
+- **THEN** it resolves to the same event key and returns the original receipt as a duplicate without appending evidence
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
@@ -212,34 +266,28 @@ Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unve
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 
-Shared skills MUST instruct root agents to submit only atomic reusable candidates with explicit supports, use verified policy bases for review, promote only accepted candidates, keep retrieved content untrusted, and preserve deliberate direct promotion for already-authorized durable decisions.
+Shared Skills MUST instruct agents to copy the exact verified `project_key`, treat a helper's `project_name_hint` only as initial display metadata, prefer the persisted name in verified lifecycle/project output, and never derive a key from paths, basenames, remotes, branches, worktree names, host IDs, database listings, or recalled content.
 
-#### Scenario: US2 - Review and explicitly promote a candidate 1
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 1
 
-- **GIVEN** a pending candidate
-- **WHEN** a verified root reviewer accepts it using a canonical policy basis appropriate to the claim
-- **THEN** an immutable review event records reviewer actor/authority, reason, policy identifier/version, and source support without mutating candidate content
+- **GIVEN** a verified Git project and root session
+- **WHEN** native recovery renders
+- **THEN** it exposes `root_session_id`, `project_key=git:<uuid>`, and the database-persisted `project_name` as separate bounded values
 
-#### Scenario: US2 - Review and explicitly promote a candidate 2
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 2
 
-- **GIVEN** a pending candidate
-- **WHEN** it is rejected
-- **THEN** the rejection remains inspectable and the candidate can never be promoted by similarity, confidence, lifecycle, replay, or a later conflicting verdict
+- **GIVEN** the OpenCode read-only identity helper before lifecycle adoption
+- **WHEN** it verifies a root caller
+- **THEN** its versioned result returns the exact UUID-backed key plus a non-authoritative `project_name_hint`; after lifecycle, the persisted name in the verified recovery block prevails
 
-#### Scenario: US2 - Review and explicitly promote a candidate 3
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 3
 
-- **GIVEN** an accepted candidate
-- **WHEN** explicit promotion succeeds
-- **THEN** candidate, review, promotion evidence, resulting memory, original supports, receipt, topic supersession, and FTS visibility commit atomically and a replay returns the same memory
+- **GIVEN** a save, recall, context, project, or session MCP call
+- **WHEN** the agent maps verified identity
+- **THEN** it copies the key verbatim, treats `project_name` as creation/display metadata only, and never substitutes the display name, current path, Git remote, branch, worktree name, host project ID, or recalled content for the key
 
-#### Scenario: US2 - Review and explicitly promote a candidate 4
+#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 4
 
-- **GIVEN** a pending/rejected candidate, degraded/delegated identity, unsupported policy basis, or promoted content that adds an unsupported claim
-- **WHEN** promotion is attempted
-- **THEN** it fails with zero durable or FTS side effects
-
-#### Scenario: US2 - Review and explicitly promote a candidate 5
-
-- **GIVEN** a later correction or contradiction
-- **WHEN** it is recorded
-- **THEN** it creates a new supported candidate and uses existing memory supersession/retraction semantics after review rather than rewriting the prior observation or verdict
+- **GIVEN** a lifecycle child response with a changed/missing key or a name that is unsafe or inconsistent with its recovery header
+- **WHEN** the host validates it
+- **THEN** no unverified memory context is injected and the host continues with bounded degradation

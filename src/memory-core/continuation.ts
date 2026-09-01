@@ -21,6 +21,7 @@ export interface ContinuationMeasurements {
 
 export interface ContinuationRenderInput {
   rootSessionKey: string;
+  projectKey?: string;
   projectName: string;
   items: ContextItem[];
   maxCodePoints?: number;
@@ -48,19 +49,24 @@ const SUMMARY_CLAIM_ORDER = ['objective', 'completed', 'decision', 'verification
 
 const codePoints = (value: string): string[] => Array.from(value);
 
-function safeIdentity(rootSessionKey: string, projectName: string): string {
+function safeIdentity(rootSessionKey: string, projectKey: string, projectName: string): string {
   if (
     codePoints(rootSessionKey).length === 0 ||
     codePoints(rootSessionKey).length > MAX_IDENTITY_CODE_POINTS ||
     !/^[a-z0-9][a-z0-9._-]*$/iu.test(rootSessionKey)
   ) throw new Error('Continuation root session identity is invalid');
   if (
+    codePoints(projectKey).length === 0 ||
+    codePoints(projectKey).length > MAX_IDENTITY_CODE_POINTS ||
+    !/^(?:git:[0-9a-f-]+|path:[^\r\n\0;=]+|[a-z0-9][a-z0-9._:-]*)$/iu.test(projectKey)
+  ) throw new Error('Continuation project key is invalid');
+  if (
     projectName.length === 0 ||
     projectName !== projectName.trim() ||
     codePoints(projectName).length > MAX_IDENTITY_CODE_POINTS ||
     UNSAFE_IDENTITY_CHARACTERS.test(projectName)
   ) throw new Error('Continuation project identity is invalid');
-  return `thoth-mem verified identity: root_session_id=${rootSessionKey}; project=${projectName}`;
+  return `thoth-mem verified identity: root_session_id=${rootSessionKey}; project_key=${projectKey}; project_name=${projectName}`;
 }
 
 function safeDisplay(value: string, withheldReferences: string[]): string {
@@ -159,7 +165,7 @@ function measurements(maxCodePoints: number, context: string, contentCodePoints:
 
 export function renderContinuation(input: ContinuationRenderInput): ContinuationRenderResult {
   const maxCodePoints = Math.max(1, Math.min(input.maxCodePoints ?? MAX_HOST_OUTPUT_CODE_POINTS, MAX_HOST_OUTPUT_CODE_POINTS));
-  const identity = safeIdentity(input.rootSessionKey, input.projectName);
+  const identity = safeIdentity(input.rootSessionKey, input.projectKey ?? 'p', input.projectName);
   const identityPrefix = `${RECOVERY_TAG_START}\n${identity}`;
   const identityOnly = `${identityPrefix}\n${RECOVERY_TAG_END}`;
   if (codePoints(identityOnly).length > maxCodePoints) throw new Error('Continuation identity exceeds the host output cap');

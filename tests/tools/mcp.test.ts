@@ -15,6 +15,22 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('bounds structured project alias inspection and reports truncation', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const aliases = Array.from({ length: 260 }, (_, index) => `path:C:/mcp-alias-${String(index).padStart(3, '0')}`);
+      service.save({
+        project: { key: 'git:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'MCP aliases', aliases },
+        evidence: { kind: 'explicit_save', content: 'bounded MCP alias fixture' },
+      });
+      const handlers = createToolHandlers(service);
+      const result = await handlers.mem_project({ action: 'list' });
+      const structured = result.structuredContent as { data: { projects: Array<{ aliases: string[]; aliasCount: number; aliasesTruncated: boolean }> } };
+      expect(structured.data.projects[0]).toMatchObject({ aliasCount: 260, aliasesTruncated: true });
+      expect(structured.data.projects[0]!.aliases).toHaveLength(256);
+    } finally { service.close(); }
+  });
+
   it('returns versioned structured save and progressive recall envelopes', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {

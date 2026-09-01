@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
 
@@ -39,7 +42,7 @@ import { canonicalizeObservation, canonicalizeObservationReview, insertObservati
 import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
-import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, projectIdentityFromId, resolveProjectIdentityKey, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
@@ -81,9 +84,15 @@ export interface RecallDiagnostic {
 }
 interface ServiceOptions { databasePath: string; readonly?: boolean; recallObserver?: (observation: RecallDiagnostic) => void }
 interface RecallInput { projectKey: string; query: string; mode?: 'compact' | 'context'; history?: boolean; budgetChars?: number; limit?: number; correlationId?: string; lexicalStrategy?: LexicalQueryStrategyId }
+interface ContextInput { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; budgetChars?: number; correlationId?: string }
+type ContextSelection = 'project' | 'session_summary_only';
 export interface RetrievalTelemetry { stage: 'compact' | 'context' | 'full_fetch'; finalized: boolean; escalated: boolean; avoided: boolean; full_fetches: 0 | 1; avoided_full_fetches: 0 | 1 }
+export interface ProjectRenameInput { selector: string; name: string }
+export interface ProjectListing { id: string; key: string; name: string; aliases: string[]; aliasCount: number; aliasesTruncated: boolean; shadowed: boolean }
 
 const MAX_CORRELATION_STATES = 1_024;
+export const PROJECT_ALIAS_INSPECTION_LIMIT = 256;
+const PROHIBITED_PROJECT_IDENTITY_CHARACTERS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 function measure(requested: number, source: number, evidence: number, returned: number): BudgetMeasurement {
   return { requestedChars: requested, returnedChars: returned, truncatedChars: Math.max(0, source - returned), sourceChars: source, evidenceChars: evidence, fullChars: source, compressionRatio: source === 0 ? 1 : returned / source, tokenBasis: 'estimated_chars_div_4' };
@@ -97,6 +106,38 @@ function validateSaveTaxonomy(input: SaveMemoryInput): void {
     if (input.memory.outcome !== undefined) requireCanonicalValue('memory.outcome', MEMORY_OUTCOME_VALUES, input.memory.outcome);
   }
 }
+
+export function validateProjectRenameInput(input: ProjectRenameInput): ProjectRenameInput {
+  const selector = input.selector;
+  const name = input.name.normalize('NFC');
+  if (!selector.trim() || Array.from(selector).length > 4096 || PROHIBITED_PROJECT_IDENTITY_CHARACTERS.test(selector)) throw new Error('Exact project selector is required');
+  if (!name || name !== name.trim() || Array.from(name).length > 128 || /[;=\p{Cc}\p{Zl}\p{Zp}]/u.test(name)) throw new Error('Project display name is invalid');
+  return { selector, name };
+}
+
+export function projectSelectorExists(databasePath: string, selector: string): boolean {
+  const snapshotRoot = mkdtempSync(join(tmpdir(), 'thoth-project-selector-'));
+  const snapshotPath = join(snapshotRoot, 'memory.sqlite');
+  try {
+    copyFileSync(databasePath, snapshotPath);
+    const sourceWalPath = `${databasePath}-wal`;
+    if (existsSync(sourceWalPath)) copyFileSync(sourceWalPath, `${snapshotPath}-wal`);
+    const database = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    try {
+      const projectTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").get();
+      if (!projectTable) return false;
+      const project = database.prepare('SELECT 1 FROM projects WHERE identity_key=?').get(selector);
+      if (project) return true;
+      const aliasTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_aliases'").get();
+      return Boolean(aliasTable && database.prepare('SELECT 1 FROM project_aliases WHERE alias_key=?').get(selector));
+    } finally {
+      database.close();
+    }
+  } finally {
+    rmSync(snapshotRoot, { recursive: true, force: true });
+  }
+}
+
 function canonicalizeObservationSupportMetadata(kind: SaveMemoryInput['evidence']['kind'], metadata: Record<string, unknown>): ObservationSupportMetadata {
   const parsed = requireObservationSupportMetadata(kind, metadata);
   const sanitizeMetadataText = (value: string, label: string): string => {
@@ -162,8 +203,24 @@ export class MemoryService {
     return { stage, finalized, escalated: fullFetches === 1, avoided, full_fetches: fullFetches, avoided_full_fetches: avoided ? 1 : 0 };
   }
 
-  listProjects(): Array<{ id: string; key: string; name: string }> {
-    return (this.database.prepare('SELECT id,identity_key,display_name FROM projects ORDER BY display_name,identity_key').all() as Array<{ id: string; identity_key: string; display_name: string }>).map((row) => ({ id: row.id, key: row.identity_key, name: row.display_name }));
+  listProjects(): ProjectListing[] {
+    return (this.database.prepare('SELECT id,identity_key,display_name FROM projects ORDER BY display_name,identity_key').all() as Array<{ id: string; identity_key: string; display_name: string }>).map((row) => {
+      const aliases = (this.database.prepare('SELECT alias_key FROM project_aliases WHERE project_id=? ORDER BY first_seen_at,alias_key LIMIT ?').all(row.id, PROJECT_ALIAS_INSPECTION_LIMIT) as Array<{ alias_key: string }>).map((alias) => alias.alias_key);
+      const aliasCount = Number((this.database.prepare('SELECT count(*) AS value FROM project_aliases WHERE project_id=?').get(row.id) as { value: number }).value);
+      const shadowing = this.database.prepare('SELECT project_id FROM project_aliases WHERE alias_key=? AND project_id<>?').get(row.identity_key, row.id) as { project_id: string } | undefined;
+      return { id: row.id, key: row.identity_key, name: row.display_name, aliases, aliasCount, aliasesTruncated: aliasCount > aliases.length, shadowed: Boolean(shadowing) };
+    });
+  }
+
+  renameProject(input: ProjectRenameInput): { projectId: string; key: string; oldName: string; newName: string; changed: boolean } {
+    const { selector, name } = validateProjectRenameInput(input);
+    return this.database.transaction(() => {
+      const project = resolveProjectIdentityKey(this.database, selector);
+      if (!project) throw new Error('Project selector did not match a project');
+      const changed = project.name !== name;
+      if (changed) this.database.prepare('UPDATE projects SET display_name=?,updated_at=? WHERE id=?').run(name, now(), project.id);
+      return { projectId: project.id, key: project.key, oldName: project.name, newName: name, changed };
+    })();
   }
 
   save(input: SaveMemoryInput): SaveMemoryResult {
@@ -395,7 +452,7 @@ export class MemoryService {
     const plan = buildFtsQueryPlan(input.query, strategyId);
     const stages: RecallDiagnosticStage[] = [];
     const exactStart = performance.now();
-    const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+    const project = resolveProjectIdentityKey(this.database, input.projectKey);
     const requested = Math.max(64, Math.min(input.budgetChars ?? (input.mode === 'context' ? 4000 : 1200), 20_000));
     const correlationId = input.correlationId ?? randomUUID();
     if (!project) {
@@ -545,7 +602,7 @@ export class MemoryService {
   projectSummaries(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; history?: boolean; budgetChars?: number }): { items: SessionSummaryRecord[]; requestedChars: number; returnedChars: number; truncated: boolean } {
     if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
     const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
-    const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+    const project = resolveProjectIdentityKey(this.database, input.projectKey);
     if (!project) return { items: [], requestedChars, returnedChars: 0, truncated: false };
     let sessionId: string | null = null;
     if (input.rootSessionKey && input.harness) {
@@ -565,12 +622,16 @@ export class MemoryService {
     return { items, requestedChars, returnedChars, truncated: items.length < rows.length };
   }
 
-  context(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; budgetChars?: number; correlationId?: string }): ContextResult {
+  context(input: ContextInput): ContextResult {
+    return this.contextSelection(input, 'project');
+  }
+
+  private contextSelection(input: ContextInput, selection: ContextSelection): ContextResult {
     if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
     const requested = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000));
     const correlationId = input.correlationId ?? randomUUID();
     const lanes = { lexical: 'ready' as const, ...this.projections.effectiveStates() };
-    const project = this.database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+    const project = resolveProjectIdentityKey(this.database, input.projectKey);
     if (!project) return { items: [], selectedSummaryIds: [], selectedMemoryIds: [], selectedRecordIds: [], budget: measure(requested, 0, 0, 0), lanes, warnings: [], correlationId };
 
     let sessionId: string | null = null;
@@ -612,7 +673,7 @@ export class MemoryService {
       }
     }
 
-    const rows = this.database.prepare(`
+    const rows = selection === 'session_summary_only' ? [] : this.database.prepare(`
       SELECT m.*,
         CASE
           WHEN kind='handoff' THEN 0
@@ -670,14 +731,19 @@ export class MemoryService {
     if (canonicalSummary && input.identityConfidence === 'degraded') throw new Error('A verified root identity is required to submit a summary');
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
+      const storedProject = projectIdentityFromId(this.database, projectId);
       const lifecycleContent = sanitizePrivateContent(input.content ?? '');
       const payloadHash = canonicalSummary ? hashContent(JSON.stringify({ content: lifecycleContent, summary: canonicalSummary.canonicalJson })) : hashContent(lifecycleContent);
       const found = this.database.prepare('SELECT payload_hash,outcome,evidence_id,summary_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { payload_hash: string; outcome: LifecycleResult['outcome']; evidence_id: string | null; summary_id: string | null } | undefined;
       const recovery = (outcome: LifecycleResult['outcome']): NonNullable<LifecycleResult['recovery']> => {
-        const briefing = this.context({ projectKey: input.project.key, rootSessionKey: input.rootSessionKey, harness: input.harness });
+        const contextInput = { projectKey: storedProject.key, rootSessionKey: input.rootSessionKey, harness: input.harness };
+        const briefing = input.operation === 'guide_post_compact'
+          ? this.contextSelection(contextInput, 'session_summary_only')
+          : this.context(contextInput);
         const rendered = renderContinuation({
           rootSessionKey: input.rootSessionKey,
-          projectName: input.project.name,
+          projectKey: storedProject.key,
+          projectName: storedProject.name,
           items: outcome === 'confirmed' ? briefing.items : [],
         });
         const items = rendered.selectedItems;
@@ -698,6 +764,8 @@ export class MemoryService {
           outcome,
           duplicate,
           projectId,
+          projectKey: storedProject.key,
+          projectName: storedProject.name,
           sessionId,
           evidenceId,
           event: evidenceId ? eventForEvidence(this.database, evidenceId) : null,

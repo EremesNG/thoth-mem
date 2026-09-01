@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 
+import { resolveProjectIdentityKey } from './sqlite/ledger.js';
+
 import {
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
@@ -309,7 +311,7 @@ export function listObservationRecords(database: Database.Database, input: ListO
   if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
   const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
   const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
-  const project = database.prepare('SELECT id FROM projects WHERE identity_key=?').get(input.projectKey) as { id: string } | undefined;
+  const project = resolveProjectIdentityKey(database, input.projectKey);
   if (!project) return { items: [], requestedChars, returnedChars: 0, truncated: false };
   let sessionId: string | null = null;
   if (input.rootSessionKey && input.harness) {

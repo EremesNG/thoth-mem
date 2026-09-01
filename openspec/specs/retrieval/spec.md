@@ -112,49 +112,19 @@ A confirmed save MUST be visible through authoritative lookup and FTS5 before su
 
 ### Requirement: Progressive Retrieval MUST Use Stable IDs and Bounded Escalation
 
-Briefing and compact recall MUST expose stable memory IDs; context expansion MUST remain bounded; and full content, evidence IDs, and lineage MUST require explicit selection through `mem_get` or history. Raw evidence MUST NOT enter automatic recovery.
+The post-compaction session-only selector MUST NOT change ordinary start/resume recovery, `mem_context`, or project briefing: those paths MUST retain their current deterministic project-memory eligibility, progressive stable IDs, privacy rules, and host caps.
 
-#### Scenario: US2 - Resume from actionable context 1
+#### Scenario: US3 - Preserve intentional project-wide recovery 1
 
-- **GIVEN** a current handoff containing an objective, completed work, first pending action, blockers, archive path, and key checks
-- **WHEN** session-start or post-compaction recovery runs
-- **THEN** the newest current handoff is considered before generic project guidance and the hidden pending action survives rendering
+- **GIVEN** no eligible same-session summary and a useful current project handoff
+- **WHEN** ordinary start/resume `recover` runs
+- **THEN** the existing project-wide deterministic fallback remains eligible
 
-#### Scenario: US2 - Resume from actionable context 2
+#### Scenario: US3 - Preserve intentional project-wide recovery 2
 
-- **GIVEN** more candidate memories than fit the host cap
-- **WHEN** the continuation capsule is assembled
-- **THEN** it selects fewer useful items instead of allocating trivial fragments across every candidate
-
-#### Scenario: US2 - Resume from actionable context 3
-
-- **GIVEN** a selected memory with provenance
-- **WHEN** host-visible context renders
-- **THEN** it contains a complete memory ID for `mem_get`, omits evidence IDs, identifies the content as untrusted data, and never truncates fixed metadata into a fabricated reference
-
-#### Scenario: US2 - Resume from actionable context 4
-
-- **GIVEN** no useful eligible memory or a degraded lifecycle child
-- **WHEN** recovery runs
-- **THEN** the host prompt continues with verified identity only or no block, bounded diagnostics, and no claim that the model consumed memory
-
-#### Scenario: US3 - Explore memory progressively 1
-
-- **GIVEN** a project with a current handoff and multiple durable memories
-- **WHEN** `mem_context` and `mem_project action=briefing` run under the same budget
-- **THEN** both use the same deterministic continuation policy and expose compatible stable memory IDs
-
-#### Scenario: US3 - Explore memory progressively 2
-
-- **GIVEN** a specific coding question
-- **WHEN** compact recall returns candidate IDs and the agent expands one candidate
-- **THEN** only the selected context/full-record path pays the additional content cost
-
-#### Scenario: US3 - Explore memory progressively 3
-
-- **GIVEN** similarly named memories in another project or historical superseded guidance
-- **WHEN** current project retrieval runs
-- **THEN** foreign records remain absent and historical records appear only through explicit history retrieval
+- **GIVEN** the same project state
+- **WHEN** `mem_context` or project briefing runs explicitly
+- **THEN** current promoted memories remain available with the existing stable IDs, privacy boundary, and budget behavior
 
 ### Requirement: Current Recall MUST Prefer Valid Guidance Without Hiding History
 
@@ -168,31 +138,31 @@ Default current retrieval MUST prefer valid guidance over comparable superseded,
 
 ### Requirement: Project Briefing MUST Be Deterministic and Bounded
 
-The shared continuation selector MUST consider the newest eligible current session summary before current promoted memories, use deterministic project/session/version precedence, retain existing handoff fallback when no summary exists, and never synthesize unsupported fields.
+`guide_post_compact` MUST select only the newest eligible current summary for the exact verified project, harness, and root session. It MUST NOT fill remaining budget from project memories; when no eligible session summary can be delivered, it MUST abstain with verified identity only and truthful empty selection metadata.
 
-#### Scenario: US3 - Resume from the newest truthful session projection 1
+#### Scenario: US2 - Recover only the compacted conversation 1
 
-- **GIVEN** a current supported session summary and current promoted project memories
-- **WHEN** start/resume or post-compaction recovery runs
-- **THEN** the summary is considered first and remaining budget is filled only with eligible current memories under the shared deterministic selector
+- **GIVEN** a compacted root session with a supported current checkpoint summary plus unrelated current project memories
+- **WHEN** `guide_post_compact` runs
+- **THEN** only the newest eligible summary from that exact project, harness, and root session is eligible for rendering
 
-#### Scenario: US3 - Resume from the newest truthful session projection 2
+#### Scenario: US2 - Recover only the compacted conversation 2
 
-- **GIVEN** no eligible summary after migration
-- **WHEN** recovery runs
-- **THEN** it falls back to the existing current handoff/memory policy without fabricating a summary or blocking the host prompt
+- **GIVEN** a compacted root session with no eligible current summary and one or more current project handoffs from other sessions
+- **WHEN** `guide_post_compact` runs
+- **THEN** recovery renders verified identity only, returns empty selected record IDs, and reports `contextDelivered=false`
 
-#### Scenario: US3 - Resume from the newest truthful session projection 3
+#### Scenario: US2 - Recover only the compacted conversation 3
 
-- **GIVEN** a selected summary
-- **WHEN** host-visible context renders
-- **THEN** it includes a stable summary ID for progressive expansion, preserves the actionable fields that fit, identifies all historical content as untrusted data, and does not expose raw support evidence by default
+- **GIVEN** a summary belonging to another root session or harness
+- **WHEN** post-compaction recovery runs
+- **THEN** that summary and every project memory remain absent
 
-#### Scenario: US3 - Resume from the newest truthful session projection 4
+#### Scenario: US2 - Recover only the compacted conversation 4
 
-- **GIVEN** a pre-compaction checkpoint after this change
-- **WHEN** it is captured
-- **THEN** checkpoint evidence and the supplied summary may commit idempotently but no `handoff` memory is automatically promoted
+- **GIVEN** a degraded or premature post-compaction event
+- **WHEN** recovery is evaluated
+- **THEN** existing fail-closed behavior remains unchanged and no memory is injected
 
 ### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 

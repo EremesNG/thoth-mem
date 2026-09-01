@@ -1,6 +1,8 @@
 # MCP and CLI surfaces
 
-The model-visible registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes only scoped setup, lifecycle runner, and one-way import operations.
+The model-visible registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
+
+`project_key` is the exact opaque verified identity on every project-scoped call. `project_name` is creation/display metadata only and never participates in identity equality. `mem_project action=list` exposes at most 256 exact aliases per project, `aliasCount`, `aliasesTruncated`, and shadowed historical path rows without mutating, merging, or limiting exact alias resolution.
 
 There is no v1 schema negotiation, graph action, HTTP route, dashboard, model provider, or hidden Store fallback. Errors use bounded safe messages. Structured JSON is authoritative and text is a bounded rendering.
 

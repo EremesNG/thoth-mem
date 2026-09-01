@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { normalizeNativePayload } from '../../src/integration/adapters/index.js';
 import { LifecycleRuntime } from '../../src/integration/core/lifecycle.js';
 import { MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START } from '../../src/memory-core/continuation.js';
 import { MemoryService } from '../../src/memory-core/service.js';
@@ -36,6 +37,28 @@ describe('host-neutral lifecycle', () => {
       expect(service.context({ projectKey: 'repo:life' }).items).toEqual([]);
       service.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('captures distinct Codex steers in one turn and deduplicates an exact retry', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const payload = {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'root-steered-prompts',
+        turn_id: 'turn-in-progress',
+        cwd: 'C:\\fixture\\codex-steered-prompts',
+      };
+      const firstInput = normalizeNativePayload('codex', { ...payload, prompt: 'First steer.' });
+      const secondInput = normalizeNativePayload('codex', { ...payload, prompt: 'Second steer.' });
+
+      const first = service.lifecycle(firstInput);
+      const second = service.lifecycle(secondInput);
+      const retry = service.lifecycle(firstInput);
+
+      expect(first).toMatchObject({ outcome: 'confirmed', duplicate: false, event: { sequence: 1 } });
+      expect(second).toMatchObject({ outcome: 'confirmed', duplicate: false, event: { sequence: 2 } });
+      expect(retry).toMatchObject({ duplicate: true, evidenceId: first.evidenceId, event: { sequence: 1 } });
+    } finally { service.close(); }
   });
 
   it('persists and returns degraded identity confidence across retries', () => {
@@ -247,6 +270,50 @@ describe('host-neutral lifecycle', () => {
       expect(recovered.recovery?.selectedSummaryIds).toEqual([final.summaryId]);
       expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([final.summaryId, service.get({ id: final.summaryId! }).record.submissionEvidenceId]));
       expect(recovered.capability).toMatchObject({ hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false });
+    } finally { service.close(); }
+  });
+
+  it.each(['codex', 'opencode', 'claude'] as const)('limits %s post-compaction recovery to the exact session summary', (harness) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: `repo:compact-${harness}`, name: `compact-${harness}` };
+    try {
+      const unrelated = service.save({
+        project,
+        evidence: { kind: 'handoff', content: 'UNRELATED-PROJECT-HANDOFF' },
+        memory: { kind: 'handoff', title: 'Unrelated project handoff', content: 'UNRELATED-PROJECT-HANDOFF' },
+      });
+      const foreignPrompt = service.lifecycle({
+        operation: 'capture_root', harness, project, rootSessionKey: 'foreign-root', eventKey: 'foreign-prompt', content: 'Foreign work.',
+      });
+      service.lifecycle({
+        operation: 'checkpoint_pre_compact', harness, project, rootSessionKey: 'foreign-root', eventKey: 'foreign-checkpoint',
+        summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: harness }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignPrompt.evidenceId!] }] },
+      });
+
+      service.lifecycle({ operation: 'checkpoint_pre_compact', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'summaryless-checkpoint' });
+      const summaryless = service.lifecycle({ operation: 'guide_post_compact', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'summaryless-guide' });
+      expect(summaryless.recovery).toMatchObject({ items: [], selectedSummaryIds: [], selectedMemoryIds: [], selectedRecordIds: [], sources: [] });
+      expect(summaryless.recovery?.context).not.toContain('UNRELATED-PROJECT-HANDOFF');
+      expect(summaryless.recovery?.context).not.toContain('FOREIGN-SESSION-SUMMARY');
+      expect(summaryless.capability).toMatchObject({ contextDelivered: false, modelConsumed: false });
+
+      const ordinary = service.lifecycle({ operation: 'recover', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'ordinary-recover' });
+      expect(ordinary.recovery).toMatchObject({ selectedMemoryIds: [unrelated.memory!.id], selectedRecordIds: [unrelated.memory!.id] });
+      expect(ordinary.recovery?.context).toContain('UNRELATED-PROJECT-HANDOFF');
+      expect(ordinary.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
+
+      const exactPrompt = service.lifecycle({
+        operation: 'capture_root', harness, project, rootSessionKey: 'exact-root', eventKey: 'exact-prompt', content: 'Exact work.',
+      });
+      const checkpoint = service.lifecycle({
+        operation: 'checkpoint_pre_compact', harness, project, rootSessionKey: 'exact-root', eventKey: 'exact-checkpoint',
+        summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: harness }, claims: [{ kind: 'next_action', content: 'EXACT-SESSION-NEXT-ACTION', supportIds: [exactPrompt.evidenceId!] }] },
+      });
+      const exact = service.lifecycle({ operation: 'guide_post_compact', harness, project, rootSessionKey: 'exact-root', eventKey: 'exact-guide' });
+      expect(exact.recovery).toMatchObject({ selectedSummaryIds: [checkpoint.summaryId], selectedMemoryIds: [], selectedRecordIds: [checkpoint.summaryId] });
+      expect(exact.recovery?.context).toContain('EXACT-SESSION-NEXT-ACTION');
+      expect(exact.recovery?.context).not.toContain('UNRELATED-PROJECT-HANDOFF');
+      expect(exact.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
     } finally { service.close(); }
   });
 });
