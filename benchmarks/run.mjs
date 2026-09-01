@@ -281,7 +281,10 @@ try {
     hidden_markers_expected: hiddenMarkers.length,
     hidden_markers_recovered: hiddenMarkers.filter((marker) => recoveryContext.includes(marker)).length,
     restart_recovery_success: restartRecovery.outcome === 'confirmed' && restartRecovery.capability.contextDelivered ? 1 : 0,
-    post_compaction_recovery_success: postCompactionRecovery.outcome === 'confirmed' && postCompactionRecovery.capability.contextDelivered ? 1 : 0,
+    post_compaction_recovery_success: postCompactionRecovery.outcome === 'confirmed'
+      && !postCompactionRecovery.capability.contextDelivered
+      && postCompactionRecovery.recovery?.selectedRecordIds.length === 0
+      && postCompactionRecovery.recovery.sources.length === 0 ? 1 : 0,
     abstention_success: irrelevant.items.length === 0 ? 1 : 0,
     project_isolation_success: recoveryContext.includes('FOREIGN-PROJECT-CONTEXT') ? 0 : 1,
     delegated_rejection_success: delegatedRecovery.outcome === 'degraded' && !delegatedRecovery.capability.contextDelivered && delegatedRecovery.recovery?.selectedMemoryIds.length === 0 ? 1 : 0,
