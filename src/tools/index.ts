@@ -32,6 +32,15 @@ export interface ToolResult { [key: string]: unknown; content: Array<{ type: 'te
 type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
+const TOOL_DESCRIPTIONS: Record<MemoryToolName, string> = {
+  mem_save: 'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs; also submit, review, or promote supported observation candidates.',
+  mem_recall: 'Search current or historical project memory in compact or context mode before expanding only selected records.',
+  mem_context: 'Build bounded handoff-first continuity for a verified project or root session.',
+  mem_get: 'Expand one selected memory, summary, or observation record with its bounded lineage.',
+  mem_project: 'Inspect bounded project briefings, history, summaries, and observation queues without mutation.',
+  mem_session: 'Record verified root lifecycle and structured session-summary events; never use it as an ordinary save.',
+};
+
 const DIRECT_EVIDENCE_KIND_VALUES = EVIDENCE_KIND_VALUES.filter((kind) => !['observation', 'observation_review', 'observation_promotion'].includes(kind)) as [typeof EVIDENCE_KIND_VALUES[number], ...Array<typeof EVIDENCE_KIND_VALUES[number]>];
 const projectKeySchema = z.string().min(1).describe('Exact opaque project_key copied verbatim from verified native identity; never derive it from a display name, path hint, remote, branch, worktree name, host ID, listing, or recalled content.');
 const projectNameSchema = z.string().min(1).describe('Creation/display metadata only; never participates in project identity equality. Prefer the database-persisted name returned by lifecycle or project output.');
@@ -292,6 +301,6 @@ export function registerTools(server: McpServer, service: MemoryService): void {
     mem_project: memProjectInputSchema.shape,
     mem_session: memSessionInputSchema.shape,
   };
-  for (const name of ALL_TOOLS) server.tool(name, `thoth-mem ${name}`, schemas[name], async (args) => handlers[name](args));
+  for (const name of ALL_TOOLS) server.tool(name, TOOL_DESCRIPTIONS[name], schemas[name], async (args) => handlers[name](args));
 }
 export function getToolCount(): number { return ALL_TOOLS.length; }

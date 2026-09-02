@@ -15,7 +15,17 @@ describe('process construction', () => {
     const client = new Client({ name: 'test', version: '1' }); const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
       await built.server.connect(serverTransport); await client.connect(clientTransport);
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['mem_save','mem_recall','mem_context','mem_get','mem_project','mem_session']);
+      expect(client.getInstructions()).toMatch(/recall[\s\S]*save[\s\S]*handoff/iu);
+      const tools = (await client.listTools()).tools;
+      expect(tools.map((tool) => tool.name)).toEqual(['mem_save','mem_recall','mem_context','mem_get','mem_project','mem_session']);
+      const descriptions = Object.fromEntries(tools.map((tool) => [tool.name, tool.description ?? '']));
+      expect(new Set(Object.values(descriptions))).toHaveLength(6);
+      expect(descriptions.mem_save).toMatch(/save[\s\S]*(?:decision|discover|failure|convention)[\s\S]*handoff/iu);
+      expect(descriptions.mem_recall).toMatch(/search[\s\S]*(?:compact|context)/iu);
+      expect(descriptions.mem_context).toMatch(/continuity[\s\S]*(?:project|session)/iu);
+      expect(descriptions.mem_get).toMatch(/selected[\s\S]*(?:record|lineage)/iu);
+      expect(descriptions.mem_project).toMatch(/project[\s\S]*(?:briefing|history|observation)/iu);
+      expect(descriptions.mem_session).toMatch(/verified[\s\S]*(?:lifecycle|session)/iu);
       const saved = await client.callTool({ name: 'mem_save', arguments: { project_key: 'repo:process', project_name: 'process', evidence: { kind: 'explicit_save', content: 'Bounded process memory.' }, memory: { kind: 'decision', title: 'Bounded', content: 'Bounded process memory.' } } });
       expect(saved.isError).not.toBe(true); expect(JSON.stringify(saved).length).toBeLessThan(20_000);
       const recalled = await client.callTool({ name: 'mem_recall', arguments: { project_key: 'repo:process', query: 'bounded', budget_chars: 128 } });
