@@ -80,25 +80,25 @@ Core retrieval MUST continue to query current/historical promoted memories only;
 
 ### Requirement: FTS5 Lexical Retrieval MUST Sanitize Untrusted Queries
 
-Retrieval MUST safely combine exact IDs or topic keys with a selected deterministic lexical query strategy, including phrase-capable BM25 search, bounded prefix expansion, and declared stable rank fusion, without allowing punctuation-only input, code symbols, repeated terms, overlong input, FTS operators, or a Top-5 optimization to fail global recall or change declared query-plan identity.
+For identical recall inputs, the system MUST preserve the complete ordered Top-K sequence selected from unchanged pre-existing eligible memories when imported memories are added; imported rows MUST NOT influence the pre-existing cohort's lexical corpus statistics, candidate ranks, or stable tie breaks, and existing query sanitation, exact precedence, stable fusion, limits, and query-plan identity MUST remain intact.
 
-#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 1
+#### Scenario: US1 - Preserve established recall across a legacy corpus extension 1
 
-- **GIVEN** a query with more than five eligible lexical memories
-- **WHEN** the E0 candidate runs with a caller limit of at least five
-- **THEN** it selects the same three longest sanitized terms as the current default, admits at most five lexical rows, and returns a deterministic fused order
+- **GIVEN** an unchanged current project and a deterministic set of recall probes
+- **WHEN** thousands of matching imported memories are added
+- **THEN** every pre-import Top-K memory ID remains present in the same position and order for each identical probe
 
-#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 2
+#### Scenario: US1 - Preserve established recall across a legacy corpus extension 2
 
-- **GIVEN** exact, strict, or relaxed candidates that overlap
-- **WHEN** the result lists are fused
-- **THEN** exact authoritative matches remain first, memory IDs are deduplicated, rank ties use declared stable rules, and the caller limit is never exceeded
+- **GIVEN** equal-ranked pre-existing candidates
+- **WHEN** an imported cohort changes term and document frequencies
+- **THEN** the declared pre-existing tie rules remain deterministic and corpus extension cannot invert the candidates
 
-#### Scenario: US1 - Retrieve a useful local Top-5 without vector state 3
+#### Scenario: US1 - Preserve established recall across a legacy corpus extension 3
 
-- **GIVEN** a limit below five, punctuation-only input, Unicode, repeated terms, FTS operators, phrase-like input, or an empty normalized query
-- **WHEN** recall runs
-- **THEN** the candidate remains bounded, syntax-safe, deterministic, and honest about skipped stages and work; an empty normalized query retains the existing null-plan contract with null configuration/plan hashes
+- **GIVEN** exact memory-ID or topic-key lookup
+- **WHEN** imported lexical rows also match the input
+- **THEN** exact authoritative matches remain first and the caller limit is unchanged
 
 ### Requirement: Recent Saves MUST Be Immediately Searchable by Core Retrieval
 

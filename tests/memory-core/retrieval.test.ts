@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import { applyLegacyImport, planLegacyImport, writeLegacyImportCandidate } from '../../src/memory-core/import/legacy-v1.js';
+import { stableLexicalRank } from '../../src/memory-core/retrieval/stable-lexical-rank.js';
 import { MemoryService, type RecallDiagnostic } from '../../src/memory-core/service.js';
 import {
   DEFAULT_LEXICAL_QUERY_STRATEGY,
@@ -15,13 +20,33 @@ function save(service: MemoryService, title: string, content: string, topicKey?:
   return service.save({ project: { key: 'repo:retrieval', name: 'retrieval' }, eventKey, evidence: { kind: 'explicit_save', content }, memory: { kind: 'decision', title, content, topicKey } }).memory!;
 }
 
-const CANDIDATE_STRATEGIES = ['any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1'] as const;
+const STABLE_STRATEGY = 'strict-selected-any-cap5-stable-v1' as const;
+const CANDIDATE_STRATEGIES = ['any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', STABLE_STRATEGY] as const;
 const AGENTMEMORY_BM25_COMMON_HITS = 409;
+
+describe('stable lexical rank', () => {
+  it('scores only normalized query and document fields with fixed bounded weights', () => {
+    const title = stableLexicalRank('Ａlpha café', 'Alpha café', '', '');
+    const topic = stableLexicalRank('alpha café', '', '', 'alpha café');
+    const content = stableLexicalRank('alpha café', '', 'alpha café', '');
+    const repeated = stableLexicalRank('alpha', '', 'alpha '.repeat(20), '');
+    const single = stableLexicalRank('alpha', '', 'alpha', '');
+    const padded = stableLexicalRank('alpha', '', `alpha ${'padding '.repeat(100)}`, '');
+
+    expect(title).toBeGreaterThan(topic);
+    expect(topic).toBeGreaterThan(content);
+    expect(repeated).toBeGreaterThan(single);
+    expect(repeated).toBeLessThan(single * 2);
+    expect(padded).toBeLessThan(single);
+    expect(title).toBe(stableLexicalRank('Alpha café', 'Ａlpha café', '', ''));
+    expect(Number.isFinite(title)).toBe(true);
+  });
+});
 
 describe('lexical query plans', () => {
   it('preserves the archived all-prefix control while candidates deduplicate terms', () => {
-    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe('strict-selected-any-cap5-rrf-v1');
-    expect(LEXICAL_QUERY_STRATEGY_IDS).toEqual(['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1']);
+    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe(STABLE_STRATEGY);
+    expect(LEXICAL_QUERY_STRATEGY_IDS).toEqual(['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', STABLE_STRATEGY]);
     expect(buildFtsQuery('Alpha alpha beta')).toBe('"Alpha"* AND "alpha"* AND "beta"*');
     expect(buildFtsQueryPlan('Alpha alpha beta', 'all-prefix-v1')?.stages).toEqual([
       { kind: 'strict', query: '"Alpha"* AND "alpha"* AND "beta"*' },
@@ -38,19 +63,12 @@ describe('lexical query plans', () => {
     expect(buildFtsQueryPlan('Alpha alpha beta', 'all-then-any-prefix-v1')?.maxLexicalResults).toBeNull();
   });
 
-  it('declares the bounded E0 strict/relaxed RRF plan as the lexical default', () => {
+  it('preserves the bounded archived E0 strict/relaxed RRF plan', () => {
     const strategy = 'strict-selected-any-cap5-rrf-v1';
     const input = 'aa bbbb cccccc dddddddd eeeee';
     const first = buildFtsQueryPlan(input, strategy);
     const second = buildFtsQueryPlan(input, strategy);
 
-    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe(strategy);
-    expect(LEXICAL_QUERY_STRATEGY_IDS).toEqual([
-      'all-prefix-v1',
-      'any-prefix-v1',
-      'all-then-any-prefix-v1',
-      strategy,
-    ]);
     expect(first).toMatchObject({
       strategyId: strategy,
       maxStageResults: 5,
@@ -76,6 +94,28 @@ describe('lexical query plans', () => {
     expect(buildFtsQueryPlan('!!! "" (((', strategy)).toBeNull();
   });
 
+  it('declares the stable fixed-field cohort plan as the new lexical default', () => {
+    const first = buildFtsQueryPlan('aa bbbb cccccc dddddddd eeeee', STABLE_STRATEGY);
+    const second = buildFtsQueryPlan('aa bbbb cccccc dddddddd eeeee', STABLE_STRATEGY);
+
+    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe(STABLE_STRATEGY);
+    expect(first).toMatchObject({
+      strategyId: STABLE_STRATEGY,
+      ranker: 'fixed-field-tf-v1',
+      cohorts: 'monotonic-import-v1',
+      maxStageResults: 5,
+      maxLexicalResults: 5,
+      stages: [
+        { kind: 'strict', query: '"aa"* AND "bbbb"* AND "cccccc"* AND "dddddddd"* AND "eeeee"*' },
+        { kind: 'relaxed', query: '"cccccc"* OR "dddddddd"* OR "eeeee"*' },
+      ],
+      fusion: { kind: 'rrf-v1', rankConstant: 60, weights: { strict: 1, relaxed: 1 } },
+    });
+    expect(first?.configHash).toBe('b3a5b51c95b8aa79a677b8756e7a7bac0dc6aaad84403446ea1a68f14864fa04');
+    expect(first?.planHash).toBe('b3b7dc29f6c88998afcbe630c0b11156ced307e5fb764ae25cbd756caf5f5238');
+    expect(second).toEqual(first);
+  });
+
   it('preserves the immutable hybrid-parity decision while applying the later lexical-only promotion', () => {
     const raw = readFileSync('benchmarks/results/longmemeval-s-lexical-recall-at-5-report.json', 'utf8');
     const report = JSON.parse(raw);
@@ -91,7 +131,7 @@ describe('lexical query plans', () => {
     });
     expect(e0Plan?.configHash).toBe(report.candidate.config_hash);
     expect(report.promotion.assessments[0].evidence.recall_any_at_5_hits).toBeGreaterThan(AGENTMEMORY_BM25_COMMON_HITS);
-    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe('strict-selected-any-cap5-rrf-v1');
+    expect(DEFAULT_LEXICAL_QUERY_STRATEGY).toBe(STABLE_STRATEGY);
   });
 
   it('builds stable, bounded, syntax-safe plans for untrusted query shapes', () => {
@@ -327,7 +367,7 @@ describe('lexical-first retrieval', () => {
     } finally { observed.close(); control.close(); }
   });
 
-  it('selects explicit strategies while using the promoted E0 default', () => {
+  it('selects explicit strategies while using the stable default', () => {
     const observations: RecallDiagnostic[] = [];
     const service = new MemoryService({ databasePath: ':memory:', recallObserver: (observation) => observations.push(observation) });
     try {
@@ -340,12 +380,13 @@ describe('lexical-first retrieval', () => {
       const relaxed = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 10, lexicalStrategy: 'any-prefix-v1' });
       const adaptive = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 10, lexicalStrategy: 'all-then-any-prefix-v1' });
       const e0 = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 10, lexicalStrategy: 'strict-selected-any-cap5-rrf-v1' });
+      const stable = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 10, lexicalStrategy: STABLE_STRATEGY });
 
       expect(control.items.map((item) => item.id)).toEqual([both.id]);
-      expect(implicit.items.map((item) => item.id)).toEqual(e0.items.map((item) => item.id));
+      expect(implicit.items.map((item) => item.id)).toEqual(stable.items.map((item) => item.id));
       expect(observations[0]).toMatchObject({
-        strategyId: 'strict-selected-any-cap5-rrf-v1',
-        configHash: buildFtsQueryPlan('alpha beta', 'strict-selected-any-cap5-rrf-v1')?.configHash,
+        strategyId: STABLE_STRATEGY,
+        configHash: buildFtsQueryPlan('alpha beta', STABLE_STRATEGY)?.configHash,
         result: { maxLexicalResults: 5 },
       });
       expect(relaxed.items).toHaveLength(2);
@@ -442,5 +483,197 @@ describe('lexical-first retrieval', () => {
       expect(items.map((item) => item.id)).toEqual([exactPhrase.id]);
       expect(service.recall({ projectKey: 'repo:retrieval', query: 'alph' }).items.map((item) => item.id)).toContain(exactPhrase.id);
     } finally { service.close(); }
+  });
+
+  it('keeps 17 complete native Top-K lists stable after 1,000 matching imported memories', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-stable-ranking-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'target.sqlite');
+    const candidate = join(root, 'candidate.sqlite');
+    const probes = Array.from({ length: 17 }, (_, index) => `probe${index} shared`);
+    const targetService = new MemoryService({ databasePath: target });
+    try {
+      for (const [index, probe] of probes.entries()) {
+        targetService.save({
+          project: { key: 'rank', name: 'Ranking fixture' },
+          eventKey: `protected-${index}`,
+          evidence: { kind: 'explicit_save', content: `${probe} protected native evidence` },
+          memory: { kind: 'decision', title: `Protected ${index}`, content: `${probe} protected native memory` },
+        });
+      }
+      const stableBefore = probes.map((query) => targetService.recall({ projectKey: 'rank', query, limit: 5 }).items.map((item) => item.id));
+      const archivedBefore = probes.map((query) => targetService.recall({ projectKey: 'rank', query, limit: 5, lexicalStrategy: 'strict-selected-any-cap5-rrf-v1' }).items.map((item) => item.id));
+      expect(stableBefore).toHaveLength(17);
+      expect(stableBefore.every((ids) => ids.length === 5)).toBe(true);
+      targetService.close();
+
+      const targetDatabase = new Database(target);
+      targetDatabase.pragma('journal_mode = DELETE');
+      targetDatabase.close();
+      const legacy = new Database(source);
+      legacy.exec(`
+        CREATE TABLE sessions(id TEXT PRIMARY KEY,project TEXT,directory TEXT,started_at TEXT,ended_at TEXT,summary TEXT);
+        CREATE TABLE user_prompts(id INTEGER PRIMARY KEY,session_id TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT);
+        CREATE TABLE observations(id INTEGER PRIMARY KEY,session_id TEXT,type TEXT,title TEXT,content TEXT,project TEXT,directory TEXT,topic_key TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,revision_count INTEGER);
+        CREATE TABLE observation_versions(observation_id INTEGER NOT NULL,revision INTEGER NOT NULL,title TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT,PRIMARY KEY(observation_id,revision));
+      `);
+      legacy.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('rank-session', 'rank', null, '2025-01-01T00:00:00.000Z', null, null);
+      const importedContent = `${probes.join(' ')} imported corpus extension`;
+      const insert = legacy.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+      legacy.transaction(() => {
+        for (let index = 0; index < 1_000; index++) {
+          insert.run(index + 1, 'rank-session', 'bugfix', `Imported bugfix ${index}`, importedContent, 'rank', null, null, `2025-02-01T00:${String(index % 60).padStart(2, '0')}:00.000Z`, null, null, 1);
+        }
+      })();
+      legacy.close();
+
+      const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+      copyFileSync(target, candidate);
+      writeLegacyImportCandidate({ candidatePath: candidate, plan, importedAt: '2026-09-02T12:00:00.000Z' });
+      const candidateDatabase = new Database(candidate, { readonly: true });
+      try {
+        expect(candidateDatabase.prepare("SELECT count(DISTINCT memory_id) AS count FROM legacy_import_rows WHERE disposition='imported' AND memory_id IS NOT NULL").get()).toEqual({ count: 1_000 });
+      } finally { candidateDatabase.close(); }
+
+      const candidateService = new MemoryService({ databasePath: candidate, readonly: true });
+      try {
+        const stableAfter = probes.map((query) => candidateService.recall({ projectKey: 'rank', query, limit: 5 }).items.map((item) => item.id));
+        const archivedAfter = probes.map((query) => candidateService.recall({ projectKey: 'rank', query, limit: 5, lexicalStrategy: 'strict-selected-any-cap5-rrf-v1' }).items.map((item) => item.id));
+        expect(stableAfter).toEqual(stableBefore);
+        expect(probes.map((query) => candidateService.recall({ projectKey: 'rank', query, limit: 5 }).items.map((item) => item.id))).toEqual(stableAfter);
+        expect(archivedAfter.some((ids, index) => JSON.stringify(ids) !== JSON.stringify(archivedBefore[index]))).toBe(true);
+      } finally { candidateService.close(); }
+    } finally {
+      try { targetService.close(); } catch { /* already closed */ }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fills only unused capacity from numeric import cohorts while exact access remains unconditional', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-cohort-capacity-'));
+    const target = join(root, 'target.sqlite');
+    const createLegacyCohort = (path: string, title: string, content: string, topicKey: string): void => {
+      const legacy = new Database(path);
+      legacy.exec(`
+        CREATE TABLE sessions(id TEXT PRIMARY KEY,project TEXT,directory TEXT,started_at TEXT,ended_at TEXT,summary TEXT);
+        CREATE TABLE user_prompts(id INTEGER PRIMARY KEY,session_id TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT);
+        CREATE TABLE observations(id INTEGER PRIMARY KEY,session_id TEXT,type TEXT,title TEXT,content TEXT,project TEXT,directory TEXT,topic_key TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,revision_count INTEGER);
+        CREATE TABLE observation_versions(observation_id INTEGER NOT NULL,revision INTEGER NOT NULL,title TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT,PRIMARY KEY(observation_id,revision));
+      `);
+      legacy.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('session', 'rank-capacity', null, '2025-01-01T00:00:00.000Z', null, null);
+      legacy.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(1, 'session', 'bugfix', title, content, 'rank-capacity', null, topicKey, '2025-02-01T00:00:00.000Z', null, null, 1);
+      legacy.close();
+    };
+
+    const nativeService = new MemoryService({ databasePath: target });
+    try {
+      for (let index = 0; index < 4; index++) {
+        nativeService.save({
+          project: { key: 'rank-capacity', name: 'Capacity fixture' },
+          eventKey: `native-capacity-${index}`,
+          evidence: { kind: 'explicit_save', content: `sharedcapacity native evidence ${index}` },
+          memory: { kind: 'decision', title: `Native capacity ${index}`, content: `sharedcapacity native memory ${index}` },
+        });
+      }
+      const protectedIds = nativeService.recall({ projectKey: 'rank-capacity', query: 'sharedcapacity', limit: 5 }).items.map((item) => item.id);
+      expect(protectedIds).toHaveLength(4);
+      nativeService.close();
+
+      const firstSource = join(root, 'legacy-first.sqlite');
+      const secondSource = join(root, 'legacy-second.sqlite');
+      createLegacyCohort(firstSource, 'First imported', 'sharedcapacity firstonlytoken', 'import/first');
+      createLegacyCohort(secondSource, 'Second imported', 'sharedcapacity secondonlytoken', 'import/second');
+      const firstPlan = planLegacyImport({ sourcePath: firstSource, targetPath: target });
+      const first = await applyLegacyImport({ plan: firstPlan, startedAt: '2026-09-02T12:00:00.000Z' });
+      const secondPlan = planLegacyImport({ sourcePath: secondSource, targetPath: target });
+      const second = await applyLegacyImport({ plan: secondPlan, startedAt: '2026-09-02T11:00:00.000Z' });
+      const database = new Database(target, { readonly: true });
+      const imported = database.prepare("SELECT import_id,memory_id FROM legacy_import_rows WHERE source_entity='observation' AND disposition='imported' ORDER BY import_id").all() as Array<{ import_id: string; memory_id: string }>;
+      database.close();
+      const firstId = imported.find((row) => row.import_id === first.importId)!.memory_id;
+      const secondId = imported.find((row) => row.import_id === second.importId)!.memory_id;
+
+      const observations: RecallDiagnostic[] = [];
+      const service = new MemoryService({ databasePath: target, readonly: true, recallObserver: (observation) => observations.push(observation) });
+      try {
+        expect(service.recall({ projectKey: 'rank-capacity', query: 'sharedcapacity', limit: 5 }).items.map((item) => item.id)).toEqual([...protectedIds, firstId]);
+        expect(observations[0]).toMatchObject({
+          strategyId: STABLE_STRATEGY,
+          stages: [
+            { kind: 'exact', executed: true, rows: 0 },
+            { kind: 'strict', executed: true, rows: 5 },
+            { kind: 'relaxed', executed: true, rows: 5 },
+            { kind: 'post_query', executed: true, rows: 5 },
+          ],
+          work: { rankedFtsRows: 10, fusedLexicalRows: 5, hydratedMemoryRows: 5 },
+          result: { requestedLimit: 5, maxLexicalResults: 5, returnedCount: 5 },
+        });
+        expect(service.recall({ projectKey: 'rank-capacity', query: 'secondonlytoken', limit: 5 }).items.map((item) => item.id)).toEqual([secondId]);
+        expect(service.recall({ projectKey: 'rank-capacity', query: secondId }).items[0]).toMatchObject({ id: secondId, lane: 'structured' });
+        expect(service.recall({ projectKey: 'rank-capacity', query: 'import/second' }).items[0]).toMatchObject({ id: secondId, lane: 'structured' });
+      } finally { service.close(); }
+    } finally {
+      try { nativeService.close(); } catch { /* already closed */ }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recalls imported mapped and isolated history without changing target-current ordering', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-retrieval-import-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'target.sqlite');
+    const candidate = join(root, 'candidate.sqlite');
+    const targetService = new MemoryService({ databasePath: target });
+    const winner = targetService.save({
+      project: { key: 'alpha', name: 'Alpha' }, eventKey: 'winner',
+      evidence: { kind: 'explicit_save', content: 'baseline stable token winner' },
+      memory: { kind: 'decision', title: 'Target winner', content: 'baseline stable token winner', topicKey: 'shared/topic' },
+    }).memory!;
+    const peer = targetService.save({
+      project: { key: 'alpha', name: 'Alpha' }, eventKey: 'peer',
+      evidence: { kind: 'explicit_save', content: 'baseline stable token peer' },
+      memory: { kind: 'decision', title: 'Target peer', content: 'baseline stable token peer' },
+    }).memory!;
+    const before = targetService.recall({ projectKey: 'alpha', query: 'baseline stable token', limit: 10 }).items.map((item) => item.id);
+    targetService.close();
+    const targetDatabase = new Database(target);
+    targetDatabase.pragma('journal_mode = DELETE');
+    targetDatabase.close();
+    const legacy = new Database(source);
+    legacy.exec(`
+      CREATE TABLE sessions(id TEXT PRIMARY KEY,project TEXT,directory TEXT,started_at TEXT,ended_at TEXT,summary TEXT);
+      CREATE TABLE user_prompts(id INTEGER PRIMARY KEY,session_id TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT);
+      CREATE TABLE observations(id INTEGER PRIMARY KEY,session_id TEXT,type TEXT,title TEXT,content TEXT,project TEXT,directory TEXT,topic_key TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,revision_count INTEGER);
+      CREATE TABLE observation_versions(observation_id INTEGER NOT NULL,revision INTEGER NOT NULL,title TEXT,content TEXT,project TEXT,directory TEXT,created_at TEXT,PRIMARY KEY(observation_id,revision));
+    `);
+    legacy.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('mapped', 'alpha', null, '2025-01-01T00:00:00.000Z', null, null);
+    legacy.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('isolated', 'legacy-only', null, '2025-01-01T00:00:00.000Z', null, null);
+    legacy.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(1, 'mapped', 'decision', 'Legacy collision', 'mapped historical searchable token', 'alpha', null, 'shared/topic', '2025-01-02T00:00:00.000Z', null, null, 1);
+    legacy.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(2, 'isolated', 'learning', 'Legacy isolated head', 'isolated revision token head', 'legacy-only', null, 'legacy/topic', '2025-02-02T00:00:00.000Z', '2025-02-03T00:00:00.000Z', null, 2);
+    legacy.prepare('INSERT INTO observation_versions VALUES(?,?,?,?,?,?,?)').run(2, 1, 'Legacy isolated prior', 'isolated revision token prior', 'legacy-only', null, '2025-02-01T00:00:00.000Z');
+    legacy.close();
+    try {
+      const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+      copyFileSync(target, candidate);
+      writeLegacyImportCandidate({ candidatePath: candidate, plan, importedAt: '2026-09-02T12:00:00.000Z' });
+      const service = new MemoryService({ databasePath: candidate, readonly: true });
+      try {
+        expect(service.recall({ projectKey: 'alpha', query: 'baseline stable token', limit: 10 }).items.map((item) => item.id)).toEqual(before);
+        expect(new Set(before)).toEqual(new Set([winner.id, peer.id]));
+        expect(service.recall({ projectKey: 'alpha', query: 'shared/topic' }).items.map((item) => item.id)).toEqual([winner.id]);
+        expect(service.recall({ projectKey: 'alpha', query: 'mapped historical searchable', history: true }).items).toEqual([
+          expect.objectContaining({ title: 'Legacy collision', status: 'historical' }),
+        ]);
+        const isolated = service.recall({ projectKey: 'legacy:legacy-only', query: 'isolated revision token', history: true, limit: 10 }).items;
+        expect(isolated).toEqual(expect.arrayContaining([
+          expect.objectContaining({ title: 'Legacy isolated head', status: 'current' }),
+          expect.objectContaining({ title: 'Legacy isolated prior', status: 'superseded' }),
+        ]));
+        const head = isolated.find((item) => item.title === 'Legacy isolated head')!;
+        expect(service.get({ id: head.id, history: true }).lineage.map((item) => 'title' in item ? item.title : '')).toEqual(['Legacy isolated head', 'Legacy isolated prior']);
+      } finally { service.close(); }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

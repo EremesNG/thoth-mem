@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thoth-mem.local/schemas/import-ranking-report.v1.json",
+  "title": "thoth-mem import ranking benchmark report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "created_at", "strategy", "conditions", "control", "candidate", "stability", "performance", "calls", "output"],
+  "properties": {
+    "schema": { "const": "thoth-mem.import-ranking-report.v1" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "config_hash", "plan_manifest_hash"],
+      "properties": {
+        "id": { "const": "strict-selected-any-cap5-stable-v1" },
+        "config_hash": { "const": "b3a5b51c95b8aa79a677b8756e7a7bac0dc6aaad84403446ea1a68f14864fa04" },
+        "plan_manifest_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["warmups", "samples", "probe_count", "imported_memory_count", "top_k"],
+      "properties": {
+        "warmups": { "const": 10 },
+        "samples": { "const": 100 },
+        "probe_count": { "const": 17 },
+        "imported_memory_count": { "type": "integer", "minimum": 1000 },
+        "top_k": { "const": 5 }
+      }
+    },
+    "control": { "$ref": "#/$defs/lane" },
+    "candidate": { "$ref": "#/$defs/lane" },
+    "stability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before_rankings", "after_rankings", "exact_top_k_count", "pairwise_inversions"],
+      "properties": {
+        "before_rankings": { "$ref": "#/$defs/rankings" },
+        "after_rankings": { "$ref": "#/$defs/rankings" },
+        "exact_top_k_count": { "const": 17 },
+        "pairwise_inversions": { "const": 0 }
+      }
+    },
+    "performance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_to_control_p95_ratio", "maximum_ratio", "passed"],
+      "properties": {
+        "candidate_to_control_p95_ratio": { "type": "number", "minimum": 0, "maximum": 2 },
+        "maximum_ratio": { "const": 2 },
+        "passed": { "const": true }
+      }
+    },
+    "calls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "model", "llm"],
+      "properties": { "network": { "const": 0 }, "model": { "const": 0 }, "llm": { "const": 0 } }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "path"],
+      "properties": { "mode": { "const": "create-only" }, "path": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "ranking": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "type": "string", "minLength": 1 } },
+    "rankings": { "type": "array", "minItems": 17, "maxItems": 17, "items": { "$ref": "#/$defs/ranking" } },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recall_calls", "ranked_fts_rows", "fused_lexical_rows", "hydrated_memory_rows"],
+      "properties": {
+        "recall_calls": { "const": 1700 },
+        "ranked_fts_rows": { "type": "integer", "minimum": 0 },
+        "fused_lexical_rows": { "type": "integer", "minimum": 0 },
+        "hydrated_memory_rows": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_id", "input_hash", "latency_ms", "diagnostics"],
+      "properties": {
+        "strategy_id": { "enum": ["strict-selected-any-cap5-rrf-v1", "strict-selected-any-cap5-stable-v1"] },
+        "input_hash": { "$ref": "#/$defs/hash" },
+        "latency_ms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p95", "samples"],
+          "properties": {
+            "p95": { "type": "number", "minimum": 0 },
+            "samples": { "type": "array", "minItems": 100, "maxItems": 100, "items": { "type": "number", "minimum": 0 } }
+          }
+        },
+        "diagnostics": { "$ref": "#/$defs/diagnostics" }
+      }
+    }
+  }
+}

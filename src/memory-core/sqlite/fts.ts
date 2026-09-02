@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
-export const LEXICAL_QUERY_STRATEGY_IDS = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1'] as const;
+export const LEXICAL_QUERY_STRATEGY_IDS = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', 'strict-selected-any-cap5-stable-v1'] as const;
 export type LexicalQueryStrategyId = (typeof LEXICAL_QUERY_STRATEGY_IDS)[number];
-export const DEFAULT_LEXICAL_QUERY_STRATEGY: LexicalQueryStrategyId = 'strict-selected-any-cap5-rrf-v1';
+export const DEFAULT_LEXICAL_QUERY_STRATEGY: LexicalQueryStrategyId = 'strict-selected-any-cap5-stable-v1';
 
 export interface LexicalQueryStage {
   kind: 'strict' | 'relaxed';
@@ -16,6 +16,8 @@ export interface LexicalQueryPlan {
   maxLexicalResults: number | null;
   maxStageResults?: number;
   fusion?: LexicalRankFusion;
+  ranker?: 'fixed-field-tf-v1';
+  cohorts?: 'monotonic-import-v1';
   stages: LexicalQueryStage[];
 }
 
@@ -26,6 +28,7 @@ export interface LexicalRankFusion {
 }
 
 const E0_STRATEGY_ID: LexicalQueryStrategyId = 'strict-selected-any-cap5-rrf-v1';
+export const STABLE_LEXICAL_QUERY_STRATEGY: LexicalQueryStrategyId = 'strict-selected-any-cap5-stable-v1';
 const E0_FUSION = Object.freeze({
   kind: 'rrf-v1',
   rankConstant: 60,
@@ -46,6 +49,19 @@ const STRATEGY_CONFIGS = Object.freeze({
     maxStageResults: 5,
     maxLexicalResults: 5,
     fusion: E0_FUSION,
+  }),
+  [STABLE_LEXICAL_QUERY_STRATEGY]: Object.freeze({
+    tokenizer: 'legacy-v1+candidate-v1',
+    deduplicate: 'relaxed-only',
+    selection: 'longest-v1',
+    maxInputTerms: 32,
+    maxQueryTerms: 3,
+    stages: ['AND', 'OR-independent'],
+    maxStageResults: 5,
+    maxLexicalResults: 5,
+    fusion: E0_FUSION,
+    ranker: 'fixed-field-tf-v1',
+    cohorts: 'monotonic-import-v1',
   }),
 } satisfies Record<LexicalQueryStrategyId, Readonly<Record<string, unknown>>>);
 
@@ -86,7 +102,7 @@ export function buildFtsQueryPlan(input: string, strategyId: LexicalQueryStrateg
   if (!LEXICAL_QUERY_STRATEGY_IDS.includes(strategyId)) throw new Error(`Unsupported lexical query strategy: ${strategyId}`);
   const controlTerms = tokenize(input, false);
   if (controlTerms.length === 0) return null;
-  const selectsCandidateTerms = strategyId === 'any-prefix-v1' || strategyId === E0_STRATEGY_ID;
+  const selectsCandidateTerms = strategyId === 'any-prefix-v1' || strategyId === E0_STRATEGY_ID || strategyId === STABLE_LEXICAL_QUERY_STRATEGY;
   const candidateTermPool = tokenize(input, true, selectsCandidateTerms ? 32 : 12);
   const candidateTerms = selectsCandidateTerms ? selectLongestTerms(candidateTermPool, 3) : candidateTermPool;
   const strictQuery = controlTerms.join(' AND ');
@@ -95,7 +111,7 @@ export function buildFtsQueryPlan(input: string, strategyId: LexicalQueryStrateg
     ? [{ kind: 'strict', query: strictQuery }]
     : strategyId === 'any-prefix-v1'
       ? [{ kind: 'relaxed', query: relaxedQuery }]
-      : strategyId === E0_STRATEGY_ID
+      : strategyId === E0_STRATEGY_ID || strategyId === STABLE_LEXICAL_QUERY_STRATEGY
         ? [{ kind: 'strict', query: strictQuery }, { kind: 'relaxed', query: relaxedQuery }]
         : strictQuery === relaxedQuery
           ? [{ kind: 'strict', query: strictQuery }]
@@ -105,6 +121,13 @@ export function buildFtsQueryPlan(input: string, strategyId: LexicalQueryStrateg
   if (strategyId === E0_STRATEGY_ID) {
     const maxStageResults = 5;
     const planIdentity = { strategyId, configHash, stages, maxStageResults, maxLexicalResults, fusion: E0_FUSION };
+    return { ...planIdentity, planHash: hash(planIdentity) };
+  }
+  if (strategyId === STABLE_LEXICAL_QUERY_STRATEGY) {
+    const maxStageResults = 5;
+    const ranker = 'fixed-field-tf-v1' as const;
+    const cohorts = 'monotonic-import-v1' as const;
+    const planIdentity = { strategyId, configHash, stages, maxStageResults, maxLexicalResults, fusion: E0_FUSION, ranker, cohorts };
     return { ...planIdentity, planHash: hash(planIdentity) };
   }
   return { strategyId, configHash, planHash: hash({ strategyId, configHash, stages }), maxLexicalResults, stages };
