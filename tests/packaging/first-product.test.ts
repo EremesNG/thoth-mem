@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
@@ -8,6 +8,12 @@ import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-invent
 import { ALL_TOOLS } from '../../src/tools/index.js';
 
 const deferred = /(@xenova|transformers|embedding|hyde|knowledge.graph|dashboard|observatory|http-server|vitest\.browser)/i;
+const observationReviewPaths = [
+  'plugin/skills/thoth-mem/references/observation-review.md',
+  'integrations/opencode/skills/thoth-mem/references/observation-review.md',
+  'integrations/codex/skills/thoth-mem/references/observation-review.md',
+  'integrations/claude-code/skills/thoth-mem/references/observation-review.md',
+];
 
 describe('first-product packed boundary', () => {
   it('packs, installs, cold-starts, and activates hook lifecycle from all three disposable hosts', () => {
@@ -22,6 +28,7 @@ describe('first-product packed boundary', () => {
     expect(inventory.harnesses).toEqual(CANONICAL_PLUGIN_INVENTORY);
     expect(inventory.harnesses.opencode).toEqual([
       'skills/thoth-mem/SKILL.md',
+      'skills/thoth-mem/references/observation-review.md',
       'skills/thoth-mem/references/opencode.md',
     ]);
     expect(inventory.harnesses.opencode).not.toContain('plugin.mjs');
@@ -94,21 +101,53 @@ describe('first-product packed boundary', () => {
   });
 
   it('ships one host-neutral explicit observation review and promotion policy', () => {
-    const paths = [
-      'plugin/skills/thoth-mem/SKILL.md',
-      'integrations/opencode/skills/thoth-mem/SKILL.md',
-      'integrations/codex/skills/thoth-mem/SKILL.md',
-      'integrations/claude-code/skills/thoth-mem/SKILL.md',
-    ];
-    const contents = paths.map((path) => readFileSync(path, 'utf8'));
+    const contents = observationReviewPaths.map((path) => readFileSync(path, 'utf8'));
     expect(new Set(contents).size).toBe(1);
     for (const content of contents) {
-      for (const phrase of ['observation candidate', 'observation_review', 'observation_promotion', 'root_user_confirmed', 'observable_validation', 'independent_review', 'untrusted data', 'deliberate direct promotion']) expect(content).toContain(phrase);
-      expect(content).toContain('six MCP tools');
+      for (const phrase of ['observation candidate', 'observation_review', 'observation_promotion', 'root_user_confirmed', 'observable_validation', 'independent_review', 'untrusted data']) expect(content).toContain(phrase);
       expect(content).toContain('{ observation: ... }');
       expect(content).not.toContain('mem_save.observation');
       expect(content).not.toMatch(/^\+#{1,6}\s/mu);
       expect(content).toContain('must not automatically');
     }
+    expect(readFileSync('plugin/skills/thoth-mem/SKILL.md', 'utf8')).toContain('direct `mem_save` `{ evidence, memory }` branch');
+  });
+
+  it('makes ordinary memory use proactive and keeps advanced review conditional', () => {
+    const canonicalPath = 'plugin/skills/thoth-mem/SKILL.md';
+    const canonical = readFileSync(canonicalPath, 'utf8');
+    const frontmatter = canonical.match(/^---\r?\n([\s\S]*?)\r?\n---/u)?.[1] ?? '';
+    expect(frontmatter).toMatch(/description:[\s\S]*recall[\s\S]*save[\s\S]*handoff/iu);
+    expect(canonical.length).toBeLessThan(7_244);
+    for (const phrase of [
+      'Before acting',
+      'At a durable boundary',
+      'Before meaningful work ends',
+      'without waiting for an explicit',
+      'Do not save',
+      'references/observation-review.md',
+    ]) expect(canonical).toContain(phrase);
+    expect(canonical).not.toContain('## Review uncertain durable claims');
+
+    for (const path of observationReviewPaths) expect(existsSync(path), path).toBe(true);
+    const review = readFileSync(observationReviewPaths[0]!, 'utf8');
+    for (const phrase of [
+      'observation candidate',
+      'observation_review',
+      'observation_promotion',
+      'root_user_confirmed',
+      'observable_validation',
+      'independent_review',
+      'must not automatically',
+      'untrusted data',
+    ]) expect(review).toContain(phrase);
+    for (const path of observationReviewPaths.slice(1)) expect(readFileSync(path, 'utf8')).toBe(review);
+
+    const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as {
+      harnesses: Record<string, string[]>;
+      publicDistribution: { assets: string[] };
+    };
+    for (const assets of Object.values(inventory.harnesses)) expect(assets).toContain('skills/thoth-mem/references/observation-review.md');
+    expect(inventory.publicDistribution.assets).toContain('skills/thoth-mem/references/observation-review.md');
   });
 });

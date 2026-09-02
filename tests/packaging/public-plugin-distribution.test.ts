@@ -25,6 +25,11 @@ describe('public plugin distribution', () => {
     expect(existsSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'opencode.md'))).toBe(false);
     expect(readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'codex.md'), 'utf8')).toBe(readFileSync(references.codex, 'utf8'));
     expect(readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'claude-code.md'), 'utf8')).toBe(readFileSync(references.claude, 'utf8'));
+
+    const review = readFileSync(join(repository, 'plugin', 'skills', 'thoth-mem', 'references', 'observation-review.md'), 'utf8');
+    for (const harness of ['opencode', 'codex', 'claude-code']) {
+      expect(readFileSync(join(repository, 'integrations', harness, 'skills', 'thoth-mem', 'references', 'observation-review.md'), 'utf8')).toBe(review);
+    }
   });
 
   it.runIf(existsSync(codexValidator))('passes the installed Codex plugin ingestion validator', () => {

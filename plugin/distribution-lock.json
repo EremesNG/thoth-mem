@@ -8,8 +8,9 @@
     "plugin/hooks/hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
     "plugin/runners/public-runner.mjs": "ca08ff730a7b6295341b0ee3a1a663d524124aa1d56af0a2c3c3101bb7231114",
     "plugin/runtime.json": "8b70d2768a82ffe6ce7669bbdc8dfb0707fdbb59b42a6cc0247e75adad3a8ad1",
-    "plugin/skills/thoth-mem/SKILL.md": "52573488e3aeb0efc7e3587735be341a5b6d6ec9ae42d416a4912237c700c032",
+    "plugin/skills/thoth-mem/SKILL.md": "ade8cdb59c0bee7d8d7a8322dbad9bc9de5747f6053a1b54258095b370bdaafd",
     "plugin/skills/thoth-mem/references/claude-code.md": "6db493777b74c38be8cb7281f51f61801e7a7c043a176a60fc23b18db4693b0e",
-    "plugin/skills/thoth-mem/references/codex.md": "ed56c8e74dfd38febdc49c329bc9bc33abca58a8464c125773fc49a25cdf5676"
+    "plugin/skills/thoth-mem/references/codex.md": "ed56c8e74dfd38febdc49c329bc9bc33abca58a8464c125773fc49a25cdf5676",
+    "plugin/skills/thoth-mem/references/observation-review.md": "a1be9d79acb5dd990015313f53e6e1ffafbe0e260fafebc802ffddb526a9a248"
   }
 }

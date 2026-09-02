@@ -35,6 +35,12 @@ for (const destination of [
   'integrations/claude-code/skills/thoth-mem/SKILL.md',
 ]) copyIfChanged('plugin/skills/thoth-mem/SKILL.md', destination);
 
+for (const destination of [
+  'integrations/opencode/skills/thoth-mem/references/observation-review.md',
+  'integrations/codex/skills/thoth-mem/references/observation-review.md',
+  'integrations/claude-code/skills/thoth-mem/references/observation-review.md',
+]) copyIfChanged('plugin/skills/thoth-mem/references/observation-review.md', destination);
+
 for (const [source, destination] of [
   ['integrations/codex/skills/thoth-mem/references/codex.md', 'plugin/skills/thoth-mem/references/codex.md'],
   ['integrations/claude-code/skills/thoth-mem/references/claude-code.md', 'plugin/skills/thoth-mem/references/claude-code.md'],

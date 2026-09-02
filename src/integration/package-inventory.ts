@@ -3,9 +3,9 @@ export interface PublicDistributionInventory { assets: string[] }
 export interface IntegrationInventory { schemaVersion: number; lifecycleProtocolVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
 
 export const CANONICAL_PLUGIN_INVENTORY: Record<PackageHarness, string[]> = {
-  opencode: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/opencode.md'],
-  codex: ['manifest.json','.codex-plugin/plugin.json','mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/codex.md'],
-  'claude-code': ['manifest.json','.claude-plugin/plugin.json','.mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/claude-code.md'],
+  opencode: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/observation-review.md','skills/thoth-mem/references/opencode.md'],
+  codex: ['manifest.json','.codex-plugin/plugin.json','mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/codex.md','skills/thoth-mem/references/observation-review.md'],
+  'claude-code': ['manifest.json','.claude-plugin/plugin.json','.mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/claude-code.md','skills/thoth-mem/references/observation-review.md'],
 };
 
 export const CANONICAL_PUBLIC_PLUGIN_INVENTORY = [
@@ -20,6 +20,7 @@ export const CANONICAL_PUBLIC_PLUGIN_INVENTORY = [
   'skills/thoth-mem/SKILL.md',
   'skills/thoth-mem/references/codex.md',
   'skills/thoth-mem/references/claude-code.md',
+  'skills/thoth-mem/references/observation-review.md',
 ];
 
 export function validateIntegrationInventory(value: unknown): IntegrationInventory {

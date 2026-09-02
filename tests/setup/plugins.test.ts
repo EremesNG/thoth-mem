@@ -66,6 +66,7 @@ describe('first-product native setup boundary', () => {
   it('retains only the canonical OpenCode Skill source and native Codex/Claude bundle contracts', () => {
     expect(CANONICAL_PLUGIN_INVENTORY.opencode).toEqual([
       'skills/thoth-mem/SKILL.md',
+      'skills/thoth-mem/references/observation-review.md',
       'skills/thoth-mem/references/opencode.md',
     ]);
     for (const removed of ['hooks.json', 'manifest.json', 'mcp.json', 'plugin.mjs', 'runner.mjs']) {

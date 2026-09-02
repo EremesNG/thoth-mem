@@ -20,20 +20,22 @@ describe('canonical integration package inventory', () => {
       'mem_project',
       'mem_session',
     ]));
-    expect(skill).toMatch(/persistent project memory[\s\S]*resume prior work[\s\S]*durable/iu);
+    expect(skill).toMatch(/recall prior project context[\s\S]*save durable decisions[\s\S]*continuation handoff/iu);
     expect(skill).toMatch(/compact[\s\S]*context[\s\S]*selected[\s\S]*`mem_get`/iu);
-    expect(skill).toMatch(/before (?:the )?final response[\s\S]*semantic boundary[\s\S]*future sessions benefit/iu);
+    expect(skill).toMatch(/before acting[\s\S]*at a durable boundary[\s\S]*before meaningful work ends/iu);
     expect(skill).toMatch(/architecture[\s\S]*root\s+cause|root\s+cause[\s\S]*architecture/iu);
-    expect(skill).toMatch(/reusable convention[\s\S]*completed change[\s\S]*continuation-critical/iu);
+    expect(skill).toMatch(/convention[\s\S]*completed change[\s\S]*later work/iu);
     expect(skill).toMatch(/Objective[\s\S]*Completed[\s\S]*First pending action[\s\S]*Blockers[\s\S]*Key files\/checks/u);
     expect(skill).toMatch(/evidence\.kind="handoff"[\s\S]*memory\.kind="handoff"/u);
-    expect(skill).toMatch(/transient status[\s\S]*speculation[\s\S]*raw logs[\s\S]*canonical artifacts/iu);
-    expect(skill).toMatch(/<private>[\s\S]*secrets[\s\S]*transcripts[\s\S]*generated prompts[\s\S]*assistant\s+reasoning[\s\S]*tool\s+streams[\s\S]*subagent\s+output/iu);
+    expect(skill).toMatch(/transient status[\s\S]*speculation[\s\S]*raw logs[\s\S]*canonical artifact/iu);
+    for (const excluded of [/transcripts/iu, /generated\s+prompts/iu, /assistant\s+reasoning/iu, /tool\s+streams/iu, /delegated\s+output/iu]) {
+      expect(skill, excluded.source).toMatch(excluded);
+    }
+    expect(skill).toMatch(/<private>[\s\S]*credentials[\s\S]*secrets/iu);
     expect(skill).toMatch(/root_session_key[\s\S]*(?:together|paired)[\s\S]*harness/iu);
     expect(skill).toMatch(/project-only[\s\S]*(?:unattributed|without claiming session continuity)/iu);
-    expect(skill).toMatch(/do not report[\s\S]*until[\s\S]*confirm/iu);
-    expect(skill).toMatch(/record ids[\s\S]*project[\s\S]*session bounds[\s\S]*(?:degraded|unattributed|not confirmed)/iu);
-    expect(skill).toMatch(/`mem_session`[\s\S]*actual\s+lifecycle\s+event/iu);
+    expect(skill).toMatch(/confirmed recalled or saved record ids[\s\S]*project[\s\S]*session bounds[\s\S]*(?:degraded|unattributed|not confirmed)/iu);
+    expect(skill).toMatch(/`mem_session`[\s\S]*actual[\s\S]*lifecycle\s+event/iu);
     expect(skill).not.toMatch(/dashboard|observatory|community|graph|vector|hyde|http administration/iu);
     expect(skill).not.toMatch(/mem_session\s*\(\s*action|session_id|include_timeline|max_length|navigation="community"/iu);
   });

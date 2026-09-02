@@ -32,9 +32,10 @@ describe('public plugin release inventory', () => {
   it('defines a selective durable-memory and actionable-handoff contract', () => {
     const skill = readFileSync('plugin/skills/thoth-mem/SKILL.md', 'utf8');
     for (const required of [
-      'Will this materially change how a future coding agent acts?',
+      'Save without waiting for an explicit',
+      'will materially change how a future coding agent acts',
       '`topic_key`',
-      '`outcome`',
+      'outcome',
       'Objective',
       'Completed',
       'First pending action',
@@ -43,8 +44,12 @@ describe('public plugin release inventory', () => {
       'supporting evidence',
       'assistant reasoning',
       'tool streams',
-      'subagent output',
+      'delegated output',
     ]) expect(skill, required).toContain(required);
+
+    const observationReview = readFileSync('plugin/skills/thoth-mem/references/observation-review.md', 'utf8');
+    expect(observationReview).toContain('observation_review');
+    expect(observationReview).toContain('observation_promotion');
   });
 
   it('owns zero package marketplaces and one complete shared plugin root', () => {
