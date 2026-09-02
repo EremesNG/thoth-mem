@@ -266,28 +266,34 @@ Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unve
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 
-Shared Skills MUST instruct agents to copy the exact verified `project_key`, treat a helper's `project_name_hint` only as initial display metadata, prefer the persisted name in verified lifecycle/project output, and never derive a key from paths, basenames, remotes, branches, worktree names, host IDs, database listings, or recalled content.
+The shared Skill MUST front-load recall, save, and handoff applicability in its discovery description; MUST provide a concise default cadence for pre-action recall, durable in-task saves, and pre-final continuation handoffs; and MUST preserve verified identity, privacy, confirmation, root ownership, noise exclusion, and exact-key requirements.
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 1
+#### Scenario: US2 - Recall and preserve meaningful project state 1
 
-- **GIVEN** a verified Git project and root session
-- **WHEN** native recovery renders
-- **THEN** it exposes `root_session_id`, `project_key=git:<uuid>`, and the database-persisted `project_name` as separate bounded values
+- **GIVEN** prior project work may affect a task
+- **WHEN** the agent selects workflows from the Skill description and common path
+- **THEN** it is prompted to start with bounded compact recall and expand only selected evidence
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 2
+#### Scenario: US2 - Recall and preserve meaningful project state 2
 
-- **GIVEN** the OpenCode read-only identity helper before lifecycle adoption
-- **WHEN** it verifies a root caller
-- **THEN** its versioned result returns the exact UUID-backed key plus a non-authoritative `project_name_hint`; after lifecycle, the persisted name in the verified recovery block prevails
+- **GIVEN** a verified reusable decision, root cause, discovery, convention, or completed change
+- **WHEN** the agent reaches that semantic boundary
+- **THEN** the common path directs a deliberate confirmed `mem_save` without requiring the user to say “remember this”
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 3
+#### Scenario: US2 - Recall and preserve meaningful project state 3
 
-- **GIVEN** a save, recall, context, project, or session MCP call
-- **WHEN** the agent maps verified identity
-- **THEN** it copies the key verbatim, treats `project_name` as creation/display metadata only, and never substitutes the display name, current path, Git remote, branch, worktree name, host project ID, or recalled content for the key
+- **GIVEN** meaningful work ends with continuation-critical state
+- **WHEN** the agent prepares its final response
+- **THEN** it saves one concise handoff with the established actionable fields if future work benefits
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 4
+#### Scenario: US2 - Recall and preserve meaningful project state 4
 
-- **GIVEN** a lifecycle child response with a changed/missing key or a name that is unsafe or inconsistent with its recovery header
-- **WHEN** the host validates it
-- **THEN** no unverified memory context is injected and the host continues with bounded degradation
+- **GIVEN** work is transient, speculative, already canonical, private, delegated, or explicitly excluded by the user
+- **WHEN** the agent evaluates persistence
+- **THEN** it does not create a promoted memory or invent attribution
+
+#### Scenario: US2 - Recall and preserve meaningful project state 5
+
+- **GIVEN** a reusable claim lacks direct authority
+- **WHEN** policy review is actually needed
+- **THEN** the Skill loads the conditional observation-review reference and preserves candidate, review, and promotion requirements without burdening ordinary recall or direct authorized saves

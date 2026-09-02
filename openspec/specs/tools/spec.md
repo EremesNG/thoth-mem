@@ -4,31 +4,25 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; observation submission, review, promotion, queue, and expansion MUST extend those workflow tools through closed schemas.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool without changing its schema or runtime semantics.
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 1
+#### Scenario: US1 - Discover the right memory operation 1
 
-- **GIVEN** pending, accepted, rejected, and promoted observations
-- **WHEN** `mem_project` requests observations with project/session/status bounds
-- **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
+- **GIVEN** the MCP server is started
+- **WHEN** a client inspects server instructions
+- **THEN** it sees bounded progressive recall and deliberate durable save/handoff guidance rather than a recall-only funnel
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 2
+#### Scenario: US1 - Discover the right memory operation 2
 
-- **GIVEN** one selected observation ID
-- **WHEN** `mem_get` expands it
-- **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
+- **GIVEN** the exact six tools are listed
+- **WHEN** a client compares their descriptions
+- **THEN** each description names its distinct workflow purpose and `mem_save` explicitly covers durable decisions, discoveries, failures, conventions, and handoffs
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 3
+#### Scenario: US1 - Discover the right memory operation 3
 
-- **GIVEN** any unpromoted observation
-- **WHEN** compact recall, context, briefing, or native recovery runs
-- **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
-
-#### Scenario: US3 - Inspect candidates without contaminating recall 4
-
-- **GIVEN** candidate similarity or related-memory surfacing during explicit review
-- **WHEN** lexical scoring runs
-- **THEN** the bounded scores are advisory diagnostics only and cannot accept, reject, supersede, or promote any record
+- **GIVEN** the discovery metadata changes
+- **WHEN** existing MCP contract tests run
+- **THEN** the tool names, input schemas, outputs, and persistence behavior remain unchanged
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 
