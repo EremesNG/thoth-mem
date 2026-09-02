@@ -486,13 +486,25 @@ Observation candidates, supports, terminal reviews, and promotion mappings MUST 
 
 ### Requirement: Legacy Import MUST Preserve Source Data and Report Disposition
 
-The supported importer MUST read a declared legacy source, write a distinct current target, ignore derived legacy indexes, preserve the source byte-for-byte, and report deterministic mapping, quarantine, skip, and failure counts.
+The importer and retrieval path MUST keep every eligible imported current/history memory indexed in its resolved project, guarantee access by exact memory ID or topic key, return textual matches when protected older cohorts leave caller capacity, preserve exact-dedup provenance without duplicate indexing, and retain temporal status and lineage behavior.
 
-#### Scenario: Legacy identity cannot be trusted
+#### Scenario: US2 - Keep imported history genuinely retrievable 1
 
-- **GIVEN** a source row with missing or placeholder identity
-- **WHEN** import cannot map it safely
-- **THEN** the row is quarantined or skipped with a bounded reason and no invented verified identity
+- **GIVEN** imported current memories whose queries have fewer pre-existing matches than the caller limit
+- **WHEN** normal recall runs
+- **THEN** deterministic imported results fill the remaining positions without displacing the established pre-existing Top-K sequence
+
+#### Scenario: US2 - Keep imported history genuinely retrievable 2
+
+- **GIVEN** a distinctive imported title or content phrase and fewer older-cohort matches than the caller limit
+- **WHEN** recall runs
+- **THEN** the corresponding imported memory fills protected capacity; exact imported ID/topic lookup remains guaranteed and retains structured precedence regardless of lexical capacity
+
+#### Scenario: US2 - Keep imported history genuinely retrievable 3
+
+- **GIVEN** imported superseded or historical lineage
+- **WHEN** recall runs with history enabled and the selected memory is expanded
+- **THEN** the expected revisions remain searchable and linked without entering current-only recall
 
 ### Requirement: Git Repositories MUST Use One Stable Local Project Identity
 

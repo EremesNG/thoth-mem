@@ -1,79 +1,235 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+export { planLegacyImport } from './inspect.js';
+export type { PlanLegacyImportOptions } from './inspect.js';
+export { writeLegacyImportCandidate } from './writer.js';
+export type { LegacyCandidateWriteResult, WriteLegacyImportCandidateOptions } from './writer.js';
+export { parseImportPlan, parseMappingManifest } from './contracts.js';
+export type { ImportPlan, MappingManifest } from './contracts.js';
+
+import { existsSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
 
-import type { MemoryKind } from '../contracts.js';
-import { MemoryService } from '../service.js';
-import { SQLITE_SCHEMA_REVISION } from '../sqlite/migrations.js';
+import { migrateCurrentSchema } from '../sqlite/migrations.js';
+import {
+  allocateImportArtifacts,
+  cleanupCandidate,
+  cloneBackupToCandidate,
+  closeCandidateForPublication,
+  createVerifiedTargetBackup,
+  currentFingerprint,
+  publishCandidate,
+  restorePublishedTarget,
+  type ImportArtifacts,
+  type PublicationFailurePoint,
+} from './backup.js';
+import {
+  canonicalJson,
+  parseImportPlan as parsePlan,
+  type ImportFailureCode,
+  type ImportPlan,
+  type ImportReport,
+} from './contracts.js';
+import { currentBaselineManifest, currentLogicalFingerprint, fileFingerprint, inspectLegacyForApply } from './inspect.js';
+import { databaseCounts, verifyCommittedReplay, verifyImportedDatabase, type ImportRowDelta } from './verify.js';
+import { writeLegacyImportCandidate as writeCandidate } from './writer.js';
 
-export interface LegacyImportReport {
-  schema: 'thoth-mem.import';
-  reportVersion: 2; sourceSchemaVersion: 'legacy-v1' | 'unknown'; targetSchemaVersion: typeof SQLITE_SCHEMA_REVISION; startedAt: string; finishedAt: string; committed: boolean;
-  sourcePath: string; targetPath: string; sourceHash: string; sourceUnchanged: boolean;
-  imported: { sessions: number; prompts: number; observations: number };
-  skipped: number; quarantined: number; failed: number;
-  dispositions: Record<'sessions' | 'prompts' | 'observations', { imported: number; skipped: number; quarantined: number; failed: number }>;
-  dispositionReasons: string[];
-  ignoredDerived: { tables: string[]; rows: number; byCategory: Record<'graph' | 'vector' | 'operational' | 'other', number> };
-  integrity: { foreignKeys: boolean; fts: boolean };
-  errors: Array<{ code: 'SOURCE_TARGET_ALIAS' | 'SOURCE_MISSING' | 'TARGET_NOT_EMPTY' | 'UNSUPPORTED_SCHEMA' | 'MAPPING_FAILED' | 'SOURCE_CHANGED' | 'IMPORT_FAILED'; message: string }>;
+const ZERO_DELTA: ImportRowDelta = { projects: 0, sessions: 0, evidence: 0, memories: 0, memoryEvidence: 0, fts: 0, receipts: 0 };
+const ZERO_INTEGRITY: ImportReport['integrity'] = { schemaRevision: false, baselinePreserved: false, receiptClosure: false, temporalLineage: false, provenance: false, foreignKeys: false, sqlite: false, fts: false, sourceUnchanged: false, targetBaseUnchanged: false };
+
+export interface ApplyLegacyImportOptions {
+  plan: unknown;
+  startedAt?: string;
+  injectFailure?: PublicationFailurePoint | 'before-reopen-verification';
 }
 
-export class LegacyImportFailure extends Error { constructor(readonly report: LegacyImportReport, message: string) { super(message); this.name = 'LegacyImportFailure'; } }
+export class LegacyImportFailure extends Error {
+  readonly code: ImportFailureCode;
+  readonly report: ImportReport;
+  constructor(code: ImportFailureCode, message: string, report: ImportReport) {
+    super(message);
+    this.name = 'LegacyImportFailure';
+    this.code = code;
+    this.report = report;
+  }
+}
 
-interface ImportOptions { sourcePath: string; targetPath: string }
-interface TableRow { name: string }
+function boundedMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/[\r\n\t]+/gu, ' ').slice(0, 400);
+}
 
-function sha256(path: string): string { return createHash('sha256').update(readFileSync(path)).digest('hex'); }
-function projectKey(value: unknown): { key: string; name: string } | null { if (typeof value !== 'string' || !value.trim() || /^(unknown|none|unassigned|null)$/i.test(value.trim())) return null; return { key: `legacy:${value.trim()}`, name: value.trim() }; }
-function memoryKind(value: unknown): MemoryKind { const text = String(value); if (['decision','architecture','discovery','failure','handoff','preference'].includes(text)) return text as MemoryKind; if (text === 'config' || text === 'learning') return 'convention'; if (text === 'session_summary') return 'handoff'; return 'discovery'; }
-function errorCode(message: string): LegacyImportReport['errors'][number]['code'] { if (/distinct paths/i.test(message)) return 'SOURCE_TARGET_ALIAS'; if (/does not exist/i.test(message)) return 'SOURCE_MISSING'; if (/empty or absent/i.test(message)) return 'TARGET_NOT_EMPTY'; if (/unsupported legacy schema/i.test(message)) return 'UNSUPPORTED_SCHEMA'; if (/source changed/i.test(message)) return 'SOURCE_CHANGED'; if (/privacy filtering|promoted memory|stable root|verified project/i.test(message)) return 'MAPPING_FAILED'; return 'IMPORT_FAILED'; }
-function disposition() { return { imported: 0, skipped: 0, quarantined: 0, failed: 0 }; }
+function emptyReport(plan: ImportPlan, startedAt: string): ImportReport {
+  return {
+    schema: 'thoth-mem.import.report.v3', version: 3, importId: null, planHash: plan.planHash,
+    committed: false, duplicate: false, startedAt, finishedAt: startedAt,
+    fingerprints: { source: plan.source.logicalFingerprint, targetBase: plan.target.logicalFingerprint, backup: null, candidate: null, published: null },
+    artifacts: { backupPath: null, recoveryBundlePath: null, recoveryBundleFingerprint: null, candidateCleaned: true },
+    dispositions: plan.plannedDispositions, reasonCounts: plan.reasonCounts,
+    receipts: { imports: 0, projects: 0, rows: 0, importId: null }, rowDelta: ZERO_DELTA,
+    integrity: { ...ZERO_INTEGRITY }, failure: null,
+  };
+}
 
-export function importLegacyV1(options: ImportOptions): LegacyImportReport {
-  const sourcePath = resolve(options.sourcePath); const targetPath = resolve(options.targetPath);
-  const sourceExists = existsSync(sourcePath); const sourceHash = sourceExists ? sha256(sourcePath) : ''; const deterministicTime = sourceExists ? statSync(sourcePath).mtime.toISOString() : new Date(0).toISOString(); let source: Database.Database | null = null; let service: MemoryService | null = null; const targetExisted = existsSync(targetPath); const stagingPath = join(dirname(targetPath), `.${basename(targetPath)}.importing-${randomUUID()}`); let activeType: keyof LegacyImportReport['dispositions'] | null = null;
-  const report: LegacyImportReport = { schema: 'thoth-mem.import', reportVersion: 2, sourceSchemaVersion: 'unknown', targetSchemaVersion: SQLITE_SCHEMA_REVISION, startedAt: deterministicTime, finishedAt: deterministicTime, committed: false, sourcePath, targetPath, sourceHash, sourceUnchanged: false, imported: { sessions: 0, prompts: 0, observations: 0 }, skipped: 0, quarantined: 0, failed: 0, dispositions: { sessions: disposition(), prompts: disposition(), observations: disposition() }, dispositionReasons: [], ignoredDerived: { tables: [], rows: 0, byCategory: { graph: 0, vector: 0, operational: 0, other: 0 } }, integrity: { foreignKeys: false, fts: false }, errors: [] };
+function invalidPlanReport(planHash: string, startedAt: string, message: string): ImportReport {
+  const counts = { imported: 0, linked: 0, skipped: 0, quarantined: 0 };
+  return {
+    schema: 'thoth-mem.import.report.v3', version: 3, importId: null, planHash,
+    committed: false, duplicate: false, startedAt, finishedAt: startedAt,
+    fingerprints: { source: '0'.repeat(64), targetBase: '0'.repeat(64), backup: null, candidate: null, published: null },
+    artifacts: { backupPath: null, recoveryBundlePath: null, recoveryBundleFingerprint: null, candidateCleaned: true },
+    dispositions: { session: { ...counts }, prompt: { ...counts }, session_summary: { ...counts }, observation_version: { ...counts }, observation: { ...counts } },
+    reasonCounts: {}, receipts: { imports: 0, projects: 0, rows: 0, importId: null }, rowDelta: ZERO_DELTA,
+    integrity: { ...ZERO_INTEGRITY }, failure: { code: 'PLAN_INVALID', message, priorTargetRestored: false },
+  };
+}
+
+function targetState(plan: ImportPlan): { logical: string; file: ReturnType<typeof fileFingerprint> } | null {
+  if (!existsSync(plan.target.path)) return null;
+  const database = new Database(plan.target.path, { readonly: true, fileMustExist: true, timeout: 0 });
+  try { database.pragma('query_only = ON'); return { logical: currentLogicalFingerprint(database), file: fileFingerprint(plan.target.path) }; }
+  finally { database.close(); }
+}
+
+function committedImport(plan: ImportPlan): { id: string; plan_hash: string; source_fingerprint: string } | null {
+  if (!existsSync(plan.target.path)) return null;
+  const database = new Database(plan.target.path, { readonly: true, fileMustExist: true, timeout: 0 });
   try {
-    if (sourcePath.toLocaleLowerCase() === targetPath.toLocaleLowerCase()) throw new Error('Legacy source and current target must be distinct paths');
-    if (!sourceExists) throw new Error('Legacy source does not exist');
-    if (targetExisted && statSync(targetPath).size > 0) throw new Error('Current target must be empty or absent');
-    source = new Database(sourcePath, { readonly: true, fileMustExist: true }); source.pragma('query_only = ON');
-    const tables = (source.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as TableRow[]).map((row) => row.name);
-    for (const required of ['sessions','user_prompts','observations']) if (!tables.includes(required)) throw new Error(`Unsupported legacy schema: missing ${required}`);
-    report.sourceSchemaVersion = 'legacy-v1';
-    service = new MemoryService({ databasePath: stagingPath });
-    const sessionProjects = new Map<string, { key: string; name: string }>();
-    activeType = 'sessions';
-    for (const row of source.prepare('SELECT id,project,started_at FROM sessions ORDER BY id').all() as Array<Record<string, unknown>>) {
-      const project = projectKey(row.project); if (!project) { report.quarantined++; report.dispositions.sessions.quarantined++; report.dispositionReasons.push(`sessions:${String(row.id)}:placeholder_identity`); continue; }
-      service.lifecycle({ operation: 'enroll', harness: 'import', project, rootSessionKey: String(row.id), eventKey: `legacy:session:${row.id}` }); sessionProjects.set(String(row.id), project); report.imported.sessions++; report.dispositions.sessions.imported++;
+    const table = database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='legacy_imports'").get() as { count: number };
+    if (!table.count) return null;
+    return database.prepare('SELECT id,plan_hash,source_fingerprint FROM legacy_imports WHERE source_fingerprint=?').get(plan.source.logicalFingerprint) as { id: string; plan_hash: string; source_fingerprint: string } | undefined ?? null;
+  } finally { database.close(); }
+}
+
+function assertSourceBound(plan: ImportPlan): void {
+  const source = inspectLegacyForApply(plan.source.path);
+  if (source.logicalFingerprint !== plan.source.logicalFingerprint || canonicalJson(source.fileFingerprint) !== canonicalJson(plan.source.fileFingerprint)) throw new Error('Legacy source does not match the bound import plan');
+}
+
+function assertTargetBound(plan: ImportPlan): void {
+  const target = targetState(plan);
+  if (plan.target.absent) {
+    if (target) throw new Error('Current target appeared after planning');
+    return;
+  }
+  if (!target || target.logical !== plan.target.logicalFingerprint || canonicalJson(target.file) !== canonicalJson(plan.target.fileFingerprint)) throw new Error('Current target does not match the bound import plan');
+}
+
+function failureCode(phase: string, error: unknown): ImportFailureCode {
+  const message = boundedMessage(error).toLocaleLowerCase();
+  if (message.includes('locked') || message.includes('busy')) return 'TARGET_LOCKED';
+  if (phase === 'source') return 'SOURCE_CHANGED';
+  if (phase === 'target') return 'TARGET_CHANGED';
+  if (phase === 'backup' || phase === 'allocate') return 'BACKUP_FAILED';
+  if (phase === 'verify') return 'INTEGRITY_FAILED';
+  if (phase === 'publication' || message.includes('publication')) return message.includes('locked') ? 'TARGET_LOCKED' : 'PUBLICATION_FAILED';
+  if (phase === 'replay') return 'PLAN_STALE';
+  return 'IMPORT_FAILED';
+}
+
+export async function applyLegacyImport(options: ApplyLegacyImportOptions): Promise<ImportReport> {
+  let plan: ImportPlan;
+  try { plan = parsePlan(options.plan); }
+  catch (error) {
+    const startedAt = options.startedAt ?? new Date().toISOString();
+    const suppliedHash = typeof (options.plan as { planHash?: unknown })?.planHash === 'string' ? (options.plan as { planHash: string }).planHash : '0'.repeat(64);
+    const message = boundedMessage(error);
+    const placeholder = invalidPlanReport(suppliedHash, startedAt, message);
+    throw new LegacyImportFailure('PLAN_INVALID', message, placeholder);
+  }
+  const startedAt = options.startedAt ?? new Date().toISOString();
+  const report = emptyReport(plan, startedAt);
+  let artifacts: ImportArtifacts | null = null;
+  let published = false;
+  let phase = 'source';
+  try {
+    assertSourceBound(plan);
+    phase = 'target';
+    const existing = committedImport(plan);
+    if (existing) {
+      phase = 'replay';
+      if (existing.plan_hash !== plan.planHash) throw new Error('Committed source is bound to a different plan, mapping, or policy');
+      const replay = verifyCommittedReplay(plan.target.path, plan, existing.id);
+      const publishedFingerprint = currentFingerprint(plan.target.path);
+      return {
+        ...report, importId: existing.id, committed: true, duplicate: true, finishedAt: new Date().toISOString(),
+        fingerprints: { ...report.fingerprints, candidate: publishedFingerprint, published: publishedFingerprint },
+        dispositions: replay.dispositions, reasonCounts: replay.reasonCounts,
+        receipts: { imports: 1, projects: plan.projectMappings.length, rows: plan.integrityExpectations.receiptCount, importId: existing.id },
+        rowDelta: ZERO_DELTA, integrity: replay.integrity,
+      };
     }
-    activeType = 'prompts';
-    for (const row of source.prepare('SELECT id,session_id,content,project,created_at FROM user_prompts ORDER BY id').all() as Array<Record<string, unknown>>) {
-      const project = projectKey(row.project) ?? sessionProjects.get(String(row.session_id)); if (!project) { report.quarantined++; report.dispositions.prompts.quarantined++; report.dispositionReasons.push(`user_prompts:${String(row.id)}:placeholder_identity`); continue; }
-      service.save({ project, session: { rootSessionKey: String(row.session_id), harness: 'import' }, eventKey: `legacy-prompt:${row.id}`, evidence: { kind: 'legacy_prompt', content: String(row.content), sourceRef: `user_prompts:${row.id}`, capturedAt: String(row.created_at) } }); report.imported.prompts++; report.dispositions.prompts.imported++;
+    phase = 'target';
+    assertTargetBound(plan);
+    let baseline: Record<string, unknown[]>;
+    let baseCounts: ImportRowDelta;
+    if (plan.target.absent) {
+      baseline = {};
+      baseCounts = ZERO_DELTA;
+    } else {
+      const target = new Database(plan.target.path, { readonly: true, fileMustExist: true });
+      try { baseline = currentBaselineManifest(target); baseCounts = databaseCounts(target); }
+      finally { target.close(); }
     }
-    activeType = 'observations';
-    for (const row of source.prepare('SELECT id,session_id,type,title,content,project,topic_key,created_at,deleted_at FROM observations ORDER BY id').all() as Array<Record<string, unknown>>) {
-      if (row.deleted_at !== null) { report.skipped++; report.dispositions.observations.skipped++; report.dispositionReasons.push(`observations:${String(row.id)}:deleted`); continue; }
-      const project = projectKey(row.project) ?? sessionProjects.get(String(row.session_id)); if (!project) { report.quarantined++; report.dispositions.observations.quarantined++; report.dispositionReasons.push(`observations:${String(row.id)}:placeholder_identity`); continue; }
-      service.save({ project, session: { rootSessionKey: String(row.session_id), harness: 'import' }, eventKey: `legacy-observation:${row.id}`, evidence: { kind: 'legacy_observation', content: String(row.content), sourceRef: `observations:${row.id}`, capturedAt: String(row.created_at) }, memory: { kind: memoryKind(row.type), title: String(row.title), content: String(row.content), topicKey: typeof row.topic_key === 'string' ? row.topic_key : null } }); report.imported.observations++; report.dispositions.observations.imported++;
+    phase = 'allocate';
+    artifacts = allocateImportArtifacts(plan);
+    report.artifacts.backupPath = artifacts.backupPath;
+    phase = 'backup';
+    report.fingerprints.backup = await createVerifiedTargetBackup(plan, artifacts);
+    if (plan.target.absent) {
+      const candidate = new Database(artifacts.candidatePath);
+      try { migrateCurrentSchema(candidate); }
+      finally { candidate.close(); }
+      const candidateBase = new Database(artifacts.candidatePath, { readonly: true });
+      try { baseline = currentBaselineManifest(candidateBase); baseCounts = databaseCounts(candidateBase); }
+      finally { candidateBase.close(); }
+    } else {
+      cloneBackupToCandidate(artifacts);
+      const candidate = new Database(artifacts.candidatePath, { fileMustExist: true });
+      try { migrateCurrentSchema(candidate); }
+      finally { candidate.close(); }
     }
-    activeType = null;
-    const authoritative = new Set(['sessions','user_prompts','observations']); report.ignoredDerived.tables = tables.filter((table) => !authoritative.has(table));
-    for (const table of report.ignoredDerived.tables) { if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) continue; const rows = Number((source.prepare(`SELECT count(*) AS count FROM "${table}"`).get() as { count: number }).count); report.ignoredDerived.rows += rows; const category = /kg|graph|triple/i.test(table) ? 'graph' : /vector|embedding/i.test(table) ? 'vector' : /trace|job|telemetry/i.test(table) ? 'operational' : 'other'; report.ignoredDerived.byCategory[category] += rows; }
-    service.close(); service = null; source.close(); source = null;
-    const target = new Database(stagingPath, { readonly: true }); report.integrity.foreignKeys = (target.pragma('foreign_key_check') as unknown[]).length === 0; const counts = target.prepare('SELECT (SELECT count(*) FROM memories) AS memories,(SELECT count(*) FROM memory_fts) AS fts').get() as { memories: number; fts: number }; report.integrity.fts = counts.memories === counts.fts; target.close();
-    report.sourceUnchanged = sha256(sourcePath) === sourceHash; if (!report.sourceUnchanged) throw new Error('Legacy source changed during import');
-    if (targetExisted) rmSync(targetPath, { force: true }); renameSync(stagingPath, targetPath); report.committed = true; report.dispositionReasons.sort(); report.ignoredDerived.tables.sort();
+    phase = 'write';
+    const written = writeCandidate({ candidatePath: artifacts.candidatePath, plan, importedAt: startedAt });
+    closeCandidateForPublication(artifacts.candidatePath);
+    report.fingerprints.candidate = currentFingerprint(artifacts.candidatePath);
+    phase = 'target';
+    assertSourceBound(plan);
+    assertTargetBound(plan);
+    phase = 'verify';
+    const verified = verifyImportedDatabase({ path: artifacts.candidatePath, plan, importId: written.importId, baseline, baseCounts });
+    report.importId = written.importId;
+    report.dispositions = verified.dispositions;
+    report.reasonCounts = verified.reasonCounts;
+    report.receipts = { imports: 1, projects: plan.projectMappings.length, rows: written.receipts, importId: written.importId };
+    report.rowDelta = verified.rowDelta;
+    report.integrity = verified.integrity;
+    phase = 'publication';
+    const publication = publishCandidate(plan, artifacts, options.injectFailure === 'after-target-move' || options.injectFailure === 'after-candidate-move' ? options.injectFailure : undefined);
+    published = true;
+    report.artifacts.recoveryBundlePath = artifacts.recoveryBundlePath;
+    report.artifacts.recoveryBundleFingerprint = publication.recoveryFingerprint;
+    report.fingerprints.published = publication.publishedFingerprint;
+    phase = 'verify';
+    if (options.injectFailure === 'before-reopen-verification') throw new Error('Injected failure before published database reopen verification');
+    const reopened = verifyImportedDatabase({ path: plan.target.path, plan, importId: written.importId, baseline, baseCounts });
+    report.integrity = reopened.integrity;
+    report.committed = true;
+    report.artifacts.candidateCleaned = cleanupCandidate(artifacts);
+    report.finishedAt = new Date().toISOString();
     return report;
   } catch (error) {
-    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300); report.failed++; if (activeType) report.dispositions[activeType].failed++; report.errors.push({ code: errorCode(message), message }); report.dispositionReasons.sort(); report.sourceUnchanged = sourceExists && sha256(sourcePath) === sourceHash;
-    try { service?.close(); } catch {} try { source?.close(); } catch {}
-    if (existsSync(stagingPath)) rmSync(stagingPath, { force: true });
-    throw new LegacyImportFailure(report, message);
+    let priorTargetRestored = Boolean((error as { priorTargetRestored?: boolean })?.priorTargetRestored);
+    if (published && artifacts) {
+      try { priorTargetRestored = restorePublishedTarget(plan, artifacts); }
+      catch (restoreError) { error = restoreError; priorTargetRestored = false; }
+    }
+    const code = failureCode(phase, error);
+    if (artifacts) {
+      report.artifacts.backupPath = artifacts.backupPath && existsSync(artifacts.backupPath) ? artifacts.backupPath : null;
+      report.artifacts.recoveryBundlePath = existsSync(artifacts.recoveryBundlePath) ? artifacts.recoveryBundlePath : null;
+      report.artifacts.candidateCleaned = cleanupCandidate(artifacts);
+    }
+    report.finishedAt = new Date().toISOString();
+    report.failure = { code, message: boundedMessage(error), priorTargetRestored };
+    throw new LegacyImportFailure(code, report.failure.message, report);
   }
 }

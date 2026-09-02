@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { MemoryService } from '../../src/memory-core/service.js';
-import { migrateCurrentSchema } from '../../src/memory-core/sqlite/migrations.js';
+import { migrateCurrentSchema, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
 import { IMMUTABILITY_TRIGGER_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
 
 const roots: string[] = [];
@@ -91,7 +91,9 @@ describe('SQLite taxonomy migration', () => {
 
     const migrated = new Database(fixture.path);
     try {
-      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }]);
+      expect(migrated.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual(
+        Array.from({ length: SQLITE_SCHEMA_REVISION - 1 }, (_, index) => ({ version: index + 2 })),
+      );
       expect(migrated.prepare('SELECT id,kind FROM evidence ORDER BY id').all()).toEqual(fixture.evidenceIds.slice().sort().map((id) => ({ id, kind: 'explicit_save' })));
       expect(migrated.prepare('SELECT kind FROM memories WHERE id=?').get(fixture.memoryId)).toEqual({ kind: 'convention' });
       expect(authoritativeSnapshot(migrated)).toEqual(before);

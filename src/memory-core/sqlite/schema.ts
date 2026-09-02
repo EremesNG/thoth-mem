@@ -294,6 +294,68 @@ ${TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
 `;
 
+export const LEGACY_IMPORT_AUDIT_SCHEMA_SQL = `
+CREATE TABLE legacy_imports(
+  id TEXT PRIMARY KEY,
+  source_fingerprint TEXT NOT NULL UNIQUE CHECK(length(source_fingerprint)=64),
+  source_file_fingerprint TEXT NOT NULL,
+  target_base_fingerprint TEXT NOT NULL,
+  plan_hash TEXT NOT NULL UNIQUE CHECK(length(plan_hash)=64),
+  mapping_hash TEXT NOT NULL CHECK(length(mapping_hash)=64),
+  policy_hash TEXT NOT NULL CHECK(length(policy_hash)=64),
+  source_schema TEXT NOT NULL CHECK(source_schema='legacy-v1'),
+  status TEXT NOT NULL CHECK(status='committed'),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE legacy_project_mappings(
+  import_id TEXT NOT NULL REFERENCES legacy_imports(id),
+  source_project_hash TEXT NOT NULL CHECK(length(source_project_hash)=64),
+  source_project TEXT NOT NULL,
+  disposition TEXT NOT NULL CHECK(disposition IN ('mapped','isolated','quarantined')),
+  basis TEXT NOT NULL CHECK(basis IN ('explicit','exact_identity','exact_path_alias','isolated_legacy','placeholder_identity','ambiguous_identity','project_conflict')),
+  project_id TEXT REFERENCES projects(id),
+  PRIMARY KEY(import_id,source_project_hash),
+  CHECK((disposition='quarantined' AND project_id IS NULL) OR (disposition<>'quarantined' AND project_id IS NOT NULL))
+);
+CREATE INDEX legacy_project_mappings_project ON legacy_project_mappings(project_id,import_id);
+CREATE TABLE legacy_import_rows(
+  import_id TEXT NOT NULL REFERENCES legacy_imports(id),
+  source_entity TEXT NOT NULL CHECK(source_entity IN ('session','prompt','session_summary','observation_version','observation')),
+  source_key TEXT NOT NULL,
+  source_version INTEGER NOT NULL CHECK(source_version>=0),
+  source_hash TEXT NOT NULL CHECK(length(source_hash)=64),
+  transformed_hash TEXT CHECK(transformed_hash IS NULL OR length(transformed_hash)=64),
+  disposition TEXT NOT NULL CHECK(disposition IN ('imported','linked','skipped','quarantined')),
+  reason TEXT NOT NULL CHECK(reason IN ('imported','deleted','placeholder_identity','ambiguous_identity','project_conflict','privacy_malformed','empty_after_filter','unsupported_kind','exact_existing')),
+  project_id TEXT REFERENCES projects(id),
+  session_id TEXT REFERENCES sessions(id),
+  evidence_id TEXT REFERENCES evidence(id),
+  memory_id TEXT REFERENCES memories(id),
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY(import_id,source_entity,source_key,source_version),
+  CHECK((disposition IN ('imported','linked') AND project_id IS NOT NULL) OR disposition IN ('skipped','quarantined')),
+  CHECK((disposition='linked' AND reason='exact_existing') OR disposition<>'linked')
+);
+CREATE INDEX legacy_import_rows_project ON legacy_import_rows(project_id,import_id,source_entity);
+CREATE INDEX legacy_import_rows_evidence ON legacy_import_rows(evidence_id) WHERE evidence_id IS NOT NULL;
+CREATE INDEX legacy_import_rows_memory ON legacy_import_rows(memory_id) WHERE memory_id IS NOT NULL;
+CREATE TRIGGER legacy_imports_immutable_update BEFORE UPDATE ON legacy_imports BEGIN SELECT RAISE(ABORT, 'legacy import is immutable'); END;
+CREATE TRIGGER legacy_imports_immutable_delete BEFORE DELETE ON legacy_imports BEGIN SELECT RAISE(ABORT, 'legacy import is immutable'); END;
+CREATE TRIGGER legacy_project_mappings_immutable_update BEFORE UPDATE ON legacy_project_mappings BEGIN SELECT RAISE(ABORT, 'legacy project mapping is immutable'); END;
+CREATE TRIGGER legacy_project_mappings_immutable_delete BEFORE DELETE ON legacy_project_mappings BEGIN SELECT RAISE(ABORT, 'legacy project mapping is immutable'); END;
+CREATE TRIGGER legacy_import_rows_immutable_update BEFORE UPDATE ON legacy_import_rows BEGIN SELECT RAISE(ABORT, 'legacy import row is immutable'); END;
+CREATE TRIGGER legacy_import_rows_immutable_delete BEFORE DELETE ON legacy_import_rows BEGIN SELECT RAISE(ABORT, 'legacy import row is immutable'); END;
+`;
+
+export const LEGACY_IMPORT_COHORT_SCHEMA_SQL = `
+CREATE TABLE legacy_import_cohorts(
+  import_id TEXT PRIMARY KEY REFERENCES legacy_imports(id),
+  cohort_sequence INTEGER NOT NULL UNIQUE CHECK(cohort_sequence > 0)
+);
+CREATE TRIGGER legacy_import_cohorts_immutable_update BEFORE UPDATE ON legacy_import_cohorts BEGIN SELECT RAISE(ABORT, 'legacy import cohort is immutable'); END;
+CREATE TRIGGER legacy_import_cohorts_immutable_delete BEFORE DELETE ON legacy_import_cohorts BEGIN SELECT RAISE(ABORT, 'legacy import cohort is immutable'); END;
+`;
+
 export const CURRENT_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
 ${PROJECT_ALIAS_SCHEMA_SQL}
@@ -301,6 +363,8 @@ CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES p
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${OBSERVATION_PROJECTION_SCHEMA_SQL}
+${LEGACY_IMPORT_AUDIT_SCHEMA_SQL}
+${LEGACY_IMPORT_COHORT_SCHEMA_SQL}
 ${TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
 `;

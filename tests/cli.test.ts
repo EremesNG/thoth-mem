@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 
 import { runCli } from '../src/cli.js';
 import { MemoryService } from '../src/memory-core/service.js';
+import { SQLITE_SCHEMA_REVISION } from '../src/memory-core/sqlite/migrations.js';
 import { REVISION_SIX_SCHEMA_SQL } from '../src/memory-core/sqlite/schema.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -160,7 +161,7 @@ describe('project rename CLI', () => {
       expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({ data: { projectId: 'project-1', key: 'path:C:/known', newName: 'After', changed: true } });
       const inspected = new Database(databasePath, { readonly: true, fileMustExist: true });
       try {
-        expect(inspected.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 7 });
+        expect(inspected.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: SQLITE_SCHEMA_REVISION });
         expect(inspected.prepare('SELECT display_name FROM projects WHERE id=?').get('project-1')).toEqual({ display_name: 'After' });
       } finally { inspected.close(); }
     } finally { rmSync(dataDir, { recursive: true, force: true }); }

@@ -142,10 +142,76 @@ The CLI MUST expose a bounded `project rename` administration command in additio
 
 ### Requirement: Legacy Import MUST Be Explicit and Non-Destructive
 
-`import-legacy` MUST require distinct explicit source and target paths, read the source without mutation, write a clean current database, and emit bounded imported, skipped, quarantined, failed, and integrity results.
+`import-legacy` MUST separate zero-write planning from explicit apply; require distinct explicit source and current-target paths plus a plan bound to their fingerprints and exact mapping/privacy policy; support a populated current target by building from a verified backup into an isolated candidate; reject fuzzy or ambiguous project matching, changed/locked inputs, unsafe artifact paths, and stale plans; publish only a completely verified candidate through an atomic target replacement; retain bounded recovery/report artifacts; and make an identical replay a no-op.
 
-#### Scenario: Import a supported legacy database
+#### Scenario: US1 - Inspect a migration without changing either database 1
 
-- **GIVEN** a supported source and absent distinct target
-- **WHEN** `import-legacy` completes
-- **THEN** the source hash is unchanged and the target passes foreign-key, lineage, and FTS integrity checks
+- **GIVEN** distinct readable legacy and current databases
+- **WHEN** planning runs
+- **THEN** it performs zero input writes and reports source/target fingerprints, supported schema, authoritative row counts, ignored derived inventory, project dispositions, privacy transformations, and blocking errors
+
+#### Scenario: US1 - Inspect a migration without changing either database 2
+
+- **GIVEN** legacy virtual tables whose modules are unavailable
+- **WHEN** planning inventories derived state
+- **THEN** it classifies them from schema metadata without querying or loading those modules
+
+#### Scenario: US1 - Inspect a migration without changing either database 3
+
+- **GIVEN** an unsupported source schema, aliased paths, unreadable input, or a source/target that changes during planning
+- **WHEN** planning completes
+- **THEN** it fails closed with no candidate or input mutation
+
+#### Scenario: US2 - Reconcile project identities without guessing 1
+
+- **GIVEN** an explicit source-project mapping to one exact current project key or alias
+- **WHEN** it validates
+- **THEN** every mapped legacy row uses that canonical project and the mapping is bound into the import receipt
+
+#### Scenario: US2 - Reconcile project identities without guessing 2
+
+- **GIVEN** one unambiguous exact canonical key or exact path alias
+- **WHEN** no explicit override conflicts
+- **THEN** the plan may propose that mapping and reports the evidence used
+
+#### Scenario: US2 - Reconcile project identities without guessing 3
+
+- **GIVEN** a non-placeholder legacy project that has no safe current match
+- **WHEN** planning runs
+- **THEN** it assigns one deterministic isolated legacy project identity rather than dropping its history or guessing a current project
+
+#### Scenario: US2 - Reconcile project identities without guessing 4
+
+- **GIVEN** placeholder identity, contradictory row/session identity, ambiguous aliases, or a conflicting explicit mapping
+- **WHEN** reconciliation cannot resolve it safely
+- **THEN** affected rows are quarantined or the plan is blocked with bounded reasons and no invented verified identity
+
+#### Scenario: US4 - Commit a verified candidate atomically 1
+
+- **GIVEN** an approved plan bound to exact source and target fingerprints
+- **WHEN** apply starts
+- **THEN** it creates a recoverable verified backup and a private candidate copy rather than mutating the active target in place
+
+#### Scenario: US4 - Commit a verified candidate atomically 2
+
+- **GIVEN** a fully reconciled candidate
+- **WHEN** foreign keys, schema revision, import lineage, row dispositions, memory provenance, and FTS checks pass and both inputs are unchanged
+- **THEN** publication replaces the target atomically and emits a bounded durable report
+
+#### Scenario: US4 - Commit a verified candidate atomically 3
+
+- **GIVEN** any failed check, changed input, target lock, write error, or interrupted candidate build
+- **WHEN** apply exits
+- **THEN** the prior target remains recoverable and no partial candidate is reported as committed
+
+#### Scenario: US5 - Repeat or audit the import safely 1
+
+- **GIVEN** a previously committed import with the same source fingerprint, mapping, policy, and target lineage
+- **WHEN** it is replayed
+- **THEN** it returns the original import and row mappings as an idempotent no-op
+
+#### Scenario: US5 - Repeat or audit the import safely 2
+
+- **GIVEN** the same source under a changed mapping or policy
+- **WHEN** replay is attempted
+- **THEN** it requires a new explicit plan and cannot silently reuse prior receipts

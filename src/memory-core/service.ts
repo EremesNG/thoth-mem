@@ -41,11 +41,12 @@ import { renderContinuation } from './continuation.js';
 import { canonicalizeObservation, canonicalizeObservationReview, insertObservationProjection, insertObservationReviewProjection, listObservationRecords, observationFromId } from './observations.js';
 import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
-import { DEFAULT_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
+import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
 import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, projectIdentityFromId, resolveProjectIdentityKey, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
+import { stableLexicalRank } from './retrieval/stable-lexical-rank.js';
 
 export type RecallDiagnosticStageKind = 'exact' | 'strict' | 'relaxed' | 'post_query';
 export type RecallDiagnosticSkipReason = 'not_planned' | 'limit_satisfied' | 'empty_query' | 'project_not_found';
@@ -187,6 +188,7 @@ export class MemoryService {
       throw error;
     }
     this.database.pragma('foreign_keys = ON');
+    this.database.function('thoth_stable_rank', { deterministic: true }, stableLexicalRank);
     this.projections = new ProjectionRegistry(this.database);
   }
 
@@ -472,7 +474,69 @@ export class MemoryService {
       unique.set(String(row.id), row);
     }
     let rankedFtsRows = 0;
-    if (plan?.fusion) {
+    if (plan?.fusion && strategyId === STABLE_LEXICAL_QUERY_STRATEGY) {
+      const exactIds = [...unique.keys()];
+      const lexicalLimit = Math.min(limit - unique.size, plan.maxLexicalResults ?? limit);
+      const cohortRows: Array<{ cohort_sequence: number }> = [{ cohort_sequence: 0 }];
+      const lexicalRows: Array<Record<string, unknown>> = [];
+      const stageMetrics = new Map<'strict' | 'relaxed', { elapsedMs: number; rows: number; executed: boolean }>();
+      for (const kind of ['strict', 'relaxed'] as const) stageMetrics.set(kind, { elapsedMs: 0, rows: 0, executed: false });
+
+      for (const { cohort_sequence: cohortSequence } of cohortRows) {
+        if (lexicalRows.length >= lexicalLimit) break;
+        const lexicalLists = new Map<'strict' | 'relaxed', Array<Record<string, unknown>>>();
+        for (const kind of ['strict', 'relaxed'] as const) {
+          const stage = plan.stages.find((candidate) => candidate.kind === kind);
+          if (!stage) continue;
+          const stageStart = performance.now();
+          const exclusionSql = exactIds.length > 0 ? `AND m.id NOT IN (${exactIds.map(() => '?').join(',')})` : '';
+          const stageLimit = Math.min(lexicalLimit - lexicalRows.length, plan.maxStageResults ?? lexicalLimit);
+          const lexical = this.database.prepare(`
+            WITH imported_cohorts AS (
+              SELECT lir.memory_id,min(lic.cohort_sequence) AS cohort_sequence
+              FROM legacy_import_rows lir
+              JOIN legacy_import_cohorts lic ON lic.import_id=lir.import_id
+              WHERE lir.disposition='imported' AND lir.memory_id IS NOT NULL
+              GROUP BY lir.memory_id
+            )
+            SELECT m.id,m.created_at,thoth_stable_rank(?,m.title,m.content,coalesce(m.topic_key,'')) AS raw_score,'lexical' AS lane
+            FROM memory_fts
+            JOIN memories m ON m.id=memory_fts.memory_id
+            LEFT JOIN imported_cohorts ic ON ic.memory_id=m.id
+            WHERE memory_fts MATCH ? AND m.project_id=? ${input.history ? '' : "AND m.status='current'"}
+              AND coalesce(ic.cohort_sequence,0)=? ${exclusionSql}
+            ORDER BY raw_score DESC,m.created_at DESC,m.id ASC
+            LIMIT ?
+          `).all(input.query, stage.query, project.id, cohortSequence, ...exactIds, stageLimit) as Array<Record<string, unknown>>;
+          const metrics = stageMetrics.get(kind)!;
+          metrics.elapsedMs += performance.now() - stageStart;
+          metrics.rows += lexical.length;
+          metrics.executed = true;
+          rankedFtsRows += lexical.length;
+          lexicalLists.set(kind, lexical);
+        }
+        lexicalRows.push(...fuseLexicalRanks(lexicalLists, plan.fusion, lexicalLimit - lexicalRows.length));
+        if (cohortSequence === 0 && lexicalRows.length < lexicalLimit) {
+          cohortRows.push(...this.database.prepare(`
+            SELECT DISTINCT lic.cohort_sequence
+            FROM legacy_import_cohorts lic
+            JOIN legacy_import_rows lir ON lir.import_id=lic.import_id AND lir.disposition='imported' AND lir.memory_id IS NOT NULL
+            JOIN memories m ON m.id=lir.memory_id
+            WHERE m.project_id=?
+            ORDER BY lic.cohort_sequence
+          `).all(project.id) as Array<{ cohort_sequence: number }>);
+        }
+      }
+
+      for (const kind of ['strict', 'relaxed'] as const) {
+        const stage = plan.stages.find((candidate) => candidate.kind === kind);
+        const metrics = stageMetrics.get(kind)!;
+        if (!stage) stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'not_planned' });
+        else if (lexicalLimit === 0) stages.push({ kind, executed: false, elapsedMs: 0, rows: 0, reason: 'limit_satisfied' });
+        else stages.push({ kind, executed: metrics.executed, elapsedMs: metrics.elapsedMs, rows: metrics.rows, ...(!metrics.executed ? { reason: 'limit_satisfied' as const } : {}) });
+      }
+      for (const row of lexicalRows) unique.set(String(row.id), row);
+    } else if (plan?.fusion) {
       const exactIds = [...unique.keys()];
       const lexicalLists = new Map<'strict' | 'relaxed', Array<Record<string, unknown>>>();
       for (const kind of ['strict', 'relaxed'] as const) {

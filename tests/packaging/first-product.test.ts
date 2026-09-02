@@ -63,6 +63,7 @@ describe('first-product packed boundary', () => {
       'benchmarks/report.schema.json',
       'benchmarks/retrieval-report.schema.json',
       'benchmarks/lexical-comparison-report.schema.json',
+      'benchmarks/import-ranking/report.schema.json',
       'benchmarks/observation-pipeline/report.schema.json',
       'benchmarks/lexical-comparison-baseline.json',
       'benchmarks/lexical-recall-at-5-baseline.json',

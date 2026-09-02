@@ -6,6 +6,8 @@ import { EVIDENCE_KIND_VALUES, MEMORY_KIND_VALUES } from '../contracts.js';
 import {
   CURRENT_SCHEMA_SQL,
   IMMUTABILITY_TRIGGER_SQL,
+  LEGACY_IMPORT_AUDIT_SCHEMA_SQL,
+  LEGACY_IMPORT_COHORT_SCHEMA_SQL,
   OBSERVATION_PROJECTION_SCHEMA_SQL,
   PROJECT_ALIAS_SCHEMA_SQL,
   REVISION_THREE_TAXONOMY_GUARD_SQL,
@@ -18,12 +20,14 @@ interface NameRow { name: string }
 interface VersionRow { version: number | null }
 interface KindRow { kind: string }
 
-export const SQLITE_SCHEMA_REVISION = 7;
+export const SQLITE_SCHEMA_REVISION = 9;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
 const ORDERED_SESSION_SCHEMA_REVISION = 3;
 const SESSION_PROJECTION_SCHEMA_REVISION = 4;
 const PREFIX_FTS_SCHEMA_REVISION = 5;
 const OBSERVATION_SCHEMA_REVISION = 6;
+const PROJECT_ALIAS_SCHEMA_REVISION = 7;
+const LEGACY_IMPORT_AUDIT_SCHEMA_REVISION = 8;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -230,11 +234,137 @@ function migrateRevisionSix(database: Database.Database): void {
       throw new Error('SQLite revision 7 migration changed authoritative rows');
     }
     if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 7 migration failed foreign-key verification');
-    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(PROJECT_ALIAS_SCHEMA_REVISION, new Date().toISOString());
   })();
 }
 
-export function migrateCurrentSchema(database: Database.Database): void {
+export function preV8BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v8.bak`;
+}
+
+function verifyRevisionSevenBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v8 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v8 backup failed foreign-key verification');
+    const version = backup.prepare('SELECT max(version) AS version FROM schema_migrations').get() as VersionRow;
+    if (version.version !== PROJECT_ALIAS_SCHEMA_REVISION) throw new Error('SQLite pre-v8 backup has an unexpected schema revision');
+  } finally { backup.close(); }
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function revisionSevenState(database: Database.Database): string {
+  const tables = (database.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type IN ('table','virtual') AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name").all() as NameRow[])
+    .map((row) => row.name);
+  const state = tables.map((table) => {
+    const rows = database.prepare(`SELECT * FROM ${quoteIdentifier(table)}`).all() as Array<Record<string, unknown>>;
+    return [table, rows.map((row) => JSON.stringify(row)).sort()] as const;
+  });
+  return JSON.stringify(state);
+}
+
+function assertRevisionSevenBackupMatches(database: Database.Database, backupPath: string): void {
+  const backup = new Database(backupPath, { readonly: true, fileMustExist: true });
+  try {
+    backup.pragma('query_only = ON');
+    if (revisionSevenState(backup) !== revisionSevenState(database)) {
+      throw new Error('SQLite pre-v8 backup does not match the current revision 7 state');
+    }
+  } finally { backup.close(); }
+}
+
+function ensureRevisionSevenBackup(database: Database.Database): string | null {
+  const databasePath = database.name;
+  if (!databasePath || databasePath === ':memory:') return null;
+  const backupPath = preV8BackupPath(databasePath);
+  if (existsSync(backupPath)) {
+    verifyRevisionSevenBackup(backupPath);
+    return backupPath;
+  }
+  const temporaryPath = `${backupPath}.tmp`;
+  if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  try {
+    database.prepare('VACUUM INTO ?').run(temporaryPath);
+    verifyRevisionSevenBackup(temporaryPath);
+    renameSync(temporaryPath, backupPath);
+  } finally { if (existsSync(temporaryPath)) rmSync(temporaryPath); }
+  return backupPath;
+}
+
+export interface MigrationHooks {
+  afterRevisionSevenBackupVerified?: () => void;
+  afterRevisionEightBackupVerified?: () => void;
+}
+
+function migrateRevisionSeven(database: Database.Database, hooks: MigrationHooks): void {
+  const backupPath = ensureRevisionSevenBackup(database);
+  database.transaction(() => {
+    if (backupPath) assertRevisionSevenBackupMatches(database, backupPath);
+    hooks.afterRevisionSevenBackupVerified?.();
+    const baseline = database.prepare('SELECT (SELECT count(*) FROM projects) AS projects,(SELECT count(*) FROM evidence) AS evidence,(SELECT count(*) FROM memories) AS memories,(SELECT count(*) FROM memory_fts) AS fts').get() as Record<string, number>;
+    database.exec(LEGACY_IMPORT_AUDIT_SCHEMA_SQL);
+    const after = database.prepare('SELECT (SELECT count(*) FROM projects) AS projects,(SELECT count(*) FROM evidence) AS evidence,(SELECT count(*) FROM memories) AS memories,(SELECT count(*) FROM memory_fts) AS fts').get() as Record<string, number>;
+    if (JSON.stringify(after) !== JSON.stringify(baseline)) throw new Error('SQLite revision 8 migration changed authoritative rows');
+    if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 8 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(LEGACY_IMPORT_AUDIT_SCHEMA_REVISION, new Date().toISOString());
+  }).immediate();
+}
+
+export function preV9BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v9.bak`;
+}
+
+function verifyRevisionEightBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v9 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v9 backup failed foreign-key verification');
+    const version = backup.prepare('SELECT max(version) AS version FROM schema_migrations').get() as VersionRow;
+    if (version.version !== LEGACY_IMPORT_AUDIT_SCHEMA_REVISION) throw new Error('SQLite pre-v9 backup has an unexpected schema revision');
+  } finally { backup.close(); }
+}
+
+function ensureRevisionEightBackup(database: Database.Database): string | null {
+  const databasePath = database.name;
+  if (!databasePath || databasePath === ':memory:') return null;
+  const backupPath = preV9BackupPath(databasePath);
+  if (existsSync(backupPath)) {
+    verifyRevisionEightBackup(backupPath);
+    return backupPath;
+  }
+  const temporaryPath = `${backupPath}.tmp`;
+  if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  try {
+    database.prepare('VACUUM INTO ?').run(temporaryPath);
+    verifyRevisionEightBackup(temporaryPath);
+    renameSync(temporaryPath, backupPath);
+  } finally { if (existsSync(temporaryPath)) rmSync(temporaryPath); }
+  return backupPath;
+}
+
+function migrateRevisionEight(database: Database.Database, hooks: MigrationHooks): void {
+  const backupPath = ensureRevisionEightBackup(database);
+  database.transaction(() => {
+    if (backupPath) assertRevisionSevenBackupMatches(database, backupPath);
+    hooks.afterRevisionEightBackupVerified?.();
+    const baseline = database.prepare('SELECT (SELECT count(*) FROM memories) AS memories,(SELECT count(*) FROM memory_fts) AS fts,(SELECT count(*) FROM legacy_imports) AS imports').get() as Record<string, number>;
+    database.exec(LEGACY_IMPORT_COHORT_SCHEMA_SQL);
+    const imports = database.prepare('SELECT id FROM legacy_imports ORDER BY created_at,id').all() as Array<{ id: string }>;
+    const insert = database.prepare('INSERT INTO legacy_import_cohorts(import_id,cohort_sequence) VALUES(?,?)');
+    imports.forEach((row, index) => insert.run(row.id, index + 1));
+    const after = database.prepare('SELECT (SELECT count(*) FROM memories) AS memories,(SELECT count(*) FROM memory_fts) AS fts,(SELECT count(*) FROM legacy_imports) AS imports,(SELECT count(*) FROM legacy_import_cohorts) AS cohorts').get() as Record<string, number>;
+    if (after.memories !== baseline.memories || after.fts !== baseline.fts || after.imports !== baseline.imports || after.cohorts !== baseline.imports) throw new Error('SQLite revision 9 migration changed authoritative rows');
+    if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 9 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
+  }).immediate();
+}
+
+export function migrateCurrentSchema(database: Database.Database, hooks: MigrationHooks = {}): void {
   database.pragma('foreign_keys = ON');
   const objects = database.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").all() as NameRow[];
   if (objects.length > 0 && !objects.some((row) => row.name === 'schema_migrations')) {
@@ -255,6 +385,8 @@ export function migrateCurrentSchema(database: Database.Database): void {
     migrateRevisionFour(database);
     migrateRevisionFive(database);
     migrateRevisionSix(database);
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
     return;
   }
   if (version.version === ORDERED_SESSION_SCHEMA_REVISION) {
@@ -262,21 +394,38 @@ export function migrateCurrentSchema(database: Database.Database): void {
     migrateRevisionFour(database);
     migrateRevisionFive(database);
     migrateRevisionSix(database);
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
     return;
   }
   if (version.version === SESSION_PROJECTION_SCHEMA_REVISION) {
     migrateRevisionFour(database);
     migrateRevisionFive(database);
     migrateRevisionSix(database);
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
     return;
   }
   if (version.version === PREFIX_FTS_SCHEMA_REVISION) {
     migrateRevisionFive(database);
     migrateRevisionSix(database);
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
     return;
   }
   if (version.version === OBSERVATION_SCHEMA_REVISION) {
     migrateRevisionSix(database);
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
+    return;
+  }
+  if (version.version === PROJECT_ALIAS_SCHEMA_REVISION) {
+    migrateRevisionSeven(database, hooks);
+    migrateRevisionEight(database, hooks);
+    return;
+  }
+  if (version.version === LEGACY_IMPORT_AUDIT_SCHEMA_REVISION) {
+    migrateRevisionEight(database, hooks);
     return;
   }
   throw new Error(`Unsupported memory SQLite schema revision: ${version.version}`);
