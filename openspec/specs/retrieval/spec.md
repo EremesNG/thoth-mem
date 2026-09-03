@@ -80,25 +80,43 @@ Core retrieval MUST continue to query current/historical promoted memories only;
 
 ### Requirement: FTS5 Lexical Retrieval MUST Sanitize Untrusted Queries
 
-For identical recall inputs, the system MUST preserve the complete ordered Top-K sequence selected from unchanged pre-existing eligible memories when imported memories are added; imported rows MUST NOT influence the pre-existing cohort's lexical corpus statistics, candidate ranks, or stable tie breaks, and existing query sanitation, exact precedence, stable fusion, limits, and query-plan identity MUST remain intact.
+Stable-ranking optimization MUST preserve the complete ordered candidate and delivered result sequences, fixed score semantics, exact precedence, cohort precedence, query sanitation, limits, plan/config identity, deterministic ties, and diagnostic accounting for identical inputs.
 
-#### Scenario: US1 - Preserve established recall across a legacy corpus extension 1
+#### Scenario: US1 - Preserve stable ranking while reducing latency 1
 
-- **GIVEN** an unchanged current project and a deterministic set of recall probes
-- **WHEN** thousands of matching imported memories are added
-- **THEN** every pre-import Top-K memory ID remains present in the same position and order for each identical probe
+- **GIVEN** the 470-question pre-optimization stable report
+- **WHEN** the optimized lane runs over the identical pinned corpus and budgets
+- **THEN** every complete ordered ranking and all aggregate quality metrics are byte-equivalent to the baseline
 
-#### Scenario: US1 - Preserve established recall across a legacy corpus extension 2
+#### Scenario: US1 - Preserve stable ranking while reducing latency 2
 
-- **GIVEN** equal-ranked pre-existing candidates
-- **WHEN** an imported cohort changes term and document frequencies
-- **THEN** the declared pre-existing tie rules remain deterministic and corpus extension cannot invert the candidates
+- **GIVEN** optimized stable and RRF lanes on the same build and corpus
+- **WHEN** retrieval latency is measured sequentially
+- **THEN** stable p95 is no greater than 10 ms and the stable/RRF ratio is recorded as diagnostic evidence
 
-#### Scenario: US1 - Preserve established recall across a legacy corpus extension 3
+#### Scenario: US1 - Preserve stable ranking while reducing latency 3
 
-- **GIVEN** exact memory-ID or topic-key lookup
-- **WHEN** imported lexical rows also match the input
-- **THEN** exact authoritative matches remain first and the caller limit is unchanged
+- **GIVEN** long candidate content and repeated strict/relaxed matches
+- **WHEN** stable scoring runs
+- **THEN** each candidate receives the same finite score without redundant query compilation or semantically duplicate normalization work
+
+#### Scenario: US2 - Retain import and retrieval contracts 1
+
+- **GIVEN** native and imported cohorts
+- **WHEN** stable recall executes
+- **THEN** exact ID/topic precedence and oldest-cohort-first protected capacity remain unchanged
+
+#### Scenario: US2 - Retain import and retrieval contracts 2
+
+- **GIVEN** Unicode, repeated terms, prefixes, phrases, empty fields, punctuation-only queries, and deterministic ties
+- **WHEN** the optimized scorer is evaluated
+- **THEN** its score and resulting order equal the pre-optimization implementation
+
+#### Scenario: US2 - Retain import and retrieval contracts 3
+
+- **GIVEN** the archived strategy IDs and exact six-tool MCP contract
+- **WHEN** repository verification runs
+- **THEN** neither public surface nor archived strategy behavior changes
 
 ### Requirement: Recent Saves MUST Be Immediately Searchable by Core Retrieval
 
@@ -183,3 +201,25 @@ Recall and context responses MUST report privacy-safe source, evidence, returned
 - **GIVEN** a correlated recall path finalized without `mem_get`
 - **WHEN** telemetry is emitted
 - **THEN** it records one avoided full fetch and the measured character basis explicitly
+
+### Requirement: Stable Lexical Ranking Latency Budget
+
+On the pinned 470-question LongMemEval-S corpus, an optimized stable lane and the archived RRF strategy MUST run sequentially through the same current build, conditions, and mappings. Stable retrieval p95 MUST be no greater than 10 ms while preserving the pre-optimization stable ordered output for every question; contemporaneous RRF p95 and the stable/RRF ratio MUST be reported as diagnostic evidence.
+
+#### Scenario: US1 - Preserve stable ranking while reducing latency 1
+
+- **GIVEN** the 470-question pre-optimization stable report
+- **WHEN** the optimized lane runs over the identical pinned corpus and budgets
+- **THEN** every complete ordered ranking and all aggregate quality metrics are byte-equivalent to the baseline
+
+#### Scenario: US1 - Preserve stable ranking while reducing latency 2
+
+- **GIVEN** optimized stable and RRF lanes on the same build and corpus
+- **WHEN** retrieval latency is measured sequentially
+- **THEN** stable p95 is no greater than 10 ms and the stable/RRF ratio is recorded as diagnostic evidence
+
+#### Scenario: US1 - Preserve stable ranking while reducing latency 3
+
+- **GIVEN** long candidate content and repeated strict/relaxed matches
+- **WHEN** stable scoring runs
+- **THEN** each candidate receives the same finite score without redundant query compilation or semantically duplicate normalization work

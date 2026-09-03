@@ -1,0 +1,53 @@
+# Tasks: Optimize Stable Recall Latency
+
+## Authoring contract
+
+Task IDs are sequential, test-first work precedes implementation, one root writer owns the coupled scorer/service/benchmark surface, and outcome gates require observed full-corpus evidence.
+
+## MVP scope
+
+US1 is the MVP: the optimized scorer and service path preserve the exact pre-optimization stable scores and ordered results while removing redundant query compilation, proven-safe ASCII normalization, token scanning, and repeated strict/relaxed scoring work.
+
+## Dependencies
+
+`T001 -> T002 -> T003 -> T004 -> T005 -> T006 -> T007 -> T008 -> T009 -> T010 -> T011 -> T012 -> T013 -> T014 -> T015 -> T016 -> T017 -> T018 -> T019 -> T020 -> T021 -> T022 -> T023 -> T024`; the completed evaluation-contract and baseline tasks establish immutable inputs before scorer TDD, service integration precedes corpus evaluation, and each final verification consumes evidence from the corrected build.
+
+## Story US3
+
+- [x] T001 [US3] Add a failing report-contract case admitting the stable strategy while retaining historical lane validity with FR-004/SC-005 coverage in `tests/benchmarks/retrieval-report.test.ts` | Verify: the pre-change validator returns candidate invalid for stable-v1.
+- [x] T002 [US3] Admit the stable strategy in semantic report validation without weakening unknown-strategy rejection with FR-004/SC-005 coverage in `benchmarks/retrieval-report.mjs` | Verify: stable and every archived report validate while unknown-v1 remains rejected.
+- [x] T003 [US3] Align the strict JSON report schema with the stable strategy ID with FR-004/SC-005 coverage in `benchmarks/retrieval-report.schema.json` | Verify: the schema enum names all five supported strategies and no additional value.
+- [x] T004 [US3] Exercise stable-v1 through the same offline runner corpus, budgets, mappings, query order, diagnostics, and create-only behavior with FR-004/SC-005 coverage in `tests/benchmarks/longmemeval-runner.test.ts` | Verify: the five-strategy fixture passes with distinct config/plan hashes and zero external calls.
+- [x] T005 [US3] Publish and validate the immutable pre-optimization stable baseline with FR-004/SC-005 coverage in `benchmarks/results/longmemeval-s-stable-v1-current-2026-09-02.json` | Verify: SHA-256 is 7c52da902418bcdf6c89f5c55713631ca406d95a0ae76d78406e5f928e873fda, all 470 questions validate, and p95 is 13.0459 ms.
+- [x] T006 [US3] Publish and validate the contemporaneous RRF control with FR-004/SC-005 coverage in `benchmarks/results/longmemeval-s-rrf-v1-current-2026-09-02.json` | Verify: SHA-256 is e587514b8d3d8ab5f8b6590e2fdffdcf58e8979d6775c43f6e2a27c9ecb2d9e4, all 470 questions validate, and p95 is 1.9818 ms.
+
+## Story US1
+
+- [x] T007 [US1] Add failing golden/reference equivalence, Unicode, long-content, repeated-prefix, query-change, cache-bound, and exact score-order cases with FR-001/FR-003/SC-001/SC-003 coverage in `tests/memory-core/retrieval.test.ts` | Verify: current scorer is semantically correct but lacks the bounded compiled-query and repeated-stage work contract.
+- [x] T008 [US1] Implement guarded one-pass ASCII field tokenization, preserved non-ASCII repeated normalization, compiled query terms/specificities/first-character prefix buckets, term-ordered score accumulation, and a bounded service-local ranker with FR-001/FR-003/SC-001/SC-003 coverage in `src/memory-core/retrieval/stable-lexical-rank.ts` | Verify: every T007 and locale-convergence score/order equals the frozen implementation while measured redundant work is removed only where equivalent; the failed trie round remains immutable evidence.
+- [x] T009 [US1] Add failing public recall cases for strict/relaxed overlap reuse, query reset, cache overflow, exact-capacity skips, and unchanged diagnostics with FR-001/FR-003/SC-001/SC-003 coverage in `tests/memory-core/retrieval.test.ts` | Verify: cases fail until the service owns and resets the compiled ranker at recall boundaries.
+- [x] T010 [US1] Register and invoke the service-local ranker with memory identity while preserving SQLite determinism, score/order, cohort traversal, stage limits, and public output with FR-001/FR-003/SC-001/SC-003 coverage in `src/memory-core/service.ts` | Verify: T009 passes and repeated strict/relaxed candidates reuse scores without changing ranked IDs or diagnostic row counts.
+
+## Story US2
+
+- [x] T011 [US2] Run the focused retrieval/import/schema and import-ranking regressions with FR-001/FR-003/SC-003 coverage in `tests/memory-core/retrieval.test.ts` | Verify: strategy/config/plan hashes, 17/17 protected Top-K lists, zero inversions, exact/capacity behavior, and benchmark diagnostics remain unchanged.
+- [x] T012 [US2] Apply the mandatory behavior-preserving simplification review to the scorer/service diff with FR-001/FR-003/SC-001/SC-003 coverage in `src/memory-core/retrieval/stable-lexical-rank.ts` | Verify: cache/trie ownership and reset behavior are explicit, minimal, and green under focused tests.
+- [x] T013 [US2] Document the optimized scorer boundary, immutable output oracle, and LongMemEval latency gate with FR-001/FR-002/FR-003/FR-004/SC-003/SC-004 coverage in `docs/agent/testing.md` | Verify: guidance distinguishes synthetic import stability from full-corpus performance and names no live-home workflow.
+
+## Parallel execution
+
+- None: scorer semantics, service-local cache ownership, public recall parity, and the two sequential performance lanes share mutable code or consume ordered evidence; parallel execution would invalidate latency comparability or create overlapping writers.
+
+## Final verification
+
+- [x] T014 Run build, focused LongMemEval tests, full Vitest, integration verification/smoke, import-ranking benchmark, package checks, exact six-tool audit, status/diff review, and whitespace hygiene with all FRs/SC-001/SC-003/SC-004 coverage in `package.json` | Verify: every repository gate passes with no schema revision, public API change, unrelated fixture rewrite, dependency output, secret, or real-home mutation.
+- [x] T015 Execute one Node process that seals the dist/index.js SHA-256, imports the runner once, runs optimized stable then RRF sequentially to fresh create-only outputs, and confirms the post-run build digest is unchanged with FR-001/FR-002/FR-004/SC-001/SC-002/SC-005 coverage in `benchmarks/longmemeval/run.mjs` | Verify: one invocation creates both named optimized reports from one unchanged loaded build or exits nonzero without claiming comparable evidence.
+- [x] T016 Validate the baseline and both paired reports, compare all 470 ranked/delivered source and session sequences plus aggregate quality, reconcile dataset/conditions/mappings/SQLite/errors/calls, recompute raw p95 values, and enforce the accepted 10-ms absolute stable p95 budget while retaining the RRF ratio as diagnostic evidence with FR-001/FR-002/FR-004/SC-001/SC-002/SC-005 coverage in `benchmarks/retrieval-report.mjs` | Verify: round 2 validates with zero stable-baseline output mismatches and equal quality/identity/SQLite/calls; stable p95 9.4380 ms passes the 10-ms budget, while RRF p95 1.9762 ms and the 4.7758x ratio remain diagnostic. The same-build confirmation again has zero stable-baseline mismatches and records stable 8.8932 ms, RRF 1.5019 ms, and a diagnostic 5.9213x ratio.
+- [x] T017 Persist the paired invocation, before/after build digest, three report hashes, exact-output comparison, raw p95 values, ratio, requirement results, and residual risks with all FRs/SC-001/SC-002/SC-003/SC-004/SC-005 coverage in `openspec/changes/optimize-stable-recall-latency/verify-report.md` | Verify: every FR and buildable SC is PASS, each outcome SC is observed PASS or explicit RISK, and no failed gate is presented as approval.
+- [x] T018 Obtain fresh read-only Oracle verification round 1 and persist its judgment with all FRs/SC-001/SC-002/SC-003/SC-004/SC-005 coverage in `openspec/changes/optimize-stable-recall-latency/verify-report.md` | Verify: Oracle returned FAIL because the unconditional ASCII shortcut changed Turkish/Azeri default-locale folding; archive remained prohibited.
+- [x] T019 Add a red Turkish-locale regression at the stable scorer seam, guard the ASCII shortcut with verified default-locale equivalence, and rerun focused checks with FR-001/FR-003/SC-001/SC-003 coverage in `src/memory-core/retrieval/stable-lexical-rank.ts` | Verify: the regression first observed `5` instead of `0`, then passed with exact frozen-scorer behavior; focused suite passed 8 files/80 tests.
+- [x] T020 Rebuild and publish corrected same-build stable/RRF evidence to fresh round-4 paths, reconcile all reports, and rerun repository/package/import gates with all FRs/SC-001/SC-002/SC-003/SC-004/SC-005 coverage in `benchmarks/results/longmemeval-s-stable-v1-optimized-round4-2026-09-03.json` | Verify: stable p95 `8.9408 ms`, RRF p95 `1.6229 ms`, zero stable-baseline mismatches, unchanged build digests, full 51 files/402 tests, import ranking 17/17 with zero inversions, integration and prepublish PASS.
+- [x] T021 Obtain a second fresh read-only Oracle final verification after locale convergence and persist its judgment in `openspec/changes/optimize-stable-recall-latency/verify-report.md` | Verify: Oracle returned FAIL because the removed second non-ASCII normalization changes Azerbaijani combining-mark tokenization; archive remained prohibited.
+- [x] T022 Add a red Azerbaijani combining-mark regression, restore the frozen second field normalization outside the guarded ASCII path, and rerun focused checks with FR-001/FR-003/SC-001/SC-003 coverage in `src/memory-core/retrieval/stable-lexical-rank.ts` | Verify: the regression first observed optimized `0` versus frozen `2`, then passed; focused suite passed 8 files/81 tests.
+- [x] T023 Rebuild and publish fully corrected same-build stable/RRF evidence to fresh round-5 paths, reconcile all reports, and rerun repository/package/import gates with all FRs/SC-001/SC-002/SC-003/SC-004/SC-005 coverage in `benchmarks/results/longmemeval-s-stable-v1-optimized-round5-2026-09-03.json` | Verify: stable p95 `9.3504 ms`, RRF p95 `1.6164 ms`, zero stable-baseline mismatches, unchanged build digests, full 51 files/403 tests, import ranking 17/17 with zero inversions, integration and prepublish PASS.
+- [x] T024 Obtain a third fresh read-only Oracle final verification after full locale convergence and persist its judgment in `openspec/changes/optimize-stable-recall-latency/verify-report.md` | Verify: Oracle returned PASS with no blocker after 3,456 exact differential comparisons across six locales; archive is eligible after closeout validation.
