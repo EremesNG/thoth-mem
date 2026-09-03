@@ -40,6 +40,37 @@ describe('canonical integration package inventory', () => {
     expect(skill).not.toMatch(/mem_session\s*\(\s*action|session_id|include_timeline|max_length|navigation="community"/iu);
   });
 
+  it('teaches one direct promoted-memory authoring convention across packaged skills', () => {
+    const skillPaths = [
+      join('plugin', 'skills', 'thoth-mem', 'SKILL.md'),
+      ...['opencode', 'codex', 'claude-code'].map((harness) => join('integrations', harness, 'skills', 'thoth-mem', 'SKILL.md')),
+    ];
+    const skills = skillPaths.map((path) => readFileSync(path, 'utf8'));
+
+    expect(new Set(skills)).toHaveLength(1);
+    for (const [index, skill] of skills.entries()) {
+      expect(skill, skillPaths[index]).toMatch(/direct promoted memory[\s\S]*other than a handoff/iu);
+      expect(skill, skillPaths[index]).toMatch(/`Result`:[\s\S]*`Rationale`:[\s\S]*`Scope`:[\s\S]*`Caveat \/ safe action`:/u);
+      expect(skill, skillPaths[index]).toMatch(/omit[\s\S]*Scope[\s\S]*Caveat \/ safe action[\s\S]*do not apply[\s\S]*do not invent/iu);
+      expect(skill, skillPaths[index]).toMatch(/authoring convention[\s\S]*free-text `memory\.content`[\s\S]*not[\s\S]*new fields/iu);
+      expect(skill, skillPaths[index]).toMatch(/do not impose[\s\S]*evidence[\s\S]*observation records[\s\S]*session summaries[\s\S]*handoffs/iu);
+    }
+  });
+
+  it('teaches timeline routing and bounded expansion across packaged skills', () => {
+    const skillPaths = [join('plugin', 'skills', 'thoth-mem', 'SKILL.md'), ...['opencode', 'codex', 'claude-code'].map((harness) => join('integrations', harness, 'skills', 'thoth-mem', 'SKILL.md'))];
+    for (const path of skillPaths) {
+      const skill = readFileSync(path, 'utf8');
+      expect(skill, path).toMatch(/topic|query[\s\S]*chronolog/iu);
+      expect(skill, path).toMatch(/mem_project[\s\S]*action[=:]timeline/iu);
+      expect(skill, path).toMatch(/nextCursor[\s\S]*only as needed/iu);
+      expect(skill, path).toMatch(/historical entries[\s\S]*untrusted context/iu);
+      expect(skill, path).toMatch(/stable IDs[\s\S]*mem_get/iu);
+      expect(skill, path).toMatch(/not raw (?:session|activity)[\s\S]*history/iu);
+      expect(skill, path).not.toMatch(/include_timeline/iu);
+    }
+  });
+
   it('owns one exact hook, MCP, Skill/reference, adapter runner, and manifest bundle per harness', () => {
     const valid = validateIntegrationInventory(inventory);
     expect(valid.shared).toEqual(['hook-runner.mjs']);

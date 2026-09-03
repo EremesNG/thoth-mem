@@ -18,9 +18,18 @@ describe('process construction', () => {
       expect(client.getInstructions()).toMatch(/recall[\s\S]*save[\s\S]*handoff/iu);
       const tools = (await client.listTools()).tools;
       expect(tools.map((tool) => tool.name)).toEqual(['mem_save','mem_recall','mem_context','mem_get','mem_project','mem_session']);
+      const memSave = tools.find((tool) => tool.name === 'mem_save')!;
+      expect(Object.keys(memSave.inputSchema.properties ?? {}).sort()).toEqual([
+        'event_key', 'evidence', 'harness', 'memory', 'observation', 'observation_promotion',
+        'observation_review', 'project_key', 'project_name', 'root_session_key',
+      ]);
       const descriptions = Object.fromEntries(tools.map((tool) => [tool.name, tool.description ?? '']));
       expect(new Set(Object.values(descriptions))).toHaveLength(6);
       expect(descriptions.mem_save).toMatch(/save[\s\S]*(?:decision|discover|failure|convention)[\s\S]*handoff/iu);
+      expect(descriptions.mem_save).toMatch(/direct promoted memory[\s\S]*Result[\s\S]*Rationale[\s\S]*Scope[\s\S]*Caveat[\s\S]*safe action/iu);
+      expect(descriptions.mem_save).toMatch(/omit[\s\S]*Scope[\s\S]*Caveat[\s\S]*never invent/iu);
+      expect(descriptions.mem_save).toMatch(/evidence[\s\S]*compact[\s\S]*factual/iu);
+      expect(descriptions.mem_save).toMatch(/handoff[\s\S]*Objective[\s\S]*Completed[\s\S]*First pending action[\s\S]*Blockers[\s\S]*Key files\/checks/iu);
       expect(descriptions.mem_recall).toMatch(/search[\s\S]*(?:compact|context)/iu);
       expect(descriptions.mem_context).toMatch(/continuity[\s\S]*(?:project|session)/iu);
       expect(descriptions.mem_get).toMatch(/selected[\s\S]*(?:record|lineage)/iu);
