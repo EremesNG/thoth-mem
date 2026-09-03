@@ -89,13 +89,16 @@ function targetState(plan: ImportPlan): { logical: string; file: ReturnType<type
   finally { database.close(); }
 }
 
-function committedImport(plan: ImportPlan): { id: string; plan_hash: string; source_fingerprint: string } | null {
-  if (!existsSync(plan.target.path)) return null;
-  const database = new Database(plan.target.path, { readonly: true, fileMustExist: true, timeout: 0 });
+export interface CommittedLegacyImport { id: string; planHash: string; sourceFingerprint: string }
+
+export function findCommittedLegacyImport(targetPath: string, sourceFingerprint: string): CommittedLegacyImport | null {
+  if (!existsSync(targetPath)) return null;
+  const database = new Database(targetPath, { readonly: true, fileMustExist: true, timeout: 0 });
   try {
     const table = database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='legacy_imports'").get() as { count: number };
     if (!table.count) return null;
-    return database.prepare('SELECT id,plan_hash,source_fingerprint FROM legacy_imports WHERE source_fingerprint=?').get(plan.source.logicalFingerprint) as { id: string; plan_hash: string; source_fingerprint: string } | undefined ?? null;
+    const row = database.prepare('SELECT id,plan_hash,source_fingerprint FROM legacy_imports WHERE source_fingerprint=?').get(sourceFingerprint) as { id: string; plan_hash: string; source_fingerprint: string } | undefined;
+    return row ? { id: row.id, planHash: row.plan_hash, sourceFingerprint: row.source_fingerprint } : null;
   } finally { database.close(); }
 }
 
@@ -139,14 +142,15 @@ export async function applyLegacyImport(options: ApplyLegacyImportOptions): Prom
   const report = emptyReport(plan, startedAt);
   let artifacts: ImportArtifacts | null = null;
   let published = false;
+  let publication: ReturnType<typeof publishCandidate> | null = null;
   let phase = 'source';
   try {
     assertSourceBound(plan);
     phase = 'target';
-    const existing = committedImport(plan);
+    const existing = findCommittedLegacyImport(plan.target.path, plan.source.logicalFingerprint);
     if (existing) {
       phase = 'replay';
-      if (existing.plan_hash !== plan.planHash) throw new Error('Committed source is bound to a different plan, mapping, or policy');
+      if (existing.planHash !== plan.planHash) throw new Error('Committed source is bound to a different plan, mapping, or policy');
       const replay = verifyCommittedReplay(plan.target.path, plan, existing.id);
       const publishedFingerprint = currentFingerprint(plan.target.path);
       return {
@@ -203,7 +207,7 @@ export async function applyLegacyImport(options: ApplyLegacyImportOptions): Prom
     report.rowDelta = verified.rowDelta;
     report.integrity = verified.integrity;
     phase = 'publication';
-    const publication = publishCandidate(plan, artifacts, options.injectFailure === 'after-target-move' || options.injectFailure === 'after-candidate-move' ? options.injectFailure : undefined);
+    publication = publishCandidate(plan, artifacts, options.injectFailure === 'after-target-move' || options.injectFailure === 'after-candidate-move' ? options.injectFailure : undefined);
     published = true;
     report.artifacts.recoveryBundlePath = artifacts.recoveryBundlePath;
     report.artifacts.recoveryBundleFingerprint = publication.recoveryFingerprint;
@@ -219,7 +223,7 @@ export async function applyLegacyImport(options: ApplyLegacyImportOptions): Prom
   } catch (error) {
     let priorTargetRestored = Boolean((error as { priorTargetRestored?: boolean })?.priorTargetRestored);
     if (published && artifacts) {
-      try { priorTargetRestored = restorePublishedTarget(plan, artifacts); }
+      try { priorTargetRestored = restorePublishedTarget(plan, artifacts, publication?.recoverySnapshot); }
       catch (restoreError) { error = restoreError; priorTargetRestored = false; }
     }
     const code = failureCode(phase, error);

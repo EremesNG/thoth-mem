@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { MemoryKind, MemoryOutcome } from '../contracts.js';
 import { SQLITE_SCHEMA_REVISION } from '../sqlite/migrations.js';
 
-export const IMPORT_PLAN_SCHEMA = 'thoth-mem.import.plan.v3' as const;
+export const IMPORT_PLAN_SCHEMA = 'thoth-mem.import.plan.v4' as const;
 export const IMPORT_REPORT_SCHEMA = 'thoth-mem.import.report.v3' as const;
 export const IMPORT_MAPPING_SCHEMA = 'thoth-mem.import.mapping.v1' as const;
 
@@ -28,7 +28,7 @@ export interface ProjectMapping {
 
 export interface ImportPlan {
   schema: typeof IMPORT_PLAN_SCHEMA;
-  version: 3;
+  version: 4;
   planHash: string;
   createdAt: string;
   source: {
@@ -50,6 +50,7 @@ export interface ImportPlan {
   policy: {
     importer: 'reconcile-v3'; projectResolution: 'exact-explicit-v1'; privacy: 'legacy-private-v1'; taxonomy: 'legacy-taxonomy-bugfix-v1'; temporal: 'legacy-history-v1'; dedup: 'exact-canonical-v1'; policyHash: string;
   };
+  mappingRequest: MappingManifest | null;
   projectMappings: ProjectMapping[];
   mappingHash: string;
   plannedDispositions: Record<LegacyEntity, EntityDispositionCounts>;
@@ -61,6 +62,12 @@ export interface MappingManifest {
   schema: typeof IMPORT_MAPPING_SCHEMA;
   version: 1;
   mappings: Array<{ sourceProject: string; targetSelector: string }>;
+}
+
+function canonicalMappingRequest(mapping: MappingManifest | null): MappingManifest | null {
+  if (!mapping) return null;
+  const mappings = [...mapping.mappings].sort((left, right) => left.sourceProject.localeCompare(right.sourceProject) || left.targetSelector.localeCompare(right.targetSelector));
+  return { ...mapping, mappings };
 }
 
 export interface ImportReport {
@@ -179,14 +186,14 @@ function nonNegativeInteger(value: unknown, label: string): number {
 
 export function sealImportPlan(input: Omit<ImportPlan, 'planHash'>): ImportPlan {
   const mappings = [...input.projectMappings].sort((left, right) => left.sourceProjectHash.localeCompare(right.sourceProjectHash));
-  const planWithoutHash = { ...input, projectMappings: mappings, mappingHash: hashCanonical(mappings) };
+  const planWithoutHash = { ...input, mappingRequest: canonicalMappingRequest(input.mappingRequest), projectMappings: mappings, mappingHash: hashCanonical(mappings) };
   return { ...planWithoutHash, planHash: hashCanonical(planWithoutHash) };
 }
 
 export function parseImportPlan(value: unknown): ImportPlan {
   const plan = record(value, 'plan');
-  exactKeys(plan, ['schema','version','planHash','createdAt','source','target','policy','projectMappings','mappingHash','plannedDispositions','reasonCounts','integrityExpectations'], 'plan');
-  if (plan.schema !== IMPORT_PLAN_SCHEMA || plan.version !== 3 || typeof plan.planHash !== 'string') throw new Error('Plan schema or version is invalid');
+  exactKeys(plan, ['schema','version','planHash','createdAt','source','target','policy','mappingRequest','projectMappings','mappingHash','plannedDispositions','reasonCounts','integrityExpectations'], 'plan');
+  if (plan.schema !== IMPORT_PLAN_SCHEMA || plan.version !== 4 || typeof plan.planHash !== 'string') throw new Error('Plan schema or version is invalid');
   const source = record(plan.source, 'plan.source');
   exactKeys(source, ['path','schema','logicalFingerprint','fileFingerprint','authoritativeInventory','ignoredSchemaObjects'], 'plan.source');
   const target = record(plan.target, 'plan.target');
@@ -217,6 +224,8 @@ export function parseImportPlan(value: unknown): ImportPlan {
   const policy = record(plan.policy, 'plan.policy');
   exactKeys(policy, ['importer','projectResolution','privacy','taxonomy','temporal','dedup','policyHash'], 'plan.policy');
   if (canonicalJson(policy) !== canonicalJson(IMPORT_POLICY)) throw new Error('Plan policy is unsupported');
+  const mappingRequest = plan.mappingRequest === null ? null : canonicalMappingRequest(parseMappingManifest(plan.mappingRequest));
+  if (canonicalJson(plan.mappingRequest) !== canonicalJson(mappingRequest)) throw new Error('Plan mapping request is not canonical');
   if (!Array.isArray(plan.projectMappings)) throw new Error('Plan project mappings must be an array');
   for (const value of plan.projectMappings) {
     const item = record(value, 'project mapping');
@@ -228,6 +237,11 @@ export function parseImportPlan(value: unknown): ImportPlan {
     if (item.destinationSelector !== null) stringValue(item.destinationSelector, 'project mapping destination selector');
     if (item.resolvedProjectId !== null) stringValue(item.resolvedProjectId, 'project mapping resolved project ID');
   }
+  const explicitMappings = (plan.projectMappings as ProjectMapping[])
+    .filter((mapping) => mapping.basis === 'explicit' || (mapping.destinationSelector !== null && (mapping.basis === 'ambiguous_identity' || mapping.basis === 'project_conflict')))
+    .map((mapping) => ({ sourceProject: mapping.sourceProject, targetSelector: mapping.destinationSelector! }))
+    .sort((left, right) => left.sourceProject.localeCompare(right.sourceProject) || left.targetSelector.localeCompare(right.targetSelector));
+  if (canonicalJson(explicitMappings) !== canonicalJson(mappingRequest?.mappings ?? [])) throw new Error('Plan project mappings do not match the mapping request');
   const dispositions = record(plan.plannedDispositions, 'plan.plannedDispositions');
   exactKeys(dispositions, ['session','prompt','session_summary','observation_version','observation'], 'plan.plannedDispositions');
   for (const [entity, value] of Object.entries(dispositions)) {

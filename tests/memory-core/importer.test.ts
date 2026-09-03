@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -84,6 +85,23 @@ function createTarget(path: string): void {
   }
 }
 
+function createTargetWithNonEmptyWal(path: string): void {
+  createTarget(path);
+  const result = spawnSync(process.execPath, ['-e', `
+    const Database = require('better-sqlite3');
+    const database = new Database(process.argv[1]);
+    database.pragma('journal_mode = WAL');
+    database.pragma('wal_autocheckpoint = 0');
+    database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run(
+      'project-wal', 'wal-baseline', 'WAL baseline', null,
+      '2026-09-01T00:00:01.000Z', '2026-09-01T00:00:01.000Z',
+    );
+    process.exit(0);
+  `, path], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) throw new Error(`Failed to create WAL target fixture: ${result.stderr}`);
+  if (!existsSync(`${path}-wal`) || readFileSync(`${path}-wal`).byteLength === 0) throw new Error('WAL target fixture did not retain a non-empty WAL');
+}
+
 function populateCurrentBaseline(path: string): void {
   const service = new MemoryService({ databasePath: path });
   const project = { key: 'alpha', name: 'Alpha' };
@@ -115,8 +133,18 @@ function populateCurrentBaseline(path: string): void {
   closed.close();
 }
 
+function expectRestoredBaseline(path: string, baseline: Record<string, unknown[]>): void {
+  const database = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    expect(database.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(currentBaselineManifest(database)).toEqual(baseline);
+    expect(database.prepare('SELECT count(*) AS count FROM legacy_imports').get()).toEqual({ count: 0 });
+  } finally { database.close(); }
+}
+
 describe('legacy import planning', () => {
-  it('produces a deterministic hash-bound v3 plan without writing either input or loading virtual modules', () => {
+  it('produces a deterministic hash-bound v4 plan without writing either input or loading virtual modules', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-import-plan-'));
     const source = join(root, 'legacy.sqlite');
     const target = join(root, 'memory.sqlite');
@@ -132,8 +160,9 @@ describe('legacy import planning', () => {
       expect(second).toEqual(first);
       expect(parseImportPlan(JSON.parse(JSON.stringify(first)))).toEqual(first);
       expect(first).toMatchObject({
-        schema: 'thoth-mem.import.plan.v3',
-        version: 3,
+        schema: 'thoth-mem.import.plan.v4',
+        version: 4,
+        mappingRequest: null,
         source: { path: resolve(source), schema: 'legacy-v1', authoritativeInventory: { session: 6, prompt: 4, session_summary: 1, observation_version: 1, observation: 3 } },
         target: { path: resolve(target), absent: false, schemaRevision: SQLITE_SCHEMA_REVISION },
         integrityExpectations: { targetRevision: SQLITE_SCHEMA_REVISION, receiptCount: 15, requireFtsEquality: true, requireProvenance: true },
@@ -436,6 +465,155 @@ describe('legacy candidate writer', () => {
 });
 
 describe('legacy import apply and publication', () => {
+  it('publishes a plan-bound non-empty WAL target from a normalized recovery snapshot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-import-wal-publication-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'memory.sqlite');
+    createLegacy(source);
+    createTargetWithNonEmptyWal(target);
+    const beforeDatabase = new Database(target, { readonly: true, fileMustExist: true });
+    const baseline = currentBaselineManifest(beforeDatabase);
+    beforeDatabase.close();
+    const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+    expect(plan.target.fileFingerprint?.wal).toEqual(expect.any(String));
+    expect(readFileSync(`${target}-wal`).byteLength).toBeGreaterThan(0);
+    try {
+      const report = await applyLegacyImport({ plan, startedAt: '2026-09-03T12:00:00.000Z' });
+
+      expect(report).toMatchObject({
+        committed: true,
+        duplicate: false,
+        integrity: { baselinePreserved: true, foreignKeys: true, sqlite: true },
+        artifacts: { backupPath: expect.any(String), recoveryBundlePath: expect.any(String) },
+      });
+      const published = new Database(target, { readonly: true, fileMustExist: true });
+      try {
+        const after = currentBaselineManifest(published);
+        for (const [table, rows] of Object.entries(baseline)) expect(after[table]).toEqual(expect.arrayContaining(rows));
+        expect(published.prepare('SELECT count(*) AS count FROM legacy_imports WHERE id=?').get(report.importId)).toEqual({ count: 1 });
+      } finally { published.close(); }
+      const recovery = new Database(join(report.artifacts.recoveryBundlePath!, 'memory.sqlite'), { readonly: true, fileMustExist: true });
+      try {
+        expect(recovery.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+        expect(recovery.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        expect(currentBaselineManifest(recovery)).toEqual(baseline);
+      } finally { recovery.close(); }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['after-target-move', 'PUBLICATION_FAILED'],
+    ['after-candidate-move', 'PUBLICATION_FAILED'],
+    ['before-reopen-verification', 'INTEGRITY_FAILED'],
+  ] as const)('restores a plan-bound non-empty WAL target after %s', async (injectFailure, code) => {
+    const root = mkdtempSync(join(tmpdir(), `thoth-import-wal-restore-${injectFailure}-`));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'memory.sqlite');
+    createLegacy(source);
+    createTargetWithNonEmptyWal(target);
+    const baselineDatabase = new Database(target, { readonly: true, fileMustExist: true });
+    const baseline = currentBaselineManifest(baselineDatabase);
+    baselineDatabase.close();
+    const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+    expect(plan.target.fileFingerprint?.wal).toEqual(expect.any(String));
+    try {
+      let failure: LegacyImportFailure | null = null;
+      try { await applyLegacyImport({ plan, startedAt: '2026-09-03T12:00:00.000Z', injectFailure }); }
+      catch (error) { failure = error as LegacyImportFailure; }
+
+      expect(failure).toMatchObject({
+        code,
+        report: {
+          committed: false,
+          failure: { priorTargetRestored: true },
+          artifacts: { backupPath: expect.any(String), recoveryBundlePath: expect.any(String) },
+        },
+      });
+      expect(existsSync(failure!.report.artifacts.backupPath!)).toBe(true);
+      expect(existsSync(failure!.report.artifacts.recoveryBundlePath!)).toBe(true);
+      expectRestoredBaseline(target, baseline);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('restores a DELETE-journal target after the candidate move', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-import-delete-restore-after-candidate-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'memory.sqlite');
+    createLegacy(source);
+    createTarget(target);
+    const baselineDatabase = new Database(target, { readonly: true, fileMustExist: true });
+    const baseline = currentBaselineManifest(baselineDatabase);
+    baselineDatabase.close();
+    const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+    expect(plan.target.fileFingerprint?.wal).toBeNull();
+    try {
+      let failure: LegacyImportFailure | null = null;
+      try { await applyLegacyImport({ plan, startedAt: '2026-09-03T12:00:00.000Z', injectFailure: 'after-candidate-move' }); }
+      catch (error) { failure = error as LegacyImportFailure; }
+      expect(failure).toMatchObject({ code: 'PUBLICATION_FAILED', report: { committed: false, failure: { priorTargetRestored: true } } });
+      expectRestoredBaseline(target, baseline);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('fails closed when a held reader prevents a complete WAL checkpoint', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-import-wal-checkpoint-busy-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'memory.sqlite');
+    createLegacy(source);
+    createTargetWithNonEmptyWal(target);
+    const baselineDatabase = new Database(target, { readonly: true, fileMustExist: true });
+    const baseline = currentBaselineManifest(baselineDatabase);
+    baselineDatabase.close();
+    const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+    expect(plan.target.fileFingerprint?.wal).toEqual(expect.any(String));
+    const reader = new Database(target, { readonly: true, fileMustExist: true });
+    reader.exec('BEGIN');
+    expect(reader.prepare("SELECT display_name FROM projects WHERE id='project-wal'").get()).toEqual({ display_name: 'WAL baseline' });
+    try {
+      let failure: LegacyImportFailure | null = null;
+      try { await applyLegacyImport({ plan, startedAt: '2026-09-03T12:00:00.000Z' }); }
+      catch (error) { failure = error as LegacyImportFailure; }
+
+      expect(failure).toMatchObject({
+        code: 'TARGET_LOCKED',
+        report: {
+          committed: false,
+          failure: { message: expect.stringMatching(/checkpoint incomplete.*busy=1/iu), priorTargetRestored: false },
+          artifacts: { backupPath: expect.any(String), recoveryBundlePath: null },
+        },
+      });
+      expect(existsSync(failure!.report.artifacts.backupPath!)).toBe(true);
+      const unchanged = new Database(target, { readonly: true, fileMustExist: true });
+      try {
+        expect(currentBaselineManifest(unchanged)).toEqual(baseline);
+        expect(unchanged.prepare('SELECT count(*) AS count FROM legacy_imports').get()).toEqual({ count: 0 });
+      } finally { unchanged.close(); }
+    } finally {
+      reader.exec('ROLLBACK');
+      reader.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when an absent target sidecar path becomes occupied', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-import-absent-sidecar-occupied-'));
+    const source = join(root, 'legacy.sqlite');
+    const target = join(root, 'memory.sqlite');
+    createLegacy(source);
+    const plan = planLegacyImport({ sourcePath: source, targetPath: target });
+    expect(plan.target.absent).toBe(true);
+    copyFileSync(source, `${target}-wal`);
+    const occupantHash = sha256(`${target}-wal`);
+    try {
+      await expect(applyLegacyImport({ plan, startedAt: '2026-09-03T12:00:00.000Z' })).rejects.toMatchObject({
+        code: 'PUBLICATION_FAILED',
+        report: { committed: false, failure: { priorTargetRestored: false } },
+      });
+      expect(existsSync(target)).toBe(false);
+      expect(sha256(`${target}-wal`)).toBe(occupantHash);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('namespaces overlapping imported sessions by source and replays each exact plan with zero delta', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-import-overlapping-sessions-'));
     const firstSource = join(root, 'legacy-first.sqlite');

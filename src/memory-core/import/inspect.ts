@@ -270,10 +270,11 @@ export function planLegacyImport(options: PlanLegacyImportOptions): ImportPlan {
       observation: dataset.observations.length,
     };
     const plan = sealImportPlan({
-      schema: 'thoth-mem.import.plan.v3', version: 3, createdAt: statSync(sourcePath).mtime.toISOString(),
+      schema: 'thoth-mem.import.plan.v4', version: 4, createdAt: statSync(sourcePath).mtime.toISOString(),
       source: { path: sourcePath, schema: 'legacy-v1', logicalFingerprint: sourceLogical, fileFingerprint: sourceFilesBefore, authoritativeInventory: inventory, ignoredSchemaObjects: objects.filter((object) => object.category !== 'authoritative') },
       target: { path: targetPath, absent: !target, schemaRevision: target ? Number((target.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number }).version) : null, logicalFingerprint: targetLogical, fileFingerprint: targetFilesBefore, baselineManifestHash: targetLogical },
       policy: IMPORT_POLICY,
+      mappingRequest: options.mapping ?? null,
       projectMappings: mappings.map(({ destinationKey: _destinationKey, destinationName: _destinationName, ...mapping }) => mapping), mappingHash: '',
       plannedDispositions: planned.dispositions, reasonCounts: planned.reasons,
       integrityExpectations: { targetRevision: SQLITE_SCHEMA_REVISION, baselinePreservationHash: targetLogical, receiptCount: Object.values(inventory).reduce((sum, value) => sum + value, 0), requireFtsEquality: true, requireProvenance: true },
