@@ -114,19 +114,36 @@ Changed setup requests a host restart. A verified repeated setup changes no file
 
 ## Legacy import
 
-The current runtime never opens a legacy database during normal operation. Import is an explicit two-step reconciliation into a distinct current target. Planning opens the legacy source and existing target read-only, inventories supported and unsupported rows, resolves only exact project identities or explicit mappings, and writes a create-only, hash-bound plan. Taxonomy policy `legacy-taxonomy-bugfix-v1` imports legacy `bugfix` histories as successful `discovery` memories while retaining `legacy_kind: bugfix` in evidence provenance; `manual` and `pattern` remain explicitly quarantined. Review that plan and every quarantined or isolated project before applying it.
+The current runtime never opens a legacy database during normal operation. To import the conventional `~/.thoth/thoth.db` into the configured current `memory.sqlite`, stop every Codex, OpenCode, Claude Code, or other process that may hold the current database and run one command:
 
 ```sh
-node dist/index.js import-legacy plan --source ./legacy.sqlite --target ./memory.sqlite --plan ./import-plan.json
+thoth-mem import-legacy
+```
+
+The command resolves the target from the normal data-directory configuration, plans and applies through the same fingerprint-bound importer, creates a verified backup and isolated candidate when a target exists, publishes only after all integrity checks pass, and reports aggregate imported/quarantined/skipped counts plus its retained plan, report, backup, and recovery locations. It never emits legacy memory prose. If the target is open, changed, invalid, aliased, or unsafe, the command fails without claiming commit; close the host and repeat the same command.
+
+Nonstandard sources, an approved exact mapping manifest, and an explicit data directory remain single-command options:
+
+```sh
+thoth-mem import-legacy --source ./legacy.sqlite --map ./mapping.json --data-dir ./current-memory
+thoth-mem import-legacy --json
+```
+
+Each request keeps immutable plan attempts and create-only reports beneath `<dataDir>/imports`. An equivalent repeat selects the exact sealed plan recorded by the committed target and returns an idempotent zero-delta replay. Taxonomy policy `legacy-taxonomy-bugfix-v1` imports legacy `bugfix` histories as successful `discovery` memories while retaining `legacy_kind: bugfix` in evidence provenance; `manual` and `pattern` remain explicitly quarantined.
+
+Advanced operators can still separate zero-write planning from application for an external review or custom artifact-custody workflow:
+
+```sh
+thoth-mem import-legacy plan --source ./legacy.sqlite --target ./memory.sqlite --plan ./import-plan.json
 # Optional: add --map ./mapping.json after reviewing explicit project mappings.
 
 # Stop every process that can open the target before publication.
-node dist/index.js import-legacy apply --plan ./import-plan.json --report ./import-report.json
+thoth-mem import-legacy apply --plan ./import-plan.json --report ./import-report.json
 ```
 
 Apply accepts no path or policy overrides. It verifies the sealed plan and unchanged inputs, creates and verifies a recoverable backup, reconciles into a candidate copy, and publishes one closed SQLite file only after integrity, provenance, receipt, and FTS checks pass. The legacy source remains unchanged; a populated current target is preserved and existing current topic winners keep precedence. Plan and report paths are create-only. On failure, keep the report and the reported recovery bundle instead of deleting or retrying over them.
 
-Before applying to the real `~/.thoth/thoth.db` and configured `memory.sqlite`, copy both database bundles to an isolated rehearsal directory and run plan/apply there. Inspect the dispositions and retrieval results, then schedule the real cutover with all hosts stopped. Do not delete the legacy database, verified backup, or recovery bundle until the migrated runtime has been independently validated.
+For unusually sensitive installations, use the advanced commands against isolated copies first and inspect dispositions and retrieval results before the real cutover. Do not delete the legacy database, verified backup, or recovery bundle until the migrated runtime has been independently validated.
 
 The runtime also does not guess, rename, copy, or dual-read a database created under the previous generation-suffixed default filename. To adopt an existing local ledger, first close every host process, create a recoverable backup, then explicitly copy or move the exact selected old database to `memory.sqlite` in the configured data directory before restarting. Repository setup and tests never perform this stateful operation in a real user home.
 

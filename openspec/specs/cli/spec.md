@@ -142,76 +142,94 @@ The CLI MUST expose a bounded `project rename` administration command in additio
 
 ### Requirement: Legacy Import MUST Be Explicit and Non-Destructive
 
-`import-legacy` MUST separate zero-write planning from explicit apply; require distinct explicit source and current-target paths plus a plan bound to their fingerprints and exact mapping/privacy policy; support a populated current target by building from a verified backup into an isolated candidate; reject fuzzy or ambiguous project matching, changed/locked inputs, unsafe artifact paths, and stale plans; publish only a completely verified candidate through an atomic target replacement; retain bounded recovery/report artifacts; and make an identical replay a no-op.
+`import-legacy` MUST make one explicit CLI invocation the normal migration workflow; default the source to the conventional legacy database under the user home and the target to `memory.sqlite` under the resolved runtime data directory; accept bounded source, mapping, and data-directory overrides; bind the complete canonical mapping request, including null versus empty mode, inside the sealed plan hash recorded by the target receipt; internally create and retain importer-owned request custody with immutable baseline-bound plan attempts and create-only reports; use a fresh attempt while no matching source import is committed; read the committed plan hash from the target and reuse only that exact retained sealed plan for an equivalent replay; execute fingerprint-bound planning and verified apply without manual artifact choreography; emit bounded aggregate success or actionable failure output; preserve advanced `plan` and `apply` subcommands; reject changed, locked, aliased, invalid, tampered, substituted, or unsafe inputs before claiming commit; allow a later stable retry after an uncommitted failure; preserve a verified backup and recoverable publication; accept importer-controlled physical WAL normalization only when the complete logical baseline remains equal to the sealed plan; verify restoration by SQLite integrity, foreign keys, and logical baseline rather than stale pre-checkpoint byte hashes; and keep repeated imports idempotent.
 
-#### Scenario: US1 - Inspect a migration without changing either database 1
+#### Scenario: US1 - Publish from a stable WAL target 1
 
-- **GIVEN** distinct readable legacy and current databases
-- **WHEN** planning runs
-- **THEN** it performs zero input writes and reports source/target fingerprints, supported schema, authoritative row counts, ignored derived inventory, project dispositions, privacy transformations, and blocking errors
+- **GIVEN** a stable current target with a non-empty WAL that is logically identical to its sealed plan baseline
+- **WHEN** one-command import publishes a fully verified candidate
+- **THEN** importer-controlled WAL normalization does not produce a target-changed failure and the command reports a committed import
 
-#### Scenario: US1 - Inspect a migration without changing either database 2
+#### Scenario: US1 - Publish from a stable WAL target 2
 
-- **GIVEN** legacy virtual tables whose modules are unavailable
-- **WHEN** planning inventories derived state
-- **THEN** it classifies them from schema metadata without querying or loading those modules
+- **GIVEN** an equivalent stable target with an absent or empty WAL
+- **WHEN** the same import runs
+- **THEN** existing successful publication and recovery behavior remains unchanged
 
-#### Scenario: US1 - Inspect a migration without changing either database 3
+#### Scenario: US2 - Restore publication failures truthfully 1
 
-- **GIVEN** an unsupported source schema, aliased paths, unreadable input, or a source/target that changes during planning
-- **WHEN** planning completes
-- **THEN** it fails closed with no candidate or input mutation
+- **GIVEN** a non-empty-WAL target and an injected failure after the target enters recovery
+- **WHEN** recovery runs
+- **THEN** the prior logical database is restored and verified even if its WAL/main byte representation was normalized
 
-#### Scenario: US2 - Reconcile project identities without guessing 1
+#### Scenario: US2 - Restore publication failures truthfully 2
 
-- **GIVEN** an explicit source-project mapping to one exact current project key or alias
-- **WHEN** it validates
-- **THEN** every mapped legacy row uses that canonical project and the mapping is bound into the import receipt
+- **GIVEN** a candidate that reached the target path but fails before final commit verification
+- **WHEN** recovery runs
+- **THEN** the candidate is removed from the active path and the verified prior baseline is restored without overwriting unrelated files
 
-#### Scenario: US2 - Reconcile project identities without guessing 2
+#### Scenario: US3 - Fail closed on real target activity 1
 
-- **GIVEN** one unambiguous exact canonical key or exact path alias
-- **WHEN** no explicit override conflicts
-- **THEN** the plan may propose that mapping and reports the evidence used
+- **GIVEN** the target cannot reach the importer's quiescence barrier
+- **WHEN** publication begins
+- **THEN** the import fails as locked/busy, retains recoverable artifacts, and tells the user to close hosts and rerun the same command
 
-#### Scenario: US2 - Reconcile project identities without guessing 3
+#### Scenario: US3 - Fail closed on real target activity 2
 
-- **GIVEN** a non-placeholder legacy project that has no safe current match
-- **WHEN** planning runs
-- **THEN** it assigns one deterministic isolated legacy project identity rather than dropping its history or guessing a current project
+- **GIVEN** the target's logical contents change before or during the bounded publication handoff
+- **WHEN** the importer revalidates the recovery snapshot or target paths
+- **THEN** it refuses candidate publication, restores the captured prior state when possible, and never claims commit
 
-#### Scenario: US2 - Reconcile project identities without guessing 4
+#### Scenario: US4 - Complete the real cutover after verification 1
 
-- **GIVEN** placeholder identity, contradictory row/session identity, ambiguous aliases, or a conflicting explicit mapping
-- **WHEN** reconciliation cannot resolve it safely
-- **THEN** affected rows are quarantined or the plan is blocked with bounded reasons and no invented verified identity
+- **GIVEN** the fixed packaged build, the conventional legacy source, and a stopped stable target
+- **WHEN** `thoth-mem import-legacy` runs
+- **THEN** the command commits once and post-cutover integrity plus bounded recall inspection pass
 
-#### Scenario: US4 - Commit a verified candidate atomically 1
+#### Scenario: US5 - Preserve the established import contract 1
 
-- **GIVEN** an approved plan bound to exact source and target fingerprints
-- **WHEN** apply starts
-- **THEN** it creates a recoverable verified backup and a private candidate copy rather than mutating the active target in place
+- **GIVEN** the conventional legacy database and a configured current data directory
+- **WHEN** `thoth-mem import-legacy` runs
+- **THEN** it resolves both database paths, creates private run artifacts, plans, applies, verifies, and reports success in that single invocation
 
-#### Scenario: US4 - Commit a verified candidate atomically 2
+#### Scenario: US5 - Preserve the established import contract 2
 
-- **GIVEN** a fully reconciled candidate
-- **WHEN** foreign keys, schema revision, import lineage, row dispositions, memory provenance, and FTS checks pass and both inputs are unchanged
-- **THEN** publication replaces the target atomically and emits a bounded durable report
+- **GIVEN** a nonstandard legacy database or reviewed mapping manifest
+- **WHEN** the operator passes the optional source, mapping, or data-directory override
+- **THEN** the same one-command workflow binds those exact values into the audited plan
 
-#### Scenario: US4 - Commit a verified candidate atomically 3
+#### Scenario: US5 - Preserve the established import contract 3
 
-- **GIVEN** any failed check, changed input, target lock, write error, or interrupted candidate build
-- **WHEN** apply exits
-- **THEN** the prior target remains recoverable and no partial candidate is reported as committed
+- **GIVEN** a successful import
+- **WHEN** the CLI returns
+- **THEN** its bounded output identifies aggregate dispositions, retained plan/report locations, and nullable backup/recovery locations without exposing legacy prose
 
-#### Scenario: US5 - Repeat or audit the import safely 1
+#### Scenario: US5 - Preserve the established import contract 4
 
-- **GIVEN** a previously committed import with the same source fingerprint, mapping, policy, and target lineage
-- **WHEN** it is replayed
-- **THEN** it returns the original import and row mappings as an idempotent no-op
+- **GIVEN** the configured target is open or changes between internal planning and apply
+- **WHEN** one-command import runs
+- **THEN** it exits nonzero, reports a bounded close-host-or-retry action, and leaves the active target recoverable without claiming commit
 
-#### Scenario: US5 - Repeat or audit the import safely 2
+#### Scenario: US5 - Preserve the established import contract 5
 
-- **GIVEN** the same source under a changed mapping or policy
-- **WHEN** replay is attempted
-- **THEN** it requires a new explicit plan and cannot silently reuse prior receipts
+- **GIVEN** an invalid source, mapping, target alias, or unsafe artifact condition
+- **WHEN** one-command import runs
+- **THEN** it fails closed without requiring the user to inspect or repair an internal plan manually
+
+#### Scenario: US5 - Preserve the established import contract 6
+
+- **GIVEN** the same source fingerprint was already committed
+- **WHEN** an equivalent one-command import is run again
+- **THEN** it reads the committed plan hash from the target, selects that exact retained sealed plan from matching request custody, the existing importer receipts prevent duplicate authoritative rows, and the command reports the idempotent outcome
+
+#### Scenario: US5 - Preserve the established import contract 7
+
+- **GIVEN** a prior attempt failed safely because the uncommitted target changed after planning
+- **WHEN** the target becomes stable and the same one-command request is retried
+- **THEN** it creates or selects a fresh baseline-bound plan attempt and can complete without manual artifact cleanup
+
+#### Scenario: US5 - Preserve the established import contract 8
+
+- **GIVEN** an operator explicitly selects `plan` or `apply`
+- **WHEN** that subcommand runs
+- **THEN** the existing explicit paths, fingerprint binding, create-only artifacts, and stale-plan rejection remain authoritative
