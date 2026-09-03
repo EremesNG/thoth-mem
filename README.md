@@ -12,7 +12,22 @@ pnpm run build
 node dist/index.js mcp --data-dir ./memory-data
 ```
 
-Recall is progressive: `mem_recall mode=compact`, then `mode=context`, then `mem_get` only when full content is needed. `mem_context` is a separate bounded project/session recovery briefing; `mem_project action=summaries` and `action=observations` provide bounded explicit inspection. Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory. Rejection is terminal, corrections append successors, and normal lifecycle capture never infers a candidate, review, or promotion. The exact six-tool surface does not change.
+Recall is progressive: `mem_recall mode=compact`, then `mode=context`, then `mem_get` only when full content is needed. `mem_context` is a separate bounded project/session recovery briefing; `mem_project action=timeline`, `action=summaries`, and `action=observations` provide bounded explicit inspection. Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory. Rejection is terminal, corrections append successors, and normal lifecycle capture never infers a candidate, review, or promotion. The exact six-tool surface does not change.
+
+Use the timeline when the question is how promoted project memory changed over time rather than which memories best match a query:
+
+```json
+{
+  "action": "timeline",
+  "project_key": "git:verified-project-id",
+  "since": "2026-01-01T00:00:00Z",
+  "until": "2026-12-31T23:59:59Z",
+  "limit": 20,
+  "budget_chars": 4000
+}
+```
+
+Entries include all current, superseded, retracted, and historical promoted-memory states in deterministic `validFrom` descending and ID ascending order. They expose only bounded title/topic/snippet metadata and validity lineage; raw evidence, summaries, observations, and session events remain excluded. Follow the opaque `nextCursor` only as needed, then use `mem_get` on selected stable IDs for full content and provenance. Bounds are inclusive normalized ISO instants. A cursor is bound to its project and bounds and traverses the live ledger; restart from the first page when a snapshot-like fresh view is required after concurrent backdated writes.
 
 Verified session saves return an ordered event sequence. At `checkpoint_pre_compact` or `finalize`, `mem_session` may accept an externally produced structured summary whose every claim cites in-range evidence from the same project and root session. The core validates and versions it but never generates it or promotes a handoff automatically. A minimal checkpoint submission uses the evidence ID and event sequence returned by an earlier session-scoped `mem_save`:
 

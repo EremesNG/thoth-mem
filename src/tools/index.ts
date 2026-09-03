@@ -33,11 +33,17 @@ type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
 const TOOL_DESCRIPTIONS: Record<MemoryToolName, string> = {
-  mem_save: 'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs; also submit, review, or promote supported observation candidates.',
+  mem_save: [
+    'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs.',
+    'For a direct promoted memory other than a handoff, write memory.content as concise labeled Result, Rationale, Scope, and Caveat / safe action lines.',
+    'Omit Scope or Caveat / safe action when it does not apply, and never invent details to fill the template.',
+    'Keep evidence compact and factual. Handoff memories keep the dedicated Objective, Completed, First pending action, Blockers, and Key files/checks format.',
+    'Also submit, review, or promote supported observation candidates.',
+  ].join(' '),
   mem_recall: 'Search current or historical project memory in compact or context mode before expanding only selected records.',
   mem_context: 'Build bounded handoff-first continuity for a verified project or root session.',
   mem_get: 'Expand one selected memory, summary, or observation record with its bounded lineage.',
-  mem_project: 'Inspect bounded project briefings, history, summaries, and observation queues without mutation.',
+  mem_project: 'Inspect bounded project timelines, briefings, history, summaries, and observation queues without mutation.',
   mem_session: 'Record verified root lifecycle and structured session-summary events; never use it as an ordinary save.',
 };
 
@@ -171,7 +177,7 @@ const memContextInputSchema = z.object({
   finalize_answer: z.boolean().optional(),
 }).strict();
 const memProjectInputSchema = z.object({
-  action: z.enum(['list', 'briefing', 'history', 'summaries', 'observations']).describe('Project view action. list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.'),
+  action: z.enum(['list', 'timeline', 'briefing', 'history', 'summaries', 'observations']).describe('Project view action. timeline lists promoted memories in reverse validity order; list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.'),
   project_key: projectKeySchema.optional(),
   id: z.string().min(1).optional(),
   root_session_key: z.string().min(1).optional(),
@@ -180,6 +186,9 @@ const memProjectInputSchema = z.object({
   state: z.enum(OBSERVATION_STATE_VALUES).optional(),
   limit: z.number().int().positive().max(100).optional(),
   budget_chars: z.number().optional(),
+  since: z.string().min(1).optional(),
+  until: z.string().min(1).optional(),
+  cursor: z.string().min(1).max(4_096).optional(),
 }).strict();
 
 function string(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`); return value; }
@@ -279,7 +288,14 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
     mem_context: guarded(async (input) => { const parsed = parseToolInput(memContextInputSchema, input); const identity = sessionIdentity(parsed.root_session_key, parsed.harness); const result = service.context({ projectKey: parsed.project_key, ...(identity ?? {}), budgetChars: number(parsed.budget_chars, 4000), correlationId: optionalString(parsed.correlation_id) }); return success('mem_context', { items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', parsed.finalize_answer === true) }); }),
     mem_get: guarded(async (input) => { const result = service.get({ id: string(input.id, 'id'), history: input.history === true }); const correlationId = optionalString(input.correlation_id); return success('mem_get', result, { sources: [...new Set([recordSourceIds(result.record as unknown as Record<string, unknown>), ...result.lineage.map((item) => recordSourceIds(item as unknown as Record<string, unknown>))].flat())], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } }); }),
     mem_project: guarded(async (input) => {
-      const parsed = parseToolInput(memProjectInputSchema, input); const action = parsed.action; if (action === 'list') return success('mem_project', { projects: service.listProjects() });
+      const parsed = parseToolInput(memProjectInputSchema, input); const action = parsed.action;
+      if (action === 'timeline') {
+        if (parsed.id !== undefined || parsed.root_session_key !== undefined || parsed.harness !== undefined || parsed.temporal !== undefined || parsed.state !== undefined) throw new Error('timeline accepts only project_key, since, until, cursor, limit, and budget_chars');
+        const result = service.timeline({ projectKey: string(parsed.project_key, 'project_key'), since: parsed.since, until: parsed.until, cursor: parsed.cursor, limit: parsed.limit, budgetChars: parsed.budget_chars });
+        return success('mem_project', { action, items: result.items, nextCursor: result.nextCursor, hasMore: result.hasMore }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars }, warnings: result.hasMore ? ['payload_truncated'] : [] });
+      }
+      if (parsed.since !== undefined || parsed.until !== undefined || parsed.cursor !== undefined) throw new Error('since, until, and cursor are timeline-only fields');
+      if (action === 'list') return success('mem_project', { projects: service.listProjects() });
       const identity = sessionIdentity(parsed.root_session_key, parsed.harness);
       if (action === 'briefing') { const result = service.context({ projectKey: string(parsed.project_key, 'project_key'), ...(identity ?? {}), budgetChars: number(parsed.budget_chars, 5000) }); return success('mem_project', { action, items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, compression_ratio: result.budget.compressionRatio } }); }
       if (action === 'history') { const result = service.get({ id: string(parsed.id, 'id'), history: true }); return success('mem_project', { action, lineage: result.lineage }, { sources: [...new Set(result.lineage.flatMap((item) => recordSourceIds(item as unknown as Record<string, unknown>)))] }); }

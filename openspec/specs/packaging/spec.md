@@ -94,9 +94,27 @@ The default package and startup path MUST NOT require or start dashboard, observ
 
 ### Requirement: Packed Verification MUST Exercise Every Host in Disposable State
 
-Release verification MUST import the native OpenCode entry, execute the CLI, validate public/local setup planning, synchronize Skills, cold-start MCP, and execute lifecycle runners for all three hosts without reading or mutating real user homes.
+Release verification MUST continue to import the native OpenCode entry, execute the CLI, validate public/local setup planning, synchronize Skills, cold-start MCP, and execute lifecycle runners for all three hosts without reading or mutating real user homes. It MUST also assert equivalent timeline guidance across OpenCode, Codex, and Claude Code Skills while continuing to prove an exact six-tool MCP inventory in disposable state.
 
-#### Scenario: Run packed smoke
+#### Scenario: US3 - Teach every packaged agent to use the timeline 1
+
+- **GIVEN** the canonical `thoth-mem` Skill
+- **WHEN** an agent needs chronological project context rather than relevance-ranked recall
+- **THEN** the guidance directs it to bounded `mem_project action=timeline` exploration and subsequent `mem_get` expansion of selected IDs
+
+#### Scenario: US3 - Teach every packaged agent to use the timeline 2
+
+- **GIVEN** the OpenCode, Codex, and Claude Code plugin bundles
+- **WHEN** packaging verification compares their Skills
+- **THEN** all copies contain equivalent timeline guidance and retain the established identity, privacy, save, and handoff rules
+
+#### Scenario: US3 - Teach every packaged agent to use the timeline 3
+
+- **GIVEN** the timeline action is added
+- **WHEN** MCP and packed integration tests enumerate tools
+- **THEN** the server still exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+
+#### Scenario: US7 - Preserve disposable packed verification 1
 
 - **GIVEN** a freshly built tarball and disposable homes
 - **WHEN** integration smoke runs

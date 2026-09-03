@@ -283,6 +283,34 @@ export interface EvidenceRecord { id: string; projectId: string; sessionId: stri
 export interface MemoryRecord { id: string; projectId: string; topicKey: string | null; kind: MemoryKind; title: string; content: string; outcome: MemoryOutcome; status: MemoryStatus; validFrom: string; invalidAt: string | null; supersedesId: string | null; createdAt: string; evidenceIds: string[] }
 export interface SaveMemoryResult { evidence: EvidenceRecord; memory: MemoryRecord | null; event: SessionEventRecord | null; projectId: string; sessionId: string | null; duplicate: boolean }
 
+export interface TimelineInput {
+  projectKey: string;
+  since?: string;
+  until?: string;
+  cursor?: string;
+  limit?: number;
+  budgetChars?: number;
+}
+export interface TimelineItem {
+  id: string;
+  title: string;
+  snippet: string;
+  kind: MemoryKind;
+  topicKey: string | null;
+  outcome: MemoryOutcome;
+  status: MemoryStatus;
+  validFrom: string;
+  invalidAt: string | null;
+  supersedesId: string | null;
+}
+export interface TimelineResult {
+  items: TimelineItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  requestedChars: number;
+  returnedChars: number;
+}
+
 export interface SessionEventInput {
   actor: EventActor;
   authority: EventAuthority;

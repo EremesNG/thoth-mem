@@ -140,27 +140,45 @@ Compact recall and context MUST continue to exclude observations, while `mem_get
 
 ### Requirement: mem_project MUST Keep Project Operations Bounded
 
-`mem_project` MUST add a bounded observation inspection action supporting verified project/session/status/current-history filters, non-branching correction lineage, and a total stable queue order without becoming a mutation, consolidation, or automatic-promotion surface.
+`mem_project` MUST retain bounded observation inspection with verified project/session/status/current-history filters, non-branching correction lineage, and a total stable queue order without becoming a mutation, consolidation, or automatic-promotion surface; MUST add a read-only `timeline` action requiring the exact verified `project_key`; MUST keep the exact six-tool registry unchanged; and MUST return only promoted memories from that project in timeline results.
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 1
+#### Scenario: US1 - Browse project memory chronologically 1
+
+- **GIVEN** a project containing promoted memories in every supported temporal status
+- **WHEN** an agent requests `mem_project` with `action=timeline`
+- **THEN** it receives compact entries ordered by `validFrom` descending and `id` ascending for equal timestamps
+
+#### Scenario: US1 - Browse project memory chronologically 2
+
+- **GIVEN** memories belonging to another project
+- **WHEN** the timeline is requested with one exact verified `project_key`
+- **THEN** no foreign title, snippet, identifier, or temporal metadata is returned
+
+#### Scenario: US1 - Browse project memory chronologically 3
+
+- **GIVEN** an unknown project key, invalid time bound, malformed cursor, or incompatible cursor boundary
+- **WHEN** the timeline is requested
+- **THEN** the service returns an empty result for the unknown project or a bounded safe validation error for invalid input without writes
+
+#### Scenario: US4 - Preserve bounded observation inspection 1
 
 - **GIVEN** pending, accepted, rejected, and promoted observations
 - **WHEN** `mem_project` requests observations with project/session/status bounds
 - **THEN** it returns a deterministic capped queue with stable IDs, compact metadata, and no raw support payloads
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 2
+#### Scenario: US4 - Preserve bounded observation inspection 2
 
 - **GIVEN** one selected observation ID
 - **WHEN** `mem_get` expands it
 - **THEN** it returns only that candidate, generator, scope, supports, immutable review lineage, promotion mapping, and related temporal memory IDs
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 3
+#### Scenario: US4 - Preserve bounded observation inspection 3
 
 - **GIVEN** any unpromoted observation
 - **WHEN** compact recall, context, briefing, or native recovery runs
 - **THEN** the observation is absent and existing memory/summary ordering, payload budget, trust boundary, and FTS rows remain unchanged
 
-#### Scenario: US3 - Inspect candidates without contaminating recall 4
+#### Scenario: US4 - Preserve bounded observation inspection 4
 
 - **GIVEN** candidate similarity or related-memory surfacing during explicit review
 - **WHEN** lexical scoring runs

@@ -11,6 +11,7 @@ import {
   LIFECYCLE_OPERATION_VALUES,
   MEMORY_KIND_VALUES,
   MEMORY_OUTCOME_VALUES,
+  MEMORY_STATUS_VALUES,
   requireObservationSupportMetadata,
   requireCanonicalValue,
   type BudgetMeasurement,
@@ -36,6 +37,9 @@ import {
   type SessionEventInput,
   type SessionSummaryRecord,
   type SummaryContextItem,
+  type TimelineInput,
+  type TimelineItem,
+  type TimelineResult,
 } from './contracts.js';
 import { renderContinuation } from './continuation.js';
 import { canonicalizeObservation, canonicalizeObservationReview, insertObservationProjection, insertObservationReviewProjection, listObservationRecords, observationFromId } from './observations.js';
@@ -94,6 +98,124 @@ export interface ProjectListing { id: string; key: string; name: string; aliases
 const MAX_CORRELATION_STATES = 1_024;
 export const PROJECT_ALIAS_INSPECTION_LIMIT = 256;
 const PROHIBITED_PROJECT_IDENTITY_CHARACTERS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+const TIMELINE_CURSOR_VERSION = 1;
+const TIMELINE_MIN_BUDGET_CHARS = 1_024;
+const TIMELINE_MAX_BUDGET_CHARS = 20_000;
+const TIMELINE_TITLE_CODE_POINTS = 64;
+const TIMELINE_TOPIC_CODE_POINTS = 64;
+const TIMELINE_SNIPPET_CODE_POINTS = 160;
+const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+
+interface TimelineCursorPayload {
+  v: 1;
+  projectId: string;
+  since: string | null;
+  until: string | null;
+  lastValidFrom: string;
+  lastId: string;
+}
+
+function normalizeInstant(value: string, label: string): string {
+  const match = ISO_INSTANT_PATTERN.exec(value);
+  if (!match) throw new Error(`${label} must be an ISO-8601 instant`);
+  const [, year, month, day, hour, minute, second] = match;
+  const numericYear = Number(year);
+  const numericMonth = Number(month);
+  const numericDay = Number(day);
+  const leapYear = numericYear % 4 === 0 && (numericYear % 100 !== 0 || numericYear % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][numericMonth - 1] ?? 0;
+  if (numericMonth < 1 || numericMonth > 12 || numericDay < 1 || numericDay > daysInMonth || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) {
+    throw new Error(`${label} must be an ISO-8601 instant`);
+  }
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw new Error(`${label} must be an ISO-8601 instant`);
+  return new Date(milliseconds).toISOString();
+}
+
+function normalizeTimelineLimit(value: number | undefined): number {
+  const limit = value ?? 20;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be an integer from 1 to 100');
+  return limit;
+}
+
+function normalizeTimelineBudget(value: number | undefined): number {
+  const requested = value ?? 4_000;
+  if (!Number.isSafeInteger(requested) || requested < 1) throw new Error('Timeline character budget must be a positive integer');
+  return Math.max(TIMELINE_MIN_BUDGET_CHARS, Math.min(requested, TIMELINE_MAX_BUDGET_CHARS));
+}
+
+function clipCodePoints(value: string, maximum: number): string {
+  const points = Array.from(value.normalize('NFC'));
+  return points.length <= maximum ? points.join('') : `${points.slice(0, Math.max(0, maximum - 1)).join('')}…`;
+}
+
+function decodeTimelineCursor(value: string): TimelineCursorPayload {
+  if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error('Timeline cursor is invalid');
+  let parsed: unknown;
+  try {
+    const bytes = Buffer.from(value, 'base64url');
+    if (bytes.toString('base64url') !== value) throw new Error('non-canonical cursor');
+    parsed = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new Error('Timeline cursor is invalid');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Timeline cursor is invalid');
+  const record = parsed as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.join(',') !== 'lastId,lastValidFrom,projectId,since,until,v'
+    || record.v !== TIMELINE_CURSOR_VERSION
+    || typeof record.projectId !== 'string' || !record.projectId.trim()
+    || typeof record.lastId !== 'string' || !record.lastId.trim()
+    || typeof record.lastValidFrom !== 'string'
+    || (record.since !== null && typeof record.since !== 'string')
+    || (record.until !== null && typeof record.until !== 'string')) throw new Error('Timeline cursor is invalid');
+  const since = record.since === null ? null : normalizeInstant(record.since, 'Timeline cursor since');
+  const until = record.until === null ? null : normalizeInstant(record.until, 'Timeline cursor until');
+  return {
+    v: 1,
+    projectId: record.projectId,
+    since,
+    until,
+    lastValidFrom: normalizeInstant(record.lastValidFrom, 'Timeline cursor position'),
+    lastId: record.lastId,
+  };
+}
+
+function encodeTimelineCursor(payload: TimelineCursorPayload): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function timelineItemFromRow(row: Record<string, unknown>, allowance: number): { item: TimelineItem; chars: number } {
+  const kind = requireCanonicalValue('timeline.kind', MEMORY_KIND_VALUES, row.kind);
+  const outcome = requireCanonicalValue('timeline.outcome', MEMORY_OUTCOME_VALUES, row.outcome);
+  const status = requireCanonicalValue('timeline.status', MEMORY_STATUS_VALUES, row.status);
+  const titlePoints = Array.from(clipCodePoints(String(row.title), TIMELINE_TITLE_CODE_POINTS));
+  const topicPoints = row.topic_key === null ? null : Array.from(clipCodePoints(String(row.topic_key), TIMELINE_TOPIC_CODE_POINTS));
+  const snippetPoints = Array.from(clipCodePoints(String(row.content), TIMELINE_SNIPPET_CODE_POINTS));
+  const build = (): TimelineItem => ({
+    id: String(row.id),
+    title: titlePoints.join(''),
+    snippet: snippetPoints.join(''),
+    kind,
+    topicKey: topicPoints?.join('') ?? null,
+    outcome,
+    status,
+    validFrom: normalizeInstant(String(row.valid_from), 'Timeline memory validFrom'),
+    invalidAt: row.invalid_at === null ? null : normalizeInstant(String(row.invalid_at), 'Timeline memory invalidAt'),
+    supersedesId: row.supersedes_id === null ? null : String(row.supersedes_id),
+  });
+  let item = build();
+  let chars = JSON.stringify(item).length;
+  while (chars > allowance && (snippetPoints.length > 1 || titlePoints.length > 1 || (topicPoints?.length ?? 0) > 1)) {
+    if (snippetPoints.length > 1) snippetPoints.splice(-2, 1);
+    else if (titlePoints.length > 1) titlePoints.splice(-2, 1);
+    else topicPoints!.splice(-2, 1);
+    item = build();
+    chars = JSON.stringify(item).length;
+  }
+  if (chars > allowance) throw new Error('Timeline character budget cannot fit one compact item');
+  return { item, chars };
+}
 
 function measure(requested: number, source: number, evidence: number, returned: number): BudgetMeasurement {
   return { requestedChars: requested, returnedChars: returned, truncatedChars: Math.max(0, source - returned), sourceChars: source, evidenceChars: evidence, fullChars: source, compressionRatio: source === 0 ? 1 : returned / source, tokenBasis: 'estimated_chars_div_4' };
@@ -333,6 +455,43 @@ export class MemoryService {
 
   listObservations(input: ListObservationsInput): ListObservationsResult {
     return listObservationRecords(this.database, input);
+  }
+
+  timeline(input: TimelineInput): TimelineResult {
+    const limit = normalizeTimelineLimit(input.limit);
+    const requestedChars = normalizeTimelineBudget(input.budgetChars);
+    const since = input.since === undefined ? null : normalizeInstant(input.since, 'Timeline since');
+    const until = input.until === undefined ? null : normalizeInstant(input.until, 'Timeline until');
+    if (since && until && since > until) throw new Error('Timeline since must not be later than until');
+    const cursor = input.cursor === undefined ? null : decodeTimelineCursor(input.cursor);
+    const project = resolveProjectIdentityKey(this.database, input.projectKey);
+    if (!project) {
+      if (cursor) throw new Error('Timeline cursor does not match this project and time range');
+      return { items: [], nextCursor: null, hasMore: false, requestedChars, returnedChars: 0 };
+    }
+    if (cursor && (cursor.projectId !== project.id || cursor.since !== since || cursor.until !== until)) throw new Error('Timeline cursor does not match this project and time range');
+    const clauses = ['project_id=?'];
+    const parameters: unknown[] = [project.id];
+    if (since) { clauses.push('julianday(valid_from)>=julianday(?)'); parameters.push(since); }
+    if (until) { clauses.push('julianday(valid_from)<=julianday(?)'); parameters.push(until); }
+    if (cursor) {
+      clauses.push('(julianday(valid_from)<julianday(?) OR (julianday(valid_from)=julianday(?) AND id>?))');
+      parameters.push(cursor.lastValidFrom, cursor.lastValidFrom, cursor.lastId);
+    }
+    parameters.push(limit + 1);
+    const rows = this.database.prepare(`SELECT * FROM memories WHERE ${clauses.join(' AND ')} ORDER BY julianday(valid_from) DESC,id ASC LIMIT ?`).all(...parameters) as Array<Record<string, unknown>>;
+    const items: TimelineItem[] = [];
+    let returnedChars = 0;
+    for (const row of rows.slice(0, limit)) {
+      const compact = timelineItemFromRow(row, requestedChars);
+      if (returnedChars + compact.chars > requestedChars) break;
+      items.push(compact.item);
+      returnedChars += compact.chars;
+    }
+    const hasMore = items.length < rows.length;
+    const last = items.at(-1);
+    const nextCursor = hasMore && last ? encodeTimelineCursor({ v: 1, projectId: project.id, since, until, lastValidFrom: last.validFrom, lastId: last.id }) : null;
+    return { items, nextCursor, hasMore, requestedChars, returnedChars };
   }
 
   reviewObservation(input: ReviewObservationInput): ReviewObservationResult {

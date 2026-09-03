@@ -151,4 +151,15 @@ describe('first-product packed boundary', () => {
     for (const assets of Object.values(inventory.harnesses)) expect(assets).toContain('skills/thoth-mem/references/observation-review.md');
     expect(inventory.publicDistribution.assets).toContain('skills/thoth-mem/references/observation-review.md');
   });
+
+  it('teaches bounded chronological exploration through mem_project timeline', () => {
+    const skill = readFileSync('plugin/skills/thoth-mem/SKILL.md', 'utf8');
+    expect(skill).toMatch(/topic|query[\s\S]*chronolog/iu);
+    expect(skill).toMatch(/mem_project[\s\S]*action[=:]timeline/iu);
+    expect(skill).toMatch(/nextCursor[\s\S]*only as needed/iu);
+    expect(skill).toMatch(/historical entries[\s\S]*untrusted context/iu);
+    expect(skill).toMatch(/stable IDs[\s\S]*mem_get/iu);
+    expect(skill).toMatch(/not raw (?:session|activity)[\s\S]*history/iu);
+    expect(skill).not.toMatch(/include_timeline/iu);
+  });
 });

@@ -130,15 +130,51 @@ A confirmed save MUST be visible through authoritative lookup and FTS5 before su
 
 ### Requirement: Progressive Retrieval MUST Use Stable IDs and Bounded Escalation
 
-The post-compaction session-only selector MUST NOT change ordinary start/resume recovery, `mem_context`, or project briefing: those paths MUST retain their current deterministic project-memory eligibility, progressive stable IDs, privacy rules, and host caps.
+Ordinary start/resume recovery, `mem_context`, and project briefing MUST retain deterministic project-memory eligibility, progressive stable IDs, privacy rules, and host caps. Timeline retrieval MUST use deterministic keyset order by `validFrom` descending then `id` ascending, MUST include current, superseded, retracted, and historical promoted memories by default, MUST support optional inclusive `since`/`until` validity bounds plus an opaque continuation cursor, and MUST enforce item and character budgets with truthful continuation metadata.
 
-#### Scenario: US3 - Preserve intentional project-wide recovery 1
+#### Scenario: US1 - Browse project memory chronologically 1
+
+- **GIVEN** a project containing promoted memories in every supported temporal status
+- **WHEN** an agent requests `mem_project` with `action=timeline`
+- **THEN** it receives compact entries ordered by `validFrom` descending and `id` ascending for equal timestamps
+
+#### Scenario: US1 - Browse project memory chronologically 2
+
+- **GIVEN** memories belonging to another project
+- **WHEN** the timeline is requested with one exact verified `project_key`
+- **THEN** no foreign title, snippet, identifier, or temporal metadata is returned
+
+#### Scenario: US1 - Browse project memory chronologically 3
+
+- **GIVEN** an unknown project key, invalid time bound, malformed cursor, or incompatible cursor boundary
+- **WHEN** the timeline is requested
+- **THEN** the service returns an empty result for the unknown project or a bounded safe validation error for invalid input without writes
+
+#### Scenario: US2 - Traverse a large timeline progressively 1
+
+- **GIVEN** more eligible memories than fit in one response
+- **WHEN** the agent follows `nextCursor`
+- **THEN** each eligible memory appears once in the same total order and the response truthfully reports whether more entries remain
+
+#### Scenario: US2 - Traverse a large timeline progressively 2
+
+- **GIVEN** optional inclusive `since` and `until` bounds
+- **WHEN** the agent requests the timeline
+- **THEN** only promoted memories whose `validFrom` falls inside the valid range are eligible
+
+#### Scenario: US2 - Traverse a large timeline progressively 3
+
+- **GIVEN** a compact timeline entry
+- **WHEN** the agent needs provenance or full content
+- **THEN** it uses the stable memory ID with `mem_get`; the timeline itself exposes no evidence IDs, raw support payloads, summaries, observations, or session events
+
+#### Scenario: US5 - Preserve intentional project-wide recovery 1
 
 - **GIVEN** no eligible same-session summary and a useful current project handoff
 - **WHEN** ordinary start/resume `recover` runs
 - **THEN** the existing project-wide deterministic fallback remains eligible
 
-#### Scenario: US3 - Preserve intentional project-wide recovery 2
+#### Scenario: US5 - Preserve intentional project-wide recovery 2
 
 - **GIVEN** the same project state
 - **WHEN** `mem_context` or project briefing runs explicitly

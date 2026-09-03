@@ -31,6 +31,76 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('exposes a compact promoted-memory timeline through mem_project and defers expansion to mem_get', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const saved = await handlers.mem_save({
+        project_key: 'repo:timeline-mcp',
+        project_name: 'timeline-mcp',
+        event_key: 'timeline-memory',
+        evidence: { kind: 'explicit_save', content: 'RAW SUPPORT MUST STAY DEFERRED' },
+        memory: { kind: 'decision', title: 'Timeline choice', content: 'Use the compact timeline.', topic_key: 'timeline/choice', outcome: 'mixed' },
+      });
+      const memory = (saved.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
+      service.save({
+        project: { key: 'repo:timeline-mcp', name: 'timeline-mcp' },
+        eventKey: 'older-timeline-memory',
+        evidence: { kind: 'explicit_save', content: 'OLDER RAW SUPPORT MUST STAY DEFERRED', capturedAt: '2020-01-01T00:00:00.000Z' },
+        memory: { kind: 'discovery', title: 'Older timeline entry', content: 'Older compact entry.' },
+      });
+
+      const timeline = await handlers.mem_project({ action: 'timeline', project_key: 'repo:timeline-mcp', limit: 1, budget_chars: 2_000 });
+      expect(timeline).toMatchObject({
+        structuredContent: {
+          schema: 'thoth-mem.mcp.mem_project',
+          data: {
+            action: 'timeline',
+            items: [{ id: memory.id, title: 'Timeline choice', snippet: 'Use the compact timeline.', topicKey: 'timeline/choice', outcome: 'mixed', status: 'current' }],
+            nextCursor: expect.any(String),
+            hasMore: true,
+          },
+          sources: [memory.id],
+          budget: { requested_chars: 2_000, returned_chars: expect.any(Number) },
+          warnings: ['payload_truncated'],
+        },
+      });
+      const serialized = JSON.stringify(timeline.structuredContent);
+      expect(serialized).not.toContain(memory.evidenceIds[0]!);
+      expect(serialized).not.toContain('RAW SUPPORT MUST STAY DEFERRED');
+      expect(serialized).not.toContain('OLDER RAW SUPPORT MUST STAY DEFERRED');
+      expect(serialized).not.toMatch(/evidenceIds|supportIds|submissionEvidenceId|claims|observations|session_events/iu);
+
+      const nextCursor = (timeline.structuredContent.data as { nextCursor: string }).nextCursor;
+      const nextPage = await handlers.mem_project({ action: 'timeline', project_key: 'repo:timeline-mcp', cursor: nextCursor, limit: 1, budget_chars: 2_000 });
+      expect(nextPage).toMatchObject({ structuredContent: { data: { action: 'timeline', items: [{ title: 'Older timeline entry' }], nextCursor: null, hasMore: false }, warnings: [] } });
+
+      const expanded = await handlers.mem_get({ id: memory.id });
+      expect(expanded).toMatchObject({ structuredContent: { data: { record: { id: memory.id, evidenceIds: memory.evidenceIds } } } });
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('rejects unsafe timeline requests without writes and returns an empty unknown-project page', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const before = service.listProjects();
+      const invalid = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', since: 'invalid' });
+      const malformed = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', cursor: 'not+a+cursor' });
+      const unsupported = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', temporal: 'history' });
+      const listWithTimelineField = await handlers.mem_project({ action: 'list', since: '2026-01-01T00:00:00Z' });
+      const briefingWithTimelineField = await handlers.mem_project({ action: 'briefing', project_key: 'repo:missing', until: '2026-01-01T00:00:00Z' });
+      const legacy = await handlers.mem_project({ action: 'briefing', project_key: 'repo:missing', include_timeline: true });
+      for (const result of [invalid, malformed, unsupported, listWithTimelineField, briefingWithTimelineField, legacy]) expect(result.isError).toBe(true);
+
+      const unknown = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing' });
+      expect(unknown).toMatchObject({ structuredContent: { data: { action: 'timeline', items: [], nextCursor: null, hasMore: false }, sources: [], warnings: [] } });
+      expect(service.listProjects()).toEqual(before);
+      expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
   it('returns versioned structured save and progressive recall envelopes', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {

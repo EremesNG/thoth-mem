@@ -266,33 +266,51 @@ Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unve
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 
-The shared Skill MUST front-load recall, save, and handoff applicability in its discovery description; MUST provide a concise default cadence for pre-action recall, durable in-task saves, and pre-final continuation handoffs; and MUST preserve verified identity, privacy, confirmation, root ownership, noise exclusion, and exact-key requirements.
+The shared Skill MUST front-load recall, save, and handoff applicability in its discovery description; MUST provide a concise default cadence for pre-action recall, durable in-task saves, and pre-final continuation handoffs; and MUST preserve verified identity, privacy, confirmation, root ownership, noise exclusion, and exact-key requirements. The canonical shared Skill and every supported host/plugin copy MUST also add concise routing for chronological exploration using `mem_project action=timeline` followed by selective `mem_get` without displacing those practices.
 
-#### Scenario: US2 - Recall and preserve meaningful project state 1
+#### Scenario: US3 - Teach every packaged agent to use the timeline 1
+
+- **GIVEN** the canonical `thoth-mem` Skill
+- **WHEN** an agent needs chronological project context rather than relevance-ranked recall
+- **THEN** the guidance directs it to bounded `mem_project action=timeline` exploration and subsequent `mem_get` expansion of selected IDs
+
+#### Scenario: US3 - Teach every packaged agent to use the timeline 2
+
+- **GIVEN** the OpenCode, Codex, and Claude Code plugin bundles
+- **WHEN** packaging verification compares their Skills
+- **THEN** all copies contain equivalent timeline guidance and retain the established identity, privacy, save, and handoff rules
+
+#### Scenario: US3 - Teach every packaged agent to use the timeline 3
+
+- **GIVEN** the timeline action is added
+- **WHEN** MCP and packed integration tests enumerate tools
+- **THEN** the server still exposes exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`
+
+#### Scenario: US6 - Preserve semantic-boundary memory cadence 1
 
 - **GIVEN** prior project work may affect a task
 - **WHEN** the agent selects workflows from the Skill description and common path
 - **THEN** it is prompted to start with bounded compact recall and expand only selected evidence
 
-#### Scenario: US2 - Recall and preserve meaningful project state 2
+#### Scenario: US6 - Preserve semantic-boundary memory cadence 2
 
 - **GIVEN** a verified reusable decision, root cause, discovery, convention, or completed change
 - **WHEN** the agent reaches that semantic boundary
 - **THEN** the common path directs a deliberate confirmed `mem_save` without requiring the user to say “remember this”
 
-#### Scenario: US2 - Recall and preserve meaningful project state 3
+#### Scenario: US6 - Preserve semantic-boundary memory cadence 3
 
 - **GIVEN** meaningful work ends with continuation-critical state
 - **WHEN** the agent prepares its final response
 - **THEN** it saves one concise handoff with the established actionable fields if future work benefits
 
-#### Scenario: US2 - Recall and preserve meaningful project state 4
+#### Scenario: US6 - Preserve semantic-boundary memory cadence 4
 
 - **GIVEN** work is transient, speculative, already canonical, private, delegated, or explicitly excluded by the user
 - **WHEN** the agent evaluates persistence
 - **THEN** it does not create a promoted memory or invent attribution
 
-#### Scenario: US2 - Recall and preserve meaningful project state 5
+#### Scenario: US6 - Preserve semantic-boundary memory cadence 5
 
 - **GIVEN** a reusable claim lacks direct authority
 - **WHEN** policy review is actually needed
