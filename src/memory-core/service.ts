@@ -46,7 +46,7 @@ import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evi
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
-import { stableLexicalRank } from './retrieval/stable-lexical-rank.js';
+import { createStableLexicalRanker } from './retrieval/stable-lexical-rank.js';
 
 export type RecallDiagnosticStageKind = 'exact' | 'strict' | 'relaxed' | 'post_query';
 export type RecallDiagnosticSkipReason = 'not_planned' | 'limit_satisfied' | 'empty_query' | 'project_not_found';
@@ -177,6 +177,7 @@ export class MemoryService {
   private readonly database: Database.Database;
   private readonly recallObserver?: (observation: RecallDiagnostic) => void;
   private readonly correlationStates = new Map<string, { finalized: boolean; fullFetches: 0 | 1 }>();
+  private readonly stableLexicalRanker = createStableLexicalRanker();
 
   constructor(options: ServiceOptions) {
     this.recallObserver = options.recallObserver;
@@ -188,7 +189,7 @@ export class MemoryService {
       throw error;
     }
     this.database.pragma('foreign_keys = ON');
-    this.database.function('thoth_stable_rank', { deterministic: true }, stableLexicalRank);
+    this.database.function('thoth_stable_rank', { deterministic: true }, this.stableLexicalRanker.rank);
     this.projections = new ProjectionRegistry(this.database);
   }
 
@@ -475,6 +476,7 @@ export class MemoryService {
     }
     let rankedFtsRows = 0;
     if (plan?.fusion && strategyId === STABLE_LEXICAL_QUERY_STRATEGY) {
+      this.stableLexicalRanker.beginQuery(input.query);
       const exactIds = [...unique.keys()];
       const lexicalLimit = Math.min(limit - unique.size, plan.maxLexicalResults ?? limit);
       const cohortRows: Array<{ cohort_sequence: number }> = [{ cohort_sequence: 0 }];
@@ -499,7 +501,7 @@ export class MemoryService {
               WHERE lir.disposition='imported' AND lir.memory_id IS NOT NULL
               GROUP BY lir.memory_id
             )
-            SELECT m.id,m.created_at,thoth_stable_rank(?,m.title,m.content,coalesce(m.topic_key,'')) AS raw_score,'lexical' AS lane
+            SELECT m.id,m.created_at,thoth_stable_rank(?,m.id,m.title,m.content,coalesce(m.topic_key,'')) AS raw_score,'lexical' AS lane
             FROM memory_fts
             JOIN memories m ON m.id=memory_fts.memory_id
             LEFT JOIN imported_cohorts ic ON ic.memory_id=m.id

@@ -89,7 +89,7 @@
     "unitInterval": {"type": "number", "minimum": 0, "maximum": 1},
     "stringIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "orderedStringIds": {"type": "array", "items": {"type": "string", "minLength": 1}},
-    "lexicalStrategy": {"type": "object", "additionalProperties": false, "required": ["id", "config_hash"], "properties": {"id": {"enum": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1", "strict-selected-any-cap5-rrf-v1"]}, "config_hash": {"$ref": "#/$defs/hash"}}},
+    "lexicalStrategy": {"type": "object", "additionalProperties": false, "required": ["id", "config_hash"], "properties": {"id": {"enum": ["all-prefix-v1", "any-prefix-v1", "all-then-any-prefix-v1", "strict-selected-any-cap5-rrf-v1", "strict-selected-any-cap5-stable-v1"]}, "config_hash": {"$ref": "#/$defs/hash"}}},
     "exclusion": {"type": "object", "additionalProperties": false, "required": ["question_id", "reason"], "properties": {"question_id": {"type": "string", "minLength": 1}, "reason": {"const": "abstention"}}},
     "metricSet": {
       "type": "object",

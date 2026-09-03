@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { applyLegacyImport, planLegacyImport, writeLegacyImportCandidate } from '../../src/memory-core/import/legacy-v1.js';
-import { stableLexicalRank } from '../../src/memory-core/retrieval/stable-lexical-rank.js';
+import { createStableLexicalRanker, stableLexicalRank, type StableLexicalRankWorkEvent } from '../../src/memory-core/retrieval/stable-lexical-rank.js';
 import { MemoryService, type RecallDiagnostic } from '../../src/memory-core/service.js';
 import {
   DEFAULT_LEXICAL_QUERY_STRATEGY,
@@ -23,6 +23,28 @@ function save(service: MemoryService, title: string, content: string, topicKey?:
 const STABLE_STRATEGY = 'strict-selected-any-cap5-stable-v1' as const;
 const CANDIDATE_STRATEGIES = ['any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', STABLE_STRATEGY] as const;
 const AGENTMEMORY_BM25_COMMON_HITS = 409;
+
+function referenceStableLexicalRank(query: string, title: string, content: string, topicKey: string): number {
+  const normalize = (value: string): string => value.normalize('NFKC').toLocaleLowerCase();
+  const tokens = (value: string): string[] => normalize(value).match(/[\p{L}\p{N}_]{2,}/gu) ?? [];
+  const queryPhrase = normalize(query).trim();
+  const queryTerms = [...new Set(tokens(query).slice(0, 32))];
+  const scoreField = (value: string, weight: number, phraseWeight: number): number => {
+    const normalized = normalize(value);
+    const fieldTerms = tokens(normalized);
+    const lengthNormalization = 1 + Math.log1p(Math.max(0, fieldTerms.length - 8)) / 4;
+    let score = queryPhrase && normalized.includes(queryPhrase) ? phraseWeight : 0;
+    for (const term of queryTerms) {
+      let frequency = 0;
+      for (const candidate of fieldTerms) if (candidate.startsWith(term)) frequency += 1;
+      if (frequency === 0) continue;
+      score += weight * (frequency / (frequency + 1)) * (Math.min(Array.from(term).length, 12) / 4) / lengthNormalization;
+    }
+    return score;
+  };
+  if (queryTerms.length === 0) return 0;
+  return scoreField(title, 8, 24) + scoreField(topicKey, 4, 12) + scoreField(content, 1, 4);
+}
 
 describe('stable lexical rank', () => {
   it('scores only normalized query and document fields with fixed bounded weights', () => {
@@ -40,6 +62,93 @@ describe('stable lexical rank', () => {
     expect(padded).toBeLessThan(single);
     expect(title).toBe(stableLexicalRank('Alpha café', 'Ａlpha café', '', ''));
     expect(Number.isFinite(title)).toBe(true);
+  });
+
+  it('compiles once, normalizes each uncached field once, and remains exactly equivalent to the frozen scorer', () => {
+    const events: StableLexicalRankWorkEvent[] = [];
+    const ranker = createStableLexicalRanker({ cacheCapacity: 2, observe: (event) => events.push(event) });
+    const query = 'Ａlpha alpha café prefix repeated';
+    const candidates = [
+      ['one', 'Alpha café', `${'prefix repeated '.repeat(2_000)}tail`, 'topic/alpha'],
+      ['two', 'Repeated prefix', 'prefixing prefixes café', ''],
+    ] as const;
+
+    ranker.beginQuery(query);
+    const scores = candidates.map(([id, title, content, topicKey]) => ranker.rank(query, id, title, content, topicKey));
+    expect(ranker.rank(query, ...candidates[0])).toBe(scores[0]);
+    expect(scores).toEqual(candidates.map(([, title, content, topicKey]) => referenceStableLexicalRank(query, title, content, topicKey)));
+    expect(events.filter((event) => event.kind === 'query_compiled')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'field_normalized')).toHaveLength(6);
+    expect(events.filter((event) => event.kind === 'cache_hit')).toHaveLength(1);
+  });
+
+  it('preserves exact score and ordering across Unicode, empty, repeated-prefix, and long-content fixtures', () => {
+    const fixtures = [
+      ['!!!', '', '', ''],
+      ['café CAFÉ', 'Ｃafé release', 'café caféine', 'café/topic'],
+      ['alpha alphabet alpha', 'alphabet alpha', 'alphanumeric alphabetic alpha', 'alpha'],
+      ['underscore_token １２３', 'underscore_token', `${'１２３ padding '.repeat(4_000)}tail`, ''],
+      ['İstanbul istanbul', 'İSTANBUL', 'istanbul İstanbul', 'locale/İstanbul'],
+    ] as const;
+    for (const [query, title, content, topicKey] of fixtures) {
+      expect(Object.is(stableLexicalRank(query, title, content, topicKey), referenceStableLexicalRank(query, title, content, topicKey))).toBe(true);
+    }
+
+    const query = 'alpha alph alphabet';
+    const candidates = ['alpha', 'alphabet alphabet', 'alphanumeric alpha alphabet', 'unrelated'];
+    const optimizedOrder = candidates.map((content) => ({ content, score: stableLexicalRank(query, '', content, '') })).sort((left, right) => right.score - left.score).map(({ content }) => content);
+    const referenceOrder = candidates.map((content) => ({ content, score: referenceStableLexicalRank(query, '', content, '') })).sort((left, right) => right.score - left.score).map(({ content }) => content);
+    expect(optimizedOrder).toEqual(referenceOrder);
+  });
+
+  it('preserves default-locale ASCII folding when it differs from Unicode default folding', () => {
+    const originalLocaleLowerCase = String.prototype.toLocaleLowerCase;
+    const localeLowerCase = vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(function (this: string) {
+      return originalLocaleLowerCase.call(this, 'tr-TR');
+    });
+    try {
+      expect(referenceStableLexicalRank('Istanbul', '', 'İstanbul', '')).toBe(0);
+      expect(stableLexicalRank('Istanbul', '', 'İstanbul', '')).toBe(0);
+      const ranker = createStableLexicalRanker();
+      ranker.beginQuery('Istanbul');
+      expect(ranker.rank('Istanbul', 'turkish-city', '', 'İstanbul', '')).toBe(0);
+    } finally {
+      localeLowerCase.mockRestore();
+    }
+  });
+
+  it('preserves repeated default-locale normalization for non-ASCII field tokens', () => {
+    const originalLocaleLowerCase = String.prototype.toLocaleLowerCase;
+    const localeLowerCase = vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(function (this: string) {
+      return originalLocaleLowerCase.call(this, 'az-AZ');
+    });
+    try {
+      const query = 'ÌA';
+      const title = 'İ\u0300A';
+      expect(referenceStableLexicalRank(query, title, '', '')).toBe(2);
+      expect(stableLexicalRank(query, title, '', '')).toBe(2);
+      const ranker = createStableLexicalRanker();
+      ranker.beginQuery(query);
+      expect(ranker.rank(query, 'azerbaijani-combining-mark', title, '', '')).toBe(2);
+    } finally {
+      localeLowerCase.mockRestore();
+    }
+  });
+
+  it('resets same-query scores explicitly and skips caching once exact capacity is full', () => {
+    const events: StableLexicalRankWorkEvent[] = [];
+    const ranker = createStableLexicalRanker({ cacheCapacity: 1, observe: (event) => events.push(event) });
+    ranker.beginQuery('alpha');
+    const first = ranker.rank('alpha', 'one', '', 'alpha', '');
+    ranker.rank('alpha', 'two', '', 'alpha alpha', '');
+    ranker.rank('alpha', 'two', '', 'alpha alpha', '');
+    expect(ranker.rank('alpha', 'one', '', 'changed without reset', '')).toBe(first);
+
+    ranker.beginQuery('alpha');
+    expect(ranker.rank('alpha', 'one', '', 'changed without reset', '')).not.toBe(first);
+    expect(events.filter((event) => event.kind === 'query_compiled')).toHaveLength(2);
+    expect(events.filter((event) => event.kind === 'cache_hit')).toHaveLength(1);
+    expect(events.filter((event) => event.kind === 'cache_skipped')).toHaveLength(2);
   });
 });
 
@@ -365,6 +474,38 @@ describe('lexical-first retrieval', () => {
       expect(serialized).not.toContain('Private exact title');
       expect(serialized).not.toContain('e0-diagnostic');
     } finally { observed.close(); control.close(); }
+  });
+
+  it('preserves stable overlap, recall-boundary reset, capacity skips, and diagnostics', () => {
+    const observations: RecallDiagnostic[] = [];
+    const service = new MemoryService({ databasePath: ':memory:', recallObserver: (observation) => observations.push(observation) });
+    try {
+      const memories = Array.from({ length: 8 }, (_, index) => save(
+        service,
+        `Alpha beta ${index}`,
+        `alpha beta shared candidate ${index}`,
+        undefined,
+        `stable-overlap-${index}`,
+      ));
+      const first = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 5, lexicalStrategy: STABLE_STRATEGY, correlationId: 'stable-repeat' });
+      const repeated = service.recall({ projectKey: 'repo:retrieval', query: 'alpha beta', limit: 5, lexicalStrategy: STABLE_STRATEGY, correlationId: 'stable-repeat' });
+      const changedQuery = service.recall({ projectKey: 'repo:retrieval', query: 'beta shared', limit: 5, lexicalStrategy: STABLE_STRATEGY, correlationId: 'stable-change' });
+      expect(repeated).toEqual(first);
+      expect(changedQuery.items.every((item) => memories.some((memory) => memory.id === item.id))).toBe(true);
+      expect(observations.slice(0, 2).map((observation) => observation.stages.map(({ kind, executed, rows, reason }) => ({ kind, executed, rows, reason })))).toEqual([
+        observations[0]!.stages.map(({ kind, executed, rows, reason }) => ({ kind, executed, rows, reason })),
+        observations[0]!.stages.map(({ kind, executed, rows, reason }) => ({ kind, executed, rows, reason })),
+      ]);
+
+      const exact = save(service, 'Exact capacity', 'unrelated content', 'exact-capacity', 'stable-exact-capacity');
+      expect(service.recall({ projectKey: 'repo:retrieval', query: 'exact-capacity', limit: 1, lexicalStrategy: STABLE_STRATEGY }).items.map((item) => item.id)).toEqual([exact.id]);
+      expect(observations.at(-1)?.stages).toMatchObject([
+        { kind: 'exact', executed: true, rows: 1 },
+        { kind: 'strict', executed: false, rows: 0, reason: 'limit_satisfied' },
+        { kind: 'relaxed', executed: false, rows: 0, reason: 'limit_satisfied' },
+        { kind: 'post_query', executed: true, rows: 1 },
+      ]);
+    } finally { service.close(); }
   });
 
   it('selects explicit strategies while using the stable default', () => {

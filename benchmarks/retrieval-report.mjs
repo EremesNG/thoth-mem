@@ -4,7 +4,7 @@ const K_VALUES = [1, 5, 10, 20];
 const METRIC_KEYS = [...K_VALUES.flatMap((k) => [`recall_any_at_${k}`, `recall_at_${k}`, `recall_all_at_${k}`]), 'mrr_any', 'ndcg_at_10'];
 const HASH = /^[a-f0-9]{64}$/u;
 const REVISION = /^[a-f0-9]{40}$/u;
-const LEXICAL_STRATEGY_IDS = new Set(['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1']);
+const LEXICAL_STRATEGY_IDS = new Set(['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', 'strict-selected-any-cap5-stable-v1']);
 
 function exactKeys(value, keys) {
   return value && typeof value === 'object' && !Array.isArray(value)

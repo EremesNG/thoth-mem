@@ -89,14 +89,14 @@ describe('LongMemEval-S lexical runner', () => {
     const source = { dataset: 'test/longmemeval-cleaned', filename: 'dataset.json', revision: 'a'.repeat(40), sha256, bytes: Buffer.byteLength(content), license: 'MIT' };
     writeFileSync(datasetPath, content);
     try {
-      const strategyIds = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1'] as const;
+      const strategyIds = ['all-prefix-v1', 'any-prefix-v1', 'all-then-any-prefix-v1', 'strict-selected-any-cap5-rrf-v1', 'strict-selected-any-cap5-stable-v1'] as const;
       const reports = [];
       for (const lexicalStrategy of strategyIds) {
         const outputPath = join(root, `${lexicalStrategy}.json`);
         const result = await runLongMemEval({ datasetPath, expectedSha256: sha256, outputPath, source, workDirectory: join(root, `work-${lexicalStrategy}`), lexicalStrategy });
         expect(validateRetrievalReport(result.report)).toEqual({ valid: true, errors: [] });
         expect(result.report.candidate.config.lexical_strategy).toMatchObject({ id: lexicalStrategy });
-        const maxLexicalResults = lexicalStrategy === 'any-prefix-v1' ? 2 : lexicalStrategy === 'strict-selected-any-cap5-rrf-v1' ? 5 : null;
+        const maxLexicalResults = lexicalStrategy === 'any-prefix-v1' ? 2 : lexicalStrategy.startsWith('strict-selected-any-cap5-') ? 5 : null;
         expect(result.diagnostics).toMatchObject({ strategy_id: lexicalStrategy, max_lexical_results: maxLexicalResults });
         expect(result.diagnostics.queries.every((query: { work: Record<string, number> }) => query.work.fused_lexical_rows >= 0)).toBe(true);
         expect(result.report.queries.every((query: { query_plan_hash: string }) => /^[a-f0-9]{64}$/u.test(query.query_plan_hash))).toBe(true);
@@ -112,8 +112,9 @@ describe('LongMemEval-S lexical runner', () => {
       expect(shared(reports[1])).toEqual(shared(reports[0]));
       expect(shared(reports[2])).toEqual(shared(reports[0]));
       expect(shared(reports[3])).toEqual(shared(reports[0]));
-      expect(new Set(reports.map((report) => report.candidate.config.lexical_strategy.config_hash)).size).toBe(4);
-      expect(new Set(reports.map((report) => report.queries.map((query: { query_plan_hash: string }) => query.query_plan_hash).join(':'))).size).toBe(4);
+      expect(shared(reports[4])).toEqual(shared(reports[0]));
+      expect(new Set(reports.map((report) => report.candidate.config.lexical_strategy.config_hash)).size).toBe(5);
+      expect(new Set(reports.map((report) => report.queries.map((query: { query_plan_hash: string }) => query.query_plan_hash).join(':'))).size).toBe(5);
       await expect(runLongMemEval({ datasetPath, expectedSha256: sha256, outputPath: join(root, 'invalid.json'), source, lexicalStrategy: 'unsupported-v1' })).rejects.toThrow(/Unsupported lexical query strategy/u);
     } finally {
       rmSync(root, { recursive: true, force: true });

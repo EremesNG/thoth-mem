@@ -204,11 +204,16 @@ describe('retrieval-only benchmark scoring', () => {
     expect(validateRetrievalReport(missingPlanHash).errors).toContain('queries');
   });
 
-  it('admits only the declared E0 strategy while retaining historical v1 lane validity', () => {
+  it('admits the stable strategy while retaining historical v1 lane validity', () => {
     const e0 = validReport();
     setAt(e0, ['candidate', 'config', 'lexical_strategy', 'id'], 'strict-selected-any-cap5-rrf-v1');
     setAt(e0, ['candidate', 'config_hash'], hash(e0.candidate.config));
     expect(validateRetrievalReport(e0)).toEqual({ valid: true, errors: [] });
+
+    const stable = validReport();
+    setAt(stable, ['candidate', 'config', 'lexical_strategy', 'id'], 'strict-selected-any-cap5-stable-v1');
+    setAt(stable, ['candidate', 'config_hash'], hash(stable.candidate.config));
+    expect(validateRetrievalReport(stable)).toEqual({ valid: true, errors: [] });
 
     const unknown = validReport();
     setAt(unknown, ['candidate', 'config', 'lexical_strategy', 'id'], 'unknown-v1');
@@ -221,6 +226,7 @@ describe('retrieval-only benchmark scoring', () => {
       'any-prefix-v1',
       'all-then-any-prefix-v1',
       'strict-selected-any-cap5-rrf-v1',
+      'strict-selected-any-cap5-stable-v1',
     ]);
 
     for (const path of [
