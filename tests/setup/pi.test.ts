@@ -2,12 +2,15 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getPiManagerInvocation, parsePiList, setupPi, type PiExecutor, type PiPackageRecord } from '../../src/setup/pi.js';
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 function packageFixture(root: string): string {
   const version = (JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { version: string }).version;
@@ -66,7 +69,9 @@ class FakePi implements PiExecutor {
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'thoth-pi-setup-')); roots.push(root);
-  return { root, homeDir: join(root, 'home'), publicRoot: packageFixture(join(root, 'public')), localRoot: packageFixture(join(root, 'local')) };
+  const homeDir = join(root, 'home');
+  vi.stubEnv('XDG_CONFIG_HOME', join(homeDir, '.config'));
+  return { root, homeDir, publicRoot: packageFixture(join(root, 'public')), localRoot: packageFixture(join(root, 'local')) };
 }
 
 function treeSnapshot(root: string): Array<[string, string]> {
