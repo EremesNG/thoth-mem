@@ -17,3 +17,4 @@ const shared = {
 
 await esbuild.build({ ...shared, entryPoints: [resolve('src/index.ts')], outfile: resolve(outputDirectory, 'index.js') });
 await esbuild.build({ ...shared, entryPoints: [resolve('src/integration/opencode/index.ts')], outfile: resolve(outputDirectory, 'opencode.js') });
+await esbuild.build({ ...shared, entryPoints: [resolve('src/integration/pi/index.ts')], outfile: resolve(outputDirectory, 'pi.js') });

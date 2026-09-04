@@ -87,8 +87,9 @@ lifecycle event.
 ## Identity and ownership
 
 Before a session-attributed write or lifecycle operation, load exactly one identity
-reference for the active host: `references/opencode.md`, `references/codex.md`, or
-`references/claude-code.md`.
+reference for the active host: `references/opencode.md`, `references/codex.md`,
+`references/claude-code.md`, or `references/pi.md`. For Pi, select
+`references/pi.md` for identity and lifecycle operations.
 
 Copy the exact opaque verified `project_key` verbatim. Treat `project_name_hint` as
 initial display metadata only and prefer the persisted `project_name` returned by

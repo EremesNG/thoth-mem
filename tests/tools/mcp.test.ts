@@ -1,9 +1,34 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { MemoryService } from '../../src/memory-core/service.js';
-import { ALL_TOOLS, createToolHandlers } from '../../src/tools/index.js';
+import { createServer } from '../../src/server.js';
+import { ALL_TOOLS, createToolHandlers, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
 
 describe('MCP boundary', () => {
+  it('derives tools/list names, descriptions, and schemas from the authoritative catalog', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-catalog-'));
+    const built = createServer({ dataDir: root });
+    const client = new Client({ name: 'catalog-test', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await built.server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const listed = (await client.listTools()).tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+      expect(listed).toEqual(MEMORY_TOOL_CATALOG);
+    } finally {
+      await client.close();
+      await built.server.close();
+      built.service.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes exactly six workflow tools and rejects removed graph actions', async () => {
     expect(ALL_TOOLS).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session']);
     const service = new MemoryService({ databasePath: ':memory:' });

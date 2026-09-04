@@ -24,6 +24,7 @@ import {
 const REVISION_THREE_EVIDENCE_KIND_VALUES = [
   'root_prompt', 'explicit_save', 'checkpoint', 'handoff', 'legacy_prompt', 'legacy_observation',
 ] as const;
+export const PRE_V10_HARNESS_VALUES = ['opencode', 'codex', 'claude', 'mcp', 'cli', 'import'] as const;
 
 function sqlValues(values: readonly string[]): string {
   return values.map((value) => `'${value.replaceAll("'", "''")}'`).join(',');
@@ -115,7 +116,7 @@ ${memoryFtsSchemaSql(ftsOptions)}
 
 export const REVISION_THREE_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, UNIQUE(project_id, root_session_key, harness));
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(PRE_V10_HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix('')}
 ${REVISION_THREE_TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
@@ -134,7 +135,7 @@ ${SESSION_PROJECTION_TRIGGER_SQL}
 
 export const REVISION_FOUR_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(PRE_V10_HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)')}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${TAXONOMY_GUARD_SQL}
@@ -143,7 +144,7 @@ ${IMMUTABILITY_TRIGGER_SQL}
 
 export const REVISION_FIVE_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(PRE_V10_HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${taxonomyGuardSql([...REVISION_THREE_EVIDENCE_KIND_VALUES, 'session_summary'])}
@@ -286,7 +287,7 @@ CREATE TRIGGER observation_receipt_immutable_delete BEFORE DELETE ON observation
 
 export const REVISION_SIX_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(PRE_V10_HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${OBSERVATION_PROJECTION_SCHEMA_SQL}

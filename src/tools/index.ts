@@ -32,7 +32,7 @@ export interface ToolResult { [key: string]: unknown; content: Array<{ type: 'te
 type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>;
 type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
-const TOOL_DESCRIPTIONS: Record<MemoryToolName, string> = {
+export const TOOL_DESCRIPTIONS: Readonly<Record<MemoryToolName, string>> = {
   mem_save: [
     'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs.',
     'For a direct promoted memory other than a handoff, write memory.content as concise labeled Result, Rationale, Scope, and Caveat / safe action lines.',
@@ -309,14 +309,32 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
 
 export function registerTools(server: McpServer, service: MemoryService): void {
   const handlers = createToolHandlers(service);
-  const schemas: Record<MemoryToolName, Record<string, z.ZodType>> = {
-    mem_save: memSaveBaseInputSchema.shape,
-    mem_recall: { project_key: projectKeySchema, query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
-    mem_context: memContextInputSchema.shape,
-    mem_get: { id: z.string(), history: z.boolean().optional(), correlation_id: z.string().optional() },
-    mem_project: memProjectInputSchema.shape,
-    mem_session: memSessionInputSchema.shape,
-  };
-  for (const name of ALL_TOOLS) server.tool(name, TOOL_DESCRIPTIONS[name], schemas[name], async (args) => handlers[name](args));
+  for (const item of MEMORY_TOOL_CATALOG) server.tool(item.name, item.description, TOOL_SCHEMA_SHAPES[item.name], async (args) => handlers[item.name](args));
 }
 export function getToolCount(): number { return ALL_TOOLS.length; }
+
+const TOOL_SCHEMA_SHAPES: Record<MemoryToolName, Record<string, z.ZodType>> = {
+  mem_save: memSaveBaseInputSchema.shape,
+  mem_recall: { project_key: projectKeySchema, query: z.string(), mode: z.enum(['compact', 'context']).optional(), temporal: z.enum(['current', 'history']).optional(), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
+  mem_context: memContextInputSchema.shape,
+  mem_get: { id: z.string(), history: z.boolean().optional(), correlation_id: z.string().optional() },
+  mem_project: memProjectInputSchema.shape,
+  mem_session: memSessionInputSchema.shape,
+};
+
+export interface MemoryToolCatalogItem {
+  name: MemoryToolName;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+function publicInputSchema(name: MemoryToolName): Record<string, unknown> {
+  const { additionalProperties: _additionalProperties, ...schema } = z.toJSONSchema(z.object(TOOL_SCHEMA_SHAPES[name]), { target: 'draft-7' }) as Record<string, unknown>;
+  return schema;
+}
+
+export const MEMORY_TOOL_CATALOG: readonly MemoryToolCatalogItem[] = Object.freeze(ALL_TOOLS.map((name) => Object.freeze({
+  name,
+  description: TOOL_DESCRIPTIONS[name],
+  inputSchema: publicInputSchema(name),
+})));

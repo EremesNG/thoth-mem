@@ -19,8 +19,32 @@ pnpm run prepublishOnly
 git diff --check
 ```
 
+## Native-host verification matrix
+
+The supported-host contract has exactly four native hosts:
+
+| Host | Managed setup and runtime boundary | Focused coverage |
+| --- | --- | --- |
+| OpenCode | `setup opencode`; Bun loads the thin native entry and Node owns SQLite/MCP lifecycle work. | `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/lifecycle.test.ts` |
+| Codex | `setup codex`; native plugin hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
+| Claude Code | `setup claude`; native hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
+| Pi | `setup pi`; the native extension shares one lazy Node MCP child for tools and lifecycle calls. Certified real-host version: `0.84.4`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts` |
+
+For the Pi lane, run the terminating focused suite after a build:
+
+```sh
+pnpm run build
+pnpm exec vitest run tests/setup/pi.test.ts tests/integration/pi-lifecycle.test.ts tests/integration/pi-mcp-client.test.ts tests/integration/pi-native-plugin.test.ts tests/integration/recovery.test.ts --config vitest.integration.config.ts
+```
+
+The host-shaped packed smoke is a separate terminating check:
+
+```sh
+pnpm exec vitest run tests/integration/public-marketplace-smoke.test.ts --config vitest.integration.config.ts
+```
+
 The tag-triggered release workflow runs package verification, the packed
-three-host smoke, and the offline fixture benchmark before publishing npm and
+four-host smoke, and the offline fixture benchmark before publishing npm and
 creating the GitHub release. Only after those steps succeed, it mints an
 ephemeral GitHub App token scoped to `thoth-plugins` with `contents: write` and
 runs `pnpm run release:marketplace`.
@@ -63,7 +87,30 @@ pnpm exec vitest run tests/memory-core/retrieval.test.ts tests/benchmarks/longme
 
 The real-dataset outcome is observed only when the prepared file matches revision `98d7416c24c778c2fee6e6f3006e7a073259d48f`, SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`, and the resulting retrieval-only report validates. Keep the product profile (`sqlite-fts5-bm25-session-full`) distinct from the official `rank_bm25` implementation, preserve repeated base session IDs as separate occurrence source IDs and Top-K positions, accept string-typed empty turn content, preserve Top-20 and the separate 4,000-UTF-16-unit delivery budget, reconcile per-query ranking/delivery source/returned/truncated evidence with report aggregates, and do not infer optional-module promotion from a baseline-only report.
 
-There is no lint or browser lane. `integration:smoke` packs the real tarball, installs it in a disposable directory, verifies all three native inventories, cold-starts its CLI, and executes every packaged lifecycle runner with host-shaped fixtures without touching real host homes. It does not launch real host binaries or prove host-model consumption. External benchmark lanes may remain unavailable only when the report says so explicitly.
+There is no lint or browser lane. `integration:smoke` packs the real tarball,
+installs it in a disposable directory, verifies all four native inventories,
+cold-starts its CLI, loads the Pi `0.84.4` extension and Skill, enumerates the
+six tools, and executes every packaged lifecycle runner with host-shaped
+fixtures without touching real host homes. It does not prove host-model
+consumption. External benchmark lanes may remain unavailable only when the
+report says so explicitly.
+
+The Pi portion of `integration:smoke` runs both explicit-local and public setup
+against redirected disposable Pi agent, session, data, npm cache, and npmrc
+directories. The public `npm:thoth-mem@<candidate-version>` path is served by
+an ephemeral loopback npm-compatible registry seeded with the just-packed
+candidate tarball and the complete runtime dependency closure resolved from the
+frozen lockfile and installed graph. The verifier fixes npm's registry to that
+loopback server, configures HTTP, HTTPS, and all proxy variables to an
+unreachable loopback endpoint, and uses `pi --list-models --offline
+--no-approve` to load the installed extension and Skill. It checks candidate
+and closure SHA-256, SHA-512 integrity, SHA-1 shasum, dependency identities,
+installed manifest/resources, and Pi's exact package-list record; it logs and
+verifies requests received by the registry, without claiming a global network
+interceptor. It repeats setup to require `changed=false`, then compares a
+digest of the real Pi home before the smoke exits; `finally` cleanup removes
+the disposable state. This smoke cannot prove that a host model used returned
+recovery guidance.
 
 Memory-operating-model seams are covered by:
 
@@ -71,7 +118,7 @@ Memory-operating-model seams are covered by:
 - `tests/memory-core/context.test.ts` for handoff-first selection, failed/mixed lessons, temporal truth, deterministic aggregate budgets, hidden actions, and project isolation;
 - `tests/memory-core/continuation.test.ts` for Unicode caps, useful-content floors/ratio, metadata-starvation abstention, complete metadata, trust delimiters, poisoning/control characters, and embedded supporting-evidence omission;
 - `tests/tools/mcp.test.ts` for the compact → context → get funnel, shared briefing selection, deferred evidence IDs, and history provenance;
-- `tests/integration/adapters.test.ts`, `tests/integration/opencode-native-plugin.test.ts`, and `tests/integration/public-plugin-runner.test.ts` for pre-hash credential sanitation, verbatim final-context injection, and identity-only fallback across all hosts;
+- `tests/integration/adapters.test.ts`, `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/public-plugin-runner.test.ts`, and the Pi lifecycle/native-plugin suites for pre-hash credential sanitation, verbatim final-context injection, and identity-only fallback across all four hosts;
 - `tests/benchmarks/report.test.ts` and `tests/benchmarks/runner.test.ts` for hidden actionable fields, abstention, poisoning, isolation, injected characters/tokens, useful-content ratio, and equal Top-K/final-context comparability.
 
 Ordered session events and summaries add this focused verification lane:
@@ -93,6 +140,6 @@ pnpm run benchmark:observation
 
 `benchmark:observation` is an offline isolated control/candidate fixture. Both lanes use the current schema, identical final promoted-memory content and topic lineage, query, Top-K, and character budget. The candidate lane records blocked poisoned/cross-scope cases, rejected negated/stale-procedure cases, an accepted attributable failure, and promoted changing-requirement/correction/topic-supersession cases. It must prove complete candidate/review/promotion lineage, zero harmful/unsupported/rejected/unreviewed promotions, zero pre-promotion recall leakage, identical final recall order/payload/delivery/useful-content ratio, p95 normal-recall latency no greater than 2× control, aggregate SQLite bytes no greater than 2× control, and literal zero model/network calls. Submit, review, and promotion each report canonical payload JSON, recomputed evidence and service-receipt hashes, exact output IDs, projection counts, p50/p95 samples, payload characters, and SQLite before/after/delta. Every receipt evidence ID is re-derived from its audited project, operation, and event key; observation and review IDs are likewise re-derived from their canonical evidence IDs. Candidate envelopes reconcile their complete closed projection—including claim, scope, coverage, generator, facets, supports, predecessor, and proposed memory—while save/review envelopes reconcile their complete persisted semantics and promotion requires both the exact operation envelope and canonical promotion evidence. Structured validation or attestation metadata must agree with the linked review observation and verdict. All five scenario candidates and reviews match code-owned assertion/review manifests; the rejected, failed, and stale candidates additionally match complete semantic manifests. A separate support manifest fixes each candidate/review to its expected support event identity and fixes the support evidence kind/content/structured validation method. Report-local bundles therefore cannot redefine the fixture or redirect its provenance merely by rehashing themselves. Complete audited memory rows derive final memory and topic lineage. Every scenario is reconciled through a hashed semantic trace against receipts, project-scoped SQLite/FTS rows, an exact operation window and row delta, the exact union of observation/review supports, review policy, and complete predecessor/current review-promotion-memory lineage. `benchmarks/observation-pipeline/report.mjs` recomputes every gate and rejects coherent linked-evidence mutations unless the entire self-contained report is replaced; `report.schema.json` closes the envelope. The normal `benchmark:fixture` report embeds this validated outcome while leaving immutable LongMemEval-S reports untouched.
 
-The committed summary outcome fixture is offline and deterministic. For each OpenCode, Codex, and Claude-shaped harness it uses isolated control and candidate projects, identical five-field actionable source values, and the same 1,000-code-point delivery cap. It requires ordered idempotency, same-scope claim support, version precedence, three-host recovery, non-empty checkpoint capture, zero automatic handoff promotion, zero support leakage, zero mixed candidate memories, zero model/network calls, and a candidate useful-content ratio no lower than the handoff control. `benchmarks/report.mjs` and `benchmarks/report.schema.json` close that summary envelope; missing, extra, incoherent, contaminated, or non-inferior-by-assertion-only reports fail validation.
+The committed summary outcome fixture is offline and deterministic. For each OpenCode-, Codex-, Claude-, and Pi-shaped harness it uses isolated control and candidate projects, identical five-field actionable source values, and the same 1,000-code-point delivery cap. It requires ordered idempotency, same-scope claim support, version precedence, four-host recovery, non-empty checkpoint capture, zero automatic handoff promotion, zero support leakage, zero mixed candidate memories, zero model/network calls, and a candidate useful-content ratio no lower than the handoff control. `benchmarks/report.mjs` and `benchmarks/report.schema.json` close that summary envelope; missing, extra, incoherent, contaminated, or non-inferior-by-assertion-only reports fail validation.
 
 Run the nearest file first, then `pnpm run build`, `pnpm test`, `pnpm run integration:verify`, `pnpm run integration:smoke`, `pnpm run benchmark:fixture`, and `pnpm run prepublishOnly`. The committed fixture must make zero network/model calls and must not claim external quality while LongMemEval-S, LoCoMo, AMB/BEAM/PersonaMem, or SDEBench lanes are unavailable.

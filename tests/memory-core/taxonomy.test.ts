@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { LifecycleInput, SaveMemoryInput } from '../../src/memory-core/contracts.js';
+import { HARNESS_VALUES, type LifecycleInput, type SaveMemoryInput } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 
 const roots: string[] = [];
@@ -21,6 +21,17 @@ afterEach(() => {
 });
 
 describe('canonical taxonomy', () => {
+  it('accepts Pi alongside every prior harness while keeping the allowlist exact', () => {
+    expect(HARNESS_VALUES).toEqual(['opencode', 'codex', 'claude', 'pi', 'mcp', 'cli', 'import']);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      for (const harness of HARNESS_VALUES) {
+        const result = service.lifecycle({ operation: 'enroll', harness, project: { key: `repo:${harness}`, name: harness }, rootSessionKey: 'root', eventKey: 'enroll' });
+        expect(result).toMatchObject({ outcome: 'confirmed', projectKey: `repo:${harness}` });
+      }
+    } finally { service.close(); }
+  });
+
   it('rejects invalid direct service classifications before durable mutation', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {

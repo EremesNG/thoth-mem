@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { migrateCurrentSchema, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
-import { LEGACY_IMPORT_AUDIT_SCHEMA_SQL, PROJECT_ALIAS_SCHEMA_SQL, REVISION_FIVE_SCHEMA_SQL, REVISION_FOUR_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
+import { migrateCurrentSchema, preV10BackupPath, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
+import { LEGACY_IMPORT_AUDIT_SCHEMA_SQL, LEGACY_IMPORT_COHORT_SCHEMA_SQL, PROJECT_ALIAS_SCHEMA_SQL, REVISION_FIVE_SCHEMA_SQL, REVISION_FOUR_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
 
 const roots: string[] = [];
 
@@ -14,6 +14,13 @@ function fixturePath(name = 'memory.sqlite'): string {
   const root = mkdtempSync(join(tmpdir(), 'thoth-schema-v4-'));
   roots.push(root);
   return join(root, name);
+}
+
+function exactLogicalRows(database: Database.Database, excluded: readonly string[] = []): string {
+  const excludedNames = new Set(excluded);
+  const tables = (database.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type IN ('table','virtual') AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name").all() as Array<{ name: string }>)
+    .map((row) => row.name).filter((name) => !excludedNames.has(name));
+  return JSON.stringify(tables.map((table) => [table, (database.prepare(`SELECT * FROM "${table.replaceAll('"', '""')}"`).all() as Array<Record<string, unknown>>).map((row) => JSON.stringify(row)).sort()]));
 }
 
 function createRevisionThreeFixture(path: string): void {
@@ -102,18 +109,121 @@ function createRevisionEightFixture(path: string): void {
   } finally { database.close(); }
 }
 
+function createRevisionNineFixture(path: string): void {
+  createRevisionEightFixture(path);
+  const database = new Database(path);
+  try {
+    database.exec(LEGACY_IMPORT_COHORT_SCHEMA_SQL);
+    const timestamp = '2026-09-03T00:00:00.000Z';
+    database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)').run('session-9', 'project-1', 'root-9', 'codex', 'compacted', timestamp, null, 2);
+    const evidence = database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)');
+    evidence.run('event-evidence-9', 'project-1', 'session-9', 'root_prompt', 'Referenced root event.', 'event-hash-9', null, timestamp, '{"fixture":9}');
+    evidence.run('summary-evidence-9', 'project-1', 'session-9', 'session_summary', 'Referenced summary.', 'summary-hash-9', null, timestamp, '{}');
+    evidence.run('observation-evidence-9', 'project-1', 'session-9', 'observation', 'Referenced observation.', 'observation-hash-9', null, timestamp, '{}');
+    database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)').run('event-evidence-9', 'session-9', 1, 'user', 'root_user', 'session', 'standard');
+    database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('summary-9', 'project-1', 'session-9', 'summary-evidence-9', 'checkpoint', 1, 'current', 1, 1, 'harness', 'pi-fixture', null, null, null, timestamp);
+    database.prepare('INSERT INTO session_summary_claims VALUES(?,?,?,?,?,?)').run('claim-9', 'summary-9', 0, 'completed', 'Referenced claim.', 'succeeded');
+    database.prepare('INSERT INTO session_summary_claim_supports VALUES(?,?,?)').run('claim-9', 'event-evidence-9', 'supports');
+    database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('codex', 'project-1', 'root-9', 'checkpoint-9', 'checkpoint_pre_compact', 'payload-hash-9', 'confirmed', timestamp, null, 'summary-evidence-9', 'summary-9');
+    database.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('observation-9', 'project-1', 'session-9', 'observation-evidence-9', null, 'session', 1, 1, 'result', 'Referenced observation', 'The migration preserves this observation.', 'discovery', 'Preserved discovery', 'Preserved content.', null, 'succeeded', 'harness', 'pi-fixture', null, null, timestamp);
+    database.prepare('INSERT INTO observation_facets VALUES(?,?,?,?)').run('observation-9', 'concept', 0, 'migration');
+    database.prepare('INSERT INTO observation_supports VALUES(?,?,?)').run('observation-9', 'event-evidence-9', 'supports');
+    database.prepare('INSERT INTO legacy_import_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run('import-a', 'session', 'legacy-session-9', 0, '3'.repeat(64), '4'.repeat(64), 'imported', 'imported', 'project-1', 'session-9', 'event-evidence-9', 'memory-1', timestamp);
+    database.prepare('INSERT INTO legacy_import_cohorts VALUES(?,?)').run('import-a', 1);
+    database.prepare('INSERT INTO legacy_import_cohorts VALUES(?,?)').run('import-z', 2);
+    database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(9, '2026-09-03T00:00:00.000Z');
+  } finally { database.close(); }
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe('SQLite current schema migrations', () => {
+  it('migrates revision 9 through an exact retained backup, reopens idempotently, and accepts Pi', () => {
+    const path = fixturePath(); createRevisionNineFixture(path);
+    const database = new Database(path);
+    const contender = new Database(path); contender.pragma('busy_timeout = 1');
+    const beforeAllRows = exactLogicalRows(database);
+    const beforeAuthoritativeRows = exactLogicalRows(database, ['schema_migrations']);
+    try {
+      const before = database.prepare('SELECT * FROM sessions ORDER BY id').all();
+      migrateCurrentSchema(database, { afterRevisionNineTableRebuilt: () => {
+        expect(() => contender.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('concurrent', 'concurrent', 'Concurrent', null, '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')).toThrow(/locked|busy/iu);
+      } });
+      expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(before);
+      expect(exactLogicalRows(database, ['schema_migrations'])).toBe(beforeAuthoritativeRows);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 10 });
+      expect(() => database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)').run('pi-session', 'project-1', 'pi-root', 'pi', 'active', '2026-09-03T00:00:00.000Z', null, 0)).not.toThrow();
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      expect(() => migrateCurrentSchema(database)).not.toThrow();
+    } finally { contender.close(); database.close(); }
+    const backup = new Database(preV10BackupPath(path), { readonly: true, fileMustExist: true });
+    try {
+      expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+      expect(exactLogicalRows(backup)).toBe(beforeAllRows);
+    }
+    finally { backup.close(); }
+  });
+
+  it('rejects a structurally valid mismatched pre-v10 backup before mutation', () => {
+    const path = fixturePath(); const foreign = fixturePath('foreign.sqlite');
+    createRevisionNineFixture(path); createRevisionNineFixture(foreign);
+    const other = new Database(foreign);
+    other.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('foreign-project', 'foreign', 'Foreign', null, '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z');
+    other.close();
+    copyFileSync(foreign, preV10BackupPath(path));
+    const database = new Database(path);
+    try {
+      expect(() => migrateCurrentSchema(database)).toThrow(/locked revision 9 source/u);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+      expect(database.prepare("SELECT sql FROM sqlite_master WHERE name='sessions'").get()).not.toMatchObject({ sql: expect.stringContaining("'pi'") });
+    } finally { database.close(); }
+  });
+
+  it('rejects drift after backup verification and rolls back an interrupted table swap', () => {
+    const driftPath = fixturePath(); createRevisionNineFixture(driftPath);
+    const drift = new Database(driftPath);
+    try {
+      expect(() => migrateCurrentSchema(drift, { afterRevisionNineBackupVerified: () => {
+        drift.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('drift', 'drift', 'Drift', null, '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z');
+      } })).toThrow(/locked revision 9 source/u);
+      expect(drift.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+    } finally { drift.close(); }
+
+    const rollbackPath = fixturePath(); createRevisionNineFixture(rollbackPath);
+    const rollbackDatabase = new Database(rollbackPath);
+    const sessions = rollbackDatabase.prepare('SELECT * FROM sessions ORDER BY id').all();
+    try {
+      expect(() => migrateCurrentSchema(rollbackDatabase, { afterRevisionNineTableRebuilt: () => { throw new Error('interrupt table swap'); } })).toThrow(/interrupt table swap/u);
+      expect(rollbackDatabase.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+      expect(rollbackDatabase.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(sessions);
+      expect(rollbackDatabase.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(rollbackDatabase.pragma('foreign_key_check')).toEqual([]);
+      expect(existsSync(preV10BackupPath(rollbackPath))).toBe(true);
+    } finally { rollbackDatabase.close(); }
+  });
+
+  it('detects any dependent-row mutation during the revision-10 table swap and rolls it back', () => {
+    const path = fixturePath(); createRevisionNineFixture(path);
+    const database = new Database(path);
+    const before = database.prepare('SELECT * FROM lifecycle_receipts').all();
+    try {
+      expect(() => migrateCurrentSchema(database, { afterRevisionNineTableRebuilt: () => {
+        database.prepare("UPDATE lifecycle_receipts SET payload_hash='changed-but-same-count'").run();
+      } })).toThrow(/row|state|depend/iu);
+      expect(database.prepare('SELECT * FROM lifecycle_receipts').all()).toEqual(before);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+    } finally { database.close(); }
+  });
+
   it('adds immutable gap-free import cohorts when revision 8 is upgraded', () => {
     const path = fixturePath();
     createRevisionEightFixture(path);
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(SQLITE_SCHEMA_REVISION).toBe(9);
+      expect(SQLITE_SCHEMA_REVISION).toBe(10);
       expect(database.prepare('SELECT import_id,cohort_sequence FROM legacy_import_cohorts ORDER BY cohort_sequence').all()).toEqual([
         { import_id: 'import-a', cohort_sequence: 1 },
         { import_id: 'import-z', cohort_sequence: 2 },
@@ -130,8 +240,8 @@ describe('SQLite current schema migrations', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(SQLITE_SCHEMA_REVISION).toBe(9);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
+      expect(SQLITE_SCHEMA_REVISION).toBe(10);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('observations','observation_facets','observation_supports','observation_reviews','observation_review_supports','observation_promotions','observation_receipts') ORDER BY name").all()).toHaveLength(7);
       for (const table of ['observations', 'observation_facets', 'observation_supports', 'observation_reviews', 'observation_review_supports', 'observation_promotions', 'observation_receipts']) {
         expect(database.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
@@ -175,8 +285,8 @@ describe('SQLite current schema migrations', () => {
       const database = new Database(target);
       try {
         migrateCurrentSchema(database);
-        expect(SQLITE_SCHEMA_REVISION).toBe(9);
-        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+        expect(SQLITE_SCHEMA_REVISION).toBe(10);
+        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 10 });
         expect(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='project_aliases'").get()).toEqual({ count: 1 });
         expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('legacy_imports','legacy_project_mappings','legacy_import_rows') ORDER BY name").all()).toHaveLength(3);
         expect(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='legacy_import_cohorts'").get()).toEqual({ count: 1 });
@@ -201,7 +311,7 @@ describe('SQLite current schema migrations', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
       expect(database.prepare('SELECT next_event_sequence FROM sessions WHERE id=?').get('session-1')).toEqual({ next_event_sequence: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_events').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
@@ -225,7 +335,7 @@ describe('SQLite current schema migrations', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
       expect(database.prepare('SELECT id,content FROM memories').get()).toEqual({ id: 'memory-1', content: 'searchable migration marker café' });
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'migra*'").all()).toEqual([{ memory_id: 'memory-1' }]);
       expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_fts'").get()).toMatchObject({ sql: expect.stringContaining("prefix='2 3 4 5 6 7 8 9 10 11 12'") });
@@ -321,7 +431,7 @@ describe('SQLite current schema migrations', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
       expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='project_aliases'").get()).toMatchObject({ sql: expect.stringContaining('alias_key TEXT PRIMARY KEY') });
       expect(database.prepare('SELECT count(*) AS count FROM project_aliases').get()).toEqual({ count: 0 });
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'revision'").all()).toEqual([{ memory_id: 'memory-1' }]);
@@ -364,7 +474,7 @@ describe('SQLite current schema migrations', () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 7 }, { version: 8 }, { version: 9 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('legacy_imports','legacy_project_mappings','legacy_import_rows') ORDER BY name").all()).toEqual([
         { name: 'legacy_import_rows' }, { name: 'legacy_imports' }, { name: 'legacy_project_mappings' },
       ]);
@@ -411,7 +521,7 @@ describe('SQLite current schema migrations', () => {
     try {
       retry.exec('DROP TRIGGER reject_revision_eight');
       expect(() => migrateCurrentSchema(retry)).not.toThrow();
-      expect(retry.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 9 });
+      expect(retry.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 10 });
     } finally { retry.close(); }
   });
 

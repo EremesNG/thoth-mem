@@ -2,39 +2,27 @@
 
 ## Requirements
 
-### Requirement: Published Package MUST Contain Native Assets for All Three Harnesses
+### Requirement: Published Package MUST Contain Native Assets for Every Supported Harness
 
-The packed release MUST keep one coherent OpenCode, Codex, and Claude distribution whose runners, receipts, Skills, schemas, and package inventory use the unversioned current contract while preserving numeric manifest schema versions where technically required.
+The packed release MUST keep one coherent OpenCode, Codex, Claude Code, and Pi distribution whose runners or extensions, receipts, Skills, schemas, package metadata, and inventory use the current thoth-mem contract while preserving numeric manifest schema versions where technically required.
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 1
+#### Scenario: US2 - Use the existing memory tools from Pi 1
 
-- **GIVEN** a clean installation
-- **WHEN** the MCP and native lifecycle paths execute
-- **THEN** their public envelopes and commands use the current unversioned thoth-mem contract and persist to `memory.sqlite`
+- **GIVEN** the native Pi package is loaded
+- **WHEN** Pi enumerates extension tools
+- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 2
+#### Scenario: US2 - Use the existing memory tools from Pi 2
 
-- **GIVEN** an invocation using a removed transitional command or namespace
-- **WHEN** it reaches the current package
-- **THEN** it fails explicitly instead of entering a compatibility shim
+- **GIVEN** a valid tool call
+- **WHEN** Pi executes it
+- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 3
+#### Scenario: US2 - Use the existing memory tools from Pi 3
 
-- **GIVEN** a legacy database selected for import
-- **WHEN** the operator runs the current importer
-- **THEN** `import-legacy` writes a distinct current database and preserves the source without describing the target as a replacement generation
-
-#### Scenario: US3 - Preserve technical version truth without product-generation branding 1
-
-- **GIVEN** an existing current database at an older internal SQLite revision
-- **WHEN** startup migration runs
-- **THEN** ordered idempotent migration still uses numeric revisions and preserves authoritative data
-
-#### Scenario: US3 - Preserve technical version truth without product-generation branding 2
-
-- **GIVEN** a native manifest or import report that needs a machine-readable format discriminator
-- **WHEN** it is emitted
-- **THEN** it may retain a numeric version field while its command, filename, namespace, and prose remain free of transitional generation labels
+- **GIVEN** the packaged Pi Skill
+- **WHEN** an agent reads its memory guidance
+- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
 
 ### Requirement: NPM Tarball MUST Match One Canonical Integration Inventory
 
@@ -94,25 +82,25 @@ The default package and startup path MUST NOT require or start dashboard, observ
 
 ### Requirement: Packed Verification MUST Exercise Every Host in Disposable State
 
-Release verification MUST continue to import the native OpenCode entry, execute the CLI, validate public and local setup, synchronize Skills, cold-start MCP, and execute lifecycle runners for OpenCode, Codex, and Claude Code without reading or mutating real user homes. It MUST run on supported Windows and Linux Node installations without assuming one platform-specific npm CLI layout, MUST accept only recognized single-record `npm pack --json` envelopes, and MUST fail clearly when the CLI or package record is unavailable or ambiguous.
+Release verification MUST import the native OpenCode and Pi entries, execute the CLI, validate public and local setup, synchronize Skills, cold-start MCP, and execute lifecycle runners or native extension fixtures for OpenCode, Codex, Claude Code, and Pi without reading or mutating real user homes. The prepublication Pi public-source case MUST resolve `npm:thoth-mem@<candidate-version>` through an ephemeral loopback npm-compatible registry that serves the exact candidate tarball plus a complete, exact runtime dependency closure materialized from the frozen installed graph; MUST deny or detect non-loopback package egress; and MUST prove the installed source, version, manifest, extension, Skill, dependency versions, and integrity ledger came from that hermetic fixture rather than a previously published artifact. It MUST retain supported Windows/Linux portability, strict package-record parsing, exact six-tool assertions, and clear failure for unavailable or ambiguous CLI/package records.
 
-#### Scenario: US1 - Verify the packed package on supported hosts 1
+#### Scenario: US2 - Use the existing memory tools from Pi 1
 
-- **GIVEN** npm is installed in the normal Windows layout or the normal Unix global layout
-- **WHEN** packed verification locates and invokes npm
-- **THEN** it finds a real CLI without assuming it is below the Node executable's `bin` directory
+- **GIVEN** the native Pi package is loaded
+- **WHEN** Pi enumerates extension tools
+- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
 
-#### Scenario: US1 - Verify the packed package on supported hosts 2
+#### Scenario: US2 - Use the existing memory tools from Pi 2
 
-- **GIVEN** `npm pack --json` returns either the supported array envelope or keyed package object envelope
-- **WHEN** verification reads the result
-- **THEN** it identifies exactly one package record and validates its filename and file inventory
+- **GIVEN** a valid tool call
+- **WHEN** Pi executes it
+- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
 
-#### Scenario: US1 - Verify the packed package on supported hosts 3
+#### Scenario: US2 - Use the existing memory tools from Pi 3
 
-- **GIVEN** disposable host homes and a freshly packed tarball
-- **WHEN** the smoke runner exercises OpenCode, Codex, and Claude Code
-- **THEN** no real user home is read or mutated and every lifecycle/MCP assertion passes
+- **GIVEN** the packaged Pi Skill
+- **WHEN** an agent reads its memory guidance
+- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
 
 ### Requirement: Plugin Releases MUST Publish Their Catalog Version
 

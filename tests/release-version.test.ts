@@ -30,16 +30,27 @@ function createReleaseFixture(): string {
   const manifest = JSON.parse(
     readFileSync(join(sourceRoot, 'package.json'), 'utf8'),
   ) as {
+    devDependencies: Record<string, string>;
+    keywords: string[];
     name: string;
     packageManager: string;
+    peerDependencies: Record<string, string>;
+    pi: {
+      extensions: string[];
+      skills: string[];
+    };
     version: string;
     scripts: Record<string, string>;
   };
   writeFileSync(
     join(fixtureRoot, 'package.json'),
     `${JSON.stringify({
+      devDependencies: manifest.devDependencies,
+      keywords: manifest.keywords,
       name: manifest.name,
       packageManager: manifest.packageManager,
+      peerDependencies: manifest.peerDependencies,
+      pi: manifest.pi,
       version: manifest.version,
       scripts: {
         'integration:sync': manifest.scripts['integration:sync'],
@@ -54,6 +65,8 @@ function createReleaseFixture(): string {
   cpSync(join(sourceRoot, 'plugin'), join(fixtureRoot, 'plugin'), {
     recursive: true,
   });
+  mkdirSync(join(fixtureRoot, 'dist'));
+  cpSync(join(sourceRoot, 'dist', 'pi.js'), join(fixtureRoot, 'dist', 'pi.js'));
   mkdirSync(join(fixtureRoot, 'scripts'));
   for (const script of [
     'sync-plugin-distribution.mjs',

@@ -1,6 +1,6 @@
 export const MEMORY_PROTOCOL_VERSION = 3;
 
-export const HARNESS_VALUES = ['opencode', 'codex', 'claude', 'mcp', 'cli', 'import'] as const;
+export const HARNESS_VALUES = ['opencode', 'codex', 'claude', 'pi', 'mcp', 'cli', 'import'] as const;
 export const EVIDENCE_KIND_VALUES = [
   'root_prompt', 'explicit_save', 'checkpoint', 'handoff',
   'legacy_prompt', 'legacy_observation', 'session_summary',
