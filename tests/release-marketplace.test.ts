@@ -127,6 +127,8 @@ describe('thoth-mem marketplace publication', () => {
       join(process.cwd(), '.github', 'workflows', 'release.yml'),
       'utf8',
     ).replaceAll('\r\n', '\n');
+    const setupNode = workflow.indexOf('uses: actions/setup-node@v6');
+    const setupNpm = workflow.indexOf('- run: npm install -g npm@11.19.1');
     const npmPublish = workflow.indexOf('- run: npm publish --ignore-scripts');
     const createRelease = workflow.indexOf('- name: Create GitHub release');
     const createToken = workflow.indexOf('- name: Create marketplace token');
@@ -134,7 +136,10 @@ describe('thoth-mem marketplace publication', () => {
       '- name: Publish marketplace version',
     );
 
-    expect(npmPublish).toBeGreaterThan(-1);
+    expect(setupNode).toBeGreaterThan(-1);
+    expect(setupNpm).toBeGreaterThan(setupNode);
+    expect(workflow.slice(setupNode, setupNpm)).toContain('node-version: 22.14');
+    expect(npmPublish).toBeGreaterThan(setupNpm);
     expect(createRelease).toBeGreaterThan(npmPublish);
     expect(createToken).toBeGreaterThan(createRelease);
     expect(publishMarketplace).toBeGreaterThan(createToken);
