@@ -18,7 +18,7 @@ On Windows, an implicit `codex` manager command follows the operator-visible `cm
 
 ## Release and catalog handoff
 
-`release:patch`, `release:minor`, and `release:major` update and verify the package, push its commit and `v<version>` tag, and only then run `release:marketplace`. The catalog-only publisher verifies the remote tag, updates only the `thoth-mem` record in a fresh clone of central `main`, validates the generated Codex and Claude catalogs, and uses a normal non-force push.
+`release:patch`, `release:minor`, and `release:major` update and verify the package, then push its commit and `v<version>` tag. That tag starts the release workflow, which verifies the package, publishes npm, creates the GitHub release, and then uses the scoped GitHub App to publish only the `thoth-mem` pin to the central catalog. CI is the sole automatic marketplace publisher. The catalog-only publisher verifies the remote tag, updates only the `thoth-mem` record in a fresh clone of central `main`, validates the generated Codex and Claude catalogs, and uses a normal non-force push.
 
 If the product push succeeds but the catalog handoff fails, rerun `pnpm run release:marketplace`. The retry does not create another version or tag. A concurrent central update is reported as a rejected race; rerun the same command from the unchanged product version instead of force-pushing.
 

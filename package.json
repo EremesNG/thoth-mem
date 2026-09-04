@@ -51,9 +51,9 @@
     "prepublishOnly": "pnpm run integration:verify && pnpm run build && pnpm test",
     "version": "pnpm run integration:sync && pnpm run integration:verify",
     "release:marketplace": "node scripts/publish-marketplace.mjs",
-    "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace",
-    "release:minor": "npm version minor --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace",
-    "release:major": "npm version major --ignore-scripts=false && git push --follow-tags && pnpm run release:marketplace"
+    "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags",
+    "release:minor": "npm version minor --ignore-scripts=false && git push --follow-tags",
+    "release:major": "npm version major --ignore-scripts=false && git push --follow-tags"
   },
   "engines": {
     "node": ">=22.12.0"

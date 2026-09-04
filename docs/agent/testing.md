@@ -19,6 +19,18 @@ pnpm run prepublishOnly
 git diff --check
 ```
 
+The tag-triggered release workflow runs package verification, the packed
+three-host smoke, and the offline fixture benchmark before publishing npm and
+creating the GitHub release. Only after those steps succeed, it mints an
+ephemeral GitHub App token scoped to `thoth-plugins` with `contents: write` and
+runs `pnpm run release:marketplace`.
+
+`tests/release-marketplace.test.ts` validates the workflow and package-script
+contracts plus the publisher against a self-contained disposable central
+catalog. It does not claim that the live GitHub App installation or
+cross-repository push has succeeded; that outcome is established by a real tag
+release.
+
 The opt-in LongMemEval-S lane separates networked preparation from both offline evaluations:
 
 ```sh
