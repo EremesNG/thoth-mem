@@ -6,6 +6,9 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const runner = join(process.cwd(), 'plugin', 'runners', 'public-runner.mjs');
+const packageVersion = (JSON.parse(
+  readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
+) as { version: string }).version;
 
 function projectFixture(root: string): { path: string; key: string } {
   const path = join(root, 'fixture');
@@ -92,7 +95,7 @@ function createLocalRuntime(root: string): { entry: string; capture: string } {
   const entry = join(packageRoot, 'dist', 'index.js');
   const capture = join(root, 'local runtime args.json');
   mkdirSync(join(packageRoot, 'dist'), { recursive: true });
-  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'thoth-mem', version: '0.4.13' }));
+  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'thoth-mem', version: packageVersion }));
   writeFileSync(entry, `
 import { writeFileSync } from 'node:fs';
 writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
@@ -109,7 +112,7 @@ describe('public plugin runner', () => {
       cpSync(join(process.cwd(), 'plugin'), installedPlugin, { recursive: true });
       writeFileSync(join(installedPlugin, 'runtime.json'), `${JSON.stringify({
         package: 'thoth-mem',
-        version: '0.4.13',
+        version: packageVersion,
         entry: local.entry,
       }, null, 2)}\n`);
 
@@ -184,7 +187,7 @@ describe('public plugin runner', () => {
         },
       });
       expect(JSON.parse(readFileSync(shim.capture, 'utf8'))).toEqual([
-      '--yes', 'thoth-mem@0.4.13', 'lifecycle', '--harness', harness,
+      '--yes', `thoth-mem@${packageVersion}`, 'lifecycle', '--harness', harness,
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

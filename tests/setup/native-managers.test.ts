@@ -12,6 +12,9 @@ import {
 } from '../../src/setup/native-manager.js';
 
 const roots: string[] = [];
+const packageVersion = (JSON.parse(
+  readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
+) as { version: string }).version;
 
 const managerIdentities = {
   codex: { marketplaceName: 'thoth-plugins', pluginId: 'thoth-mem@thoth-plugins' },
@@ -53,6 +56,7 @@ class FakeManager implements NativeManagerExecutor {
   failMarketplaceAdd = false;
   failPluginAdd = false;
   marketplaceRemoveCapability = true;
+  pluginVersion = packageVersion;
   afterCentralInstall?: () => void;
   marketplaceSource = 'https://github.com/EremesNG/thoth-plugins.git';
 
@@ -83,7 +87,7 @@ class FakeManager implements NativeManagerExecutor {
     }
     if (args.join(' ') === 'plugin list --json') {
       const installed = [
-        ...(this.plugin ? [{ pluginId: identity.pluginId, name: 'thoth-mem', marketplaceName: identity.marketplaceName, version: '0.4.13', installed: true, enabled: this.enabled }] : []),
+        ...(this.plugin ? [{ pluginId: identity.pluginId, name: 'thoth-mem', marketplaceName: identity.marketplaceName, version: this.pluginVersion, installed: true, enabled: this.enabled }] : []),
         ...[...this.legacyPluginIds].map((pluginId) => ({ pluginId, name: 'thoth-mem', marketplaceName: pluginId.split('@')[1], version: '0.4.13', installed: true, enabled: true })),
       ];
       return this.host === 'codex' ? this.ok({ installed, available: [] }) : this.ok(installed);
@@ -200,6 +204,7 @@ describe('native Codex and Claude manager setup', () => {
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'thoth-mem', version: '0.4.13' }));
     writeFileSync(runtimeEntry, 'export {};\n');
     const executor = new FakeManager('codex');
+    executor.pluginVersion = '0.4.13';
 
     const first = setupNativeManager({ host: 'codex', homeDir, env: {}, executor, packageRoot, dataDir });
     expect(first).toMatchObject({ status: 'complete', changed: true, restartRequired: true });

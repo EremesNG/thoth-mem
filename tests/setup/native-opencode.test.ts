@@ -9,6 +9,9 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { setupOpenCode } from '../../src/setup/opencode.js';
 
 const temporaryRoots: string[] = [];
+const packageVersion = (JSON.parse(
+  readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
+) as { version: string }).version;
 
 function temporaryRoot(name: string): string {
   const root = join(tmpdir(), `thoth-mem-${name}-${process.pid}-${temporaryRoots.length}`);
@@ -43,7 +46,7 @@ describe('native OpenCode setup', () => {
 
     expect(result.changed).toBe(false);
     expect(result.status).toBe('planned');
-    expect(result.plugin).toBe('thoth-mem@0.4.13');
+    expect(result.plugin).toBe(`thoth-mem@${packageVersion}`);
     expect(result.actions).toEqual([
       expect.stringContaining('plugin'),
       expect.stringContaining('Skill'),
@@ -65,7 +68,7 @@ describe('native OpenCode setup', () => {
     expect(first.changed).toBe(true);
     const configAfterFirst = readFileSync(configPath, 'utf8');
     const parsed = parse(configAfterFirst) as Record<string, unknown>;
-    expect(parsed.plugin).toEqual(['other-plugin@7', 'thoth-mem@0.4.13']);
+    expect(parsed.plugin).toEqual(['other-plugin@7', `thoth-mem@${packageVersion}`]);
     expect(parsed.mcp).toEqual({ 'user-server': { type: 'remote', url: 'https://example.test' } });
     expect(parsed.skills).toEqual({ paths: ['C:/user/skills'] });
     expect(configAfterFirst).toContain('// keep this user comment');

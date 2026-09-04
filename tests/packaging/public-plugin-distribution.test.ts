@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const repository = process.cwd();
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8')) as T;
+const packageVersion = readJson<{ version: string }>(join(repository, 'package.json')).version;
 const codexValidator = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'skills', '.system', 'plugin-creator', 'scripts', 'validate_plugin.py');
 
 describe('public plugin distribution', () => {
@@ -58,7 +59,7 @@ describe('public plugin distribution', () => {
     }>(join(pluginRoot, '.codex-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       name: 'thoth-mem',
-      version: '0.4.13',
+      version: packageVersion,
       mcpServers: './.mcp.json',
       skills: './skills/',
       interface: { displayName: 'thoth-mem Persistent Memory', category: 'Productivity' },
@@ -67,7 +68,7 @@ describe('public plugin distribution', () => {
     expect(manifest).not.toHaveProperty('displayName');
     expect(manifest).not.toHaveProperty('category');
     expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
-      'cache/thoth-plugins/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+      `cache/thoth-plugins/thoth-mem/${packageVersion}/skills/thoth-mem/SKILL.md`,
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of ['./hooks/hooks.json', manifest.mcpServers, manifest.skills]) {
@@ -102,13 +103,13 @@ describe('public plugin distribution', () => {
     }>(join(pluginRoot, '.claude-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       name: 'thoth-mem',
-      version: '0.4.13',
+      version: packageVersion,
       hooks: './hooks/claude-hooks.json',
       mcpServers: './.mcp.json',
       skills: './skills/',
     });
     expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
-      'cache/thoth-plugins/thoth-mem/0.4.13/skills/thoth-mem/SKILL.md',
+      `cache/thoth-plugins/thoth-mem/${packageVersion}/skills/thoth-mem/SKILL.md`,
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
     for (const component of [manifest.hooks, manifest.mcpServers, manifest.skills]) {
