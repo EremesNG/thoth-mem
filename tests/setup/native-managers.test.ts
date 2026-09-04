@@ -201,7 +201,7 @@ describe('native Codex and Claude manager setup', () => {
     writeFileSync(runtimeEntry, 'export {};\n');
     const executor = new FakeManager('codex');
 
-    const first = setupNativeManager({ host: 'codex', homeDir, executor, packageRoot, dataDir });
+    const first = setupNativeManager({ host: 'codex', homeDir, env: {}, executor, packageRoot, dataDir });
     expect(first).toMatchObject({ status: 'complete', changed: true, restartRequired: true });
     expect(first.source).toBe('https://github.com/EremesNG/thoth-plugins.git');
     expect(JSON.parse(readFileSync(join(homeDir, '.config', 'thoth-mem', 'config.json'), 'utf8'))).toEqual({
@@ -210,7 +210,7 @@ describe('native Codex and Claude manager setup', () => {
       runtimeEntry,
     });
 
-    const second = setupNativeManager({ host: 'codex', homeDir, executor, packageRoot, dataDir });
+    const second = setupNativeManager({ host: 'codex', homeDir, env: {}, executor, packageRoot, dataDir });
     expect(second).toMatchObject({ status: 'complete', changed: false, restartRequired: false });
   });
 
@@ -467,7 +467,7 @@ describe('native Codex and Claude manager setup', () => {
   test('fails closed on a pre-identity in-progress journal instead of reusing legacy ownership booleans', () => {
     const homeDir = temporaryHome('legacy-journal');
     const executor = new FakeManager('codex');
-    expect(() => setupNativeManager({ host: 'codex', homeDir, executor, interruptAfter: 'marketplace' })).toThrow(/Simulated manager interruption/u);
+    expect(() => setupNativeManager({ host: 'codex', homeDir, env: {}, executor, interruptAfter: 'marketplace' })).toThrow(/Simulated manager interruption/u);
     const journalPath = join(homeDir, '.config', 'thoth-mem', 'receipts', 'codex.in-progress.json');
     const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as Record<string, unknown>;
     journal.schemaVersion = 1;
@@ -476,7 +476,7 @@ describe('native Codex and Claude manager setup', () => {
     writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
     const mutationsBeforeResume = executor.calls.filter(({ args }) => !args.includes('--version') && !args.includes('--help') && !args.includes('list')).length;
 
-    expect(() => setupNativeManager({ host: 'codex', homeDir, executor })).toThrow(/in-progress manager receipt is invalid/u);
+    expect(() => setupNativeManager({ host: 'codex', homeDir, env: {}, executor })).toThrow(/in-progress manager receipt is invalid/u);
     expect(executor.calls.filter(({ args }) => !args.includes('--version') && !args.includes('--help') && !args.includes('list'))).toHaveLength(mutationsBeforeResume);
   });
 

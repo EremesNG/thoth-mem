@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import {
-  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -8,13 +7,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 import { afterEach, describe, expect, test } from 'vitest';
 
 import { publishMarketplace } from '../scripts/publish-marketplace.mjs';
+import { seedCentralMarketplaceFixture } from './fixtures/central-marketplace.js';
 
-const CENTRAL_SOURCE = join(process.cwd(), '..', 'thoth-plugins');
 const temporaryRoots: string[] = [];
 
 function git(cwd: string, args: string[]): string {
@@ -55,10 +54,7 @@ function createFixture(version = '0.4.14', createTag = true): Fixture {
   temporaryRoots.push(root);
 
   const centralWork = join(root, 'central-work');
-  cpSync(CENTRAL_SOURCE, centralWork, {
-    recursive: true,
-    filter: (source) => !['.git', 'node_modules'].includes(basename(source)),
-  });
+  seedCentralMarketplaceFixture(centralWork);
   initializeWorkingRepository(centralWork);
   commitAll(centralWork, 'central fixture');
   const centralRemote = join(root, 'central.git');

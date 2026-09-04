@@ -1,14 +1,15 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 import { parse as parseJsonc } from 'jsonc-parser';
+import { parseNpmPackRecord, resolveNpmCli } from './npm-pack.mjs';
 
 const repository = resolve(import.meta.dirname, '..');
 const scratch = mkdtempSync(join(tmpdir(), 'thoth-packed-native-'));
-const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const npmCli = resolveNpmCli();
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
@@ -38,9 +39,9 @@ function isolatedEnvironment(name) {
 }
 
 try {
-  assert(existsSync(npmCli), `npm CLI was not found beside Node at ${npmCli}.`);
   const packed = run(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', scratch], { cwd: repository });
-  const tarball = join(scratch, JSON.parse(packed.stdout)[0].filename);
+  const tarball = join(scratch, parseNpmPackRecord(packed.stdout).filename);
+  writeFileSync(join(scratch, 'package.json'), `${JSON.stringify({ private: true, allowScripts: { 'better-sqlite3': true, 'msgpackr-extract': true } }, null, 2)}\n`);
   run(process.execPath, [npmCli, 'install', '--no-audit', '--no-fund', tarball], { cwd: scratch });
   const packageRoot = join(scratch, 'node_modules', 'thoth-mem');
   const cli = join(packageRoot, 'dist', 'index.js');

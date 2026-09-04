@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { parseNpmPackRecord, resolveNpmCli } from '../../scripts/npm-pack.mjs';
 import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-inventory.js';
 import { ALL_TOOLS } from '../../src/tools/index.js';
 
@@ -16,6 +17,23 @@ const observationReviewPaths = [
 ];
 
 describe('first-product packed boundary', () => {
+  it('normalizes supported npm pack envelopes and rejects ambiguous output', () => {
+    const record = {
+      name: 'thoth-mem',
+      filename: 'thoth-mem-0.4.13.tgz',
+      files: [{ path: 'dist/index.js' }],
+    };
+
+    expect(parseNpmPackRecord(JSON.stringify([record]))).toEqual(record);
+    expect(parseNpmPackRecord(JSON.stringify({ 'thoth-mem': record }))).toEqual(record);
+    expect(() => parseNpmPackRecord('not json')).toThrow(/valid JSON/u);
+    expect(() => parseNpmPackRecord('[]')).toThrow(/exactly one package record/u);
+    expect(() => parseNpmPackRecord(JSON.stringify([record, record]))).toThrow(/exactly one package record/u);
+    expect(() => parseNpmPackRecord(JSON.stringify({ 'thoth-mem': { name: 'thoth-mem' } }))).toThrow(/filename and files/u);
+    expect(existsSync(resolveNpmCli())).toBe(true);
+    expect(() => resolveNpmCli({ execPath: resolve('missing-node-root', 'node'), env: {} })).toThrow(/npm CLI was not found/u);
+  });
+
   it('packs, installs, cold-starts, and activates hook lifecycle from all three disposable hosts', () => {
     const smoke = spawnSync(process.execPath, ['scripts/verify-packed-plugins.mjs'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, timeout: 120_000 });
     expect(smoke.status, `${smoke.stdout}\n${smoke.stderr}`).toBe(0);
@@ -75,10 +93,10 @@ describe('first-product packed boundary', () => {
   });
 
   it('packs only the clean dist and the canonical integration inventory', () => {
-    const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const npmCli = resolveNpmCli();
     const packed = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
     expect(packed.status, packed.stderr).toBe(0);
-    const paths = (JSON.parse(packed.stdout)[0].files as Array<{ path: string }>).map((file) => file.path.replaceAll('\\', '/'));
+    const paths = parseNpmPackRecord(packed.stdout).files.map((file) => file.path.replaceAll('\\', '/'));
     expect(paths.filter((path) => path.startsWith('dist/'))).toEqual([
       'dist/index.js',
       'dist/index.js.map',
