@@ -1,0 +1,3 @@
+# Distribution hashes and synchronized copies must use identical bytes on every OS.
+plugin/** text=auto eol=lf
+integrations/** text=auto eol=lf

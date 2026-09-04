@@ -22,10 +22,11 @@ function git(cwd: string, args: string[]): string {
   }).trim();
 }
 
-function createReleaseFixture(): string {
+function createReleaseFixture(autocrlf: boolean): string {
   const sourceRoot = process.cwd();
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'thoth-release-version-'));
   temporaryRoots.push(fixtureRoot);
+  cpSync(join(sourceRoot, '.gitattributes'), join(fixtureRoot, '.gitattributes'));
 
   const manifest = JSON.parse(
     readFileSync(join(sourceRoot, 'package.json'), 'utf8'),
@@ -76,12 +77,18 @@ function createReleaseFixture(): string {
   }
 
   git(fixtureRoot, ['init', '--quiet', '-b', 'main']);
-  git(fixtureRoot, ['config', 'core.autocrlf', 'false']);
+  git(fixtureRoot, ['config', 'core.autocrlf', String(autocrlf)]);
   git(fixtureRoot, ['config', 'user.name', 'Release Test']);
   git(fixtureRoot, ['config', 'user.email', 'release-test@example.invalid']);
   git(fixtureRoot, ['add', '.']);
   git(fixtureRoot, ['commit', '--quiet', '-m', 'release fixture']);
-  return fixtureRoot;
+  const checkoutRoot = `${fixtureRoot}-checkout`;
+  temporaryRoots.push(checkoutRoot);
+  git(fixtureRoot, ['-c', `core.autocrlf=${autocrlf}`, 'clone', '--quiet', fixtureRoot, checkoutRoot]);
+  git(checkoutRoot, ['config', 'core.autocrlf', String(autocrlf)]);
+  git(checkoutRoot, ['config', 'user.name', 'Release Test']);
+  git(checkoutRoot, ['config', 'user.email', 'release-test@example.invalid']);
+  return checkoutRoot;
 }
 
 afterEach(() => {
@@ -91,8 +98,8 @@ afterEach(() => {
 });
 
 describe('npm version release lifecycle', () => {
-  test('commits every versioned public plugin artifact with the package bump', () => {
-    const fixtureRoot = createReleaseFixture();
+  test.each([false, true])('commits a portable clean release with autocrlf=%s', (autocrlf) => {
+    const fixtureRoot = createReleaseFixture(autocrlf);
 
     const command = process.platform === 'win32'
       ? process.env.ComSpec ?? 'cmd.exe'
@@ -118,5 +125,27 @@ describe('npm version release lifecycle', () => {
       'plugin/runtime.json',
     ]);
     expect(git(fixtureRoot, ['status', '--short'])).toBe('');
+    const lfCheckout = `${fixtureRoot}-lf`;
+    temporaryRoots.push(lfCheckout);
+    git(fixtureRoot, ['-c', 'core.autocrlf=false', 'clone', '--quiet', fixtureRoot, lfCheckout]);
+    execFileSync(process.execPath, ['scripts/verify-integration-package.mjs'], {
+      cwd: lfCheckout,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    execFileSync(process.execPath, ['scripts/sync-plugin-distribution.mjs'], {
+      cwd: fixtureRoot,
+      windowsHide: true,
+    });
+    expect(git(fixtureRoot, ['status', '--short'])).toBe('');
+  });
+
+  test('builds before verifying generated assets during prepublish', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    expect(manifest.scripts.prepublishOnly.split(' && ')).toEqual([
+      'pnpm run build', 'pnpm run integration:verify', 'pnpm test',
+    ]);
   });
 });

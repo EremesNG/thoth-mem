@@ -57,6 +57,13 @@ creating the GitHub release. Only after those steps succeed, it mints an
 ephemeral GitHub App token scoped to `thoth-plugins` with `contents: write` and
 runs `pnpm run release:marketplace`.
 
+`prepublishOnly` builds before checking generated integration assets, so it
+works from a checkout without `dist/`. Distribution files under `plugin/` and
+`integrations/` use LF through `.gitattributes`: the lock hashes raw bytes and
+must match on Windows and Linux. `tests/release-version.test.ts` exercises
+version bumps with both `core.autocrlf` settings, verifies a fresh LF checkout,
+and requires repeated synchronization to leave Git clean.
+
 `tests/release-marketplace.test.ts` validates the workflow and package-script
 contracts plus the publisher against a self-contained disposable central
 catalog. It does not claim that the live GitHub App installation or

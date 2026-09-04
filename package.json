@@ -56,7 +56,7 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "node scripts/build.mjs && vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
-    "prepublishOnly": "pnpm run integration:verify && pnpm run build && pnpm test",
+    "prepublishOnly": "pnpm run build && pnpm run integration:verify && pnpm test",
     "version": "pnpm run integration:sync && pnpm run integration:verify && git add -- plugin",
     "release:marketplace": "node scripts/publish-marketplace.mjs",
     "release:patch": "npm version patch --ignore-scripts=false && git push --follow-tags",
