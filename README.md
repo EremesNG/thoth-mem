@@ -4,7 +4,7 @@
 
 **Persistent memory your coding agents can share — and you can audit.**
 
-A local, SQLite-first memory service for OpenCode, Codex, and Claude Code.
+A local, SQLite-first memory service for OpenCode, Codex, Claude Code, and Pi.
 
 [![npm version](https://img.shields.io/npm/v/thoth-mem?style=for-the-badge&logo=npm&color=CB3837)](https://www.npmjs.com/package/thoth-mem) [![CI status](https://img.shields.io/github/actions/workflow/status/EremesNG/thoth-mem/ci.yml?branch=master&style=for-the-badge&logo=github&label=CI)](https://github.com/EremesNG/thoth-mem/actions/workflows/ci.yml) [![MIT license](https://img.shields.io/badge/license-MIT-2F81F7?style=for-the-badge)](https://github.com/EremesNG/thoth-mem/blob/master/package.json) ![Node.js 22.12 or newer](https://img.shields.io/badge/Node.js-%E2%89%A522.12-339933?style=for-the-badge&logo=node.js&logoColor=white)
 
@@ -12,7 +12,7 @@ A local, SQLite-first memory service for OpenCode, Codex, and Claude Code.
 
 ---
 
-| **91.9%** | **6** | **3** | **0** |
+| **91.9%** | **6** | **4** | **0** |
 | :---: | :---: | :---: | :---: |
 | LongMemEval-S RecallAny@5 | focused MCP tools | native coding-agent hosts | model calls required |
 
@@ -20,7 +20,7 @@ A local, SQLite-first memory service for OpenCode, Codex, and Claude Code.
 
 Coding agents lose the decisions that matter between sessions: why an approach was chosen, which failure already occurred, what the next safe action is, and which evidence supports the current answer. Static instruction files help with rules, but they do not provide temporal history, scoped retrieval, or attributable provenance.
 
-thoth-mem gives all three supported hosts one durable local memory without turning memory into an opaque second agent.
+thoth-mem gives all four supported hosts one durable local memory without turning memory into an opaque second agent.
 
 | | Design choice | What it gives you |
 | --- | --- | --- |
@@ -40,6 +40,7 @@ flowchart LR
   O[OpenCode] --> H[Native lifecycle adapters]
   C[Codex] --> H
   A[Claude Code] --> H
+  P[Pi] --> H
   H --> S[MemoryService]
   S --> L[(Immutable SQLite ledger)]
   S --> F[(Rebuildable FTS5 index)]
@@ -48,6 +49,7 @@ flowchart LR
   R --> O
   R --> C
   R --> A
+  R --> P
 ```
 
 1.  Native lifecycle adapters map each host into the same project and root-session contract.
@@ -60,56 +62,18 @@ flowchart LR
 
 ## Install
 
-Requirements: Node.js `>=22.12.0` and a supported OpenCode, Codex, or Claude Code installation.
+Requirements: Node.js `>=22.12.0` and a supported OpenCode, Codex, Claude Code, or Pi installation. Pi support is certified against `@earendil-works/pi-coding-agent` `0.84.4` (the supported `0.84.x` manager family).
 
-### OpenCode
+thoth-mem integrates with each harness through its native extension points. It installs memory tooling and lifecycle integration—not agents or subagents. Preview any managed setup by adding `--plan --json` to its `npx` command.
 
-Preview the exact global changes, then apply them:
+| Harness | What thoth-mem installs | Install |
+| --- | --- | --- |
+| <a href="https://claude.com/product/claude-code"><img src="https://github.com/anthropics.png?size=120" alt="Claude Code" width="48" height="48" /></a><br/>**Claude Code** | Marketplace plugin with native hooks, one six-tool MCP registration, and the shared memory skill. The plugin loads the exact published npm version declared by the marketplace distribution. | `claude plugin marketplace add https://github.com/EremesNG/thoth-plugins.git --scope user`<br/>`claude plugin install thoth-mem@thoth-plugins --scope user`<br/><br/>Managed alternative: `npx --yes thoth-mem@latest setup claude` |
+| <a href="https://github.com/openai/codex"><img src="https://github.com/openai.png?size=120" alt="Codex CLI" width="48" height="48" /></a><br/>**Codex CLI** | Marketplace plugin with native hooks, one six-tool MCP registration, and the shared memory skill. Codex `0.151.x` is supported without a forced manager override. | `codex plugin marketplace add https://github.com/EremesNG/thoth-plugins.git`<br/>`codex plugin add thoth-mem@thoth-plugins`<br/><br/>Managed alternative: `npx --yes thoth-mem@latest setup codex` |
+| <a href="https://github.com/anomalyco/opencode"><picture><source media="(prefers-color-scheme: dark)" srcset="https://svgl.app/library/opencode-dark.svg"><img src="https://svgl.app/library/opencode.svg" alt="OpenCode" width="48" height="48" /></picture></a><br/>**OpenCode** | Native npm plugin, lifecycle adapter, exact six-tool MCP surface, and shared memory skill. Setup pins the executing package version and synchronizes the skill globally. | `npx --yes thoth-mem@latest setup opencode` |
+| <a href="https://github.com/earendil-works/pi"><img src="img/pi.svg" alt="Pi" width="48" height="48" /></a><br/>**Pi** | Native package extension with lifecycle integration and one package-relative Node MCP child exposing the exact six memory tools. Certified for the `0.84.x` manager family. | `npx --yes thoth-mem@latest setup pi` |
 
-```sh
-npx --yes thoth-mem@latest setup opencode --plan --json
-npx --yes thoth-mem@latest setup opencode
-```
-
-OpenCode loads the npm package as a native plugin. Setup pins the executing package version and synchronizes the packaged memory skill into the global OpenCode skill directory.
-
-### Codex
-
-Install the public plugin from the central Thoth marketplace:
-
-```sh
-codex plugin marketplace add https://github.com/EremesNG/thoth-plugins.git
-codex plugin add thoth-mem@thoth-plugins
-```
-
-The package-managed setup can preview and verify the marketplace, plugin, hooks, MCP registration, skill, and runtime:
-
-```sh
-npx --yes thoth-mem@latest setup codex --plan --json
-npx --yes thoth-mem@latest setup codex
-```
-
-Codex `0.151.x` is the supported unforced manager contract. Another version fails closed unless `--force-version` verifies the complete safe manager surface first.
-
-### Claude Code
-
-Install from the same central marketplace:
-
-```sh
-claude plugin marketplace add https://github.com/EremesNG/thoth-plugins.git --scope user
-claude plugin install thoth-mem@thoth-plugins --scope user
-```
-
-Or use the package-managed setup:
-
-```sh
-npx --yes thoth-mem@latest setup claude --plan --json
-npx --yes thoth-mem@latest setup claude
-```
-
-Both public plugins load the exact published `thoth-mem` npm version declared by the marketplace distribution and include native hooks, one six-tool MCP registration, and the shared memory skill.
-
-> [!NOTE] Setup is global/user-native only. Project-scoped copied bundles, broad manager-cache edits, legacy fallback, and fragment migration are intentionally unsupported. A verified repeated setup is idempotent and requests no restart.
+> [!NOTE] Managed setup is global/user-native only, idempotent when already current, and requests a host restart after a changed install. `--plan --json` performs no writes or mutating manager commands. Project-scoped copied bundles, broad manager-cache edits, legacy fallback, and fragment migration are intentionally unsupported.
 
 ## Use the memory
 
@@ -169,7 +133,7 @@ The MCP server exposes exactly six tools:
 | `mem_project` | Inspect timelines, summaries, observation queues, history, and project briefings. |
 | `mem_session` | Record verified root lifecycle events and source-supported structured session summaries. |
 
-OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool for active-session metadata. It is not an MCP memory operation. Codex and Claude receive the same root identity through verified native lifecycle context.
+OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool for active-session metadata. It is not an MCP memory operation. Codex, Claude, and Pi receive the same root identity through verified native lifecycle context; Pi uses its documented session-manager identity and working directory.
 
 ## LongMemEval-S
 
@@ -209,7 +173,19 @@ Protocol sources: [LongMemEval repository](https://github.com/xiaowu0162/LongMem
 
 All hosts resolve one data directory in this order: an explicit command value, `THOTH_MEM_DATA_DIR`, strict provider configuration, then `~/.thoth-mem`. The provider file lives below `XDG_CONFIG_HOME/thoth-mem/config.json` when XDG configuration is set, or below `~/.config/thoth-mem/config.json` otherwise. The database is always `memory.sqlite` inside the selected data directory.
 
-Changed setup requests a host restart. `--plan` performs no writes or mutating manager commands. Malformed, unreadable, schema-invalid, or missing-runtime configuration fails closed.
+Changed OpenCode, Codex, and Claude setup requests a host restart; restart Pi
+after a changed package install when needed to load updated native assets.
+`--plan` performs no writes or mutating manager commands. Malformed, unreadable,
+schema-invalid, or missing-runtime configuration fails closed.
+
+Opening a revision-9 database with the Pi-capable runtime performs the one-time
+revision-10 migration. It retains or creates `memory.sqlite.pre-v10.bak`, takes
+an immediate write-excluding lock, and rechecks the exact live logical state
+against that backup before rebuilding only the `sessions` harness constraint to
+include `pi`. Existing sessions, evidence, events, summaries, receipts, and
+FTS rows are preserved; a mismatched backup or source drift fails closed before
+mutation. A revision-10 database reopens idempotently. This migration is
+separate from the unsupported import of manually copied host configuration.
 
 ### Legacy SQLite import
 
