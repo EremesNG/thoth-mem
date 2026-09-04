@@ -1,6 +1,6 @@
 {
   "name": "thoth-mem",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Local-first persistent memory for Codex coding sessions.",
   "author": {
     "name": "thoth-mem contributors"
