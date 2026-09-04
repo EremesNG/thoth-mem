@@ -19,4 +19,11 @@ The branches are mutually exclusive, reject unknown nested keys and partial iden
 
 `mem_project action=observations` lists a project-scoped bounded queue with optional exact-session, state, and `current|history` filters. Current means correction-chain leaves; history means non-leaf predecessors. Results are ordered by pending/accepted/rejected/promoted state priority, creation time, then ID, and never include raw support content. `mem_get` expands one observation ID into its candidate, facets, support IDs, terminal review, promotion mapping, and optional predecessor/successor lineage. `mem_recall`, `mem_context`, `mem_session`, and `mem_project action=briefing` continue to consume summaries and promoted memories only.
 
-`plugin/skills/thoth-mem/SKILL.md` is the canonical agent guidance. It routes topic/query needs to `mem_recall`, chronological needs to the bounded timeline, and selected IDs to `mem_get`, while preserving the existing recall/save/handoff, identity, privacy, and confirmation cadence. `pnpm run integration:sync` copies that body byte-for-byte to the OpenCode, Codex, and Claude Code bundles and refreshes the public distribution lock; do not edit host copies independently.
+`plugin/skills/thoth-mem/SKILL.md` is the canonical agent guidance. It routes topic/query needs to `mem_recall`, chronological needs to the bounded timeline, and selected IDs to `mem_get`, while preserving the existing recall/save/handoff, identity, privacy, and confirmation cadence. `pnpm run integration:sync` copies that body byte-for-byte to the OpenCode, Codex, Claude Code, and Pi `SKILL.md` destinations. It also copies the canonical `plugin/skills/thoth-mem/references/observation-review.md` to each host's `references/observation-review.md`, including `integrations/pi/skills/thoth-mem/references/observation-review.md`. Do not edit synchronized host copies independently.
+
+The Pi synchronization route owns only those two generated Pi outputs; its
+host-specific `references/pi.md` remains a separate canonical Pi identity and
+lifecycle reference. The command continues to refresh the public distribution
+lock for the Codex/Claude `plugin/` assets. Adding Pi synchronization does not
+change memory-tool semantics, recall/save/handoff behavior, or the Codex/Claude
+distribution-lock ownership boundary.

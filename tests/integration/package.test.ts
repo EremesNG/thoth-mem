@@ -110,7 +110,7 @@ describe('canonical integration package inventory', () => {
     const duplicate = clone(); duplicate.harnesses.opencode.push(duplicate.harnesses.opencode[0]!); expect(() => validateIntegrationInventory(duplicate)).toThrow(/duplicate/i);
     const identity = clone(); identity.harnesses.opencode[0] = 'identity-tool.mjs'; expect(() => validateIntegrationInventory(identity)).toThrow(/invalid|deferred/i);
     const deferred = clone(); deferred.harnesses.codex[0] = 'dashboard/manifest.json'; expect(() => validateIntegrationInventory(deferred)).toThrow(/invalid|deferred/i);
-    const extraOwner = clone(); extraOwner.harnesses.shared = []; expect(() => validateIntegrationInventory(extraOwner)).toThrow(/exactly three/i);
+    const extraOwner = clone(); extraOwner.harnesses.shared = []; expect(() => validateIntegrationInventory(extraOwner)).toThrow(/exactly four/i);
     const duplicateShared = clone(); duplicateShared.shared.push('hook-runner.mjs'); expect(() => validateIntegrationInventory(duplicateShared)).toThrow(/shared runner/i);
   });
 });

@@ -6,14 +6,10 @@ import { tool, type Hooks, type Plugin } from '@opencode-ai/plugin';
 
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
 import type { LifecycleResult } from '../../memory-core/contracts.js';
-import {
-  MAX_HOST_OUTPUT_CODE_POINTS,
-  RECOVERY_TAG_END,
-  RECOVERY_TAG_START,
-  renderContinuation,
-} from '../../memory-core/continuation.js';
+import { RECOVERY_TAG_END, RECOVERY_TAG_START } from '../../memory-core/continuation.js';
 import { sanitizePrivateContent } from '../../memory-core/privacy.js';
 import { resolveLocalProjectIdentity } from '../project-identity.js';
+import { isOwnedRecoveryBlock, verifiedRecovery } from '../recovery.js';
 import {
   dispatchOpenCodeLifecycleThroughNode,
   type OpenCodeLifecycleDispatchInput,
@@ -23,7 +19,6 @@ export { RECOVERY_TAG_END, RECOVERY_TAG_START };
 const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v2';
 const MAX_IDENTITY_CODE_POINTS = 128;
 const MAX_IDENTITY_PARENT_DEPTH = 16;
-const UNSAFE_IDENTITY_HEADER_CHARACTERS = /[;=\p{Cc}\p{Zl}\p{Zp}]/u;
 
 interface SessionState {
   directory: string;
@@ -65,65 +60,8 @@ function degradedIdentity(reason: string): string {
   return identityResult({ status: 'degraded', reason, authorization: 'none' });
 }
 
-function projectName(directory: string): string | undefined {
-  const normalized = directory.replace(/[\\/]+$/u, '');
-  const name = normalized.split(/[\\/]/u).filter(Boolean).at(-1);
-  return name
-    && name === name.trim()
-    && Array.from(name).length <= MAX_IDENTITY_CODE_POINTS
-    && !UNSAFE_IDENTITY_HEADER_CHARACTERS.test(name)
-    ? name
-    : undefined;
-}
-
 function stableLifecycleEventKey(parts: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
-function identityOnlyRecovery(rootSessionKey: string, directory: string): string | undefined {
-  let project;
-  try { project = resolveLocalProjectIdentity(directory); } catch { return undefined; }
-  if (!isBoundedIdentifier(rootSessionKey)) return undefined;
-  try {
-    return renderContinuation({ rootSessionKey, projectKey: project.key, projectName: project.name, items: [] }).context;
-  } catch {
-    return undefined;
-  }
-}
-
-function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: string, directory: string): string | undefined {
-  const fallback = identityOnlyRecovery(rootSessionKey, directory);
-  let localProject;
-  try { localProject = resolveLocalProjectIdentity(directory); } catch { return fallback; }
-  const recovery = result?.recovery;
-  if (!fallback || !recovery || result.projectKey !== localProject.key || !projectName(result.projectName)) return fallback;
-  const context = recovery.context;
-  const codePointLength = Array.from(context).length;
-  const selectedIds = recovery.items.map((item) => item.id);
-  const selectedSummaryIds = recovery.items.filter((item) => 'recordType' in item && item.recordType === 'summary').map((item) => item.id);
-  const selectedMemoryIds = recovery.items.filter((item) => !('recordType' in item && item.recordType === 'summary')).map((item) => item.id);
-  const identity = `thoth-mem verified identity: root_session_id=${rootSessionKey}; project_key=${result.projectKey}; project_name=${result.projectName}`;
-  if (
-    !isOwnedRecoveryBlock(context) ||
-    context.split(RECOVERY_TAG_START).length !== 2 ||
-    context.split(RECOVERY_TAG_END).length !== 2 ||
-    context.split('\n')[1] !== identity ||
-    codePointLength > MAX_HOST_OUTPUT_CODE_POINTS ||
-    recovery.rendering.maxCodePoints !== MAX_HOST_OUTPUT_CODE_POINTS ||
-    recovery.rendering.totalCodePoints !== codePointLength ||
-    selectedIds.length > 3 ||
-    JSON.stringify(selectedIds) !== JSON.stringify(recovery.selectedRecordIds) ||
-    JSON.stringify(selectedSummaryIds) !== JSON.stringify(recovery.selectedSummaryIds) ||
-    JSON.stringify(selectedMemoryIds) !== JSON.stringify(recovery.selectedMemoryIds) ||
-    result.capability.contextDelivered !== (selectedIds.length > 0) ||
-    recovery.items.some((item) => !context.includes(`(${'recordType' in item && item.recordType === 'summary' ? 'summary' : 'memory'}:${item.id})`)) ||
-    recovery.items.some((item) => 'recordType' in item && item.recordType === 'summary' ? context.includes(item.submissionEvidenceId) : 'evidenceIds' in item && item.evidenceIds.some((id) => context.includes(id)))
-  ) return fallback;
-  return context;
-}
-
-function isOwnedRecoveryBlock(value: string): boolean {
-  return value.startsWith(`${RECOVERY_TAG_START}\n`) && value.endsWith(`\n${RECOVERY_TAG_END}`);
 }
 
 export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugin {

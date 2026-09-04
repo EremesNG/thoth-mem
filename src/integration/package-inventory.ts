@@ -1,4 +1,4 @@
-export type PackageHarness = 'opencode' | 'codex' | 'claude-code';
+export type PackageHarness = 'opencode' | 'codex' | 'claude-code' | 'pi';
 export interface PublicDistributionInventory { assets: string[] }
 export interface IntegrationInventory { schemaVersion: number; lifecycleProtocolVersion: number; coreVersion: string; shared: string[]; harnesses: Record<string, string[]>; publicDistribution: PublicDistributionInventory }
 
@@ -6,6 +6,7 @@ export const CANONICAL_PLUGIN_INVENTORY: Record<PackageHarness, string[]> = {
   opencode: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/observation-review.md','skills/thoth-mem/references/opencode.md'],
   codex: ['manifest.json','.codex-plugin/plugin.json','mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/codex.md','skills/thoth-mem/references/observation-review.md'],
   'claude-code': ['manifest.json','.claude-plugin/plugin.json','.mcp.json','hooks/hooks.json','runner.mjs','skills/thoth-mem/SKILL.md','skills/thoth-mem/references/claude-code.md','skills/thoth-mem/references/observation-review.md'],
+  pi: ['skills/thoth-mem/SKILL.md','skills/thoth-mem/references/observation-review.md','skills/thoth-mem/references/pi.md'],
 };
 
 export const CANONICAL_PUBLIC_PLUGIN_INVENTORY = [
@@ -29,7 +30,7 @@ export function validateIntegrationInventory(value: unknown): IntegrationInvento
   if (inventory.schemaVersion !== 2 || typeof inventory.coreVersion !== 'string' || !inventory.coreVersion) throw new Error('Integration inventory version is invalid');
   if (inventory.lifecycleProtocolVersion !== 3) throw new Error('Integration lifecycle protocol version is invalid');
   if (!Array.isArray(inventory.shared) || inventory.shared.length !== 1 || inventory.shared[0] !== 'hook-runner.mjs') throw new Error('Integration inventory must own the exact shared runner');
-  if (!inventory.harnesses || Object.keys(inventory.harnesses).sort().join(',') !== ['claude-code','codex','opencode'].join(',')) throw new Error('Integration inventory must own exactly three harnesses');
+  if (!inventory.harnesses || Object.keys(inventory.harnesses).sort().join(',') !== ['claude-code','codex','opencode','pi'].join(',')) throw new Error('Integration inventory must own exactly four harnesses');
   for (const harness of Object.keys(CANONICAL_PLUGIN_INVENTORY) as PackageHarness[]) {
     const assets = inventory.harnesses[harness]; if (!Array.isArray(assets)) throw new Error(`Missing ${harness} assets`);
     if (new Set(assets).size !== assets.length) throw new Error(`Duplicate ${harness} asset ownership`);

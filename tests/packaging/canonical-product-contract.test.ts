@@ -33,7 +33,7 @@ const requiredTitles = [
   'Progressive Retrieval MUST Use Stable IDs and Bounded Escalation',
   'MCP Surface MUST Be Compact and Workflow-Level',
   'Every Native Plugin MUST Bundle Hooks, MCP, and Skills',
-  'Published Package MUST Contain Native Assets for All Three Harnesses',
+  'Published Package MUST Contain Native Assets for Every Supported Harness',
   'Evals MUST Compare Equal-Budget Retrieval Lanes Against the Lexical Baseline',
 ];
 

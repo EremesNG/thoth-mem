@@ -77,6 +77,27 @@ afterEach(() => {
 });
 
 describe('SQLite taxonomy migration', () => {
+  it('runs a complete Pi session lifecycle on the current schema', () => {
+    const path = databasePath();
+    const service = new MemoryService({ databasePath: path });
+    const base = { harness: 'pi' as const, project: { key: 'repo:pi-lifecycle', name: 'pi-lifecycle' }, rootSessionKey: 'pi-root' };
+    try {
+      const results = [
+        service.lifecycle({ ...base, operation: 'enroll', eventKey: 'enroll' }),
+        service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover' }),
+        service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'input', content: 'Verified Pi root input.' }),
+        service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre', content: 'Identity-only checkpoint metadata.' }),
+        service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'post' }),
+        service.lifecycle({ ...base, operation: 'finalize', eventKey: 'shutdown' }),
+      ];
+      expect(results.map((result) => result.outcome)).toEqual(['confirmed', 'confirmed', 'confirmed', 'confirmed', 'confirmed', 'confirmed']);
+      expect(results.at(-1)).toMatchObject({ projectKey: 'repo:pi-lifecycle' });
+      const database = new Database(path, { readonly: true });
+      try { expect(database.prepare('SELECT harness,state FROM sessions').get()).toEqual({ harness: 'pi', state: 'ended' }); }
+      finally { database.close(); }
+    } finally { service.close(); }
+  });
+
   it('converges declared revision-2 values once without changing authoritative semantics', () => {
     const fixture = createRevision2Fixture();
     const beforeDatabase = new Database(fixture.path, { readonly: true });

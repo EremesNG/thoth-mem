@@ -32,10 +32,13 @@ node dist/index.js mcp --data-dir ./memory-data
 | --- | --- |
 | <code>src/memory-core/</code> | SQLite ledger, FTS5 retrieval, identities, projections, and shared <code>MemoryService</code>. |
 | <code>src/tools/</code> | Exact six-tool MCP surface. |
-| <code>src/integration/</code> | Host-neutral lifecycle mapping. |
-| <code>src/setup/</code> | Transactional OpenCode, Codex, and Claude Code setup. |
-| <code>integrations/</code> | Canonical native plugin bundles. |
-| <code>scripts/</code> | Build, package verification, distribution sync, and marketplace publication. |
+| <code>src/integration/</code> | Host-neutral lifecycle mapping for OpenCode, Codex, Claude Code, and Pi. |
+| <code>src/setup/</code> | Transactional setup for all four native hosts, including Pi package receipts. |
+| <code>src/setup/pi.ts</code> | Pi version/capability gate, global package install, provenance receipt, rollback, and idempotent verification. |
+| <code>integrations/inventory.json</code> | Exact four-host asset ownership and public distribution inventory. |
+| <code>integrations/</code> | Canonical OpenCode, Codex, Claude Code, and Pi native bundles. |
+| <code>scripts/</code> | Build, four-host package verification, distribution sync, packed smoke, and marketplace publication. |
+| <code>scripts/verify-integration-package.mjs</code> / <code>scripts/verify-packed-plugins.mjs</code> | Validate the four-host inventory and run disposable packed setup/lifecycle smoke, including Pi local/public paths. |
 | <code>benchmarks/</code> | Offline fixtures, immutable external reports, schemas, and validators. |
 | <code>tests/</code> | Unit, integration, setup, packaging, tool, importer, and benchmark suites. |
 | <code>docs/agent/</code> | Task-routed repository guidance for coding agents. |
@@ -75,6 +78,26 @@ node dist/index.js setup codex --local-package-root /absolute/path/to/thoth-mem 
 node dist/index.js setup claude --local-package-root /absolute/path/to/thoth-mem --data-dir /absolute/path/to/shared-memory
 ~~~
 
+### Pi checkout
+
+Pi local setup is global/user-scoped and requires an explicit absolute package
+root. Build the checkout, then preview and apply the package-manager change:
+
+~~~sh
+pnpm run build
+node dist/index.js setup pi --plan --json \
+  --local-package-root /absolute/path/to/thoth-mem \
+  --data-dir /absolute/path/to/shared-memory
+node dist/index.js setup pi \
+  --local-package-root /absolute/path/to/thoth-mem \
+  --data-dir /absolute/path/to/shared-memory
+~~~
+
+The setup path is certified against Pi `0.84.4` and verifies the exact
+`dist/pi.js` extension and `integrations/pi/skills/thoth-mem` Skill after
+installation. It does not imply project-local `pi install -l` or mutate an
+unowned Pi package.
+
 ## Verification
 
 Run the nearest terminating test first, then the repository gates that match the changed surface.
@@ -93,8 +116,8 @@ git diff --check
 | --- | --- |
 | <code>pnpm run build</code> | Strict TypeScript and distribution build. |
 | <code>pnpm test</code> | Full unit and integration test configuration. |
-| <code>integration:verify</code> | Canonical local and public inventories for all three hosts. |
-| <code>integration:smoke</code> | Real packed tarball, disposable install, cold CLI start, and packaged lifecycle runners. |
+| <code>integration:verify</code> | Canonical local and public inventories for exactly four hosts. |
+| <code>integration:smoke</code> | Real packed tarball, disposable install, cold CLI start, and packaged OpenCode/Codex/Claude Code/Pi lifecycle fixtures; Pi public setup uses a loopback candidate-plus-runtime-closure registry. |
 | <code>benchmark:fixture</code> | Offline committed general fixture with zero model or network calls. |
 | <code>prepublishOnly</code> | Inventory, build, and full test publication gate. |
 

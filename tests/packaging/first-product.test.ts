@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { parseNpmPackRecord, resolveNpmCli } from '../../scripts/npm-pack.mjs';
-import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-inventory.js';
+import { CANONICAL_PLUGIN_INVENTORY, validateIntegrationInventory } from '../../src/integration/package-inventory.js';
 import { ALL_TOOLS } from '../../src/tools/index.js';
 
 const deferred = /(@xenova|transformers|embedding|hyde|knowledge.graph|dashboard|observatory|http-server|vitest\.browser)/i;
@@ -14,6 +14,7 @@ const observationReviewPaths = [
   'integrations/opencode/skills/thoth-mem/references/observation-review.md',
   'integrations/codex/skills/thoth-mem/references/observation-review.md',
   'integrations/claude-code/skills/thoth-mem/references/observation-review.md',
+  'integrations/pi/skills/thoth-mem/references/observation-review.md',
 ];
 
 describe('first-product packed boundary', () => {
@@ -34,12 +35,15 @@ describe('first-product packed boundary', () => {
     expect(() => resolveNpmCli({ execPath: resolve('missing-node-root', 'node'), env: {} })).toThrow(/npm CLI was not found/u);
   });
 
-  it('packs, installs, cold-starts, and activates hook lifecycle from all three disposable hosts', () => {
-    const smoke = spawnSync(process.execPath, ['scripts/verify-packed-plugins.mjs'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, timeout: 120_000 });
+  it('packs, installs, cold-starts, and activates hook lifecycle from all four disposable hosts', () => {
+    const smoke = spawnSync(process.execPath, ['scripts/verify-packed-plugins.mjs'], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, timeout: 180_000 });
     expect(smoke.status, `${smoke.stdout}\n${smoke.stderr}`).toBe(0);
-    expect(smoke.stdout).toContain('Packed smoke passed for opencode, codex, claude-code.');
-    expect(smoke.stdout).toContain('Activated lifecycle fixtures for opencode, codex, claude-code.');
-  }, 120_000);
+    expect(smoke.stdout).toContain('Packed smoke passed for opencode, codex, claude-code, pi.');
+    expect(smoke.stdout).toContain('Activated lifecycle fixtures for opencode, codex, claude-code, pi.');
+    expect(smoke.stdout).toContain('Verified hermetic public Pi candidate and complete runtime closure.');
+    expect(smoke.stdout).toContain('Verified exact public Pi list and full installed runtime graph.');
+    expect(smoke.stdout).toContain('Verified SHA-256, SHA-512 integrity, and SHA-1 shasum ledger fields.');
+  }, 180_000);
 
   it('keeps exact hook/MCP/Skill ownership and no deferred active package, workspace, config, or CI references', () => {
     const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as { harnesses: Record<string, string[]> };
@@ -61,9 +65,17 @@ describe('first-product packed boundary', () => {
       dependencies: Record<string, string>;
       files: string[];
       scripts: Record<string, string>;
+      keywords: string[];
+      pi: { extensions: string[]; skills: string[] };
+      peerDependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
     };
     expect(manifest.main).toBe('dist/opencode.js');
     expect(manifest.bin).toEqual({ 'thoth-mem': 'dist/index.js' });
+    expect(manifest.pi).toEqual({ extensions: ['./dist/pi.js'], skills: ['./integrations/pi/skills/thoth-mem'] });
+    expect(manifest.keywords).toContain('pi-package');
+    expect(manifest.peerDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '*', typebox: '*' });
+    expect(manifest.devDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '0.84.4', typebox: '1.3.7' });
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
       '@modelcontextprotocol/sdk',
       '@opencode-ai/plugin',
@@ -102,6 +114,8 @@ describe('first-product packed boundary', () => {
       'dist/index.js.map',
       'dist/opencode.js',
       'dist/opencode.js.map',
+      'dist/pi.js',
+      'dist/pi.js.map',
     ]);
     const integrations = paths.filter((path) => path.startsWith('integrations/')).sort();
     const expected = ['integrations/inventory.json', 'integrations/shared/hook-runner.mjs'];
@@ -109,14 +123,63 @@ describe('first-product packed boundary', () => {
     expect(integrations).toEqual(expected.sort());
   });
 
-  it('pins the lifecycle-v3 summary envelope across the unchanged six-tool, three-host package', () => {
+  it('pins the lifecycle-v3 summary envelope across the unchanged six-tool, four-host package', () => {
     const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as { lifecycleProtocolVersion: number; harnesses: Record<string, string[]> };
     const publicRunner = readFileSync('plugin/runners/public-runner.mjs', 'utf8');
     expect(ALL_TOOLS).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session']);
     expect(inventory.lifecycleProtocolVersion).toBe(3);
-    expect(Object.keys(inventory.harnesses).sort()).toEqual(['claude-code', 'codex', 'opencode']);
+    expect(Object.keys(inventory.harnesses).sort()).toEqual(['claude-code', 'codex', 'opencode', 'pi']);
     for (const field of ['selectedSummaryIds', 'selectedMemoryIds', 'selectedRecordIds', "'summary' : 'memory'"]) expect(publicRunner).toContain(field);
     expect(readFileSync('integrations/shared/hook-runner.mjs', 'utf8')).toContain("readFileSync(0, 'utf8')");
+  });
+
+  it('builds a thin Pi entry and ships Pi-specific identity guidance', () => {
+    const built = readFileSync('dist/pi.js', 'utf8');
+    expect(built).not.toMatch(/better-sqlite3|class MemoryService|sqlite\/migrations/iu);
+    expect(built).toContain('MEMORY_TOOL_CATALOG');
+    const reference = readFileSync('integrations/pi/skills/thoth-mem/references/pi.md', 'utf8');
+    for (const phrase of ['harness=pi', 'root_session_id', 'session_start', 'session_before_compact', 'session_compact', 'session_shutdown']) expect(reference).toContain(phrase);
+    expect(reference).toMatch(/privacy[\s\S]*before[\s\S]*identity/iu);
+    expect(reference).toMatch(/must not infer[\s\S]*community[\s\S]*delegat/iu);
+  });
+
+  it('routes canonical and Pi Skills to the Pi identity reference', () => {
+    const skillPaths = [
+      'plugin/skills/thoth-mem/SKILL.md',
+      'integrations/opencode/skills/thoth-mem/SKILL.md',
+      'integrations/codex/skills/thoth-mem/SKILL.md',
+      'integrations/claude-code/skills/thoth-mem/SKILL.md',
+      'integrations/pi/skills/thoth-mem/SKILL.md',
+    ];
+    const skills = skillPaths.map((path) => readFileSync(path, 'utf8'));
+    expect(new Set(skills)).toHaveLength(1);
+    const canonical = skills[0]!;
+    for (const host of ['opencode', 'codex', 'claude-code', 'pi']) expect(canonical).toContain(`references/${host}.md`);
+    for (const [index, skill] of skills.entries()) expect(skill, skillPaths[index]).toMatch(/For Pi, select\s+`references\/pi\.md`\s+for identity and lifecycle operations\./u);
+  });
+
+  it('synchronizes only canonical Pi Skill assets without extending the public distribution lock', () => {
+    const script = readFileSync('scripts/sync-plugin-distribution.mjs', 'utf8');
+    expect(script).toContain('integrations/pi/skills/thoth-mem/SKILL.md');
+    expect(script).toContain('integrations/pi/skills/thoth-mem/references/observation-review.md');
+    const lock = JSON.parse(readFileSync('plugin/distribution-lock.json', 'utf8')) as { assets: Record<string, string> };
+    expect(Object.keys(lock.assets).some((path) => path.includes('/pi/'))).toBe(false);
+  });
+
+  it('validates exact four-harness ownership and rejects malformed Pi inventories', () => {
+    const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as Record<string, unknown> & { harnesses: Record<string, string[]> };
+    expect(validateIntegrationInventory(inventory).harnesses).toEqual(CANONICAL_PLUGIN_INVENTORY);
+    for (const mutate of [
+      (assets: string[]) => assets.slice(1),
+      (assets: string[]) => [...assets, 'extra.mjs'],
+      (assets: string[]) => [...assets, assets[0]!],
+      (assets: string[]) => [...assets.slice(0, -1), '../escaped.md'],
+      (assets: string[]) => [...assets.slice(0, -1), 'dashboard.mjs'],
+    ]) {
+      const malformed = structuredClone(inventory);
+      malformed.harnesses.pi = mutate(malformed.harnesses.pi!);
+      expect(() => validateIntegrationInventory(malformed)).toThrow();
+    }
   });
 
   it('ships one host-neutral explicit observation review and promotion policy', () => {

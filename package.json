@@ -16,6 +16,14 @@
   "bin": {
     "thoth-mem": "dist/index.js"
   },
+  "pi": {
+    "extensions": [
+      "./dist/pi.js"
+    ],
+    "skills": [
+      "./integrations/pi/skills/thoth-mem"
+    ]
+  },
   "files": [
     "dist",
     "config.schema.json",
@@ -64,7 +72,8 @@
     "ai",
     "coding-agent",
     "sqlite",
-    "persistent-memory"
+    "persistent-memory",
+    "pi-package"
   ],
   "license": "MIT",
   "dependencies": {
@@ -75,11 +84,17 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.1",
     "esbuild": "^0.25.5",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "typebox": "1.3.7"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   }
 }

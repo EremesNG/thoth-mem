@@ -4,111 +4,111 @@
 
 ### Requirement: Every Native Plugin MUST Bundle Hooks, MCP, and Skills
 
-Each host bundle MUST continue to package its supported hooks, one registration path for the shared six-tool MCP server, and the same memory Skill, with no transitional product-generation wording or stale copied contract.
+Every supported host bundle, including Pi, MUST package its supported lifecycle hooks, one registration path for the shared exact six-tool memory surface, and the same canonical memory Skill without stale copied contracts. Pi MUST expose the tools through its native extension API while delegating execution to the existing MCP server rather than requiring a community MCP adapter or importing the SQLite runtime into the Pi process.
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 1
+#### Scenario: US2 - Use the existing memory tools from Pi 1
 
-- **GIVEN** a clean installation
-- **WHEN** the MCP and native lifecycle paths execute
-- **THEN** their public envelopes and commands use the current unversioned thoth-mem contract and persist to `memory.sqlite`
+- **GIVEN** the native Pi package is loaded
+- **WHEN** Pi enumerates extension tools
+- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 2
+#### Scenario: US2 - Use the existing memory tools from Pi 2
 
-- **GIVEN** an invocation using a removed transitional command or namespace
-- **WHEN** it reaches the current package
-- **THEN** it fails explicitly instead of entering a compatibility shim
+- **GIVEN** a valid tool call
+- **WHEN** Pi executes it
+- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
 
-#### Scenario: US2 - Treat the replacement architecture as the normal product base 3
+#### Scenario: US2 - Use the existing memory tools from Pi 3
 
-- **GIVEN** a legacy database selected for import
-- **WHEN** the operator runs the current importer
-- **THEN** `import-legacy` writes a distinct current database and preserves the source without describing the target as a replacement generation
+- **GIVEN** the packaged Pi Skill
+- **WHEN** an agent reads its memory guidance
+- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
 
 ### Requirement: Runtime Lifecycle MUST Preserve the Core Contract
 
-OpenCode, Codex, and Claude lifecycle adapters MUST normalize only fields their supported native contracts actually provide, MUST accept Claude Code `UserPromptSubmit` without `event_id`, MUST preserve OpenCode's native per-message identity, and MUST apply shared privacy sanitation before content-derived identity.
+OpenCode, Codex, Claude Code, and Pi lifecycle adapters MUST normalize only fields their supported native contracts actually provide and MUST apply shared privacy sanitation before content-derived identity. Pi MUST map documented session start, admitted root input, context preparation, pre-compaction, successful compaction, failed compaction, settled-agent, and shutdown events onto enroll, recover, capture-root, checkpoint-pre-compact, guide-post-compact, non-finalizing degradation or flush, and finalize semantics without automatically promoting prompt, model, tool, summary, or lifecycle content.
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 1
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
 
-- **GIVEN** two Codex `UserPromptSubmit` payloads with the same `turn_id` and different prompts
-- **WHEN** both are normalized and captured
-- **THEN** they receive different stable event keys, neither lifecycle call throws, and each produces one ordered root-prompt evidence event
+- **GIVEN** a root Pi session with a verified working directory and session ID
+- **WHEN** the session starts and prepares model context
+- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 2
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
 
-- **GIVEN** an official Claude Code `UserPromptSubmit` payload without a synthetic `event_id`
-- **WHEN** it is normalized
-- **THEN** capture succeeds using only documented native fields and a different sanitized prompt receives a different stable event key
+- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
+- **WHEN** Pi admits them
+- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 3
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
 
-- **GIVEN** two OpenCode root-user messages admitted during the same active cycle
-- **WHEN** the native plugin captures them
-- **THEN** each uses its immutable native message ID and neither is collapsed into the other
+- **GIVEN** Pi is about to compact and later reports successful compaction
+- **WHEN** the lifecycle hooks execute
+- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 4
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
 
-- **GIVEN** the same sanitized native prompt payload is retried
-- **WHEN** lifecycle receives it again
-- **THEN** it resolves to the same event key and returns the original receipt as a duplicate without appending evidence
+- **GIVEN** the root Pi session shuts down
+- **WHEN** the shutdown event fires
+- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
+
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
+
+- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
+- **WHEN** the Pi-capable runtime opens it
+- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
 
 ### Requirement: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
-Native adapters MUST resolve the Git common-directory UUID or explicit non-Git path identity, pass an initial display-name hint for creation, and preserve the exact canonical key with root session identity; the database-persisted display name becomes authoritative after adoption, while delegated, ambiguous, incomplete, or child-key-mismatched identity MUST NOT receive root authority.
+Native adapters, including Pi, MUST resolve the Git common-directory UUID or explicit non-Git path identity from the host working directory, pass an initial display-name hint only for adoption, and preserve the exact canonical project key with a stable root session identity. Pi MUST use its documented session identity and working directory, while delegated, ambiguous, incomplete, or child-key-mismatched identity MUST NOT receive root authority.
 
-#### Scenario: US1 - Keep one project across moves, renames, and worktrees 1
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
 
-- **GIVEN** a Git repository without a thoth-mem identity
-- **WHEN** verified native identity resolves concurrently for the first time
-- **THEN** exactly one fully written UUID marker is published atomically without replacement in the Git common directory and every caller returns `git:<uuid>`
+- **GIVEN** a root Pi session with a verified working directory and session ID
+- **WHEN** the session starts and prepares model context
+- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
 
-#### Scenario: US1 - Keep one project across moves, renames, and worktrees 2
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
 
-- **GIVEN** a repository with an existing local UUID
-- **WHEN** its working directory is moved from one path or drive to another
-- **THEN** the UUID-backed project key remains unchanged and the new path is recorded as an alias
+- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
+- **WHEN** Pi admits them
+- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
 
-#### Scenario: US1 - Keep one project across moves, renames, and worktrees 3
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
 
-- **GIVEN** a repository folder renamed from `thoth-mem` to `thoth-memory`
-- **WHEN** lifecycle resumes
-- **THEN** the project key remains unchanged and its persisted display name changes only through the explicit rename CLI
+- **GIVEN** Pi is about to compact and later reports successful compaction
+- **WHEN** the lifecycle hooks execute
+- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
 
-#### Scenario: US1 - Keep one project across moves, renames, and worktrees 4
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
 
-- **GIVEN** a main worktree and linked worktrees such as `thoth-mem-imp-size`
-- **WHEN** any worktree runs lifecycle, save, or recall
-- **THEN** all use the same canonical project while their exact paths remain separately observable aliases
+- **GIVEN** the root Pi session shuts down
+- **WHEN** the shutdown event fires
+- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
 
-#### Scenario: US1 - Keep one project across moves, renames, and worktrees 5
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
 
-- **GIVEN** two independent clones of the same remote
-- **WHEN** each resolves identity
-- **THEN** each receives a different local UUID unless a future explicit linking operation is requested
+- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
+- **WHEN** the Pi-capable runtime opens it
+- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 1
+#### Scenario: US4 - Fail safely without blocking Pi 1
 
-- **GIVEN** a verified Git project and root session
-- **WHEN** native recovery renders
-- **THEN** it exposes `root_session_id`, `project_key=git:<uuid>`, and the database-persisted `project_name` as separate bounded values
+- **GIVEN** the thoth-mem child cannot start, times out, exits nonzero, or returns an invalid or oversized envelope
+- **WHEN** a Pi prompt or lifecycle hook continues
+- **THEN** no unverified memory is injected, the prompt is not rejected, and only a bounded diagnostic is emitted
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 2
+#### Scenario: US4 - Fail safely without blocking Pi 2
 
-- **GIVEN** the OpenCode read-only identity helper before lifecycle adoption
-- **WHEN** it verifies a root caller
-- **THEN** its versioned result returns the exact UUID-backed key plus a non-authoritative `project_name_hint`; after lifecycle, the persisted name in the verified recovery block prevails
+- **GIVEN** the MCP child and lifecycle child reach a fresh shared data directory concurrently
+- **WHEN** both initialize
+- **THEN** schema bootstrap converges safely or one path degrades truthfully without corrupting the database or blocking Pi
 
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 3
+#### Scenario: US4 - Fail safely without blocking Pi 3
 
-- **GIVEN** a save, recall, context, project, or session MCP call
-- **WHEN** the agent maps verified identity
-- **THEN** it copies the key verbatim, treats `project_name` as creation/display metadata only, and never substitutes the display name, current path, Git remote, branch, worktree name, host project ID, or recalled content for the key
-
-#### Scenario: US2 - Propagate exact identity through every native and MCP boundary 4
-
-- **GIVEN** a lifecycle child response with a changed/missing key or a name that is unsafe or inconsistent with its recovery header
-- **WHEN** the host validates it
-- **THEN** no unverified memory context is injected and the host continues with bounded degradation
+- **GIVEN** a delegated, ambiguous, incomplete, or child-key-mismatched Pi identity
+- **WHEN** lifecycle attempts root-only capture or recovery
+- **THEN** it receives no root authority and injects no unverified context
 
 ### Requirement: Automatic Capture MUST Remain Privacy-Safe and Minimal
 
@@ -228,41 +228,77 @@ Model-visible verified identity MUST carry the exact canonical `project_key` plu
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 
-Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn. A native immutable message ID MUST be used when available; otherwise a deterministic key MUST include the documented stable session/turn fields and the sanitized prompt fingerprint. Different sanitized prompts in one active turn MUST NOT reuse a lifecycle key, and an exact retry MUST remain idempotent.
+Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn. A native immutable message ID MUST be used when available; otherwise, including for Pi root input, a deterministic key MUST bind documented stable session or turn fields with the sanitized prompt fingerprint so different prompts remain distinct and exact retries remain idempotent.
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 1
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
 
-- **GIVEN** two Codex `UserPromptSubmit` payloads with the same `turn_id` and different prompts
-- **WHEN** both are normalized and captured
-- **THEN** they receive different stable event keys, neither lifecycle call throws, and each produces one ordered root-prompt evidence event
+- **GIVEN** a root Pi session with a verified working directory and session ID
+- **WHEN** the session starts and prepares model context
+- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 2
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
 
-- **GIVEN** an official Claude Code `UserPromptSubmit` payload without a synthetic `event_id`
-- **WHEN** it is normalized
-- **THEN** capture succeeds using only documented native fields and a different sanitized prompt receives a different stable event key
+- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
+- **WHEN** Pi admits them
+- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 3
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
 
-- **GIVEN** two OpenCode root-user messages admitted during the same active cycle
-- **WHEN** the native plugin captures them
-- **THEN** each uses its immutable native message ID and neither is collapsed into the other
+- **GIVEN** Pi is about to compact and later reports successful compaction
+- **WHEN** the lifecycle hooks execute
+- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
 
-#### Scenario: US1 - Capture messages submitted during an active agent turn 4
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
 
-- **GIVEN** the same sanitized native prompt payload is retried
-- **WHEN** lifecycle receives it again
-- **THEN** it resolves to the same event key and returns the original receipt as a duplicate without appending evidence
+- **GIVEN** the root Pi session shuts down
+- **WHEN** the shutdown event fires
+- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
+
+#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
+
+- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
+- **WHEN** the Pi-capable runtime opens it
+- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
-Child launch, timeout, nonzero exit, oversized output, invalid envelope, or unverifiable identity MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt.
+Child launch, timeout, nonzero exit, protocol failure, oversized output, invalid envelope, tool bridge failure, or unverifiable identity in any native adapter, including Pi, MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt. The Pi extension MUST NOT open SQLite directly, and concurrent MCP/lifecycle cold start MUST preserve the database bootstrap safety contract.
 
-#### Scenario: OpenCode Node lifecycle child fails
+#### Scenario: US2 - Use the existing memory tools from Pi 1
 
-- **GIVEN** the Bun adapter cannot obtain a valid Node lifecycle envelope
-- **WHEN** the host hook completes
-- **THEN** the user prompt continues with no recovery block and one bounded diagnostic
+- **GIVEN** the native Pi package is loaded
+- **WHEN** Pi enumerates extension tools
+- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
+
+#### Scenario: US2 - Use the existing memory tools from Pi 2
+
+- **GIVEN** a valid tool call
+- **WHEN** Pi executes it
+- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
+
+#### Scenario: US2 - Use the existing memory tools from Pi 3
+
+- **GIVEN** the packaged Pi Skill
+- **WHEN** an agent reads its memory guidance
+- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
+
+#### Scenario: US4 - Fail safely without blocking Pi 1
+
+- **GIVEN** the thoth-mem child cannot start, times out, exits nonzero, or returns an invalid or oversized envelope
+- **WHEN** a Pi prompt or lifecycle hook continues
+- **THEN** no unverified memory is injected, the prompt is not rejected, and only a bounded diagnostic is emitted
+
+#### Scenario: US4 - Fail safely without blocking Pi 2
+
+- **GIVEN** the MCP child and lifecycle child reach a fresh shared data directory concurrently
+- **WHEN** both initialize
+- **THEN** schema bootstrap converges safely or one path degrades truthfully without corrupting the database or blocking Pi
+
+#### Scenario: US4 - Fail safely without blocking Pi 3
+
+- **GIVEN** a delegated, ambiguous, incomplete, or child-key-mismatched Pi identity
+- **WHEN** lifecycle attempts root-only capture or recovery
+- **THEN** it receives no root authority and injects no unverified context
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 

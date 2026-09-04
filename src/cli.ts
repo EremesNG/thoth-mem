@@ -9,8 +9,9 @@ import { LegacyImportFailure, applyLegacyImport, findCommittedLegacyImport, pars
 import { MemoryService, projectSelectorExists, validateProjectRenameInput } from './memory-core/service.js';
 import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
+import { setupPi } from './setup/pi.js';
 
-const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
 
@@ -193,14 +194,30 @@ export async function runCli(args: string[]): Promise<number> {
     } catch (error) { process.stderr.write(`Project rename failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
   }
   if (command === 'setup') {
-    const commandIndex = args.indexOf(command); const harness = args.slice(commandIndex + 1).find((arg) => !arg.startsWith('-'));
-    if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude') { process.stderr.write('setup requires opencode, codex, or claude\n'); return 2; }
+    const commandIndex = args.indexOf(command); const harness = args[commandIndex + 1];
+    if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude' && harness !== 'pi') { process.stderr.write('setup requires opencode, codex, claude, or pi\n'); return 2; }
     if (value(args, '--scope') || args.includes('--project')) { process.stderr.write('setup supports only global/user native installation; project scope is not supported\n'); return 2; }
+    const seen = new Set<string>();
+    for (let index = commandIndex + 2; index < args.length; index += 1) {
+      const token = args[index]!;
+      const equals = token.indexOf('=');
+      const option = equals >= 0 ? token.slice(0, equals) : token;
+      if (!['--plan', '--json', '--force-version', '--data-dir', '--local-package-root'].includes(option) || seen.has(option)) {
+        process.stderr.write('setup received a duplicate or unknown option\n'); return 2;
+      }
+      seen.add(option);
+      if (option === '--data-dir' || option === '--local-package-root') {
+        const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+        if (!optionValue || optionValue.startsWith('--')) { process.stderr.write(`setup ${option} requires a value\n`); return 2; }
+      } else if (equals >= 0) { process.stderr.write(`setup ${option} does not accept a value\n`); return 2; }
+    }
     const localPackageRoot = value(args, '--local-package-root'); const dataDir = value(args, '--data-dir'); const planOnly = args.includes('--plan');
     try {
       const result = harness === 'opencode'
         ? setupOpenCode({ mode: localPackageRoot ? 'local' : 'public', ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly })
-        : setupNativeManager({ host: harness, ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') });
+        : harness === 'pi'
+          ? setupPi({ ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') })
+          : setupNativeManager({ host: harness, ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') });
       if (args.includes('--json')) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       else {
         process.stdout.write(`${harness}: ${result.status}; changed=${result.changed}\n`);
@@ -209,7 +226,7 @@ export async function runCli(args: string[]): Promise<number> {
         if ('warnings' in result) for (const warning of result.warnings) process.stdout.write(`Warning: ${warning}\n`);
         if ('diagnostics' in result) for (const diagnostic of result.diagnostics) process.stdout.write(`Diagnostic: ${diagnostic}\n`);
       }
-      return result.status === 'unsupported' || result.status === 'requires-user-action' ? 1 : 0;
+      return 'strategy' in result && (result.status === 'unsupported' || result.status === 'requires-user-action') ? 1 : 0;
     } catch (error) { process.stderr.write(`Setup failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
   }
   if (command !== 'import-legacy') { process.stderr.write(`Unknown command: ${command}\n`); return 2; }

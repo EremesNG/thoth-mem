@@ -33,12 +33,14 @@ for (const destination of [
   'integrations/opencode/skills/thoth-mem/SKILL.md',
   'integrations/codex/skills/thoth-mem/SKILL.md',
   'integrations/claude-code/skills/thoth-mem/SKILL.md',
+  'integrations/pi/skills/thoth-mem/SKILL.md',
 ]) copyIfChanged('plugin/skills/thoth-mem/SKILL.md', destination);
 
 for (const destination of [
   'integrations/opencode/skills/thoth-mem/references/observation-review.md',
   'integrations/codex/skills/thoth-mem/references/observation-review.md',
   'integrations/claude-code/skills/thoth-mem/references/observation-review.md',
+  'integrations/pi/skills/thoth-mem/references/observation-review.md',
 ]) copyIfChanged('plugin/skills/thoth-mem/references/observation-review.md', destination);
 
 for (const [source, destination] of [
