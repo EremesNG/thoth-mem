@@ -1,11 +1,21 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "thoth-mem",
-  "description": "Persistent project memory through the existing six thoth-mem MCP tools.",
+  "displayName": "thoth-mem Persistent Memory",
   "version": "0.4.13",
+  "description": "Local-first persistent memory for Claude Code sessions.",
   "author": {
-    "name": "thoth-mem maintainers"
+    "name": "thoth-mem contributors"
   },
   "homepage": "https://github.com/EremesNG/thoth-mem",
   "repository": "https://github.com/EremesNG/thoth-mem",
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "sqlite",
+    "coding-agent"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/claude-hooks.json",
+  "mcpServers": "./.mcp.json"
 }

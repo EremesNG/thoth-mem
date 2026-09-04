@@ -1,12 +1,4 @@
-packages:
-  - dashboard
 allowBuilds:
   better-sqlite3: true
   esbuild: true
-  onnxruntime-node: true
-  protobufjs: true
-  sharp: true
-packageExtensions:
-  '@huggingface/transformers':
-    dependencies:
-      onnxruntime-common: 1.24.3
+  msgpackr-extract: true

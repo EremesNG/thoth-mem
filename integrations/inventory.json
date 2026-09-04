@@ -1,85 +1,27 @@
 {
-  "schemaVersion": 1,
-  "assets": [
-    {
-      "harness": "opencode",
-      "role": "plugin",
-      "path": "integrations/opencode/plugin.mjs"
-    },
-    {
-      "harness": "opencode",
-      "role": "instruction",
-      "path": "integrations/opencode/memory-protocol.md"
-    },
-    {
-      "harness": "opencode",
-      "role": "runner",
-      "path": "integrations/shared/hook-runner.mjs"
-    },
-    {
-      "harness": "codex",
-      "role": "marketplace",
-      "path": ".agents/plugins/marketplace.json"
-    },
-    {
-      "harness": "codex",
-      "role": "plugin",
-      "path": "plugin/.codex-plugin/plugin.json"
-    },
-    {
-      "harness": "codex",
-      "role": "mcp",
-      "path": "plugin/codex.mcp.json"
-    },
-    {
-      "harness": "codex",
-      "role": "hooks",
-      "path": "plugin/hooks/codex-hooks.json"
-    },
-    {
-      "harness": "claude",
-      "role": "marketplace",
-      "path": ".claude-plugin/marketplace.json"
-    },
-    {
-      "harness": "claude",
-      "role": "plugin",
-      "path": "plugin/.claude-plugin/plugin.json"
-    },
-    {
-      "harness": "claude",
-      "role": "mcp",
-      "path": "plugin/.mcp.json"
-    },
-    {
-      "harness": "claude",
-      "role": "hooks",
-      "path": "plugin/hooks/hooks.json"
-    },
-    {
-      "harness": "shared",
-      "role": "runner",
-      "path": "plugin/runners/hook-runner.mjs"
-    },
-    {
-      "harness": "shared",
-      "role": "skill",
-      "path": "plugin/skills/thoth-mem/SKILL.md"
-    },
-    {
-      "harness": "shared",
-      "role": "skill-reference-codex",
-      "path": "plugin/skills/thoth-mem/references/codex.md"
-    },
-    {
-      "harness": "shared",
-      "role": "skill-reference-claude-code",
-      "path": "plugin/skills/thoth-mem/references/claude-code.md"
-    },
-    {
-      "harness": "shared",
-      "role": "skill-reference-opencode",
-      "path": "plugin/skills/thoth-mem/references/opencode.md"
-    }
-  ]
+  "schemaVersion": 2,
+  "lifecycleProtocolVersion": 3,
+  "coreVersion": "0.4.13",
+  "shared": ["hook-runner.mjs"],
+  "harnesses": {
+    "opencode": ["skills/thoth-mem/SKILL.md", "skills/thoth-mem/references/observation-review.md", "skills/thoth-mem/references/opencode.md"],
+    "codex": ["manifest.json", ".codex-plugin/plugin.json", "mcp.json", "hooks/hooks.json", "runner.mjs", "skills/thoth-mem/SKILL.md", "skills/thoth-mem/references/codex.md", "skills/thoth-mem/references/observation-review.md"],
+    "claude-code": ["manifest.json", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "runner.mjs", "skills/thoth-mem/SKILL.md", "skills/thoth-mem/references/claude-code.md", "skills/thoth-mem/references/observation-review.md"]
+  },
+  "publicDistribution": {
+    "assets": [
+      ".codex-plugin/plugin.json",
+      ".claude-plugin/plugin.json",
+      ".mcp.json",
+      "hooks/hooks.json",
+      "hooks/claude-hooks.json",
+      "runners/public-runner.mjs",
+      "runtime.json",
+      "distribution-lock.json",
+      "skills/thoth-mem/SKILL.md",
+      "skills/thoth-mem/references/codex.md",
+      "skills/thoth-mem/references/claude-code.md",
+      "skills/thoth-mem/references/observation-review.md"
+    ]
+  }
 }

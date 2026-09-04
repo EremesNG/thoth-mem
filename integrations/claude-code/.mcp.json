@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "thoth-mem": {
+      "command": "node",
+      "args": ["runner.mjs", "--mcp"],
+      "cwd": "."
+    }
+  }
+}

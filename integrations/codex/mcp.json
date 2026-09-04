@@ -1,0 +1,7 @@
+{
+  "thoth_mem": {
+    "command": "node",
+    "args": ["runner.mjs", "--mcp"],
+    "cwd": "."
+  }
+}

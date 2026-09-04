@@ -1,26 +1,33 @@
 {
   "name": "thoth-mem",
   "version": "0.4.13",
-  "description": "Persistent project memory through the existing six thoth-mem MCP tools.",
+  "description": "Local-first persistent memory for Codex coding sessions.",
   "author": {
-    "name": "thoth-mem maintainers"
+    "name": "thoth-mem contributors"
   },
   "homepage": "https://github.com/EremesNG/thoth-mem",
   "repository": "https://github.com/EremesNG/thoth-mem",
   "license": "MIT",
   "keywords": [
     "memory",
-    "mcp",
-    "sessions",
-    "context"
+    "sqlite",
+    "coding-agent"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/codex-hooks.json",
-  "mcpServers": "./codex.mcp.json",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "thoth-mem Persistent Memory",
-    "shortDescription": "Privacy-safe root-session memory and bounded recall.",
-    "developerName": "thoth-mem maintainers",
-    "category": "Productivity"
+    "shortDescription": "Persistent memory for coding sessions.",
+    "longDescription": "SQLite-first project memory, bounded recovery, and compaction-safe lifecycle for coding agents.",
+    "developerName": "thoth-mem contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Memory",
+      "MCP"
+    ],
+    "websiteURL": "https://github.com/EremesNG/thoth-mem",
+    "defaultPrompt": [
+      "Recall the durable decisions for this project."
+    ]
   }
 }

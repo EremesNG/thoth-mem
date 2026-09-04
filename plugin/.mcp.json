@@ -1,12 +1,11 @@
 {
   "mcpServers": {
     "thoth-mem": {
-      "command": "npx",
+      "cwd": ".",
+      "command": "node",
       "args": [
-        "--yes",
-        "thoth-mem@0.4.13",
-        "mcp",
-        "--no-http"
+        "./runners/public-runner.mjs",
+        "--mcp"
       ]
     }
   }

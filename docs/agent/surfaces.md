@@ -1,37 +1,22 @@
-# MCP, CLI, and HTTP surfaces
+# MCP and CLI surfaces
 
-## Responsibility
+The model-visible registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
 
-Owns process startup/shutdown, MCP registration and schemas, CLI parsing/output/exit behavior, HTTP routing/error mapping, OpenAPI, and operation tracing at public boundaries. Durable data behavior belongs to persistence/retrieval.
+`project_key` is the exact opaque verified identity on every project-scoped call. `project_name` is creation/display metadata only and never participates in identity equality. `mem_project action=list` exposes at most 256 exact aliases per project, `aliasCount`, `aliasesTruncated`, and shadowed historical path rows without mutating, merging, or limiting exact alias resolution.
 
-## Entry points
+There is no v1 schema negotiation, graph action, HTTP route, dashboard, model provider, or hidden Store fallback. Errors use bounded safe messages. Structured JSON is authoritative and text is a bounded rendering.
 
-- `src/index.ts` and `src/server.ts`: stdio process, config/store composition, transport, and cleanup.
-- `src/tools/index.ts` plus `src/tools/mem-*.ts`: six-tool MCP surface and zod-backed handlers.
-- `src/cli.ts`: public commands, setup dispatch, and package-internal integration event ingress.
-- `src/http-server.ts`, `src/http-routes.ts`, `src/http-openapi.ts`: HTTP bridge, takeover, routes, JSON contracts, and docs.
-- `src/tools/tracing.ts` and trace store behavior: sanitized operation evidence.
+`mem_project action=timeline` is the project-wide chronological read for promoted memories. It requires the exact `project_key`, accepts optional inclusive `since`/`until` ISO instants plus an opaque cursor, and returns a bounded page ordered by semantic `validFrom` descending and ID ascending. All four memory statuses are eligible by default. Compact items expose stable IDs and bounded memory/validity metadata only; raw evidence, summaries, observations, and session events remain behind their existing explicit routes, and full memory expansion remains a `mem_get` operation. Timeline cursors are bound to the project and normalized bounds, represent a live traversal rather than a database snapshot, and reject reuse under a different scope. Timeline-only fields fail on every other project action.
 
-## Invariants and hazards
+`mem_save` is one strict four-branch union:
 
-- The compact MCP surface is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`; internal/admin capabilities stay in CLI/HTTP unless the task explicitly changes this contract.
-- Tool modules remain thin, validate inputs locally, and delegate durable behavior.
-- Preserve CLI stdout/stderr and exit semantics, HTTP status/error bodies, request validation, and OpenAPI agreement when public behavior changes.
-- `/viz/atlas` Community preserves unqualified and `presentation=complete` pagination. `presentation=semantic-zoom` is additive and returns one bounded representative projection with exact accounting, deterministic regions, aggregate region bridges, and typed relationship explanations. `region_id` is valid only for semantic-zoom Community; invalid combinations return `VIZ_ATLAS_PRESENTATION_INVALID`, while obsolete or wrong-parent regions return `VIZ_ATLAS_REGION_GONE` with Community recovery.
-- `/viz/atlas`, `/observatory/recall`, and `/observatory/pivot` negotiate additive `hierarchy=global|project`. Project hierarchy accepts Universe without `project_id`; Project requires `project_id`; Community and Neighborhood require both opaque `project_id` and the owning `community_id`. Project Universe pages are deterministic, use `page_size` `1..150` (dashboard policy 24 projects/72 cores), and expose a generation/scope-bound opaque continuation; each page is a replacement, not an accumulator.
-- Project-hierarchy atlas responses expose only opaque project/constellation ownership, safe labels, project regions/bridges, and level-local counts. Recall hits and pivots return the server-revalidated `project_id + community_id + focus_node_id` tuple. Raw canonical project values never enter hierarchy URLs. Unqualified requests retain global compatibility; hierarchy conflicts, missing ownership, obsolete projects, and stale cursors use the typed `VIZ_ATLAS_HIERARCHY_INVALID`, `VIZ_ATLAS_PROJECT_SCOPE_INVALID`, `VIZ_ATLAS_PROJECT_GONE`, and existing generation/cursor errors with the nearest valid recovery level.
-- Close Store/process resources on normal and signal shutdown paths.
-- Trace request/response data must remain sanitized and bounded.
+- direct `{ evidence, memory? }` preserves the deliberate save path; metadata is forbidden except for the closed evidence-only `observation_validation` and `observation_review_attestation` forms, which require paired verified session identity, a stable event key, an existing same-project candidate, and no memory;
+- `{ observation }` submits one source-supported session- or project-scoped candidate with an exact proposed memory but does not write memory or FTS;
+- `{ observation_review }` appends one terminal root-authorized accepted/rejected verdict under `root_user_confirmed`, `observable_validation`, or `independent_review` and its exact support matrix;
+- `{ observation_promotion }` explicitly promotes one accepted candidate without accepting new prose.
 
-## Tests and verification
+The branches are mutually exclusive, reject unknown nested keys and partial identity pairs, and bind idempotent replay to the original payload/project/session. Observation proposed memory deliberately omits `supersedes_id`; a stable `topic_key` applies the existing current-memory supersession rule at promotion time. Raw `observation`, `observation_review`, and `observation_promotion` evidence kinds are internal canonical records, not direct public evidence inputs.
 
-- MCP: `tests/tools/`, especially `registry.test.ts` for registration changes.
-- CLI/process: `tests/cli.test.ts`, `tests/index.test.ts`.
-- HTTP/OpenAPI/dashboard contracts: `tests/http-server.test.ts`, `tests/http-viz.test.ts`, and relevant `tests/dashboard/` files.
-- Run focused tests first. Tool registration changes require build plus full tests; public TypeScript/export changes require build. See [testing](testing.md).
+`mem_project action=observations` lists a project-scoped bounded queue with optional exact-session, state, and `current|history` filters. Current means correction-chain leaves; history means non-leaf predecessors. Results are ordered by pending/accepted/rejected/promoted state priority, creation time, then ID, and never include raw support content. `mem_get` expands one observation ID into its candidate, facets, support IDs, terminal review, promotion mapping, and optional predecessor/successor lineage. `mem_recall`, `mem_context`, `mem_session`, and `mem_project action=briefing` continue to consume summaries and promoted memories only.
 
-## Escalate context
-
-Load [persistence](persistence-retrieval.md) for Store/retrieval semantics, [dashboard](dashboard.md) for client consumption, or [native lifecycle](native-lifecycle.md) for package-internal event behavior.
-
-Evidence: `src/tools/index.ts`, `src/cli.ts`, `src/http-routes.ts`, `src/http-server.ts`, `src/http-openapi.ts`, and matching tests.
+`plugin/skills/thoth-mem/SKILL.md` is the canonical agent guidance. It routes topic/query needs to `mem_recall`, chronological needs to the bounded timeline, and selected IDs to `mem_get`, while preserving the existing recall/save/handoff, identity, privacy, and confirmation cadence. `pnpm run integration:sync` copies that body byte-for-byte to the OpenCode, Codex, and Claude Code bundles and refreshes the public distribution lock; do not edit host copies independently.

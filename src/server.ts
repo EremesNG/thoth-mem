@@ -1,48 +1,28 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Store } from "./store/index.js";
-import { getConfig, resolveDataDir, ThothConfig } from "./config.js";
-import { registerTools } from "./tools/index.js";
-import { VERSION } from "./version.js";
-import { createEmbeddingProvider } from "./retrieval/provider-factory.js";
-import type { EmbeddingProviderAdapter } from "./retrieval/providers.js";
-import { createHydeGenerator } from "./retrieval/hyde-generator.js";
-import type { HydeGenerator } from "./retrieval/hyde.js";
-import { createKgLlmExtractor } from "./indexing/kg-llm-generator.js";
-import type { KgLlmExtractor } from "./indexing/kg-llm-generator.js";
-import { SERVER_MEMORY_PROTOCOL_INSTRUCTIONS } from "./integration/core/protocol.js";
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
-export interface ServerOptions {
-  dataDir?: string;
-  embeddingProvider?: EmbeddingProviderAdapter | null;
-}
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-export function createServer(options: ServerOptions): {
-  server: McpServer;
-  store: Store;
-  config: ThothConfig;
-  embeddingProvider: EmbeddingProviderAdapter | null;
-  hydeGenerator: HydeGenerator | null;
-  kgLlmExtractor: KgLlmExtractor | null;
-} {
-  const config = getConfig({ dataDir: options.dataDir });
+import { loadRuntimeConfig } from './config/runtime.js';
+import { MemoryService } from './memory-core/service.js';
+import { registerTools } from './tools/index.js';
+import { VERSION } from './version.js';
 
-  resolveDataDir(config);
+export interface ServerOptions { dataDir?: string; databasePath?: string }
 
-  const store = new Store(config.dbPath, config);
-  const embeddingProvider = options.embeddingProvider === undefined
-    ? config.embedding ? createEmbeddingProvider(config.embedding) : null
-    : options.embeddingProvider;
-  const hydeGenerator = createHydeGenerator(config.hyde);
-  const kgLlmExtractor = createKgLlmExtractor(config.kgLlm);
+const SERVER_INSTRUCTIONS = [
+  'Persistent project memory for coding agents.',
+  'Recall compactly before acting when prior work may change the task; expand context and fetch only selected records.',
+  'Save verified durable decisions, discoveries, failures, conventions, and completed-change lessons at semantic boundaries, and save one continuation handoff before meaningful work ends when future sessions benefit.',
+  'Use verified identity for attribution, exclude private, transient, canonical, user-forbidden, and duplicate content, and reserve mem_session for actual root lifecycle events.',
+].join(' ');
 
-  const server = new McpServer({
-    name: "thoth-mem",
-    version: VERSION,
-  }, {
-    instructions: SERVER_MEMORY_PROTOCOL_INSTRUCTIONS,
-  });
-
-  registerTools(server, store, { embeddingProvider, hydeGenerator });
-
-  return { server, store, config, embeddingProvider, hydeGenerator, kgLlmExtractor };
+export function createServer(options: ServerOptions = {}): { server: McpServer; service: MemoryService; databasePath: string } {
+  const dataDir = loadRuntimeConfig({ ...(options.dataDir ? { explicitDataDir: options.dataDir } : {}) }).dataDir;
+  mkdirSync(dataDir, { recursive: true });
+  const databasePath = options.databasePath ?? join(dataDir, 'memory.sqlite');
+  const service = new MemoryService({ databasePath });
+  const server = new McpServer({ name: 'thoth-mem', version: VERSION }, { instructions: SERVER_INSTRUCTIONS });
+  registerTools(server, service);
+  return { server, service, databasePath };
 }

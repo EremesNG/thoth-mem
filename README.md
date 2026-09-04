@@ -1,358 +1,210 @@
-<div align="center">
+# thoth-mem
 
-<img src="img/thoth-mem.png" alt="Thoth-Mem" width="400" />
+SQLite-first persistent memory for OpenCode, Codex, and Claude Code.
 
-# Thoth-Mem
+The product has one local SQLite/FTS5 source of truth, immutable evidence, database-ordered session events, source-supported versioned session summaries, reviewed observation candidates, promoted temporal memories, and exactly six MCP tools: `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. OpenCode additionally exposes one read-only native `thoth_mem_root_identity` tool for active-session metadata; it is not an MCP memory operation. Codex and Claude obtain the same root identity from verified native lifecycle context. It requires no embedding model, vector extension, graph engine, LLM, network service, HTTP server, or dashboard.
 
-**Persistent memory for AI coding agents**
+## Use
 
-[![npm version](https://img.shields.io/npm/v/thoth-mem)](https://www.npmjs.com/package/thoth-mem)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-
-Give coding agents durable project memory across sessions, compactions, and context resets.
-
-</div>
-
-Thoth-Mem is a local-first MCP server backed by SQLite and FTS5. It preserves useful decisions, bug fixes, conventions, and session continuity, then retrieves only the evidence an agent needs. The same installation also provides a CLI, an optional HTTP API, and native lifecycle integrations for supported coding harnesses.
-
-Global scope manages the current user's harness configuration; project scope is explicit and confined to the selected project and its receipt tree. Engram, thoth-agents, or another memory integration may overlap; treat this as a warning only: thoth-mem does not edit, disable, remove, or write to external repositories.
-
-## Quick start
-
-Requires Node.js 18 or newer. Native setup is optional: a manual MCP connection
-only needs the `mcp` command.
-
-### Run the published package
-
-Start the latest published MCP server without installing a global command:
-
-```bash
-npx -y thoth-mem@latest mcp
-```
-
-This starts the MCP server and its local HTTP bridge. Add `--no-http` when only
-the MCP transport is wanted. New client configurations should use the explicit
-`mcp` subcommand.
-
-Native integrations invoke the persistent `thoth-mem` command after setup, so
-install or update that command globally before configuring a harness. Use `npx`
-to run the setup implementation from the latest published package, inspect its
-zero-write plan, and then apply it:
-
-```bash
-npx -y thoth-mem@latest setup codex --scope global --plan --json
-npx -y thoth-mem@latest setup codex --scope global --json
-```
-
-Replace `codex` with `opencode` or `claude` for another supported harness, then
-restart that harness. Running `setup` alone does not install or update the npm
-package.
-
-### Install this repository
-
-Use the repository flow to test commits that have not been published yet:
-
-```bash
-pnpm install
+```sh
+pnpm install --frozen-lockfile
 pnpm run build
-pnpm add -g .
-thoth-mem version
-thoth-mem setup codex --scope global --plan --json
-thoth-mem setup codex --scope global --json
+node dist/index.js mcp --data-dir ./memory-data
 ```
 
-`thoth-mem@latest` only contains the latest published release. Rebuild and rerun
-`pnpm add -g .` after pulling newer unpublished commits.
+Recall is progressive: `mem_recall mode=compact`, then `mode=context`, then `mem_get` only when full content is needed. `mem_context` is a separate bounded project/session recovery briefing; `mem_project action=timeline`, `action=summaries`, and `action=observations` provide bounded explicit inspection. Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory. Rejection is terminal, corrections append successors, and normal lifecycle capture never infers a candidate, review, or promotion. The exact six-tool surface does not change.
 
-### Update an existing installation
-
-Update the package first. If a native integration is installed, rerun its setup
-so copied assets, skills, hooks, and managed declarations converge to the new
-package version:
-
-```bash
-pnpm add -g thoth-mem@latest
-npx -y thoth-mem@latest setup codex --scope global --plan --json
-npx -y thoth-mem@latest setup codex --scope global --json
-```
-
-Then restart the harness or MCP process. Manual MCP users do not need `setup`;
-restarting `npx -y thoth-mem@latest mcp` is enough.
-
-Setup preserves the memory database and user-owned configuration. On startup,
-missing configuration fields may be backfilled, but explicit values such as an
-LM Studio model remain selected. The config format remains `"version": 1`.
-For a published install, update an older `$schema` URL manually to that release
-version for current editor validation and autocomplete. An unpublished checkout
-must use this repository's `config.schema.json` for matching validation because
-unpkg cannot expose the change before release. The schema URL does not control
-runtime migration.
-
-Changing an embedding model is a configuration operation, not a setup operation.
-Edit `embedding.provider`, `model`, `baseUrl`, and native `dimensions` as needed;
-`profile: "auto"` resolves supported model families. Restart thoth-mem and let
-the changed embedding lineage enqueue the idempotent semantic-index rebuild.
-
-## The memory loop
-
-A useful agent workflow is small and repeatable:
-
-1. **Save the durable lesson.** Use `mem_save` for a decision, root cause, convention, or other non-obvious fact that should survive the current context.
-2. **Recall narrowly.** Start with `mem_recall(mode="compact")`, expand strong candidates with `mode="context"`, and fetch a complete selected record with `mem_get`.
-3. **Resume with identity.** Keep the same stable `session_id` and `project`; use `mem_context` for recent continuity and `mem_session` for root-owned lifecycle events.
-
-Example observation:
+Use the timeline when the question is how promoted project memory changed over time rather than which memories best match a query:
 
 ```json
 {
-  "kind": "observation",
-  "title": "Retry SQLite writes in a new transaction",
-  "type": "bugfix",
-  "project": "my-project",
-  "topic_key": "sqlite/busy-retry",
-  "content": "**What**: Roll back after SQLITE_BUSY and retry in a new transaction.\n**Why**: Retrying inside the failed transaction repeats the failure.\n**Where**: write transaction helper.\n**Learned**: Use bounded backoff before opening the new transaction."
+  "action": "timeline",
+  "project_key": "git:verified-project-id",
+  "since": "2026-01-01T00:00:00Z",
+  "until": "2026-12-31T23:59:59Z",
+  "limit": 20,
+  "budget_chars": 4000
 }
 ```
 
-Remove content inside `<private>...</private>` before persistence. Do not store credentials, complete transcripts, generated agent prompts as user intent, or raw logs without a reusable lesson.
+Entries include all current, superseded, retracted, and historical promoted-memory states in deterministic `validFrom` descending and ID ascending order. They expose only bounded title/topic/snippet metadata and validity lineage; raw evidence, summaries, observations, and session events remain excluded. Follow the opaque `nextCursor` only as needed, then use `mem_get` on selected stable IDs for full content and provenance. Bounds are inclusive normalized ISO instants. A cursor is bound to its project and bounds and traverses the live ledger; restart from the first page when a snapshot-like fresh view is required after concurrent backdated writes.
 
-## Six MCP tools
-
-| Tool | Use it for |
-| --- | --- |
-| `mem_save` | Persist an observation, real user prompt, root-owned summary, or passive learning. |
-| `mem_recall` | Run bounded fused recall; use compact results before expanding context. |
-| `mem_context` | Read recent sessions, prompts, observations, and optional recalled continuity. |
-| `mem_get` | Fetch one observation or prompt by ID, with bounded pagination or timeline context. |
-| `mem_project` | Navigate projects, topics, graph views, and operational health. |
-| `mem_session` | Start, checkpoint, or summarize a root-owned memory session. |
-
-Setup, sync, migration, rebuild, and maintenance commands are CLI/HTTP administration, not additional MCP tools.
-
-## Inspect graph communities
-
-Communities are bounded summaries derived from a project's knowledge graph. An operator builds or refreshes the committed summaries through the CLI:
-
-```bash
-thoth-mem rebuild-communities --project my-project
-```
-
-An agent then obtains them through `mem_project`:
+Verified session saves return an ordered event sequence. At `checkpoint_pre_compact` or `finalize`, `mem_session` may accept an externally produced structured summary whose every claim cites in-range evidence from the same project and root session. The core validates and versions it but never generates it or promotes a handoff automatically. A minimal checkpoint submission uses the evidence ID and event sequence returned by an earlier session-scoped `mem_save`:
 
 ```json
 {
-  "action": "graph",
-  "project": "my-project",
-  "navigation": "community",
-  "limit": 5,
-  "max_chars": 2000
-}
-```
-
-The response reports community state and freshness, then entries such as `community=<id>`, graph coverage, confidence, degradation state, a bounded summary, and `sources=obs:<id>`. Community inspection requires a project but no focus node or observation ID. If no committed summaries exist, it says so instead of synthesizing a global answer.
-
-To inspect evidence behind a community, take an `obs:<id>` from its `sources` field and call `mem_get(kind="observation", id=<id>)`. Observation IDs also appear in recall results. For a bounded graph neighborhood, reuse one as `focus_node_id="obs:<id>"` with `navigation="neighborhood"`.
-
-## Native harness integrations
-
-Native setup installs the packaged MCP declaration, memory skill, and lifecycle hooks where the harness supports them. Inspect the zero-write plan first, then rerun without `--plan` to apply it:
-
-| Harness | Plan | Apply |
-| --- | --- | --- |
-| OpenCode | `thoth-mem setup opencode --scope global --plan --json` | `thoth-mem setup opencode --scope global --json` |
-| Codex | `thoth-mem setup codex --scope global --plan --json` | `thoth-mem setup codex --scope global --json` |
-| Claude Code | `thoth-mem setup claude --scope global --plan --json` | `thoth-mem setup claude --scope global --json` |
-
-The default OpenCode setup command is `thoth-mem setup opencode`; add
-`thoth-mem setup opencode --scope project --project /path/to/project --force`
-when explicitly targeting a project, or use
-`thoth-mem setup codex --rollback /path/to/receipt.json` for a receipt-scoped
-rollback.
-
-Setup status and process exit codes are stable:
-
-| Status | Exit code |
-| --- | --- |
-| `complete` | `0` |
-| `failed` | `1` |
-| `partial` | `2` |
-| `requires_user_action` | `3` |
-
-Project-local setup is explicit:
-
-```bash
-thoth-mem setup opencode --scope project --project /path/to/project --plan --json
-```
-
-Review detected conflicts before applying. Use `--force` only for conflicting locations whose thoth-mem ownership is already proven. Codex `0.144.x`, `0.146.x`, and `0.147.x` belong to the tested compatibility set and do not require `--force`. For other Codex versions, `--force` may override only the tested-version gate when the selected scope still exposes complete, independently verifiable plugin-manager capabilities; setup emits a warning when it uses that override. It does not bypass state verification, ownership, containment, reconciliation, or cleanup safeguards, and it grants no authority over unrelated configuration.
-
-Claude Code also supports its native marketplace flow:
-
-```bash
-claude plugin marketplace add EremesNG/thoth-mem
-claude plugin install thoth-mem
-```
-
-Native integration is optional. Existing memories and the six-tool MCP server continue to work with a manual connection.
-
-### Manual MCP fallback
-
-Native hooks are optional. Keep a plain six-tool MCP connection when you do not
-want managed setup or a native plugin; existing memories remain available.
-
-## Transitioning to native harness integration
-
-Native setup is opt-in: inspect the zero-write plan, review conflicts, then apply the matching harness command. For Codex, open `/plugins`, install thoth-mem from `EremesNG/thoth-mem`, and verify the marketplace and plugin state. External Codex registration is not atomically reversible, so confirm external state before retrying or rolling back local setup.
-
-Managed setup contract: Plan mode performs zero writes and only mutation at
-thoth-mem-managed locations. Backups are created before the first mutation;
-OpenCode accepts `opencode.json` or `opencode.jsonc`. Each mutating attempt
-writes an HMAC-protected receipt with status `in_progress` before changes:
-
-- global receipts: `<thoth-data-dir>/setup/receipts/<receipt-id>/receipt.json`
-- project receipts: `<project>/.thoth/setup/receipts/<receipt-id>/receipt.json`
-
-Missing or tampered receipts fail closed. A verified rollback preserves unrelated settings,
-while drift or unavailable capabilities return `requires_user_action`.
-Repeated setup and repeated completed rollback are no-ops when verified state
-already matches.
-
-### Gemini CLI: manual MCP
-
-Gemini CLI is a manual MCP client path, not a managed native thoth-mem integration. Add this entry to `~/.gemini/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "thoth": {
-      "command": "npx",
-      "args": ["-y", "thoth-mem@latest", "mcp"]
-    }
+  "operation": "checkpoint_pre_compact",
+  "harness": "codex",
+  "project_key": "path:/workspace/thoth-mem",
+  "project_name": "thoth-mem",
+  "root_session_key": "verified-root-session",
+  "event_key": "checkpoint:42",
+  "content": "Non-empty checkpoint evidence.",
+  "summary": {
+    "kind": "checkpoint",
+    "coverage": { "from_sequence": 1, "to_sequence": 7 },
+    "generator": { "kind": "root_agent", "name": "root-agent" },
+    "claims": [
+      { "kind": "objective", "content": "Preserve supported session continuity.", "support_ids": ["evidence-id-from-mem-save"] },
+      { "kind": "next_action", "content": "Run the focused verification lane.", "support_ids": ["evidence-id-from-mem-save"] }
+    ]
   }
 }
 ```
 
-## Evaluate retrieval and graph quality
+On recovery, the newest eligible summary for that exact verified session is rendered first as untrusted historical data with a stable `(summary:<id>)` expansion reference. Raw supports remain withheld from model-visible context; use `mem_get` for the selected summary ID when its structured claims and support IDs are needed. If no eligible summary exists, recovery truthfully falls back to current handoff/memory selection without fabricating one.
 
-The repository includes deterministic evaluation commands:
+## Public plugin installation
 
-```bash
-pnpm run eval:retrieval
-pnpm run eval:kg
-pnpm run eval:embedding-models -- --help
+OpenCode loads the npm package itself as a native plugin. Setup writes one exact `thoth-mem@<executing-version>` entry and synchronizes the packaged memory Skill into OpenCode's global Skill directory:
+
+```sh
+npx --yes thoth-mem@0.4.13 setup opencode --plan --json
+npx --yes thoth-mem@0.4.13 setup opencode
 ```
 
-`eval:retrieval` seeds signal observations plus distractors and measures whether the expected memory ranks near the top. Read its report as a collection of signals:
+Codex users can add the central Thoth marketplace and install the public plugin:
 
-- **Recall and rank** show whether the right evidence was found and how early.
-- **Noise and case mix** show robustness across direct, rephrased, and repository-derived examples.
-- **Compression** shows how much evidence was removed before context delivery; it is an efficiency signal, not proof that the remaining text is correct.
-- **Lane and fallback evidence** shows lexical, semantic raw/HyDE, and KG participation, including pending or degraded semantic behavior.
-- **Lineage and provenance** show whether returned evidence remains attributable to its source.
-
-`eval:kg` measures expected subject-relation-object recall, forbidden-triple leakage, deterministic extraction behavior, and validated optional LLM enrichment. Missing expected facts indicate coverage gaps; forbidden hits indicate unsafe graph invention.
-
-These evals are deterministic development gates over curated and synthetic fixtures. They do not predict every production corpus, replace human review, prove a native harness integration, or by themselves justify enabling optional community read paths. Compare the individual cases and failure messages instead of treating one aggregate number as universal quality.
-
-### Embedding profiles and model comparison
-
-Semantic embedding inputs are formatted by a versioned model profile. `auto` recognizes Nomic, EmbeddingGemma, and Qwen3-Embedding model-family aliases; unknown models use `raw` and receive no inferred asymmetric formatting. The public configuration intentionally has no global `task` field: retrieval intent and query/document role are assigned internally for each input, including document-role HyDE answers.
-
-```json
-{
-  "embedding": {
-    "provider": "lmstudio",
-    "model": "text-embedding-embeddinggemma-300m",
-    "baseUrl": "http://127.0.0.1:1234",
-    "dimensions": 768,
-    "profile": "auto",
-    "normalize": true
-  }
-}
+```sh
+codex plugin marketplace add https://github.com/EremesNG/thoth-plugins.git
+codex plugin add thoth-mem@thoth-plugins
 ```
 
-Supported profile values are `auto`, `nomic`, `embeddinggemma`, `qwen3`, and `raw`. `THOTH_EMBEDDING_PROFILE` and `THOTH_EMBEDDING_NORMALIZE` override persisted values. The resolved profile version and normalization flag are part of semantic index lineage, so changing them marks prior vectors stale and uses the existing idempotent rebuild queue.
+Claude Code users can use the same central marketplace:
 
-Local Transformers.js inference can opt into a specific ONNX execution device:
-
-```json
-{
-  "embedding": {
-    "provider": "transformers_local",
-    "model": "onnx-community/embeddinggemma-300m-ONNX",
-    "device": "dml",
-    "dimensions": 768,
-    "profile": "auto",
-    "normalize": true
-  }
-}
+```sh
+claude plugin marketplace add https://github.com/EremesNG/thoth-plugins.git --scope user
+claude plugin install thoth-mem@thoth-plugins --scope user
 ```
 
-Supported device values are `auto`, `cpu`, `dml`, `cuda`, and `coreml`; `cpu` is the default. `THOTH_EMBEDDING_DEVICE` overrides the persisted `embedding.device` value. With the prebuilt Node ONNX Runtime used by Transformers.js, `dml` targets DirectML on Windows, `cuda` targets supported Linux x64 CUDA installations, and `coreml` targets macOS. An explicit unavailable device fails model initialization instead of silently switching to CPU. `auto` delegates platform-specific provider ordering and fallback to Transformers.js, so its effective backend can change across hosts or dependency versions.
+Both public plugins load the exact published `thoth-mem` npm version declared by the repository distribution. They include native hooks, one six-tool MCP registration, and the shared memory Skill.
 
-Device selection only affects `transformers_local`; remote Ollama and LM Studio requests ignore it. GPU backends can have a substantially slower cold start, so they are most useful for persistent MCP processes or larger embedding batches. The device is deliberately excluded from semantic index lineage: changing only `embedding.device` does not mark existing vectors stale or enqueue a rebuild.
+The same operations are available through the package CLI. Codex `0.151.x` is the supported unforced manager contract; another Codex version fails closed unless `--force-version` verifies the complete safe manager surface first. Claude setup can verify marketplace, plugin, hooks, MCP, Skill, and runtime structure without claiming paid-model use.
 
-Provider model examples:
-
-| Profile | LM Studio model ID | Transformers.js model ID | Native dimensions |
-| --- | --- | --- | ---: |
-| Nomic | use the exact ID from `/v1/models`, for example `text-embedding-nomic-embed-text-v1.5@q8_0` | `nomic-ai/nomic-embed-text-v1.5` | 768 |
-| EmbeddingGemma | `text-embedding-embeddinggemma-300m` for the verified GGUF installation | `onnx-community/embeddinggemma-300m-ONNX` | 768 |
-| Qwen3-Embedding-0.6B | `text-embedding-qwen3-embedding-0.6b` for the verified GGUF installation | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 |
-
-EmbeddingGemma local execution consumes `sentence_embedding`. Qwen local execution applies the retrieval instruction only to queries and uses the last attended hidden-state token for pooling. All providers reject incomplete, non-finite, zero, or dimensionally inconsistent batches. LM Studio response indexes are validated and valid out-of-order rows are restored to input order; missing, duplicate, or invalid indexes are rejected. During recall these errors explicitly degrade semantic retrieval while lexical and KG retrieval continue.
-
-Run the three-model quality gate with explicit model IDs and a durable output path:
-
-```bash
-pnpm run eval:embedding-models -- --provider lmstudio --base-url http://127.0.0.1:1234 --nomic-model <nomic-id> --embeddinggemma-model <gemma-id> --qwen3-model <qwen-id> --output <result.json>
+```sh
+npx --yes thoth-mem@0.4.13 setup codex --plan --json
+npx --yes thoth-mem@0.4.13 setup codex
+npx --yes thoth-mem@0.4.13 setup claude --plan --json
+npx --yes thoth-mem@0.4.13 setup claude
 ```
 
-The gate requires all three executions to complete and at least one candidate to meet the Recall@1/Recall@5/MRR thresholds without regressing any Nomic metric. Nomic is the relative comparator, not a candidate subject to the absolute thresholds. If both candidates qualify, an explicit quality score and stable tie-break order select the winner. A missing model, invalid vector, no eligible candidate, or report-write failure exits non-zero and preserves the current default.
+Setup is global/user-native only. Project scope, copied plugin bundles, broad manager-cache edits, legacy fallback, and fragment migration are intentionally unsupported. With Codex closed, setup makes one bounded migration exception after verifying `thoth-mem@thoth-plugins`: it retires only the two documented thoth-mem legacy identities and their exact preflight-approved cache/snapshot roots. It never scans for deletion targets or treats restart as cache garbage collection.
 
-The recorded 2026-08-08 LM Studio run selected EmbeddingGemma as the shipped local default. EmbeddingGemma and Qwen3 both completed with Recall@1 `1.00`, Recall@5 `1.00`, and MRR `1.00`, versus Nomic `0.50`, `1.00`, and `0.7167`; both candidates were eligible, and EmbeddingGemma won their exact quality tie by the stable lexical profile-ID rule. Median latency in the persisted decision run was 190.5 ms for Nomic, 195 ms for EmbeddingGemma, and 320.5 ms for Qwen3.
+## Local OpenCode development
 
-Qwen3 file sizes depend on the runtime artifact:
+Build the checkout, then select local provenance explicitly. There is no fallback from `file://` to npm and the repository marketplaces remain unchanged:
 
-| Qwen3 artifact | Quantization | Bytes | MiB |
-| --- | --- | ---: | ---: |
-| Original Transformers `model.safetensors` | BF16 | 1,191,586,416 | 1,136.39 |
-| Transformers.js `onnx/model_quantized.onnx` | Q8 | 613,527,631 | 585.11 |
-| LM Studio `Qwen3-Embedding-0.6B-Q8_0.gguf` | Q8_0 | 639,150,592 | 609.54 |
-
-The Qwen3 Q8 model is 304,069,133 bytes larger than EmbeddingGemma Q8 in Transformers.js and 305,559,648 bytes larger in LM Studio. It also uses native 1024-dimensional vectors instead of EmbeddingGemma's 768 dimensions. The runner does not install or discover provider models on the operator's behalf.
-
-Scale retrieval noise when you want a tougher local run:
-
-```powershell
-$env:THOTH_RETRIEVAL_EVAL_NOISE='250'
-pnpm run eval:retrieval
-```
-
-## Advanced operations
-
-- Run `thoth-mem help` for the complete CLI command and option list.
-- Open the local dashboard at `http://localhost:7438/` and OpenAPI documentation at `http://localhost:7438/docs`.
-- Use `thoth-mem sync --dir=.thoth-sync` and `thoth-mem sync-import --dir=.thoth-sync` for Git-friendly portability.
-- `repair-sync-journal (--project <name> | --all) --apply` previews and binds its repair batch internally. The optional `--expected-fingerprint` remains available when an external workflow already has a preview binding.
-- `prune-operation-traces (--project <name> | --all) --apply` likewise binds one retention batch internally. Add `--until-complete` to process the initially bounded backlog with one fixed effective instant and fresh later fingerprints. An externally supplied binding must include both `--expected-fingerprint` and `--effective-now`.
-- `compact-database [--data-dir <path>]` performs a read-only preview. Add `--apply` only after reviewing its reclaimable-space and capacity estimates. Apply can require twice the greater of the physical and logical database sizes, can be blocked by other SQLite clients, and reports success only after integrity, foreign-key, schema, durable-count, and WAL checks. It uses SQLite-managed checkpoint and `VACUUM`; it does not promise rollback after a committed compaction.
-- Compaction is never automatic. Running it against live data requires separate operator authorization; repository tests use disposable databases only.
-- Review [`config.schema.json`](config.schema.json) for persisted configuration and environment-backed settings.
-- Data lives in `~/.thoth/thoth.db` by default; override the data directory with `THOTH_DATA_DIR` or `--data-dir`.
-
-Semantic indexing is non-blocking. If embeddings or `sqlite-vec` are unavailable, recall remains usable through supported lexical and graph evidence and reports the degraded lane instead of silently claiming semantic success.
-
-## Development
-
-```bash
-pnpm install
-pnpm run integration:verify
+```sh
 pnpm run build
+node dist/index.js setup opencode --plan --json \
+  --local-package-root /absolute/path/to/thoth-mem \
+  --data-dir /absolute/path/to/shared-memory
+node dist/index.js setup opencode \
+  --local-package-root /absolute/path/to/thoth-mem \
+  --data-dir /absolute/path/to/shared-memory
+```
+
+The local entry is the canonical absolute URL for `dist/opencode.js`. OpenCode loads the thin native adapter inside Bun; SQLite-backed lifecycle calls cross bounded JSON stdio to literal `node` and the package-relative `dist/index.js lifecycle` entry, while MCP starts through the same package-relative Node entry. The adapter preserves user `skills.paths`, keeps changing recovered memory in one tagged trailing prompt region, and degrades without rejecting the host prompt if the Node lifecycle process is unavailable. Setup owns only the exact thoth-mem plugin entries, global `skills/thoth-mem` tree, provider config, and its bounded receipts.
+
+For Codex development through a personal marketplace, keep its local entry pointed at `./plugins/thoth-mem` and synchronize the payload from this checkout with:
+
+```sh
+pnpm run setup:codex:local
+```
+
+The command builds the checkout, replaces `~/plugins/thoth-mem`, gives the copied manifests a cache-busting local version, and makes both its MCP registration and lifecycle runner execute this checkout's absolute `dist/index.js`. It does not edit `~/.agents/plugins/marketplace.json`, install or uninstall a plugin, or change the shared memory database. Manage the public/local plugin selection in Codex and restart Codex after synchronizing a new build.
+
+The native manager setup remains available when explicit checkout provenance is preferred without a personal marketplace:
+
+```sh
+node dist/index.js setup codex --local-package-root /absolute/path/to/thoth-mem --data-dir /absolute/path/to/shared-memory
+node dist/index.js setup claude --local-package-root /absolute/path/to/thoth-mem --data-dir /absolute/path/to/shared-memory
+```
+
+## Shared runtime data
+
+All hosts resolve one data directory in this order: explicit command value, `THOTH_MEM_DATA_DIR`, strict provider config, then `~/.thoth-mem`. The provider file is `${XDG_CONFIG_HOME:-~/.config}/thoth-mem/config.json`; `setup --data-dir` atomically merges only `dataDir` and preserves other valid provider fields. Explicit local Codex/Claude setup additionally records an absolute, package-identity-checked `runtimeEntry`; public manager setup removes that local override. Malformed, unreadable, schema-invalid, missing-runtime, or non-file configuration fails closed. The runtime database is always `memory.sqlite` inside the selected data directory.
+
+Changed setup requests a host restart. A verified repeated setup changes no files or manager state and requests no restart. `--plan` performs no writes or mutating manager commands.
+
+## Legacy import
+
+The current runtime never opens a legacy database during normal operation. To import the conventional `~/.thoth/thoth.db` into the configured current `memory.sqlite`, stop every Codex, OpenCode, Claude Code, or other process that may hold the current database and run one command:
+
+```sh
+thoth-mem import-legacy
+```
+
+The command resolves the target from the normal data-directory configuration, plans and applies through the same fingerprint-bound importer, creates a verified backup and isolated candidate when a target exists, publishes only after all integrity checks pass, and reports aggregate imported/quarantined/skipped counts plus its retained plan, report, backup, and recovery locations. It never emits legacy memory prose. If the target is open, changed, invalid, aliased, or unsafe, the command fails without claiming commit; close the host and repeat the same command.
+
+Nonstandard sources, an approved exact mapping manifest, and an explicit data directory remain single-command options:
+
+```sh
+thoth-mem import-legacy --source ./legacy.sqlite --map ./mapping.json --data-dir ./current-memory
+thoth-mem import-legacy --json
+```
+
+Each request keeps immutable plan attempts and create-only reports beneath `<dataDir>/imports`. An equivalent repeat selects the exact sealed plan recorded by the committed target and returns an idempotent zero-delta replay. Taxonomy policy `legacy-taxonomy-bugfix-v1` imports legacy `bugfix` histories as successful `discovery` memories while retaining `legacy_kind: bugfix` in evidence provenance; `manual` and `pattern` remain explicitly quarantined.
+
+Advanced operators can still separate zero-write planning from application for an external review or custom artifact-custody workflow:
+
+```sh
+thoth-mem import-legacy plan --source ./legacy.sqlite --target ./memory.sqlite --plan ./import-plan.json
+# Optional: add --map ./mapping.json after reviewing explicit project mappings.
+
+# Stop every process that can open the target before publication.
+thoth-mem import-legacy apply --plan ./import-plan.json --report ./import-report.json
+```
+
+Apply accepts no path or policy overrides. It verifies the sealed plan and unchanged inputs, creates and verifies a recoverable backup, reconciles into a candidate copy, and publishes one closed SQLite file only after integrity, provenance, receipt, and FTS checks pass. The legacy source remains unchanged; a populated current target is preserved and existing current topic winners keep precedence. Plan and report paths are create-only. On failure, keep the report and the reported recovery bundle instead of deleting or retrying over them.
+
+For unusually sensitive installations, use the advanced commands against isolated copies first and inspect dispositions and retrieval results before the real cutover. Do not delete the legacy database, verified backup, or recovery bundle until the migrated runtime has been independently validated.
+
+The runtime also does not guess, rename, copy, or dual-read a database created under the previous generation-suffixed default filename. To adopt an existing local ledger, first close every host process, create a recoverable backup, then explicitly copy or move the exact selected old database to `memory.sqlite` in the configured data directory before restarting. Repository setup and tests never perform this stateful operation in a real user home.
+
+## Verification and benchmarks
+
+```sh
 pnpm test
+pnpm run integration:verify
+pnpm run integration:smoke
+pnpm run benchmark:observation
+pnpm run benchmark:fixture
+pnpm run prepublishOnly
 ```
 
-## License
+The observation benchmark is an offline equal-budget control/candidate check over the real SQLite service. It requires identical final memory, topic lineage, and recall delivery; complete candidate/review/promotion lineage; explicit poisoned, negated, cross-scope, failed, changing-requirement, stale-procedure, correction, and topic-supersession outcomes; canonical payload JSON with recomputed evidence/receipt hashes, exact output IDs, and exact per-scenario projection windows carried in a hashed semantic trace. Final memory and topic lineage derive from complete audited SQLite rows; receipt targets derive from their canonical evidence and projection relationships; scenario identity, supports, policies, predecessor/current reviews and both promotion mappings reconcile with receipts, FTS, and attributable writes. The gate also requires zero invalid promotions or pre-promotion recall leakage, p95 recall and aggregate SQLite footprint at most 2× control, and zero model/network calls. The general committed fixture embeds that outcome; neither command is evidence that optional retrieval lanes should be promoted. External LongMemEval-S, LoCoMo, AMB, and SDEBench lanes remain explicitly unavailable until separately prepared equal-budget runs produce complete reports.
 
-[MIT](LICENSE)
+LongMemEval-S is the first opt-in external retrieval baseline. Preparation is the only networked step; it downloads the official cleaned S file from an immutable Hugging Face revision, verifies SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`, validates its records, and stores it under the gitignored `benchmarks/.cache/longmemeval/` directory. Evaluation re-verifies the file and runs offline:
+
+```sh
+pnpm run benchmark:prepare:longmemeval
+pnpm run benchmark:longmemeval
+pnpm run benchmark:compare:longmemeval
+```
+
+The offline command writes `benchmarks/results/longmemeval-s-fts5-report.json` atomically and refuses to overwrite an existing result. It evaluates one isolated SQLite database per eligible question, one ordered full-dialogue memory per session occurrence, and the real `MemoryService` FTS5/BM25 path. Repeated official `haystack_session_id` values remain distinct Top-K positions under deterministic occurrence source IDs; empty string turn content is preserved. This product profile is deliberately named `sqlite-fts5-bm25-session-full`; it does not claim numerical parity with the official user-only, space-tokenized `rank_bm25` runner.
+
+Only the 30 `_abs` abstention records are excluded. Every other record must have nonempty `answer_session_ids` resolving to ingested session occurrences; `answer`, `has_answer`, oracle data, and gold IDs never enter indexed text or ranking. The report keeps `recall_any`, fractional Recall, and `recall_all` distinct at K=1/5/10/20 over distinct gold session IDs, plus first-gold MRR over candidate positions and occurrence-level binary NDCG@10. Candidate quality uses Top-20 with a 20,000-UTF-16-unit measurement allowance; delivery is measured separately at 4,000 UTF-16 units, the product's current `estimated_chars_div_4` approximation for 1,000 tokens.
+
+The report also records source/configuration hashes, per-question provenance and ranking/delivery budget evidence (requested, source, evidence, returned, truncated, full, and compression), reconciled character/token aggregates, p50/p95 retrieval, delivery, ingestion and startup latency, process RSS, SQLite bytes, exclusions, and literal zero evaluation-time network/model/LLM calls. A lexical baseline alone always remains `incomplete` for promotion: it supplies the control evidence for a later equal-budget candidate and does not justify vectors or any other optional module.
+
+The offline comparison command runs the archived `all-prefix-v1` control and the local-only `any-prefix-v1` and `all-then-any-prefix-v1` candidates sequentially through the real built service. Reports are strict, non-overwriting evidence whose lanes share the exact corpus, order, Top-20/delivery budgets, and occurrence provenance. A candidate can advance only when exactly one clears every predeclared gate: at least `0.05` absolute RecallAny@20 gain, no NDCG@10 or fractional Recall@20 regression, retrieval p95 at most twice the control, identical aggregate SQLite bytes, complete provenance, zero errors, and zero model/network/LLM calls. The archived latency round selected `any-prefix-v1` for the next lexical refinement: it deterministically chooses the three longest sanitized query terms from a bounded window, ranks at most two lexical rows after exact matches, and remains entirely local. This does not change the six MCP tools or add a remote, model, vector, graph, dashboard, or HTTP dependency.
+
+The pinned 470-question comparison retained `all-prefix-v1`. Both candidates raised RecallAny@20 from `0.1298` to `0.9936` and NDCG@10 from `0.1045` to about `0.8537`, with identical aggregate SQLite bytes, complete provenance, and zero errors or calls. They did not clear the latency gate: retrieval p95 was `1.4320 ms` for the control, `6.8333 ms` for `any-prefix-v1`, and `8.1297 ms` for `all-then-any-prefix-v1`. The report therefore records `no_candidate_eligible`; the quality gain is durable evidence for a later latency-focused experiment, not authorization to weaken this change's predeclared gate.
+
+### LongMemEval-S results
+
+The following results use the same pinned cleaned corpus and its 470 eligible non-abstention questions. RecallAny@5 reports questions with at least one gold session in the first five results; Recall@5 is fractional gold-session coverage, while RecallAll@5 requires every gold session to appear in the first five.
+
+| Lexical strategy | RecallAny@5 | Recall@5 | RecallAll@5 | NDCG@10 | MRR | Retrieval p95 | Role |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `all-prefix-v1` | 61/470 (13.0%) | 9.8% | 6.6% | 0.1045 | 0.1287 | 1.1471 ms | Archived control |
+| `any-prefix-v1` | 388/470 (82.6%) | 67.7% | 54.0% | 0.6965 | 0.7947 | 1.4437 ms | Bounded candidate |
+| `all-then-any-prefix-v1` | 446/470 (94.9%) | 87.9% | 78.7% | 0.8538 | 0.8717 | 3.9512 ms | Broad quality reference |
+| `strict-selected-any-cap5-rrf-v1` | 419/470 (89.1%) | 79.7% | 68.3% | 0.7700 | 0.8177 | 2.0552 ms | Archived E0 candidate |
+| `strict-selected-any-cap5-stable-v1` | 432/470 (91.9%) | 84.8% | 75.5% | 0.8165 | 0.8538 | 9.3504 ms | Current optimized default |
+
+The first four rows come from the immutable [Top-5 lexical comparison](benchmarks/results/longmemeval-s-lexical-recall-at-5-report.json); the final row comes from the passing [stable optimization round](benchmarks/results/longmemeval-s-stable-v1-optimized-round5-2026-09-03.json). Every listed run records zero errors and zero model, LLM, or evaluation-time network calls. Latency is environment-sensitive and is comparable only within the same report; the quality metrics remain bound to the same pinned dataset and evaluation contract.
+
+Authoritative protocol sources: [LongMemEval repository](https://github.com/xiaowu0162/LongMemEval), [official cleaned dataset](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned), and [pinned dataset revision](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/commit/98d7416c24c778c2fee6e6f3006e7a073259d48f).

@@ -1,1561 +1,360 @@
-import './store/sqlite-uri-runtime.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { ThothConfig } from './config.js';
-import { getConfig, resolveDataDir, resolveStoragePaths } from './config.js';
-import { applyDatabaseCompaction, previewDatabaseCompaction } from './store/compaction.js';
-import { Store } from './store/index.js';
-import { OBSERVATION_TYPES } from './store/types.js';
-import type { AdminStorageScope, DeleteProjectResult, ExportData, MaintenanceRunPreview, MaintenanceRunResult, MaintenanceScope, Observation, ObservationScope, ObservationType, OperationTraceRetentionResult, SyncJournalRepairResult } from './store/types.js';
-import { syncExport, syncImport } from './sync/index.js';
-import { formatIdentityWarning } from './store/identity.js';
-import { formatObservationMarkdown, formatSearchResultMarkdown } from './utils/content.js';
-import { VERSION } from './version.js';
-import { createEmbeddingProvider } from './retrieval/provider-factory.js';
-import type { SemanticIndexProgress, StoreOpenOptions } from './store/index.js';
-import { getSetupExitCode } from './setup/types.js';
-import type { SetupRequest, SetupResult } from './setup/types.js';
-import { inspectAndPlanSetup } from './setup/engine.js';
-import {
-  runIntegrationEventCommand,
-  type IntegrationEventCommandResult,
-} from './integration/runtime/integration-event-command.js';
+import { loadRuntimeConfig } from './config/runtime.js';
+import { normalizeAdapterEvent, normalizeNativePayload, type AdapterEvent } from './integration/adapters/index.js';
+import { LegacyImportFailure, applyLegacyImport, findCommittedLegacyImport, parseImportPlan, parseMappingManifest, planLegacyImport } from './memory-core/import/legacy-v1.js';
+import { MemoryService, projectSelectorExists, validateProjectRenameInput } from './memory-core/service.js';
+import { setupNativeManager } from './setup/native-manager.js';
+import { setupOpenCode } from './setup/opencode.js';
 
-export { VERSION };
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
-const HELP_TEXT = `thoth-mem — Persistent memory for AI coding agents
+function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
 
-Usage:
-  thoth-mem [command] [options]
-
-Commands:
-   mcp                    Start MCP server (default)
-   search <query>         Search memories
-   save <title> <content> Save a memory
-   timeline <obs_id>      Chronological context
-   context [project]      Recent session context
-   stats                  Memory statistics
-   export [file]          Export to JSON
-   import <file>          Import from JSON
-   sync                   Git sync export
-   sync-import            Git sync import
-   migrate-project <old> <new>  Rename a project
-   delete-project <project>     Delete a project safely
-   rebuild-graph          Rebuild derived graph facts
-   prune-graph            Bound superseded graph history (keep-N)
-   rebuild-communities    Rebuild derived KG community summaries
-   preview-communities    Preview derived KG community summaries
-   communities-status     Inspect derived KG community state
-   drop-communities       Drop derived KG community summaries
-   rebuild-index          Queue/process semantic index rebuild jobs
-   rebuild-index --status Show semantic index progress without queueing work
-   maintain-memory        Preview/apply memory maintenance metadata
-   repair-sync-journal    Preview/apply bounded sync-journal repair
-   prune-operation-traces Preview/apply bounded operation-trace retention
-   compact-database       Preview/apply guarded SQLite compaction
-   setup <opencode|codex|claude> Plan or manage a native harness integration
-   version                Show version
-   help                   Show this help
-
-Global Options:
-  --data-dir=<path>      Data directory (default: ~/.thoth)
-  -p, --project <name>   Filter by project
-  --help                 Show help
-
-Operation Trace Retention Options:
-  --until-complete       Continue preview-bound retention batches after the first apply
-
-Setup Options:
-  --scope <global|project>  Setup scope (default: global)
-  --project <path>          Required with --scope project
-  --plan                    Inspect and report without mutation
-  --force                   Replace proven managed conflicts; for Codex, override only the version gate
-  --rollback <receipt>      Roll back a managed setup receipt
-  --json                    Emit the setup result as JSON
-`;
-
-class CliError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CliError';
+function projectRenameArguments(args: string[], commandIndex: number): { selector: string; name: string; dataDir?: string } | null {
+  const parsed: Partial<{ selector: string; name: string; dataDir: string }> = {};
+  const options = new Map([
+    ['--project', 'selector' as const],
+    ['--name', 'name' as const],
+    ['--data-dir', 'dataDir' as const],
+  ]);
+  for (let index = commandIndex + 2; index < args.length; index += 1) {
+    const token = args[index]!;
+    const equals = token.indexOf('=');
+    const option = equals >= 0 ? token.slice(0, equals) : token;
+    const property = options.get(option);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
   }
+  if (!parsed.selector || !parsed.name) return null;
+  return { selector: parsed.selector, name: parsed.name, ...(parsed.dataDir ? { dataDir: parsed.dataDir } : {}) };
 }
 
-interface GlobalOptions {
-  dataDir?: string;
-  project?: string;
-  help: boolean;
-}
-
-interface ParsedArgs {
-  command?: string;
-  positionals: string[];
-  globals: GlobalOptions;
-}
-
-interface StoreContext {
-  store: Store;
-  config: ThothConfig;
-}
-
-export interface RunCliOptions {
-  setupRunner?: (
-    request: SetupRequest,
-    options: { dataDir?: string },
-  ) => Promise<SetupResult>;
-  integrationEventRunner?: (
-    options: { dataDir?: string },
-  ) => Promise<IntegrationEventCommandResult>;
-}
-
-export function isCliError(error: unknown): error is CliError {
-  return error instanceof CliError;
-}
-
-function printStdout(text: string): void {
-  process.stdout.write(`${text}\n`);
-}
-
-function printStderr(text: string): void {
-  process.stderr.write(`${text}\n`);
-}
-
-function fail(message: string): never {
-  throw new CliError(message);
-}
-
-function requireValue(args: string[], index: number, option: string): string {
-  const value = args[index + 1];
-  if (!value || value.startsWith('-')) {
-    fail(`Missing value for ${option}`);
+function importPlanArguments(args: string[], commandIndex: number): { source: string; target: string; plan: string; map?: string } | null {
+  if (args[commandIndex + 1] !== 'plan') return null;
+  const parsed: Partial<{ source: string; target: string; plan: string; map: string }> = {};
+  const options = new Map([
+    ['--source', 'source' as const],
+    ['--target', 'target' as const],
+    ['--plan', 'plan' as const],
+    ['--map', 'map' as const],
+  ]);
+  for (let index = commandIndex + 2; index < args.length; index += 1) {
+    const token = args[index]!;
+    const equals = token.indexOf('=');
+    const option = equals >= 0 ? token.slice(0, equals) : token;
+    const property = options.get(option);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
   }
-  return value;
+  if (!parsed.source || !parsed.target || !parsed.plan) return null;
+  return { source: parsed.source, target: parsed.target, plan: parsed.plan, ...(parsed.map ? { map: parsed.map } : {}) };
 }
 
-function detectCommand(args: string[]): string | undefined {
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
+function importApplyArguments(args: string[], commandIndex: number): { plan: string; report: string } | null {
+  if (args[commandIndex + 1] !== 'apply') return null;
+  const parsed: Partial<{ plan: string; report: string }> = {};
+  const options = new Map([['--plan', 'plan' as const], ['--report', 'report' as const]]);
+  for (let index = commandIndex + 2; index < args.length; index += 1) {
+    const token = args[index]!;
+    const equals = token.indexOf('=');
+    const option = equals >= 0 ? token.slice(0, equals) : token;
+    const property = options.get(option);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
+  }
+  return parsed.plan && parsed.report ? { plan: parsed.plan, report: parsed.report } : null;
+}
 
-    if (arg === '--data-dir' || arg === '-p' || arg === '--project') {
-      index++;
+interface ImportRunArguments { source?: string; map?: string; dataDir?: string; json: boolean }
+
+const IMPORT_PLAN_BINDING_SCHEMA = 'thoth-mem.import.plan-binding.v1';
+
+interface ImportPlanBinding { schema: typeof IMPORT_PLAN_BINDING_SCHEMA; requestKey: string; planHash: string }
+
+function importRunArguments(args: string[], commandIndex: number): ImportRunArguments | null {
+  const parsed: Partial<Omit<ImportRunArguments, 'json'>> & { json: boolean } = { json: false };
+  const options = new Map([
+    ['--source', 'source' as const],
+    ['--map', 'map' as const],
+    ['--data-dir', 'dataDir' as const],
+  ]);
+  for (let index = commandIndex + 1; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === '--json') {
+      if (parsed.json) return null;
+      parsed.json = true;
       continue;
     }
-    if (arg.startsWith('--data-dir=') || arg.startsWith('--project=')) {
-      continue;
-    }
-    if (arg.startsWith('-')) {
-      continue;
-    }
-
-    return arg;
-  }
-
-  return undefined;
-}
-
-function parseGlobals(args: string[], options: { parseProject?: boolean } = {}): ParsedArgs {
-  const globals: GlobalOptions = { help: false };
-  const remaining: string[] = [];
-  const parseProject = options.parseProject !== false;
-
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-
-    if (arg === '--help') {
-      globals.help = true;
-      continue;
-    }
-
-    if (arg === '--data-dir') {
-      globals.dataDir = requireValue(args, index, '--data-dir');
-      index++;
-      continue;
-    }
-
-    if (arg.startsWith('--data-dir=')) {
-      globals.dataDir = arg.slice('--data-dir='.length);
-      if (!globals.dataDir) {
-        fail('Missing value for --data-dir');
-      }
-      continue;
-    }
-
-    if (parseProject && (arg === '-p' || arg === '--project')) {
-      globals.project = requireValue(args, index, arg);
-      index++;
-      continue;
-    }
-
-    if (parseProject && arg.startsWith('--project=')) {
-      globals.project = arg.slice('--project='.length);
-      if (!globals.project) {
-        fail('Missing value for --project');
-      }
-      continue;
-    }
-
-    remaining.push(arg);
-  }
-
-  const [command, ...positionals] = remaining;
-  return { command, positionals, globals };
-}
-
-function parseSetupValue(
-  args: string[],
-  index: number,
-  option: '--scope' | '--project' | '--rollback',
-): { value: string; nextIndex: number } {
-  const arg = args[index];
-  const prefix = `${option}=`;
-
-  if (arg.startsWith(prefix)) {
-    const value = arg.slice(prefix.length);
-    if (!value) {
-      fail(`Missing value for ${option}`);
-    }
-    return { value, nextIndex: index };
-  }
-
-  return {
-    value: requireValue(args, index, option),
-    nextIndex: index + 1,
-  };
-}
-
-function setupOptionName(arg: string): string {
-  if (arg.startsWith('--scope=')) {
-    return '--scope';
-  }
-  if (arg.startsWith('--project=')) {
-    return '--project';
-  }
-  if (arg.startsWith('--rollback=')) {
-    return '--rollback';
-  }
-  return arg;
-}
-
-export function parseSetupRequest(args: string[]): SetupRequest {
-  const [harnessValue, ...options] = args;
-  if (!harnessValue) {
-    fail('setup requires opencode, codex, or claude');
-  }
-  if (harnessValue !== 'opencode' && harnessValue !== 'codex' && harnessValue !== 'claude') {
-    fail(`Invalid setup harness: ${harnessValue}. Expected one of: opencode, codex, claude`);
-  }
-
-  let scope: SetupRequest['scope'] = 'global';
-  let projectPath: string | undefined;
-  let rollbackReceipt: string | undefined;
-  let planOnly = false;
-  let force = false;
-  let json = false;
-  const seen = new Set<string>();
-
-  for (let index = 0; index < options.length; index++) {
-    const arg = options[index];
-    const option = setupOptionName(arg);
-
-    if (seen.has(option)) {
-      fail(`Duplicate setup option: ${option}`);
-    }
-
-    if (option === '--scope') {
-      seen.add(option);
-      const parsed = parseSetupValue(options, index, '--scope');
-      index = parsed.nextIndex;
-      if (parsed.value !== 'global' && parsed.value !== 'project') {
-        fail(`Invalid value for --scope: ${parsed.value}. Expected one of: global, project`);
-      }
-      scope = parsed.value;
-      continue;
-    }
-    if (option === '--project') {
-      seen.add(option);
-      const parsed = parseSetupValue(options, index, '--project');
-      index = parsed.nextIndex;
-      projectPath = parsed.value.trim();
-      if (!projectPath) {
-        fail('Missing value for --project');
-      }
-      continue;
-    }
-    if (option === '--rollback') {
-      seen.add(option);
-      const parsed = parseSetupValue(options, index, '--rollback');
-      index = parsed.nextIndex;
-      rollbackReceipt = parsed.value.trim();
-      if (!rollbackReceipt) {
-        fail('Missing value for --rollback');
-      }
-      continue;
-    }
-    if (option === '--plan' || option === '--force' || option === '--json') {
-      seen.add(option);
-      if (option === '--plan') {
-        planOnly = true;
-      } else if (option === '--force') {
-        force = true;
-      } else {
-        json = true;
-      }
-      continue;
-    }
-
-    if (arg.startsWith('-')) {
-      fail(`Unexpected setup option: ${arg}`);
-    }
-    fail(`Unexpected setup argument: ${arg}`);
-  }
-
-  if (scope === 'project' && !projectPath) {
-    fail('--scope project requires --project <path>');
-  }
-  if (scope === 'global' && projectPath) {
-    fail('--project is only valid with --scope project');
-  }
-
-  return {
-    harness: harnessValue,
-    scope,
-    ...(projectPath ? { projectPath } : {}),
-    planOnly,
-    force,
-    ...(rollbackReceipt ? { rollbackReceipt } : {}),
-    json,
-  };
-}
-
-function parseOptionValue(positionals: string[], optionNames: string[]): { value?: string; rest: string[] } {
-  const rest: string[] = [];
-  let value: string | undefined;
-
-  for (let index = 0; index < positionals.length; index++) {
-    const arg = positionals[index];
-    const exactMatch = optionNames.find((name) => arg === name);
-    const prefixMatch = optionNames.find((name) => arg.startsWith(`${name}=`));
-
-    if (exactMatch) {
-      value = requireValue(positionals, index, exactMatch);
-      index++;
-      continue;
-    }
-
-    if (prefixMatch) {
-      value = arg.slice(prefixMatch.length + 1);
-      if (!value) {
-        fail(`Missing value for ${prefixMatch}`);
-      }
-      continue;
-    }
-
-    rest.push(arg);
-  }
-
-  return { value, rest };
-}
-
-function ensureNoExtraArgs(args: string[], command: string): void {
-  if (args.length > 0) {
-    fail(`Unexpected arguments for ${command}: ${args.join(' ')}`);
-  }
-}
-
-function parseInteger(value: string, option: string, minimum: number): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < minimum) {
-    fail(`Invalid value for ${option}: ${value}`);
+    const equals = token.indexOf('=');
+    const option = equals >= 0 ? token.slice(0, equals) : token;
+    const property = options.get(option);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
   }
   return parsed;
 }
 
-function parseObservationId(value: string): number {
-  return parseInteger(value, 'obs_id', 1);
+function importDispositionTotals(dispositions: Record<string, { imported: number; linked: number; skipped: number; quarantined: number }>): { imported: number; linked: number; skipped: number; quarantined: number } {
+  const totals = { imported: 0, linked: 0, skipped: 0, quarantined: 0 };
+  for (const disposition of Object.values(dispositions)) {
+    totals.imported += disposition.imported;
+    totals.linked += disposition.linked;
+    totals.skipped += disposition.skipped;
+    totals.quarantined += disposition.quarantined;
+  }
+  return totals;
 }
 
-function parseObservationType(value: string): ObservationType {
-  if (OBSERVATION_TYPES.includes(value as ObservationType)) {
-    return value as ObservationType;
-  }
-
-  fail(`Invalid type: ${value}. Expected one of: ${OBSERVATION_TYPES.join(', ')}`);
-}
-
-function parseScope(value: string): ObservationScope {
-  if (value === 'project' || value === 'personal') {
-    return value;
-  }
-
-  fail(`Invalid scope: ${value}. Expected one of: project, personal`);
-}
-
-function parseRequiredProjectName(value: string | undefined, command: string): string {
-  if (value === undefined) {
-    fail(`${command} requires <project>`);
-  }
-
-  const project = value.trim();
-  if (!project) {
-    fail(`${command} requires a non-empty <project>`);
-  }
-
-  return project;
-}
-
-function parseMaintenanceScope(positionals: string[], globals: GlobalOptions): { rest: string[]; scope: MaintenanceScope; label: string } {
-  const parsedTopicKey = parseOptionValue(positionals, ['--topic-key']);
-  const parsedTopicPrefix = parseOptionValue(parsedTopicKey.rest, ['--topic-prefix']);
-  const all = parsedTopicPrefix.rest.includes('--all');
-  const rest = parsedTopicPrefix.rest.filter((arg) => arg !== '--all');
-  const scopes = [
-    all ? 'all' : null,
-    globals.project ? 'project' : null,
-    parsedTopicKey.value ? 'topic-key' : null,
-    parsedTopicPrefix.value ? 'topic-prefix' : null,
-  ].filter((value): value is string => value !== null);
-
-  if (scopes.length !== 1) {
-    fail('maintain-memory requires exactly one scope: --all, --project <name>, --topic-key <key>, or --topic-prefix <prefix>');
-  }
-
-  if (all) {
-    return { rest, scope: { all: true }, label: 'all memories' };
-  }
-  if (globals.project) {
-    const project = parseRequiredProjectName(globals.project, 'maintain-memory --project');
-    return { rest, scope: { project }, label: `project ${project}` };
-  }
-  if (parsedTopicKey.value) {
-    return { rest, scope: { topic_key: parsedTopicKey.value }, label: `topic_key ${parsedTopicKey.value}` };
-  }
-
-  const topicPrefix = parsedTopicPrefix.value!;
-  return { rest, scope: { topic_prefix: topicPrefix }, label: `topic_prefix ${topicPrefix}` };
-}
-
-function parseProjectOrAllScope(positionals: string[], globals: GlobalOptions, command: string): { rest: string[]; all: boolean; project?: string; label: string } {
-  const all = positionals.includes('--all');
-  const rest = positionals.filter((arg) => arg !== '--all');
-  const hasProject = globals.project !== undefined;
-
-  if (all && hasProject) {
-    fail('Use either --project or --all, not both');
-  }
-
-  if (!all && !hasProject) {
-    fail(`${command} requires --project <name> or --all`);
-  }
-
-  const project = hasProject
-    ? parseRequiredProjectName(globals.project, `${command} --project`)
-    : undefined;
-
-  return {
-    rest,
-    all,
-    project,
-    label: project ? `project ${project}` : 'all projects',
-  };
-}
-
-function createStoreContext(
-  dataDir?: string,
-  options: StoreOpenOptions = {},
-): StoreContext {
-  const config = getConfig({ dataDir });
-
-  resolveDataDir(config);
-
-  return {
-    store: new Store(config.dbPath, config, options),
-    config,
-  };
-}
-
-async function withStore<T>(
-  dataDir: string | undefined,
-  action: (context: StoreContext) => Promise<T> | T,
-  options: StoreOpenOptions = {},
-): Promise<T> {
-  const context = createStoreContext(dataDir, options);
-
-  try {
-    return await action(context);
-  } finally {
-    context.store.close();
+function assertImportCustodyContained(path: string, canonicalDataDir: string): void {
+  const relation = relative(canonicalDataDir, realpathSync(path));
+  if (!relation || relation === '..' || relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(relation)) {
+    throw new Error('Legacy import custody must remain beneath the configured data directory');
   }
 }
 
-function formatTimelineObservation(observation: Observation): string {
-  return formatObservationMarkdown(observation);
+function ensureImportCustodyDirectory(path: string, canonicalDataDir: string): void {
+  if (!existsSync(path)) mkdirSync(path);
+  const status = lstatSync(path);
+  if (!status.isDirectory() || status.isSymbolicLink()) throw new Error('Legacy import custody must use regular directories without symbolic or reparse aliases');
+  assertImportCustodyContained(path, canonicalDataDir);
 }
 
-function printHelp(): void {
-  printStdout(HELP_TEXT.trimEnd());
+function assertImportCustodyFile(path: string, canonicalDataDir: string): void {
+  const status = lstatSync(path);
+  if (!status.isFile() || status.isSymbolicLink()) throw new Error('Legacy import custody must use regular files without symbolic or reparse aliases');
+  assertImportCustodyContained(path, canonicalDataDir);
 }
 
-function formatSemanticProgress(progress: SemanticIndexProgress, scopeLabel: string): string {
-  const jobLines = progress.jobs.length > 0
-    ? progress.jobs.map((job) => `  - ${job.state}/${job.kind}: ${job.count}`)
-    : ['  - none'];
-  const laneLines = progress.lanes.length > 0
-    ? progress.lanes.map((lane) => [
-      `  - ${lane.lane}:`,
-      `pending=${lane.pending ? 'yes' : 'no'}`,
-      `degraded=${lane.degraded ? 'yes' : 'no'}`,
-      `stale=${lane.stale ? 'yes' : 'no'}`,
-      `dimensions=${lane.embeddingDimensions ?? 'unknown'}`,
-      `ready=${lane.lastReadyAt ?? 'never'}`,
-      `updated=${lane.updatedAt ?? 'never'}`,
-    ].join(' '))
-    : ['  - none'];
-  const errorLines = progress.recentErrors.length > 0
-    ? progress.recentErrors.map((job) => `  - #${job.id} ${job.kind}/${job.state} attempts=${job.attemptCount}: ${job.lastError ?? 'unknown error'}`)
-    : ['  - none'];
-  const donePercent = progress.totals.total > 0
-    ? Math.round((progress.totals.done / progress.totals.total) * 100)
-    : 100;
-
-  return [
-    '## Semantic Index Status',
-    `- **Scope:** ${scopeLabel}`,
-    `- **Jobs:** ${progress.totals.done}/${progress.totals.total} done (${donePercent}%)`,
-    `- **Pending jobs:** ${progress.totals.pending}`,
-    `- **Running jobs:** ${progress.totals.running}`,
-    `- **Failed jobs:** ${progress.totals.failed}`,
-    `- **Active observations:** ${progress.coverage.observations}`,
-    `- **Chunk coverage:** ${progress.coverage.chunkVectors}/${progress.coverage.chunks} vectors`,
-    `- **Sentence coverage:** ${progress.coverage.sentenceVectors}/${progress.coverage.sentences} vectors`,
-    '- **Queue by state/kind:**',
-    ...jobLines,
-    '- **Lanes:**',
-    ...laneLines,
-    '- **Recent errors:**',
-    ...errorLines,
-  ].join('\n');
-}
-
-async function handleSearch(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsedLimit = parseOptionValue(positionals, ['--limit']);
-  const query = parsedLimit.rest.join(' ').trim();
-
-  if (!query) {
-    fail('search requires <query>');
+function readImportPlanBinding(path: string, expected: ImportPlanBinding, canonicalDataDir: string): void {
+  if (!existsSync(path)) throw new Error('Legacy import plan request binding is missing');
+  assertImportCustodyFile(path, canonicalDataDir);
+  const binding = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)
+    || JSON.stringify(Object.keys(binding).sort()) !== JSON.stringify(['planHash', 'requestKey', 'schema'])
+    || JSON.stringify(binding) !== JSON.stringify(expected)) {
+    throw new Error('Legacy import plan request binding is invalid');
   }
-
-  const limit = parsedLimit.value ? parseInteger(parsedLimit.value, '--limit', 1) : undefined;
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const results = store.searchObservations({ query, project: globals.project, limit });
-    printStdout(formatSearchResultMarkdown(results));
-  });
 }
 
-async function handleSave(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsedType = parseOptionValue(positionals, ['--type']);
-  const parsedScope = parseOptionValue(parsedType.rest, ['--scope']);
-
-  if (parsedScope.rest.length !== 2) {
-    fail('save requires <title> <content>');
-  }
-
-  const [title, content] = parsedScope.rest;
-  const type = parsedType.value ? parseObservationType(parsedType.value) : undefined;
-  const scope = parsedScope.value ? parseScope(parsedScope.value) : undefined;
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.saveObservation({
-      title,
-      content,
-      type,
-      project: globals.project,
-      scope,
-    });
-
-    printStdout([
-      `Action: ${result.action}`,
-      '',
-      formatObservationMarkdown(result.observation),
-    ].join('\n'));
-  });
+function createOrVerifyImportPlanBinding(path: string, binding: ImportPlanBinding, canonicalDataDir: string): void {
+  if (!existsSync(path)) writeFileSync(path, `${JSON.stringify(binding, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  readImportPlanBinding(path, binding, canonicalDataDir);
 }
 
-async function handleTimeline(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsedBefore = parseOptionValue(positionals, ['--before']);
-  const parsedAfter = parseOptionValue(parsedBefore.rest, ['--after']);
-
-  if (parsedAfter.rest.length !== 1) {
-    fail('timeline requires <obs_id>');
-  }
-
-  const observationId = parseObservationId(parsedAfter.rest[0]);
-  const before = parsedBefore.value ? parseInteger(parsedBefore.value, '--before', 0) : 5;
-  const after = parsedAfter.value ? parseInteger(parsedAfter.value, '--after', 0) : 5;
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const timeline = store.getTimeline({ observation_id: observationId, before, after });
-
-    if (!timeline.focus) {
-      fail(`Observation ${observationId} not found`);
-    }
-
-    const beforeText = timeline.before.length > 0
-      ? timeline.before.map((observation) => formatTimelineObservation(observation)).join('\n\n')
-      : 'No earlier observations in this session';
-    const focusText = formatTimelineObservation(timeline.focus).replace(
-      `### [${timeline.focus.type}] ${timeline.focus.title} (ID: ${timeline.focus.id})`,
-      `### ► Focus: [${timeline.focus.type}] ${timeline.focus.title} (ID: ${timeline.focus.id})`
-    );
-    const afterText = timeline.after.length > 0
-      ? timeline.after.map((observation) => formatTimelineObservation(observation)).join('\n\n')
-      : 'No later observations in this session';
-
-    printStdout([
-      `## Timeline around observation ${observationId}`,
-      '',
-      '### Before',
-      beforeText,
-      '',
-      focusText,
-      '',
-      '### After',
-      afterText,
-    ].join('\n'));
-  });
-}
-
-async function handleContext(positionals: string[], globals: GlobalOptions): Promise<void> {
-  ensureNoExtraArgs(positionals, 'context');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    printStdout(store.getContext({ project: globals.project }));
-  });
-}
-
-async function handleStats(positionals: string[], globals: GlobalOptions): Promise<void> {
-  ensureNoExtraArgs(positionals, 'stats');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const stats = store.getStats();
-    printStdout([
-      '## Thoth Memory Statistics',
-      `- **Sessions:** ${stats.total_sessions}`,
-      `- **Observations:** ${stats.total_observations}`,
-      `- **User Prompts:** ${stats.total_prompts}`,
-      `- **Projects:** ${stats.projects.join(', ') || 'none'}`,
-    ].join('\n'));
-  });
-}
-
-async function handleExport(positionals: string[], globals: GlobalOptions): Promise<void> {
-  if (positionals.length > 1) {
-    fail('export accepts at most one [file] argument');
-  }
-
-  const outputFile = positionals[0];
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const data = store.exportData(globals.project);
-    const json = JSON.stringify(data, null, 2);
-
-    if (outputFile) {
-      writeFileSync(outputFile, json, 'utf-8');
-      printStdout(`Exported memory data to ${outputFile}`);
-      return;
-    }
-
-    printStdout(json);
-  });
-}
-
-function parseImportData(text: string): ExportData {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    fail('Invalid JSON — could not parse import data');
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    fail('Invalid export format — expected an object');
-  }
-
-  const candidate = parsed as Partial<ExportData>;
-
-  if (!candidate.version || !Array.isArray(candidate.sessions) || !Array.isArray(candidate.observations) || !Array.isArray(candidate.prompts)) {
-    fail('Invalid export format — missing required fields (version, sessions, observations, prompts)');
-  }
-
-  return candidate as ExportData;
-}
-
-async function handleImport(positionals: string[], globals: GlobalOptions): Promise<void> {
-  if (positionals.length !== 1) {
-    fail('import requires <file>');
-  }
-
-  const filePath = positionals[0];
-  const data = parseImportData(readFileSync(filePath, 'utf-8'));
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.importData(data);
-    printStdout([
-      '## Memory Import Complete',
-      `- **Sessions imported:** ${result.sessions_imported}`,
-      `- **Observations imported:** ${result.observations_imported}`,
-      `- **Prompts imported:** ${result.prompts_imported}`,
-      `- **Skipped (duplicates):** ${result.skipped}`,
-    ].join('\n'));
-  });
-}
-
-async function handleSync(positionals: string[], globals: GlobalOptions): Promise<void> {
-   const parsedDir = parseOptionValue(positionals, ['--dir']);
-   ensureNoExtraArgs(parsedDir.rest, 'sync');
-
-   const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
-   const usesDefaultDir = parsedDir.value === undefined;
-
-   await withStore(globals.dataDir, ({ store }) => {
-     const result = syncExport(store, syncDir, globals.project);
-     printStdout([
-       '## Sync Export Complete',
-       `- **Directory:** ${syncDir}`,
-       usesDefaultDir ? '- **Directory default:** current working directory' : null,
-       `- **Chunk:** ${result.filename || 'none'}`,
-       `- **Sessions:** ${result.sessions}`,
-       `- **Observations:** ${result.observations}`,
-       `- **Prompts:** ${result.prompts}`,
-     ].filter((line): line is string => line !== null).join('\n'));
-   });
-}
-
-async function handleSyncImport(positionals: string[], globals: GlobalOptions): Promise<void> {
-   const parsedDir = parseOptionValue(positionals, ['--dir']);
-   ensureNoExtraArgs(parsedDir.rest, 'sync-import');
-
-   const syncDir = parsedDir.value ?? join(process.cwd(), '.thoth-sync');
-   const usesDefaultDir = parsedDir.value === undefined;
-
-   await withStore(globals.dataDir, ({ store }) => {
-     const result = syncImport(store, syncDir);
-     const identityWarning = formatIdentityWarning(result.identity);
-     printStdout([
-       '## Sync Import Complete',
-       `- **Directory:** ${syncDir}`,
-       usesDefaultDir ? '- **Directory default:** current working directory' : null,
-       `- **Chunks processed:** ${result.chunks_processed}`,
-       `- **Sessions imported:** ${result.sessions_imported}`,
-       `- **Observations imported:** ${result.observations_imported}`,
-       `- **Prompts imported:** ${result.prompts_imported}`,
-       `- **Skipped (duplicates):** ${result.skipped}`,
-       identityWarning ? `- **Identity fallback:** ${identityWarning.replace(/^Identity fallback: /, '').replace(/\.$/, '')}` : null,
-     ].filter((line): line is string => line !== null).join('\n'));
-   });
-}
-
-async function handleMigrateProject(positionals: string[], globals: GlobalOptions): Promise<void> {
-  if (positionals.length !== 2) {
-    fail('migrate-project requires <old_project> <new_project>');
-  }
-
-  const [oldProject, newProject] = positionals;
-
-  if (oldProject === newProject) {
-    fail('Old and new project names must be different');
-  }
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.migrateProject(oldProject, newProject);
-    printStdout([
-      '## Project Migration Complete',
-      `- **From:** ${result.old_project}`,
-      `- **To:** ${result.new_project}`,
-      `- **Sessions updated:** ${result.sessions_updated}`,
-      `- **Observations updated:** ${result.observations_updated}`,
-      `- **Prompts updated:** ${result.prompts_updated}`,
-    ].join('\n'));
-  });
-}
-
-function formatDeleteProjectOutput(result: DeleteProjectResult & { sync_mutations_deleted?: number }): string {
-  const lines = [
-    '## Project Deletion Complete',
-    `- **Project:** ${result.project}`,
-    `- **Observations deleted:** ${result.observations_deleted}`,
-    `- **Observation versions deleted:** ${result.observation_versions_deleted}`,
-    `- **Prompts deleted:** ${result.prompts_deleted}`,
-    `- **Sessions deleted:** ${result.sessions_deleted}`,
-  ];
-
-  if (typeof result.sync_mutations_deleted === 'number') {
-    lines.push(`- **Sync mutations deleted:** ${result.sync_mutations_deleted}`);
-  }
-
-  return lines.join('\n');
-}
-
-async function handleDeleteProject(positionals: string[], globals: GlobalOptions): Promise<void> {
-  if (positionals.length !== 1) {
-    fail('delete-project requires <project>');
-  }
-
-  const project = parseRequiredProjectName(positionals[0], 'delete-project');
-
-  await withStore(globals.dataDir, ({ store }) => {
+export async function runCli(args: string[]): Promise<number> {
+  const command = args.find((arg) => !arg.startsWith('-'));
+  if (!command || command === 'help' || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return 0; }
+  if (command === 'lifecycle') {
     try {
-      const result = store.deleteProject(project);
-      printStdout(formatDeleteProjectOutput(result));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      fail(`Project delete blocked: ${message}`);
-    }
-  });
-}
-
-async function handleRebuildGraph(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const all = positionals.includes('--all');
-  const rest = positionals.filter((arg) => arg !== '--all');
-  const hasProject = globals.project !== undefined;
-
-  if (all && hasProject) {
-    fail('Use either --project or --all, not both');
-  }
-
-  if (!all && !hasProject) {
-    fail('rebuild-graph requires --project <name> or --all');
-  }
-
-  ensureNoExtraArgs(rest, 'rebuild-graph');
-
-  const project = hasProject
-    ? parseRequiredProjectName(globals.project, 'rebuild-graph --project')
-    : undefined;
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.rebuildObservationFacts({ project });
-    printStdout([
-      '## Graph Rebuild Complete',
-      `- **Scope:** ${result.project ? `project ${result.project}` : 'all projects'}`,
-      `- **Observations scanned:** ${result.observations_scanned}`,
-      `- **Facts deleted:** ${result.facts_deleted}`,
-      `- **Facts created:** ${result.facts_created}`,
-    ].join('\n'));
-  });
-}
-
-function formatMaintenanceResult(result: MaintenanceRunPreview | MaintenanceRunResult, scopeLabel: string): string {
-  const applied = result.dry_run === false;
-  return [
-    applied ? '## Memory Maintenance Applied' : '## Memory Maintenance Preview',
-    `- **Mode:** ${applied ? 'apply' : 'dry-run'}`,
-    `- **Scope:** ${scopeLabel}`,
-    applied ? `- **Run ID:** ${result.run_id}` : null,
-    `- **Records scanned:** ${result.counts.records_scanned}`,
-    `- **Consolidation candidates:** ${result.counts.consolidation_candidates}`,
-    `- **Reflection candidates:** ${result.counts.reflection_candidates}`,
-    `- **Decay candidates:** ${result.counts.decay_candidates}`,
-    `- **Review required:** ${result.counts.review_required}`,
-    `- **Degraded signals:** ${result.degraded.length > 0 ? result.degraded.join(', ') : 'none'}`,
-  ].filter((line): line is string => line !== null).join('\n');
-}
-
-async function handlePruneGraph(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const dryRun = positionals.includes('--dry-run');
-  const all = positionals.includes('--all');
-  const rest = positionals.filter((arg) => arg !== '--all' && arg !== '--dry-run');
-  const hasProject = globals.project !== undefined;
-
-  if (all && hasProject) {
-    fail('Use either --project or --all, not both');
-  }
-
-  if (!all && !hasProject) {
-    fail('prune-graph requires --project <name> or --all');
-  }
-
-  ensureNoExtraArgs(rest, 'prune-graph');
-
-  const project = hasProject
-    ? parseRequiredProjectName(globals.project, 'prune-graph --project')
-    : undefined;
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.pruneSupersededTriples({ project, dryRun });
-    printStdout([
-      '## Graph Prune Complete',
-      `- **Scope:** ${result.project ? `project ${result.project}` : 'all projects'}`,
-      `- **Dry run:** ${result.dry_run ? 'yes' : 'no'}`,
-      `- **Slots scanned:** ${result.slots_scanned}`,
-      `- **Triples pruned:** ${result.triples_pruned}`,
-      `- **Entities pruned:** ${result.entities_pruned}`,
-      `- **Dangling refs NULLed:** ${result.dangling_refs_nulled}`,
-      `- **Superseded before -> after:** ${result.superseded_before} -> ${result.superseded_after}`,
-    ].join('\n'));
-  });
-}
-
-async function handleRebuildCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsed = parseProjectOrAllScope(positionals, globals, 'rebuild-communities');
-  ensureNoExtraArgs(parsed.rest, 'rebuild-communities');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    if (parsed.project) {
-      const result = store.rebuildCommunitySummaries({ project: parsed.project });
-      printStdout([
-        '## Community Summary Rebuild Complete',
-        `- **Scope:** ${parsed.label}`,
-        `- **Status:** ${result.status}`,
-        `- **Freshness:** ${result.freshness}`,
-        `- **Run ID:** ${result.run_id}`,
-        `- **Communities created:** ${result.communities_created}`,
-        `- **Entities scanned:** ${result.entities_scanned}`,
-        `- **Triples scanned:** ${result.triples_scanned}`,
-        `- **Source observations scanned:** ${result.source_observations_scanned}`,
-        `- **Degraded reasons:** ${result.degraded_reasons.length > 0 ? result.degraded_reasons.join(', ') : 'none'}`,
-        result.error ? `- **Error:** ${result.error}` : null,
-      ].filter((line): line is string => line !== null).join('\n'));
-      return;
-    }
-
-    const projects = store.getStats().projects;
-    const results = projects.map((project) => store.rebuildCommunitySummaries({ project }));
-    const lines = results.length > 0
-      ? results.map((result) => `- ${result.project}: status=${result.status} communities=${result.communities_created} freshness=${result.freshness}`)
-      : ['- none'];
-    printStdout([
-      '## Community Summary Rebuild Complete',
-      `- **Scope:** ${parsed.label}`,
-      `- **Projects scanned:** ${projects.length}`,
-      '',
-      ...lines,
-    ].join('\n'));
-  });
-}
-
-async function handlePreviewCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
-  ensureNoExtraArgs(positionals, 'preview-communities');
-  const project = parseRequiredProjectName(globals.project, 'preview-communities --project');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.previewCommunitySummaries({
-      project,
-      limit: Math.min(5, store.config.communitySummaries.maxCommunitiesPerProject),
-      maxChars: Math.min(600, store.config.communitySummaries.summaryMaxChars),
-    });
-    const communityLines = result.communities.length > 0
-      ? result.communities.map((community) => [
-        `- ${community.community_id}`,
-        `entities=${community.entity_count}`,
-        `triples=${community.triple_count}`,
-        `sources=${community.source_observation_count}`,
-        `degraded=${community.degraded ? 'yes' : 'no'}`,
-      ].join(' | '))
-      : ['- none'];
-
-    printStdout([
-      '## Community Summary Preview',
-      `- **Scope:** project ${project}`,
-      '- **Would commit:** no',
-      `- **State:** ${result.state}`,
-      `- **Communities shown:** ${result.communities.length}`,
-      `- **Triples scanned:** ${result.triples_scanned}`,
-      `- **Truncated:** ${result.truncated ? 'yes' : 'no'}`,
-      `- **Degraded reasons:** ${result.degraded_reasons.length > 0 ? result.degraded_reasons.join(', ') : 'none'}`,
-      '',
-      ...communityLines,
-    ].join('\n'));
-  });
-}
-
-async function handleCommunitiesStatus(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsed = parseProjectOrAllScope(positionals, globals, 'communities-status');
-  ensureNoExtraArgs(parsed.rest, 'communities-status');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    if (parsed.project) {
-      const state = store.getCommunitySummaryState({ project: parsed.project });
-      printStdout([
-        '## Community Summary Status',
-        `- **Project:** ${parsed.project}`,
-        `- **State:** ${state.state}`,
-        `- **Run ID:** ${state.run_id ?? 'none'}`,
-        `- **Latest committed run ID:** ${state.latest_committed_run_id ?? 'none'}`,
-        `- **Communities:** ${state.communities_count}`,
-        `- **Entities:** ${state.entities_count}`,
-        `- **Triples:** ${state.triples_count}`,
-        `- **Source observations:** ${state.source_observations_count}`,
-        `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,
-        `- **Degraded reasons:** ${state.degraded_reasons.length > 0 ? state.degraded_reasons.join(', ') : 'none'}`,
-        state.error ? `- **Error:** ${state.error}` : null,
-      ].filter((line): line is string => line !== null).join('\n'));
-      return;
-    }
-
-    const projects = store.getStats().projects;
-    const lines = projects.length > 0
-      ? projects.map((project) => {
-        const state = store.getCommunitySummaryState({ project });
-        return `- ${project}: state=${state.state} communities=${state.communities_count} run=${state.run_id ?? 'none'}`;
-      })
-      : ['- none'];
-    printStdout([
-      '## Community Summary Status',
-      `- **Scope:** ${parsed.label}`,
-      `- **Projects scanned:** ${projects.length}`,
-      '',
-      ...lines,
-    ].join('\n'));
-  });
-}
-
-async function handleDropCommunities(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsed = parseProjectOrAllScope(positionals, globals, 'drop-communities');
-  ensureNoExtraArgs(parsed.rest, 'drop-communities');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const result = store.dropCommunitySummaries({ project: parsed.project });
-    printStdout([
-      '## Community Summaries Dropped',
-      `- **Scope:** ${parsed.label}`,
-      `- **Runs deleted:** ${result.runs_deleted}`,
-      `- **Communities deleted:** ${result.communities_deleted}`,
-      `- **Members deleted:** ${result.members_deleted}`,
-      `- **Evidence deleted:** ${result.evidence_deleted}`,
-    ].join('\n'));
-  });
-}
-
-async function handleRebuildIndex(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const parsedReason = parseOptionValue(positionals, ['--reason']);
-  const parsedProcess = parseOptionValue(parsedReason.rest, ['--process']);
-  const statusOnly = parsedProcess.rest.includes('--status');
-  const hasProject = globals.project !== undefined;
-  const all = parsedProcess.rest.includes('--all');
-  const rest = parsedProcess.rest.filter((arg) => arg !== '--all' && arg !== '--status');
-
-  if (all && hasProject) {
-    fail('Use either --project or --all, not both');
-  }
-  if (!statusOnly && !all && !hasProject) {
-    fail('rebuild-index requires --project <name> or --all');
-  }
-  ensureNoExtraArgs(rest, 'rebuild-index');
-
-  const processLimit = parsedProcess.value ? parseInteger(parsedProcess.value, '--process', 0) : 25;
-  const project = hasProject
-    ? parseRequiredProjectName(globals.project, 'rebuild-index --project')
-    : undefined;
-  const scopeLabel = project ? `project ${project}` : 'all projects';
-
-  await withStore(globals.dataDir, async ({ store }) => {
-    if (statusOnly) {
-      printStdout(formatSemanticProgress(store.getSemanticIndexProgress({ project }), scopeLabel));
-      return;
-    }
-
-    const reason = parsedReason.value?.trim() || 'cli-manual';
-    const requeued = store.requeueFailedEmbeddingJobs();
-    const rebuild = store.enqueueManualSemanticRebuild({
-      scope: project ?? 'all',
-      reason,
-    });
-    if (processLimit > 0 && !store.config.embedding) {
-      fail('Embedding config unavailable; cannot process semantic jobs');
-    }
-    const embeddingProvider = processLimit > 0 && store.config.embedding
-      ? createEmbeddingProvider(store.config.embedding)
-      : null;
-    const processed = processLimit > 0
-      ? await store.processSemanticJobs({ limit: processLimit, embeddingProvider })
-      : 0;
-    const state = store.getSemanticIndexState();
-    const progress = store.getSemanticIndexProgress({ project });
-
-    printStdout([
-      '## Semantic Index Rebuild',
-      `- **Scope:** ${scopeLabel}`,
-      `- **Queued key:** ${rebuild.dedupeKey}`,
-      `- **Requeued failed jobs:** ${requeued}`,
-      `- **Jobs processed:** ${processed}`,
-      `- **Pending:** ${state.pending ? 'yes' : 'no'}`,
-      `- **Degraded:** ${state.degraded ? 'yes' : 'no'}`,
-      `- **Stale:** ${state.stale ? 'yes' : 'no'}`,
-      '',
-      formatSemanticProgress(progress, scopeLabel),
-    ].join('\n'));
-  }, statusOnly ? { mode: 'read-only' } : undefined);
-}
-
-async function handleMaintainMemory(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const dryRun = positionals.includes('--dry-run');
-  const apply = positionals.includes('--apply');
-
-  if (dryRun && apply) {
-    fail('Use either --dry-run or --apply, not both');
-  }
-
-  const modeArgsRemoved = positionals.filter((arg) => arg !== '--dry-run' && arg !== '--apply');
-  const parsed = parseMaintenanceScope(modeArgsRemoved, globals);
-  ensureNoExtraArgs(parsed.rest, 'maintain-memory');
-
-  await withStore(globals.dataDir, ({ store }) => {
-    const effectiveMode = apply ? 'apply' : dryRun ? 'dry-run' : store.config.maintenance.defaultMode;
-    const result = effectiveMode === 'apply'
-      ? store.runMaintenance({ scope: parsed.scope, mode: 'apply' })
-      : store.evaluateMaintenance({ scope: parsed.scope, mode: 'dry-run' });
-
-    printStdout(formatMaintenanceResult(result, parsed.label));
-  });
-}
-
-function formatSetupItems(label: string, items: string[]): string[] {
-  return [
-    `${label}:`,
-    ...(items.length > 0 ? items.map((item) => `  - ${item}`) : ['  - none']),
-  ];
-}
-
-export function formatSetupResult(result: SetupResult, json: boolean): string {
-  if (json) {
-    return JSON.stringify(result, null, 2);
-  }
-
-  return [
-    `Setup: ${result.harness} (${result.scope})`,
-    `Status: ${result.status}`,
-    `Changed: ${result.changed ? 'yes' : 'no'}`,
-    `Target: ${result.target}`,
-    ...formatSetupItems(
-      'Steps',
-      result.steps.map((step) => `${step.name}: ${step.outcome}`),
-    ),
-    ...formatSetupItems('Diagnostics', result.diagnostics),
-    ...formatSetupItems('Manual actions', result.manual_actions),
-    `Receipt: ${result.receipt ?? 'none'}`,
-  ].join('\n');
-}
-
-function setupScopeFromArgs(args: string[]): SetupRequest['scope'] {
-  for (let index = 1; index < args.length; index++) {
-    const arg = args[index];
-    if (arg === '--scope' && args[index + 1] === 'project') {
-      return 'project';
-    }
-    if (arg === '--scope=project') {
-      return 'project';
-    }
-  }
-  return 'global';
-}
-
-function setupProjectPathFromArgs(args: string[]): string | undefined {
-  for (let index = 1; index < args.length; index++) {
-    const arg = args[index];
-    if (arg === '--project') {
-      return args[index + 1]?.trim() || undefined;
-    }
-    if (arg.startsWith('--project=')) {
-      return arg.slice('--project='.length).trim() || undefined;
-    }
-  }
-  return undefined;
-}
-
-function setupValidationFailure(
-  args: string[],
-  error: unknown,
-): { result: SetupResult; json: boolean } | null {
-  const harness = args[0];
-  if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude') {
-    return null;
-  }
-
-  const scope = setupScopeFromArgs(args);
-  const projectPath = setupProjectPathFromArgs(args);
-  const message = error instanceof Error ? error.message : 'Invalid setup options';
-  return {
-    result: {
-      status: 'failed',
-      changed: false,
-      harness,
-      scope,
-      target: projectPath ?? `unresolved ${scope} target`,
-      steps: [{ name: 'Validate setup request', outcome: 'failed' }],
-      diagnostics: [message],
-      manual_actions: ['Correct the setup options and retry.'],
-      receipt: null,
-    },
-    json: args.includes('--json'),
-  };
-}
-
-async function handleSetup(
-  positionals: string[],
-  globals: GlobalOptions,
-  options: RunCliOptions,
-): Promise<number> {
-  let request: SetupRequest;
-  try {
-    request = parseSetupRequest(positionals);
-  } catch (error) {
-    const failure = setupValidationFailure(positionals, error);
-    if (!failure) {
-      throw error;
-    }
-    printStdout(formatSetupResult(failure.result, failure.json));
-    return getSetupExitCode(failure.result.status);
-  }
-
-  let result: SetupResult;
-  try {
-    const setupEngineOptions = globals.dataDir ? { dataDir: globals.dataDir } : {};
-    result = options.setupRunner
-      ? await options.setupRunner(request, setupEngineOptions)
-      : await inspectAndPlanSetup(request, setupEngineOptions);
-  } catch {
-    result = {
-      status: 'failed',
-      changed: false,
-      harness: request.harness,
-      scope: request.scope,
-      target: request.projectPath ?? 'unresolved global target',
-      steps: [{ name: 'Execute setup inspection', outcome: 'failed' }],
-      diagnostics: ['Setup inspection failed before a verified result was available.'],
-      manual_actions: ['Verify filesystem access and retry.'],
-      receipt: null,
-    };
-  }
-  printStdout(formatSetupResult(result, request.json));
-  return getSetupExitCode(result.status);
-}
-
-async function handleVersion(positionals: string[]): Promise<void> {
-  ensureNoExtraArgs(positionals, 'version');
-  printStdout(VERSION);
-}
-
-function parseAdminOptions(positionals: string[], globals: GlobalOptions, retention: boolean): {
-  scope: AdminStorageScope;
-  apply: boolean;
-  untilComplete: boolean;
-  expectedFingerprint?: string;
-  effectiveNow?: string;
-  expectedFingerprintSupplied: boolean;
-  effectiveNowSupplied: boolean;
-} {
-  let all = false;
-  let apply = false;
-  let untilComplete = false;
-  let expectedFingerprint: string | undefined;
-  let effectiveNow: string | undefined;
-  let expectedFingerprintSupplied = false;
-  let effectiveNowSupplied = false;
-  for (let index = 0; index < positionals.length; index += 1) {
-    const arg = positionals[index];
-    if (arg === '--all') all = true;
-    else if (arg === '--apply') apply = true;
-    else if (arg === '--until-complete') untilComplete = true;
-    else if (arg === '--expected-fingerprint') {
-      expectedFingerprintSupplied = true;
-      expectedFingerprint = requireValue(positionals, index++, arg);
-    } else if (arg.startsWith('--expected-fingerprint=')) {
-      expectedFingerprintSupplied = true;
-      expectedFingerprint = arg.slice(arg.indexOf('=') + 1);
-      if (!expectedFingerprint) fail('Missing value for --expected-fingerprint');
-    } else if (arg === '--effective-now') {
-      effectiveNowSupplied = true;
-      effectiveNow = requireValue(positionals, index++, arg);
-    } else if (arg.startsWith('--effective-now=')) {
-      effectiveNowSupplied = true;
-      effectiveNow = arg.slice(arg.indexOf('=') + 1);
-      if (!effectiveNow) fail('Missing value for --effective-now');
-    }
-    else fail(`Unknown option: ${arg}`);
-  }
-  if ((globals.project ? 1 : 0) + (all ? 1 : 0) !== 1) fail('Exactly one --project <name> or --all is required');
-  if (untilComplete && !retention) fail('--until-complete is only supported by prune-operation-traces');
-  if (untilComplete && !apply) fail('--until-complete requires --apply');
-  if (apply && retention && expectedFingerprintSupplied !== effectiveNowSupplied) {
-    fail('Retention apply preconditions must be supplied as a complete --expected-fingerprint/--effective-now pair');
-  }
-  if (!retention && effectiveNowSupplied) fail('--effective-now is only supported by prune-operation-traces');
-  if (!apply && (expectedFingerprintSupplied || effectiveNowSupplied)) fail('Preview mode does not accept apply preconditions');
-  return {
-    scope: globals.project ? { project: globals.project } : { all: true },
-    apply,
-    untilComplete,
-    expectedFingerprintSupplied,
-    effectiveNowSupplied,
-    ...(expectedFingerprint ? { expectedFingerprint } : {}),
-    ...(effectiveNow ? { effectiveNow } : {}),
-  };
-}
-
-function formatAdminScope(scope: AdminStorageScope): string {
-  return 'project' in scope ? scope.project : 'all';
-}
-
-function formatAdminResult(title: string, result: SyncJournalRepairResult | OperationTraceRetentionResult): string {
-  return [`## ${title}`, `- **Mode:** ${result.dry_run ? 'preview' : 'apply'}`,
-    `- **Scope:** ${formatAdminScope(result.scope)}`,
-    `- **Selection fingerprint:** ${result.selection_fingerprint}`,
-    ...('effective_now' in result ? [`- **Effective now:** ${result.effective_now}`] : []),
-    '```json', JSON.stringify(result, null, 2), '```'].join('\n');
-}
-
-function formatRetentionBatchProgress(
-  batch: number,
-  totalBatches: number,
-  result: OperationTraceRetentionResult,
-): string {
-  return `Batch ${batch}/${totalBatches}: deleted ${result.counts.deleted}, remaining ${result.counts.remaining_eligible}`;
-}
-
-function formatCompletedRetention(
-  scope: AdminStorageScope,
-  effectiveNow: string,
-  batchesCompleted: number,
-  totalDeleted: number,
-  result: OperationTraceRetentionResult,
-): string {
-  const summary = {
-    mode: 'apply-until-complete',
-    scope,
-    effective_now: effectiveNow,
-    batches_completed: batchesCompleted,
-    total_deleted: totalDeleted,
-    remaining_eligible: result.counts.remaining_eligible,
-    has_more: result.has_more,
-  };
-  return [
-    '## Operation Trace Retention',
-    '- **Mode:** apply-until-complete',
-    `- **Scope:** ${formatAdminScope(scope)}`,
-    `- **Effective now:** ${effectiveNow}`,
-    `- **Batches completed:** ${batchesCompleted}`,
-    `- **Total deleted:** ${totalDeleted}`,
-    `- **Remaining eligible:** ${result.counts.remaining_eligible}`,
-    '```json', JSON.stringify(summary, null, 2), '```',
-  ].join('\n');
-}
-
-async function handleRepairSyncJournal(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const options = parseAdminOptions(positionals, globals, false);
-  await withStore(globals.dataDir, ({ store }) => {
-    if (!options.apply) {
-      printStdout(formatAdminResult('Sync Journal Repair', store.previewSyncJournalRepair(options.scope)));
-      return;
-    }
-    const expectedFingerprint = options.expectedFingerprintSupplied
-      ? options.expectedFingerprint!
-      : store.previewSyncJournalRepair(options.scope).selection_fingerprint;
-    const result = store.applySyncJournalRepair({
-      scope: options.scope,
-      expected_selection_fingerprint: expectedFingerprint,
-    });
-    printStdout(formatAdminResult('Sync Journal Repair', result));
-  });
-}
-
-async function handlePruneOperationTraces(positionals: string[], globals: GlobalOptions): Promise<void> {
-  const options = parseAdminOptions(positionals, globals, true);
-  await withStore(globals.dataDir, ({ store }) => {
-    if (!options.apply) {
-      printStdout(formatAdminResult('Operation Trace Retention', store.previewOperationTraceRetention(options.scope)));
-      return;
-    }
-
-    const initialPreview = options.expectedFingerprintSupplied && options.effectiveNowSupplied
-      ? null
-      : store.previewOperationTraceRetention(options.scope);
-    const effectiveNow = options.effectiveNowSupplied ? options.effectiveNow! : initialPreview!.effective_now;
-    let result = store.applyOperationTraceRetention({
-      scope: options.scope,
-      expected_selection_fingerprint: options.expectedFingerprintSupplied
-        ? options.expectedFingerprint!
-        : initialPreview!.selection_fingerprint,
-      effective_now: effectiveNow,
-    });
-    if (!options.untilComplete) {
-      printStdout(formatAdminResult('Operation Trace Retention', result));
-      return;
-    }
-
-    const maxBatches = Math.max(1, Math.ceil(result.counts.eligible / result.policy.max_rows_per_run));
-    let batchesCompleted = 1;
-    let totalDeleted = result.counts.deleted;
-    printStdout(formatRetentionBatchProgress(batchesCompleted, maxBatches, result));
-    while (result.has_more) {
-      if (batchesCompleted >= maxBatches) {
-        fail('Operation-trace retention backlog changed during --until-complete; run a fresh preview');
-      }
-      const preview = store.previewOperationTraceRetention(options.scope, effectiveNow);
-      if (preview.counts.selected < 1) {
-        fail('Operation-trace retention made no progress during --until-complete');
-      }
-      result = store.applyOperationTraceRetention({
-        scope: options.scope,
-        expected_selection_fingerprint: preview.selection_fingerprint,
-        effective_now: preview.effective_now,
-      });
-      if (result.counts.deleted < 1) {
-        fail('Operation-trace retention made no progress during --until-complete');
-      }
-      batchesCompleted += 1;
-      totalDeleted += result.counts.deleted;
-      printStdout(formatRetentionBatchProgress(batchesCompleted, maxBatches, result));
-    }
-
-    printStdout(formatCompletedRetention(
-      options.scope,
-      effectiveNow,
-      batchesCompleted,
-      totalDeleted,
-      result,
-    ));
-  });
-}
-
-function formatCompactionResult(
-  result: ReturnType<typeof previewDatabaseCompaction> | ReturnType<typeof applyDatabaseCompaction>,
-): string {
-  const metrics = result.dry_run ? result.metrics : result.after;
-  const mode = result.dry_run ? 'preview' : result.skipped ? 'apply-no-op' : 'apply';
-  return [
-    '## Database Compaction',
-    `- **Mode:** ${mode}`,
-    `- **Database:** ${metrics.database_path}`,
-    `- **Database bytes:** ${metrics.database_bytes}`,
-    `- **Logical database bytes:** ${metrics.logical_database_bytes}`,
-    `- **Reclaimable bytes:** ${metrics.reclaimable_bytes}`,
-    `- **Filesystem free bytes:** ${metrics.filesystem_free_bytes}`,
-    `- **Required free bytes:** ${metrics.required_free_bytes}`,
-    `- **Journal mode:** ${metrics.journal_mode}`,
-    `- **Sidecars:** ${metrics.sidecar_state}`,
-    '```json', JSON.stringify(result, null, 2), '```',
-  ].join('\n');
-}
-
-async function handleCompactDatabase(positionals: string[], globals: GlobalOptions): Promise<void> {
-  let apply = false;
-  for (const arg of positionals) {
-    if (arg === '--apply' && !apply) apply = true;
-    else fail(`compact-database accepts only --apply and --data-dir; unknown option: ${arg}`);
-  }
-  if (globals.project) fail('compact-database accepts only --apply and --data-dir');
-  const { dbPath } = resolveStoragePaths({ dataDir: globals.dataDir });
-  const result = apply ? applyDatabaseCompaction(dbPath) : previewDatabaseCompaction(dbPath);
-  printStdout(formatCompactionResult(result));
-}
-
-async function handleIntegrationEvent(
-  positionals: string[],
-  globals: GlobalOptions,
-  options: RunCliOptions,
-): Promise<number> {
-  ensureNoExtraArgs(positionals, 'integration-event');
-  const commandOptions = globals.dataDir ? { dataDir: globals.dataDir } : {};
-  const result = options.integrationEventRunner
-    ? await options.integrationEventRunner(commandOptions)
-    : await runIntegrationEventCommand(process.stdin, commandOptions);
-  printStdout(JSON.stringify(result.response));
-  return result.exitCode;
-}
-
-export async function runCli(args: string[], options: RunCliOptions = {}): Promise<number> {
-  try {
-    const command = detectCommand(args);
-    const parsed = parseGlobals(args, { parseProject: command !== 'setup' });
-
-    if (parsed.globals.help || parsed.command === 'help' || !parsed.command) {
-      printHelp();
+      const event = JSON.parse(readFileSync(0, 'utf8')) as AdapterEvent; const nativeHarness = value(args, '--harness') as 'opencode' | 'codex' | 'claude' | undefined;
+      const dataDir = loadRuntimeConfig({ explicitDataDir: value(args, '--data-dir') }).dataDir;
+      mkdirSync(dataDir, { recursive: true });
+      const service = new MemoryService({ databasePath: join(dataDir, 'memory.sqlite') });
+      try {
+        const normalized = nativeHarness ? normalizeNativePayload(nativeHarness, event) : normalizeAdapterEvent(event);
+        const data = service.lifecycle(normalized);
+        process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: { root_session_id: normalized.rootSessionKey, project_key: data.projectKey, project_name: data.projectName }, data })}\n`);
+      } finally { service.close(); }
       return 0;
+    } catch (error) { process.stderr.write(`Lifecycle failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
+  }
+  if (command === 'project') {
+    const commandIndex = args.indexOf(command);
+    const subcommand = args[commandIndex + 1];
+    if (subcommand !== 'rename') { process.stderr.write(`Unknown project command: ${subcommand ?? ''}\n`); return 2; }
+    const parsed = projectRenameArguments(args, commandIndex);
+    if (!parsed) { process.stderr.write('project rename requires exact --project and --name values with no unknown options\n'); return 2; }
+    let rename;
+    try { rename = validateProjectRenameInput({ selector: parsed.selector, name: parsed.name }); }
+    catch (error) { process.stderr.write(`Invalid project rename: ${error instanceof Error ? error.message : String(error)}\n`); return 2; }
+    try {
+      const dataDir = loadRuntimeConfig({ explicitDataDir: parsed.dataDir }).dataDir;
+      const databasePath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(databasePath) || !projectSelectorExists(databasePath, rename.selector)) {
+        process.stderr.write('Project rename failed: Project selector did not match a project\n');
+        return 1;
+      }
+      const service = new MemoryService({ databasePath });
+      try { process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.project.rename.v1', data: service.renameProject(rename) })}\n`); }
+      finally { service.close(); }
+      return 0;
+    } catch (error) { process.stderr.write(`Project rename failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
+  }
+  if (command === 'setup') {
+    const commandIndex = args.indexOf(command); const harness = args.slice(commandIndex + 1).find((arg) => !arg.startsWith('-'));
+    if (harness !== 'opencode' && harness !== 'codex' && harness !== 'claude') { process.stderr.write('setup requires opencode, codex, or claude\n'); return 2; }
+    if (value(args, '--scope') || args.includes('--project')) { process.stderr.write('setup supports only global/user native installation; project scope is not supported\n'); return 2; }
+    const localPackageRoot = value(args, '--local-package-root'); const dataDir = value(args, '--data-dir'); const planOnly = args.includes('--plan');
+    try {
+      const result = harness === 'opencode'
+        ? setupOpenCode({ mode: localPackageRoot ? 'local' : 'public', ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly })
+        : setupNativeManager({ host: harness, ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') });
+      if (args.includes('--json')) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      else {
+        process.stdout.write(`${harness}: ${result.status}; changed=${result.changed}\n`);
+        for (const action of result.actions) process.stdout.write(`- ${action}\n`);
+        if (result.receiptPath) process.stdout.write(`Receipt: ${result.receiptPath}\n`);
+        if ('warnings' in result) for (const warning of result.warnings) process.stdout.write(`Warning: ${warning}\n`);
+        if ('diagnostics' in result) for (const diagnostic of result.diagnostics) process.stdout.write(`Diagnostic: ${diagnostic}\n`);
+      }
+      return result.status === 'unsupported' || result.status === 'requires-user-action' ? 1 : 0;
+    } catch (error) { process.stderr.write(`Setup failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
+  }
+  if (command !== 'import-legacy') { process.stderr.write(`Unknown command: ${command}\n`); return 2; }
+  const commandIndex = args.indexOf(command);
+  if (args[commandIndex + 1] === 'apply') {
+    const parsedApply = importApplyArguments(args, commandIndex);
+    if (!parsedApply) { process.stderr.write('import-legacy apply requires exact --plan and --report values with no duplicate or unknown options\n'); return 2; }
+    const reportPath = resolve(parsedApply.report);
+    if (existsSync(reportPath)) { process.stderr.write('Import apply failed: Import report path must be absent\n'); return 1; }
+    try {
+      let plan: unknown = null;
+      try { plan = JSON.parse(readFileSync(resolve(parsedApply.plan), 'utf8')) as unknown; }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+      const report = await applyLegacyImport({ plan });
+      writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+      return 0;
+    } catch (error) {
+      if (error instanceof LegacyImportFailure && !existsSync(reportPath)) writeFileSync(reportPath, `${JSON.stringify(error.report, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+      process.stderr.write(`Import apply failed: ${(error instanceof Error ? error.message : String(error)).replace(/[\r\n\t]+/gu, ' ').slice(0, 500)}\n`);
+      return 1;
     }
-
-    switch (parsed.command) {
-      case 'search':
-        await handleSearch(parsed.positionals, parsed.globals);
-        return 0;
-      case 'save':
-        await handleSave(parsed.positionals, parsed.globals);
-        return 0;
-      case 'timeline':
-        await handleTimeline(parsed.positionals, parsed.globals);
-        return 0;
-      case 'context':
-        await handleContext(parsed.positionals, parsed.globals);
-        return 0;
-      case 'stats':
-        await handleStats(parsed.positionals, parsed.globals);
-        return 0;
-      case 'export':
-        await handleExport(parsed.positionals, parsed.globals);
-        return 0;
-      case 'import':
-        await handleImport(parsed.positionals, parsed.globals);
-        return 0;
-      case 'sync':
-         await handleSync(parsed.positionals, parsed.globals);
-         return 0;
-       case 'sync-import':
-         await handleSyncImport(parsed.positionals, parsed.globals);
-         return 0;
-       case 'migrate-project':
-         await handleMigrateProject(parsed.positionals, parsed.globals);
-         return 0;
-       case 'delete-project':
-         await handleDeleteProject(parsed.positionals, parsed.globals);
-         return 0;
-       case 'rebuild-graph':
-         await handleRebuildGraph(parsed.positionals, parsed.globals);
-         return 0;
-       case 'prune-graph':
-         await handlePruneGraph(parsed.positionals, parsed.globals);
-         return 0;
-       case 'rebuild-communities':
-         await handleRebuildCommunities(parsed.positionals, parsed.globals);
-         return 0;
-       case 'preview-communities':
-         await handlePreviewCommunities(parsed.positionals, parsed.globals);
-         return 0;
-       case 'communities-status':
-         await handleCommunitiesStatus(parsed.positionals, parsed.globals);
-         return 0;
-       case 'drop-communities':
-         await handleDropCommunities(parsed.positionals, parsed.globals);
-         return 0;
-       case 'rebuild-index':
-         await handleRebuildIndex(parsed.positionals, parsed.globals);
-         return 0;
-       case 'maintain-memory':
-         await handleMaintainMemory(parsed.positionals, parsed.globals);
-         return 0;
-       case 'repair-sync-journal':
-         await handleRepairSyncJournal(parsed.positionals, parsed.globals);
-         return 0;
-       case 'prune-operation-traces':
-         await handlePruneOperationTraces(parsed.positionals, parsed.globals);
-         return 0;
-       case 'compact-database':
-         await handleCompactDatabase(parsed.positionals, parsed.globals);
-         return 0;
-       case 'setup':
-         return await handleSetup(parsed.positionals, parsed.globals, options);
-       case 'integration-event':
-         return handleIntegrationEvent(parsed.positionals, parsed.globals, options);
-       case 'version':
-         await handleVersion(parsed.positionals);
-         return 0;
-      default:
-        fail(`Unknown command: ${parsed.command}`);
+  }
+  if (args[commandIndex + 1] !== 'plan') {
+    const parsedRun = importRunArguments(args, commandIndex);
+    if (!parsedRun) { process.stderr.write('import-legacy accepts only --source, --map, --data-dir, and --json with no duplicate or unknown options\n'); return 2; }
+    let retainedFailureReportPath: string | null = null;
+    try {
+      const sourcePath = resolve(parsedRun.source ?? join(homedir(), '.thoth', 'thoth.db'));
+      const dataDir = loadRuntimeConfig({ explicitDataDir: parsedRun.dataDir }).dataDir;
+      const targetPath = join(dataDir, 'memory.sqlite');
+      const mapping = parsedRun.map ? parseMappingManifest(JSON.parse(readFileSync(resolve(parsedRun.map), 'utf8'))) : null;
+      const freshPlan = planLegacyImport({ sourcePath, targetPath, mapping });
+      const canonicalMapping = freshPlan.mappingRequest;
+      const requestKey = createHash('sha256').update(JSON.stringify({ sourcePath, targetPath, sourceFingerprint: freshPlan.source.logicalFingerprint, mapping: canonicalMapping, policyHash: freshPlan.policy.policyHash })).digest('hex');
+      const requestDirectory = join(dataDir, 'imports', requestKey);
+      const planDirectory = join(requestDirectory, 'plans');
+      const reportDirectory = join(requestDirectory, 'reports');
+      mkdirSync(dataDir, { recursive: true });
+      const canonicalDataDir = realpathSync(dataDir);
+      ensureImportCustodyDirectory(join(dataDir, 'imports'), canonicalDataDir);
+      ensureImportCustodyDirectory(requestDirectory, canonicalDataDir);
+      ensureImportCustodyDirectory(planDirectory, canonicalDataDir);
+      ensureImportCustodyDirectory(reportDirectory, canonicalDataDir);
+      const committed = findCommittedLegacyImport(targetPath, freshPlan.source.logicalFingerprint);
+      const planHash = committed?.planHash ?? freshPlan.planHash;
+      const planPath = join(planDirectory, `${planHash}.json`);
+      const planBindingPath = join(planDirectory, `${planHash}.binding.json`);
+      const planBinding: ImportPlanBinding = { schema: IMPORT_PLAN_BINDING_SCHEMA, requestKey, planHash };
+      const reportPath = join(reportDirectory, `${randomUUID()}.json`);
+      retainedFailureReportPath = reportPath;
+      let plan = freshPlan;
+      if (committed) {
+        if (!existsSync(planPath)) throw new Error('Committed legacy import plan custody is missing');
+        readImportPlanBinding(planBindingPath, planBinding, canonicalDataDir);
+        assertImportCustodyFile(planPath, canonicalDataDir);
+        plan = parseImportPlan(JSON.parse(readFileSync(planPath, 'utf8')));
+        if (plan.planHash !== committed.planHash
+          || plan.source.path !== sourcePath
+          || plan.target.path !== targetPath
+          || plan.source.logicalFingerprint !== freshPlan.source.logicalFingerprint
+          || plan.policy.policyHash !== freshPlan.policy.policyHash
+          || JSON.stringify(plan.mappingRequest) !== JSON.stringify(canonicalMapping)) {
+          throw new Error('Committed legacy import plan custody does not match this request');
+        }
+      } else {
+        if (existsSync(planPath)) {
+          readImportPlanBinding(planBindingPath, planBinding, canonicalDataDir);
+          assertImportCustodyFile(planPath, canonicalDataDir);
+          plan = parseImportPlan(JSON.parse(readFileSync(planPath, 'utf8')));
+          if (JSON.stringify(plan) !== JSON.stringify(freshPlan)) throw new Error('Legacy import plan custody collision');
+        } else {
+          createOrVerifyImportPlanBinding(planBindingPath, planBinding, canonicalDataDir);
+          writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+          assertImportCustodyFile(planPath, canonicalDataDir);
+        }
+      }
+      let report;
+      try { report = await applyLegacyImport({ plan }); }
+      catch (error) {
+        if (error instanceof LegacyImportFailure) {
+          writeFileSync(reportPath, `${JSON.stringify(error.report, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+          assertImportCustodyFile(reportPath, canonicalDataDir);
+        }
+        throw error;
+      }
+      writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+      assertImportCustodyFile(reportPath, canonicalDataDir);
+      const output = {
+        schema: 'thoth-mem.import.run.v1',
+        data: {
+          importId: report.importId,
+          committed: report.committed,
+          duplicate: report.duplicate,
+          counts: importDispositionTotals(report.dispositions),
+          reasonCounts: report.reasonCounts,
+          artifacts: {
+            planPath,
+            reportPath,
+            backupPath: report.artifacts.backupPath,
+            recoveryBundlePath: report.artifacts.recoveryBundlePath,
+          },
+        },
+      };
+      if (parsedRun.json) process.stdout.write(`${JSON.stringify(output)}\n`);
+      else {
+        const counts = output.data.counts;
+        const totalRows = counts.imported + counts.linked + counts.quarantined + counts.skipped;
+        process.stdout.write(`${[
+          'Outcome: SUCCESS - legacy import completed and committed.',
+          `Rows: total=${totalRows}; imported=${counts.imported}; linked=${counts.linked}; quarantined=${counts.quarantined}; skipped=${counts.skipped}`,
+          `Non-imported rows: quarantined=${counts.quarantined}; skipped=${counts.skipped}. They were accounted for in the report and did not prevent the commit.`,
+          `Replay: ${output.data.duplicate ? 'yes - the existing committed import was reused without adding duplicate rows' : 'no'}`,
+          `Plan: ${planPath}`,
+          `Report: ${reportPath}`,
+          `Backup (safety artifact): ${report.artifacts.backupPath ?? 'null'}`,
+          `Recovery (safety artifact): ${report.artifacts.recoveryBundlePath ?? 'null'}`,
+        ].join('\n')}\n`);
+      }
+      return 0;
+    } catch (error) {
+      const reportPath = retainedFailureReportPath && existsSync(retainedFailureReportPath) ? retainedFailureReportPath : null;
+      const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n\t]+/gu, ' ').slice(0, 400);
+      const nextAction = (error instanceof LegacyImportFailure && error.code === 'TARGET_LOCKED') || /locked|busy/iu.test(message)
+        ? 'Close all hosts using the target and rerun the same command.'
+        : null;
+      process.stderr.write(`${[
+        'Outcome: FAILED - legacy import was not committed.',
+        `Reason: ${message}`,
+        ...(reportPath ? [`Report: ${reportPath}`] : []),
+        ...(nextAction ? [`Next action: ${nextAction}`] : []),
+      ].join('\n')}\n`);
+      return 1;
     }
+  }
+  const parsedImport = importPlanArguments(args, commandIndex);
+  if (!parsedImport) { process.stderr.write('import-legacy plan requires exact --source, --target, and --plan values with no duplicate or unknown options\n'); return 2; }
+  const planPath = resolve(parsedImport.plan);
+  try {
+    if (existsSync(planPath)) throw new Error('Import plan path must be absent');
+    const mapping = parsedImport.map ? parseMappingManifest(JSON.parse(readFileSync(resolve(parsedImport.map), 'utf8'))) : null;
+    const plan = planLegacyImport({ sourcePath: resolve(parsedImport.source), targetPath: resolve(parsedImport.target), mapping });
+    writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+    return 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    printStderr(message);
-    throw error;
+    process.stderr.write(`Import planning failed: ${(error instanceof Error ? error.message : String(error)).replace(/[\r\n\t]+/gu, ' ').slice(0, 500)}\n`);
+    return 1;
   }
 }
