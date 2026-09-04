@@ -9,6 +9,7 @@ const expectedCapabilities = [
   'evals',
   'harness-integration',
   'packaging',
+  'release-publishing',
   'retrieval',
   'store',
   'tools',
@@ -47,7 +48,7 @@ const forbiddenAffirmativeRequirements = [
 ];
 
 describe('canonical product contract', () => {
-  it('contains exactly the eight current capabilities', () => {
+  it('contains exactly the nine current capabilities', () => {
     const capabilities = readdirSync('openspec/specs', { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
