@@ -328,6 +328,8 @@ process.stdout.write('native-pi-ok');
   assert(treeDigest(realPiHome) === realPiBefore, 'Packed Pi smoke mutated the real Pi home.');
 
   const piPublic = isolatedPiEnvironment('public');
+  // The frozen closure already includes native builds; install hooks would fetch outside the loopback registry.
+  piPublic.env.npm_config_ignore_scripts = 'true';
   piPublic.env.npm_config_registry = registry.url;
   piPublic.env.NPM_CONFIG_REGISTRY = registry.url;
   piPublic.env.HTTP_PROXY = 'http://127.0.0.1:9';
@@ -353,6 +355,14 @@ process.stdout.write('native-pi-ok');
   const installedRuntimeIdentities = [...installedGraph.identities].sort();
   assert(JSON.stringify(installedRuntimeIdentities) === JSON.stringify(expectedRuntimeIdentities), `Installed runtime closure drifted from the ledger: expected ${expectedRuntimeIdentities.length}, received ${installedRuntimeIdentities.length}.`);
   assert(installedGraph.edges.length >= installedGraph.identities.size, 'Installed runtime graph did not resolve every dependency edge.');
+  const publicPiMcp = run(process.execPath, [join(publicInstalled, 'dist', 'index.js'), 'mcp', '--no-http'], {
+    cwd: nativeProject,
+    env: piPublic.env,
+    input: `${JSON.stringify(initialize)}\n${JSON.stringify(initialized)}\n${JSON.stringify(listTools)}\n`,
+  });
+  const publicPiMessages = publicPiMcp.stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
+  assert(publicPiMessages.find((message) => message.id === 2)?.result?.tools?.length === 6, 'Hermetic public Pi MCP did not expose exactly six tools.');
+  assert(existsSync(join(piPublic.data, 'memory.sqlite')), 'Hermetic public Pi MCP did not open its native SQLite database.');
   const requests = readFileSync(registry.logPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean);
   assert(requests.length > 0 && requests.every((request) => request.startsWith('/')), 'Registry request log is invalid.');
   assert(treeDigest(realPiHome) === realPiBefore, 'Hermetic public Pi smoke mutated the real Pi home.');
