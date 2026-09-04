@@ -84,8 +84,12 @@ describe('benchmark fixture runner', () => {
         },
       },
       promotion: { decision: 'incomplete', reasons: ['fixture_only_external_lanes_unavailable'] },
-      observation_pipeline: { decision: { status: 'pass', reasons: ['all_observation_gates_passed'] } },
     });
+    // The report validator reconciles measured latency with the declared decision.
+    expect([
+      { status: 'pass', reasons: ['all_observation_gates_passed'] },
+      { status: 'fail', reasons: ['recall_latency_above_2x_control'] },
+    ]).toContainEqual(report.observation_pipeline.decision);
     expect(report.metrics.resources.samples.latency_ms).toHaveLength(7);
     expect(report.metrics.resources.samples.memory_bytes).toHaveLength(7);
     expect(report.metrics.resources.latency_p50_ms).toBe(percentile(report.metrics.resources.samples.latency_ms, 50));

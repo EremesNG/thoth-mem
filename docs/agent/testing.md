@@ -19,6 +19,14 @@ pnpm run prepublishOnly
 git diff --check
 ```
 
+Observation benchmark runner tests validate the emitted report and require all
+non-latency gates to pass. A measured `recall_latency_above_2x_control` result
+remains `decision.status=fail` in the report but does not fail these CI smoke
+tests: wall-clock performance on a shared runner is not deterministic. The
+benchmark's 2× threshold and sample validation remain unchanged; deterministic
+evaluator tests still require latency regressions to fail and forged decisions
+to be rejected. Inspect the report's performance decision separately from CI.
+
 ## Native-host verification matrix
 
 The supported-host contract has exactly four native hosts:
