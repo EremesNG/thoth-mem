@@ -11,7 +11,7 @@ import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
 import { setupPi } from './setup/pi.js';
 
-const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>] [--force-version]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>]\n    --force-version: Codex version override; Pi uses capability checks without a version allowlist.\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
 
@@ -202,7 +202,7 @@ export async function runCli(args: string[]): Promise<number> {
       const token = args[index]!;
       const equals = token.indexOf('=');
       const option = equals >= 0 ? token.slice(0, equals) : token;
-      if (!['--plan', '--json', '--force-version', '--data-dir', '--local-package-root'].includes(option) || seen.has(option)) {
+      if (!['--plan', '--json', '--force-version', '--data-dir', '--local-package-root'].includes(option) || seen.has(option) || (harness === 'pi' && option === '--force-version')) {
         process.stderr.write('setup received a duplicate or unknown option\n'); return 2;
       }
       seen.add(option);
@@ -216,7 +216,7 @@ export async function runCli(args: string[]): Promise<number> {
       const result = harness === 'opencode'
         ? setupOpenCode({ mode: localPackageRoot ? 'local' : 'public', ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly })
         : harness === 'pi'
-          ? setupPi({ ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') })
+          ? setupPi({ ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly })
           : setupNativeManager({ host: harness, ...(localPackageRoot ? { packageRoot: localPackageRoot } : {}), ...(dataDir ? { dataDir } : {}), planOnly, forceVersion: args.includes('--force-version') });
       if (args.includes('--json')) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       else {

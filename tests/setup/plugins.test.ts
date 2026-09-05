@@ -31,8 +31,9 @@ describe('first-product native setup boundary', () => {
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await runCli(['setup', 'pi', '--plan', '--json', '--data-dir', dataDir, `--local-package-root=${localRoot}`, '--force-version'])).toBe(0);
-      expect(setupPiMock).toHaveBeenCalledWith({ packageRoot: localRoot, dataDir, planOnly: true, forceVersion: true });
+      expect(await runCli(['setup', 'pi', '--plan', '--json', '--data-dir', dataDir, `--local-package-root=${localRoot}`])).toBe(0);
+      expect(setupPiMock).toHaveBeenCalledWith({ packageRoot: localRoot, dataDir, planOnly: true });
+      expect(await runCli(['setup', 'pi', '--force-version'])).toBe(2);
       expect(await runCli(['setup', 'pi', '--plan', '--plan'])).toBe(2);
       expect(await runCli(['setup', 'pi', '--unknown'])).toBe(2);
       expect(await runCli(['setup', 'pi', '--data-dir'])).toBe(2);

@@ -17,7 +17,6 @@ export interface PiSetupOptions {
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   planOnly?: boolean;
-  forceVersion?: boolean;
   command?: string;
   executor?: PiExecutor;
   extensionProbe?: (extensionPath: string) => PiCommandResult;
@@ -406,7 +405,6 @@ export function setupPi(options: PiSetupOptions = {}): PiSetupResult {
   const versionResult = checked(executor, command, ['--version'], 'Pi version inspection');
   const piVersion = versionResult.stdout.trim();
   if (!/^\d+\.\d+\.\d+$/u.test(piVersion)) throw new Error('Pi version output is malformed');
-  if (!/^0\.84\.\d+$/u.test(piVersion) && !options.forceVersion) throw new Error(`Pi ${piVersion || 'unknown'} is outside the supported 0.84.x contract`);
   if (!capabilities(executor, command)) throw new Error('Pi package manager capability contract is incomplete');
   let initial = inspect(executor, command);
   const { journalPath, receiptPath, providerConfigPath } = journalPaths(options);

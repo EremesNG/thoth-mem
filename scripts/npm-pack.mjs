@@ -1,5 +1,14 @@
 import { realpathSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+
+export function packTarball(stage, tarball, command = 'tar') {
+  const archiveDirectory = dirname(resolve(tarball));
+  const stagePath = relative(archiveDirectory, resolve(stage)).split(sep).join('/') || '.';
+  // GNU tar treats a colon in the archive argument as a remote host separator.
+  const result = spawnSync(command, ['-czf', basename(tarball), '-C', stagePath, 'package'], { cwd: archiveDirectory, encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) throw new Error(`Dependency archive creation failed: ${result.error?.message ?? result.stderr}`);
+}
 
 function realNpmCli(path) {
   try {

@@ -44,7 +44,7 @@ describe('packed native distribution smoke', () => {
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(result.stdout).toContain('Packed smoke passed for opencode, codex, claude-code, pi.');
       expect(result.stdout).toContain('Activated lifecycle fixtures for opencode, codex, claude-code, pi.');
-      expect(result.stdout).toContain('Verified Pi 0.84.4 local candidate with disposable home and unchanged real Pi home.');
+      expect(result.stdout).toMatch(/Verified Pi \d+\.\d+\.\d+ local candidate with disposable home and unchanged real Pi home\./u);
       expect(result.stdout).toContain('Verified hermetic public Pi candidate and complete runtime closure.');
       expect(result.stdout).toContain('Verified exact public Pi list and full installed runtime graph.');
       expect(result.stdout).toContain('Verified SHA-256, SHA-512 integrity, and SHA-1 shasum ledger fields.');

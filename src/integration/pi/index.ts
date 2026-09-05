@@ -19,7 +19,6 @@ const RECOVERY_CUSTOM_TYPE = 'thoth-mem-recovery';
 interface PiToolResult {
   content: Array<{ type: 'text'; text: string }>;
   details?: Record<string, unknown>;
-  isError?: boolean;
 }
 
 interface PiExtensionApi {
@@ -100,7 +99,8 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
           } catch (error) {
             report('pi_tool_request_failed');
             const message = error instanceof Error ? error.message : 'memory tool failed';
-            return { isError: true, content: [{ type: 'text', text: Array.from(message).slice(0, 500).join('') }] };
+            // Pi derives tool-result error status from execute rejection.
+            throw new Error(Array.from(message).slice(0, 500).join(''));
           }
         },
       });
