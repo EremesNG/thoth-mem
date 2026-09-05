@@ -36,13 +36,13 @@ The supported-host contract has exactly four native hosts:
 | OpenCode | `setup opencode`; Bun loads the thin native entry and Node owns SQLite/MCP lifecycle work. | `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/lifecycle.test.ts` |
 | Codex | `setup codex`; native plugin hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
 | Claude Code | `setup claude`; native hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
-| Pi | `setup pi`; the native extension shares one lazy Node MCP child for tools and lifecycle calls. Certified real-host version: `0.84.4`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts` |
+| Pi | `setup pi`; admission is capability-based with no version allowlist. The native extension shares one lazy Node MCP child for tools and lifecycle calls. Reproducible SDK baseline: `0.84.4`; packed smoke reports the host selected by `PATH`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts`, `tests/integration/pi-tool-error.test.ts` |
 
 For the Pi lane, run the terminating focused suite after a build:
 
 ```sh
 pnpm run build
-pnpm exec vitest run tests/setup/pi.test.ts tests/integration/pi-lifecycle.test.ts tests/integration/pi-mcp-client.test.ts tests/integration/pi-native-plugin.test.ts tests/integration/recovery.test.ts --config vitest.integration.config.ts
+pnpm exec vitest run tests/setup/pi.test.ts tests/integration/pi-lifecycle.test.ts tests/integration/pi-mcp-client.test.ts tests/integration/pi-native-plugin.test.ts tests/integration/pi-tool-error.test.ts tests/integration/recovery.test.ts --config vitest.integration.config.ts
 ```
 
 The host-shaped packed smoke is a separate terminating check:
@@ -104,7 +104,8 @@ The real-dataset outcome is observed only when the prepared file matches revisio
 
 There is no lint or browser lane. `integration:smoke` packs the real tarball,
 installs it in a disposable directory, verifies all four native inventories,
-cold-starts its CLI, loads the Pi `0.84.4` extension and Skill, enumerates the
+cold-starts its CLI, loads the extension and Skill with the invoking environment's
+Pi, records that host version without an exact-version gate, enumerates the
 six tools, and executes every packaged lifecycle runner with host-shaped
 fixtures without touching real host homes. It does not prove host-model
 consumption. External benchmark lanes may remain unavailable only when the

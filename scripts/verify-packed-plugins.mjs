@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 
 import { parse as parseJsonc } from 'jsonc-parser';
-import { parseNpmPackRecord, resolveNpmCli } from './npm-pack.mjs';
+import { packTarball, parseNpmPackRecord, resolveNpmCli } from './npm-pack.mjs';
 
 const repository = resolve(import.meta.dirname, '..');
 const scratch = mkdtempSync(join(tmpdir(), 'thoth-packed-native-'));
@@ -29,7 +29,7 @@ function assert(condition, message) {
 
 function runPi(args, options = {}) {
   if (process.platform === 'win32') return run(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', 'pi', ...args], options);
-  return run(process.env.PI_BINARY ?? 'pi', args, options);
+  return run('pi', args, options);
 }
 
 function isolatedEnvironment(name) {
@@ -121,7 +121,7 @@ function materializeRuntimeClosure(packageRoot, artifactsRoot) {
     const stagedPackage = join(stage, 'package');
     cpSync(directory, stagedPackage, { recursive: true, filter: (source) => basename(source) !== 'node_modules' });
     const tarball = join(artifactsRoot, `${manifest.name.replaceAll('@', '').replaceAll('/', '-')}-${manifest.version}.tgz`);
-    try { run('tar', ['-czf', tarball, '-C', stage, 'package']); }
+    try { packTarball(stage, tarball); }
     catch (error) { throw new Error(`Failed to pack frozen dependency ${identity}`, { cause: error }); }
     finally { rmSync(stage, { recursive: true, force: true }); }
     const bytes = readFileSync(tarball);
@@ -292,21 +292,23 @@ process.stdout.write('native-open-code-ok');
   assert(existsSync(join(localData, 'memory.sqlite')), 'Packed MCP did not use the persisted provider data directory.');
 
   const piVersion = runPi(['--version'], { cwd: tmpdir() }).stdout.trim();
-  assert(piVersion === '0.84.4', `Packed Pi smoke requires 0.84.4, received ${piVersion}.`);
+  assert(/^\d+\.\d+\.\d+$/u.test(piVersion), `Packed Pi smoke received malformed version output: ${piVersion}.`);
   const realPiHome = join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.pi', 'agent');
   const realPiBefore = treeDigest(realPiHome);
   const piLocal = isolatedPiEnvironment('local');
-  const localPiSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--local-package-root', packageRoot, '--data-dir', piLocal.data], { cwd: nativeProject, env: { ...piLocal.env, PATH: `${process.platform === 'win32' ? 'C:\\nvm4w\\nodejs;' : ''}${process.env.PATH ?? ''}` } }));
+  const localPiSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--local-package-root', packageRoot, '--data-dir', piLocal.data], { cwd: nativeProject, env: piLocal.env }));
+  assert(localPiSetup.piVersion === piVersion, 'Packed local Pi setup used a different host version.');
   assert(localPiSetup.status === 'complete' && localPiSetup.changed === true && localPiSetup.source === packageRoot, 'Packed local Pi setup did not install the explicit candidate.');
-  const localPiRepeat = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--local-package-root', packageRoot, '--data-dir', piLocal.data], { cwd: nativeProject, env: { ...piLocal.env, PATH: `${process.platform === 'win32' ? 'C:\\nvm4w\\nodejs;' : ''}${process.env.PATH ?? ''}` } }));
+  const localPiRepeat = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--local-package-root', packageRoot, '--data-dir', piLocal.data], { cwd: nativeProject, env: piLocal.env }));
   assert(localPiRepeat.changed === false, 'Repeated packed local Pi setup was not a no-op.');
   const piList = runPi(['list', '--no-approve'], { cwd: nativeProject, env: piLocal.env }).stdout;
   assert(piList.includes(packageRoot), 'Pi list omitted the explicit local candidate source.');
   assert(existsSync(join(packageRoot, 'dist', 'pi.js')) && existsSync(join(packageRoot, 'integrations', 'pi', 'skills', 'thoth-mem', 'SKILL.md')), 'Packed Pi resources are missing.');
   const piLoad = runPi(['--list-models', '--offline', '--no-approve'], { cwd: nativeProject, env: piLocal.env });
-  assert(piLoad.status === 0, 'Pi 0.84.4 did not load the installed extension and Skill.');
+  assert(piLoad.status === 0, `Pi ${piVersion} did not load the installed extension and Skill.`);
   const piSmokePath = join(scratch, 'native-pi-smoke.mjs');
   writeFileSync(piSmokePath, `
+import assert from 'node:assert/strict';
 const extension = (await import(${JSON.stringify(pathToFileURL(join(packageRoot, 'dist', 'pi.js')).href)})).default;
 const tools = []; const handlers = new Map();
 extension({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
@@ -319,7 +321,7 @@ if (!Array.isArray(transformed.messages) || transformed.messages.filter((message
 await handlers.get('session_before_compact')({ reason: 'manual', preparation: { firstKeptEntryId: 'entry-1' } }, context);
 await handlers.get('session_compact_failed')({ reason: 'manual' }, context);
 await handlers.get('agent_settled')({}, context);
-for (const tool of tools) { const result = await tool.execute('packed-call', {}); if (!Array.isArray(result.content)) throw new Error('invalid Pi tool result'); }
+for (const tool of tools) await assert.rejects(tool.execute('packed-call', {}), Error);
 await handlers.get('session_shutdown')({ reason: 'quit', targetSessionFile: 'packed.jsonl' }, context);
 process.stdout.write('native-pi-ok');
 `);
@@ -332,14 +334,18 @@ process.stdout.write('native-pi-ok');
   piPublic.env.npm_config_ignore_scripts = 'true';
   piPublic.env.npm_config_registry = registry.url;
   piPublic.env.NPM_CONFIG_REGISTRY = registry.url;
+  // This lane must reach its isolated loopback registry even when the caller is offline.
+  piPublic.env.npm_config_offline = 'false';
+  piPublic.env.NPM_CONFIG_OFFLINE = 'false';
   piPublic.env.HTTP_PROXY = 'http://127.0.0.1:9';
   piPublic.env.HTTPS_PROXY = 'http://127.0.0.1:9';
   piPublic.env.ALL_PROXY = 'http://127.0.0.1:9';
   piPublic.env.NO_PROXY = '127.0.0.1,localhost';
   writeFileSync(piPublic.env.npm_config_userconfig, `registry=${registry.url}\ncache=${join(piPublic.root, 'npm', 'cache').replaceAll('\\', '/')}\noffline=false\n`);
-  const publicPiSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--data-dir', piPublic.data], { cwd: nativeProject, env: { ...piPublic.env, PATH: `${process.platform === 'win32' ? 'C:\\nvm4w\\nodejs;' : ''}${process.env.PATH ?? ''}` } }));
+  const publicPiSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--data-dir', piPublic.data], { cwd: nativeProject, env: piPublic.env }));
+  assert(publicPiSetup.piVersion === piVersion, 'Packed public Pi setup used a different host version.');
   assert(publicPiSetup.status === 'complete' && publicPiSetup.source === `npm:thoth-mem@${manifest.version}`, 'Hermetic public Pi setup did not install the exact candidate source.');
-  const publicPiRepeat = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--data-dir', piPublic.data], { cwd: nativeProject, env: { ...piPublic.env, PATH: `${process.platform === 'win32' ? 'C:\\nvm4w\\nodejs;' : ''}${process.env.PATH ?? ''}` } }));
+  const publicPiRepeat = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--data-dir', piPublic.data], { cwd: nativeProject, env: piPublic.env }));
   assert(publicPiRepeat.changed === false, 'Repeated hermetic public Pi setup was not a no-op.');
   const publicInstalled = publicPiSetup.receiptPath ? json(publicPiSetup.receiptPath).installedPath : null;
   assert(publicInstalled && statSync(publicInstalled).isDirectory(), 'Hermetic public Pi receipt omitted its installed candidate.');
@@ -442,7 +448,7 @@ process.stdout.write('native-pi-ok');
 
   process.stdout.write('Packed smoke passed for opencode, codex, claude-code, pi.\n');
   process.stdout.write('Activated lifecycle fixtures for opencode, codex, claude-code, pi.\n');
-  process.stdout.write('Verified Pi 0.84.4 local candidate with disposable home and unchanged real Pi home.\n');
+  process.stdout.write(`Verified Pi ${piVersion} local candidate with disposable home and unchanged real Pi home.\n`);
   process.stdout.write('Verified hermetic public Pi candidate and complete runtime closure.\n');
   process.stdout.write('Verified exact public Pi list and full installed runtime graph.\n');
   process.stdout.write('Verified SHA-256, SHA-512 integrity, and SHA-1 shasum ledger fields.\n');

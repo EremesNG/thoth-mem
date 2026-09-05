@@ -132,19 +132,24 @@ describe('Pi managed setup', () => {
     expect(getPiManagerInvocation('/usr/bin/pi', ['list'], { platform: 'linux' })).toEqual({ command: '/usr/bin/pi', args: ['list'] });
   });
 
-  it('fails capability, version, malformed inventory, and unowned provenance before manager mutation', () => {
+  it.each(['0.83.0', '0.85.0', '0.99.1', '1.0.0'])('admits Pi %s by capabilities and verifies the installed package without a version override', (piVersion) => {
     const { homeDir, publicRoot } = fixture();
-    for (const executor of [new FakePi(publicRoot, '0.83.0'), new FakePi(publicRoot, '0.84.4', false), new FakePi(publicRoot, '0.84.4', true, true)]) {
+    const executor = new FakePi(publicRoot, piVersion);
+    const result = setupPi({ homeDir, executor });
+    expect(result).toMatchObject({ status: 'complete', piVersion, verification: { package: true, source: true, manifest: true } });
+    expect(JSON.parse(readFileSync(result.receiptPath!, 'utf8')).piVersion).toBe(piVersion);
+    expect(setupPi({ homeDir, executor })).toMatchObject({ status: 'complete', changed: false });
+  });
+
+  it('fails missing capabilities, malformed version or inventory, and unowned provenance before manager mutation', () => {
+    const { homeDir, publicRoot } = fixture();
+    for (const executor of [new FakePi(publicRoot, 'Pi version unknown'), new FakePi(publicRoot, '0.85.0', false), new FakePi(publicRoot, '1.0.0', true, true)]) {
       expect(() => setupPi({ homeDir, executor })).toThrow();
       expect(executor.calls.some((args) => (args[0] === 'install' || args[0] === 'remove') && args[1] !== '--help')).toBe(false);
     }
     const conflict = new FakePi(publicRoot); conflict.records = [{ scope: 'user', source: 'npm:thoth-mem@0.0.1', installedPath: publicRoot }];
     expect(() => setupPi({ homeDir, executor: conflict })).toThrow(/unowned/iu);
     expect(conflict.calls.some((args) => (args[0] === 'install' || args[0] === 'remove') && args[1] !== '--help')).toBe(false);
-
-    const malformedForced = new FakePi(publicRoot, 'Pi version unknown');
-    expect(() => setupPi({ homeDir, executor: malformedForced, forceVersion: true })).toThrow(/version/iu);
-    expect(malformedForced.calls.some((args) => (args[0] === 'install' || args[0] === 'remove') && args[1] !== '--help')).toBe(false);
 
     const invalidLocalRoot = join(homeDir, 'invalid-local');
     mkdirSync(invalidLocalRoot, { recursive: true });
