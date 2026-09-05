@@ -47,7 +47,7 @@ describe('Pi native extension', () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
-  it('isolates launch failures and throwing diagnostic sinks while returning control to Pi', async () => {
+  it('rejects tool failures while isolating lifecycle and diagnostic failures', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-fault-')); roots.push(cwd);
     const tools: Array<Record<string, unknown>> = [];
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
@@ -56,7 +56,7 @@ describe('Pi native extension', () => {
     const context = { cwd, sessionManager: { getSessionId: () => 'session-1', getLeafId: () => 'leaf-1' }, ui: { notify: () => { throw new Error('UI unavailable'); } } };
     await expect(handlers.get('session_start')!({}, context)).resolves.toBeUndefined();
     await expect(handlers.get('input')!({ text: 'keep working', source: 'rpc' }, context)).resolves.toEqual({ action: 'continue' });
-    await expect((tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call', {})).resolves.toMatchObject({ isError: true });
+    await expect((tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call', {})).rejects.toThrow('child unavailable');
     await expect(handlers.get('session_shutdown')!({ reason: 'quit' }, context)).resolves.toBeUndefined();
   });
 
