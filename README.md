@@ -17,6 +17,9 @@ Local, SQLite-first memory for OpenCode, Codex, Claude Code, and Pi. Six focused
 
 </div>
 
+> [!WARNING]
+> thoth-mem is under active development. Core concepts, memory protocols, and integration contracts are still evolving. Expect major breaking changes before a stable release.
+
 ---
 
 | **91.9%** | **6** | **4** | **0** |
