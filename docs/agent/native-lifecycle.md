@@ -6,12 +6,12 @@ Git repositories establish one local UUID in the shared Git common directory; ev
 
 OpenCode loads `dist/opencode.js` through its native npm/file plugin loader and evaluates that thin adapter inside Bun. The adapter contributes one package-relative `dist/index.js` MCP command and never mutates `skills.paths`; each SQLite-backed lifecycle operation sends one bounded host-neutral event over JSON stdio to literal `node` plus the same package-relative entry. Only the Node process loads `MemoryService` and `better-sqlite3`. Child launch, timeout, exit, output-limit, or envelope failure is logged as degraded, injects no unverified memory, and never rejects the host callback. Setup synchronizes only `integrations/opencode/skills/thoth-mem` into the selected global OpenCode config directory; copied OpenCode manifests, bridges, MCP descriptors, runners, and retired copied-setup commands no longer exist.
 
-OpenCode also exposes one read-only host-native `thoth_mem_root_identity` tool. It is not part of the six-tool MCP registry: it resolves a bounded `parentID` chain, distinguishes root from delegated callers, and grants root lifecycle authorization only to the root caller. OpenCode recovery plus Codex and Claude `SessionStart` output carry the already verified host root ID and project in a complete identity-first bounded block; the core maps that host ID to `root_session_key`. Pi instead resolves its documented session-manager ID and `cwd` during `session_start`, caches only its validated recovery block, and injects that block only from its `context` hook. Codex may target `CODEX_THREAD_ID` only when no injected identity is visible and may use one unambiguous current-task inventory entry as a cross-check. Claude uses official hook `session_id` and `cwd` and defines no synthetic session environment variable. Pi's tested `0.84.4` SDK baseline has no delegated-agent identity; this adapter never grants root authority from child or community metadata.
+OpenCode also exposes one read-only host-native `thoth_mem_root_identity` tool. It is not part of the six-tool MCP registry: it resolves a bounded `parentID` chain, distinguishes root from delegated callers, and grants root lifecycle authorization only to the root caller. OpenCode recovery plus Codex and Claude `SessionStart` output carry the already verified host root ID and project in a complete identity-first bounded block; the core maps that host ID to `root_session_key`. Pi instead resolves its documented session-manager ID and `cwd` during `session_start`, refreshes its validated recovery block once per root prompt, and injects it only as the named `thoth_mem_recovery` system-prompt section from `before_agent_start`. Codex may target `CODEX_THREAD_ID` only when no injected identity is visible and may use one unambiguous current-task inventory entry as a cross-check. Claude uses official hook `session_id` and `cwd` and defines no synthetic session environment variable. Pi's tested `1.0.1` SDK baseline has no delegated-agent identity; this adapter never grants root authority from child or community metadata.
 
 Codex and Claude Code use the central `thoth-plugins` marketplace and the shared `plugin/` root from the pinned `thoth-mem` tag. Setup registers `https://github.com/EremesNG/thoth-plugins.git` and manages only `thoth-mem@thoth-plugins` through supported native-manager commands. Their native managers own marketplace/cache state; setup independently rereads marketplace provenance plus enabled-plugin state. Both hooks and `.mcp.json` enter through the root-relative `plugin/runners/public-runner.mjs`. It delegates public lifecycle/MCP to the exact npm version in `plugin/runtime.json`, or uses the absolute package-identity-checked `runtimeEntry` persisted by explicit local setup. It does not edit manager caches or use an OpenCode loader.
 
 Pi is a native package with a reproducible SDK test baseline at
-`@earendil-works/pi-coding-agent` `0.84.4`. Setup has no version allowlist or
+`@earendil-works/pi-coding-agent` `1.0.1`. Setup has no version allowlist or
 upper version limit: it requires parseable version output, the package-manager
 capabilities, and verified installed resources/loadability. A version change
 alone never requires an override or recertification to install; passing setup
@@ -19,7 +19,10 @@ does not certify every runtime behavior on an untested release.
 `thoth-mem setup pi` uses Pi's global
 package manager and records a receipt for either the exact public source
 `npm:thoth-mem@<version>` or an explicitly supplied absolute local package
-root. The extension registers exactly the six catalog tools and shares one lazy,
+root. The extension registers exactly the six catalog tools, each with self-framed
+`renderCall`/`renderResult` output in the Thoth Pi theme style (titled frame,
+tool-aware call summary, structured result lines, status footer) that imports
+no Pi TUI module at runtime, and shares one lazy,
 time/size-bounded MCP SDK child running the package-relative
 `dist/index.js mcp --no-http` entry for both tool and lifecycle calls. The Pi
 process never loads `MemoryService` or `better-sqlite3`; a failed child is
@@ -55,7 +58,7 @@ The Pi extension maps documented events as follows:
 | --- | --- |
 | `session_start` | Resolve `cwd` and session-manager ID, enroll idempotently, recover, and cache only a verified bounded block. |
 | `input` | Capture only `interactive` or `rpc` root input after privacy sanitation; hash the session, leaf, source, streaming mode, and sanitized text for idempotency. `extension` input is excluded. |
-| `context` | Remove only the extension's prior `customType=thoth-mem-recovery` message and append the cached verified block; this handler performs no I/O. |
+| `before_agent_start` | Replay the session's recovery event key (or, after a successful compaction, its post-compaction guidance key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
 | `session_before_compact` | Record a checkpoint event from stable IDs/reason/retry metadata without copying model, tool, or branch content. |
 | `session_compact` | Request session-summary-only post-compaction guidance and refresh the verified cache. Pi's free-form compaction text is not an automatic summary or memory. |
 | `session_compact_failed` / `agent_settled` | Emit bounded degradation when needed; preserve safe recovery and never finalize. |

@@ -313,11 +313,15 @@ const extension = (await import(${JSON.stringify(pathToFileURL(join(packageRoot,
 const tools = []; const handlers = new Map();
 extension({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
 if (tools.map((tool) => tool.name).join(',') !== 'mem_save,mem_recall,mem_context,mem_get,mem_project,mem_session') throw new Error('wrong Pi tool catalog');
+const plainTheme = { fg: (_color, text) => text, bold: (text) => text };
+if (tools.some((tool) => tool.renderShell !== 'self' || !tool.renderCall(tool.name === 'mem_save' ? { memory: { kind: 'decision', title: 'Packed' } } : {}, plainTheme, { state: {} }).render(60)[0].includes(tool.name))) throw new Error('missing framed Pi tool rendering');
 const context = { cwd: ${JSON.stringify(nativeProject)}, sessionManager: { getSessionId: () => 'packed-pi-root', getLeafId: () => 'packed-pi-leaf' }, ui: { notify: () => undefined } };
 await Promise.all([handlers.get('session_start')({ reason: 'startup' }, context), tools[2].execute('context', { project_key: 'path:${nativeProject.replaceAll('\\', '/').toLowerCase()}' })]);
 await handlers.get('input')({ text: 'Packed Pi root input.', source: 'rpc' }, context);
-const transformed = await handlers.get('context')({ messages: [] }, context);
-if (!Array.isArray(transformed.messages) || transformed.messages.filter((message) => message.customType === 'thoth-mem-recovery').length > 1) throw new Error('invalid Pi recovery context');
+if (handlers.has('context')) throw new Error('Pi recovery must not inject per-LLM-call context messages');
+const sections = { other: 'keep' };
+await handlers.get('before_agent_start')({ prompt: 'Packed Pi root input.', systemPromptOptions: { sections } }, context);
+if (sections.other !== 'keep' || !String(sections.thoth_mem_recovery ?? '').includes('root_session_id=packed-pi-root')) throw new Error('invalid Pi recovery prompt section');
 await handlers.get('session_before_compact')({ reason: 'manual', preparation: { firstKeptEntryId: 'entry-1' } }, context);
 await handlers.get('session_compact_failed')({ reason: 'manual' }, context);
 await handlers.get('agent_settled')({}, context);
