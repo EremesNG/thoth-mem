@@ -53,7 +53,7 @@ function elapsed(state: RenderState | undefined): string | undefined {
 }
 
 function border(theme: Theme, isError: boolean, value: string): string {
-  return theme.fg(isError ? 'error' : 'borderMuted', value);
+  return theme.fg(isError ? 'error' : 'accent', value);
 }
 
 function rule(theme: Theme, left: string, right: string, label: string | undefined, width: number, isError: boolean, labelColor?: 'dim'): string {
