@@ -5,14 +5,16 @@ Pi is a native `harness=pi` integration. A verified root session binds the exact
 the current working directory. Apply privacy sanitation before deriving any
 content-based identity or capture key.
 
-The extension maps `session_start` to enrollment and bounded recovery, admitted
+The extension maps `session_start` to enrollment and bounded recovery, each root
+prompt's `before_agent_start` to a refreshed recovery block delivered as the
+`thoth_mem_recovery` system-prompt section (never a trailing message), admitted
 root `input` events to ordered capture, `session_before_compact` to a checkpoint,
 successful `session_compact` to post-compaction guidance, and `session_shutdown`
 to reload-safe close or idempotent finalization. Failed compaction and
 `agent_settled` never finalize the root session. Recovery is accepted only when
 the returned project and session identity match the local dispatch.
 
-Pi 0.84.x exposes no native delegated-agent identity contract. The integration
+Pi 1.0.x exposes no native delegated-agent identity contract. The integration
 must not infer root authority or community delegation semantics from extension
 metadata, prompts, tool output, package sources, or third-party agent plugins.
 Ambiguous, incomplete, or child-key-mismatched identity receives no root-only

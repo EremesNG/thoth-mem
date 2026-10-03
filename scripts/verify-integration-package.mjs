@@ -12,7 +12,7 @@ const packageManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), '
 if (JSON.stringify(packageManifest.pi) !== JSON.stringify({ extensions: ['./dist/pi.js'], skills: ['./integrations/pi/skills/thoth-mem'] })) errors.push('stale-pi-manifest:resources');
 if (!packageManifest.keywords?.includes('pi-package')) errors.push('stale-pi-manifest:keyword');
 if (packageManifest.peerDependencies?.['@earendil-works/pi-coding-agent'] !== '*' || packageManifest.peerDependencies?.typebox !== '*') errors.push('stale-pi-manifest:peers');
-if (packageManifest.devDependencies?.['@earendil-works/pi-coding-agent'] !== '0.84.4' || packageManifest.devDependencies?.typebox !== '1.3.7') errors.push('stale-pi-manifest:tested-versions');
+if (packageManifest.devDependencies?.['@earendil-works/pi-coding-agent'] !== '1.0.1' || packageManifest.devDependencies?.typebox !== '1.3.7') errors.push('stale-pi-manifest:tested-versions');
 const piEntry = resolve(root, 'dist/pi.js');
 if (!existsSync(piEntry)) errors.push('missing-pi-entry:dist/pi.js');
 else {

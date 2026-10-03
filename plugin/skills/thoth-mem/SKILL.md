@@ -77,8 +77,17 @@ save one concise handoff with `mem_save`:
 - `evidence.kind="handoff"` with compact supporting evidence;
 - `memory.kind="handoff"` with exactly `Objective`, `Completed`,
   `First pending action`, `Blockers`, and `Key files/checks`;
+- a required stable `topic_key` naming the workstream, such as
+  `handoff/<workstream>`; a later handoff for the same workstream reuses it and
+  replaces the previous one;
 - the same verified project and, for root-owned attribution, the verified root
   session pair.
+
+When the pending action of a recovered handoff is done, close it: save the
+outcome as a direct promoted memory (usually `decision` or `discovery` with
+`outcome="succeeded"`) under the same `topic_key`. That supersedes the handoff so
+it no longer leads recovery. Only the newest open handoff leads recovery, so
+close finished workstreams rather than leaving them open.
 
 Do not create a handoff merely because a response is ending. Do not call
 `mem_session` for ordinary completion; reserve it for an actual verified root

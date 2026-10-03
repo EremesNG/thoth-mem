@@ -1,7 +1,8 @@
-import type { LifecycleResult } from '../../memory-core/contracts.js';
+import type { LifecycleInput, LifecycleResult } from '../../memory-core/contracts.js';
 import { MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
 import { verifiedRecovery } from '../recovery.js';
 import { createPiMcpClient, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
+import { createToolRenderers } from './render.js';
 import {
   createPiLifecycleState,
   piInputCapture,
@@ -14,7 +15,9 @@ import {
   type PiLifecycleState,
 } from './lifecycle.js';
 
-const RECOVERY_CUSTOM_TYPE = 'thoth-mem-recovery';
+// One named system-prompt section, replaced or removed at each root prompt. Pi diffs
+// sections into the transcript, so an unchanged block costs no extra context.
+const RECOVERY_SECTION = 'thoth_mem_recovery';
 
 interface PiToolResult {
   content: Array<{ type: 'text'; text: string }>;
@@ -28,7 +31,7 @@ interface PiExtensionApi {
     description: string;
     parameters: Record<string, unknown>;
     execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<PiToolResult>;
-  }): void;
+  } & Partial<ReturnType<typeof createToolRenderers>>): void;
   on(event: string, handler: (event: Record<string, unknown>, context: PiExtensionContext) => Promise<unknown> | unknown): void;
 }
 
@@ -80,6 +83,8 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
     const client = options.client ?? createPiMcpClient({ ...options, onDiagnostic: (code) => report(code) });
     let state: PiLifecycleState | undefined;
     let recovery: string | undefined;
+    // Replaying the same recovery event key re-renders current memory without a new receipt.
+    let refresh: LifecycleInput | undefined;
 
     const dispatch = async (input: ReturnType<typeof piSessionStartInput>, context?: PiExtensionContext): Promise<LifecycleResult | undefined> => {
       try { return lifecycleResult(await client.callTool('mem_session', lifecycleArguments(input))); }
@@ -92,6 +97,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
         label: tool.name,
         description: tool.description,
         parameters: tool.inputSchema,
+        ...createToolRenderers(tool.name),
         async execute(_toolCallId, params, signal) {
           try {
             const result = await client.callTool(tool.name as MemoryToolName, params, signal);
@@ -111,9 +117,10 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
         state = createPiLifecycleState(context);
         const reason = typeof event.reason === 'string' ? event.reason : 'startup';
         await dispatch(piSessionStartInput(state, reason), context);
-        const recovered = await dispatch(piRecoveryInput(state, 'start'), context);
+        refresh = piRecoveryInput(state, 'start');
+        const recovered = await dispatch(refresh, context);
         recovery = verifiedRecovery(recovered, state.rootSessionKey, state.directory, 'pi');
-      } catch { state = undefined; recovery = undefined; report('pi_session_start_failed', context); }
+      } catch { state = undefined; recovery = undefined; refresh = undefined; report('pi_session_start_failed', context); }
     });
     pi.on('input', async (event, context) => {
       if (!state) return { action: 'continue' };
@@ -127,11 +134,18 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
       } catch { report('pi_input_capture_failed', context); }
       return { action: 'continue' };
     });
-    pi.on('context', (event) => {
-      if (!Array.isArray(event.messages)) return undefined;
-      const messages = event.messages.filter((message) => !message || typeof message !== 'object' || Array.isArray(message) || (message as Record<string, unknown>).customType !== RECOVERY_CUSTOM_TYPE);
-      if (recovery) messages.push({ role: 'custom', customType: RECOVERY_CUSTOM_TYPE, content: recovery, display: false, timestamp: Date.now() });
-      return { messages };
+    pi.on('before_agent_start', async (event, context) => {
+      const sections = asRecord(asRecord(event.systemPromptOptions)?.sections);
+      if (!sections) return undefined;
+      if (state && refresh) {
+        try {
+          const recovered = await dispatch(refresh, context);
+          if (recovered) recovery = verifiedRecovery(recovered, state.rootSessionKey, state.directory, 'pi');
+        } catch { report('pi_recovery_refresh_failed', context); }
+      }
+      if (recovery) sections[RECOVERY_SECTION] = recovery;
+      else delete sections[RECOVERY_SECTION];
+      return undefined;
     });
     pi.on('session_before_compact', async (event, context) => {
       if (!state) return;
@@ -144,8 +158,11 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
       if (!state) return;
       try {
         const entry = asRecord(event.compactionEntry) ?? {};
-        const result = await dispatch(piPostCompactInput(state, { compactionEntryId: typeof entry.id === 'string' ? entry.id : undefined, reason: typeof event.reason === 'string' ? event.reason : 'manual', isRetry: event.willRetry === true }), context);
+        const guidance = piPostCompactInput(state, { compactionEntryId: typeof entry.id === 'string' ? entry.id : undefined, reason: typeof event.reason === 'string' ? event.reason : 'manual', isRetry: event.willRetry === true });
+        const result = await dispatch(guidance, context);
         recovery = verifiedRecovery(result, state.rootSessionKey, state.directory, 'pi') ?? recovery;
+        // Later prompts keep session-summary-only guidance for the compacted session.
+        if (result) refresh = guidance;
       } catch { report('pi_post_compact_failed', context); }
     });
     pi.on('session_compact_failed', (_event, context) => { report('pi_compact_failed', context); });
@@ -157,7 +174,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
           if (mapped) await dispatch(mapped, context);
         }
       } catch { report('pi_shutdown_finalize_failed', context); }
-      finally { await client.close().catch(() => report('pi_shutdown_close_failed', context)); state = undefined; recovery = undefined; }
+      finally { await client.close().catch(() => report('pi_shutdown_close_failed', context)); state = undefined; recovery = undefined; refresh = undefined; }
     });
   };
 }

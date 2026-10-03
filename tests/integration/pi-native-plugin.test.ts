@@ -36,14 +36,15 @@ describe('Pi native extension', () => {
     const context = { cwd, sessionManager: { getSessionId: () => 'session-1', getLeafId: () => 'leaf-1' }, ui: { notify: () => undefined } };
     await handlers.get('session_start')!({ reason: 'startup' }, context);
     expect(await handlers.get('input')!({ text: 'root prompt', source: 'interactive' }, context)).toEqual({ action: 'continue' });
-    const transformed = await handlers.get('context')!({ messages: [{ role: 'custom', customType: 'other', content: 'keep' }, { role: 'custom', customType: 'thoth-mem-recovery', content: 'old' }] }, context) as { messages: Array<Record<string, unknown>> };
-    expect(transformed.messages).toHaveLength(2);
-    expect(transformed.messages[0]).toEqual({ role: 'custom', customType: 'other', content: 'keep' });
-    expect(transformed.messages[1]).toMatchObject({ role: 'custom', customType: 'thoth-mem-recovery', display: false });
+    const sections: Record<string, string> = { other: 'keep', thoth_mem_recovery: 'old' };
+    expect(await handlers.get('before_agent_start')!({ prompt: 'root prompt', systemPromptOptions: { sections } }, context)).toBeUndefined();
+    expect(sections.other).toBe('keep');
+    expect(sections.thoth_mem_recovery).toMatch(/^<!-- thoth-mem:recovery:start -->\n.*root_session_id=session-1;/u);
+    expect(handlers.has('context')).toBe(false);
     await handlers.get('session_compact_failed')!({ reason: 'manual' }, context);
     await handlers.get('agent_settled')!({}, context);
     await handlers.get('session_shutdown')!({ reason: 'reload' }, context);
-    expect(calls).toEqual(['enroll', 'recover', 'capture_root']);
+    expect(calls).toEqual(['enroll', 'recover', 'capture_root', 'recover']);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 

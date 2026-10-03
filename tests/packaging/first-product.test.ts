@@ -75,7 +75,7 @@ describe('first-product packed boundary', () => {
     expect(manifest.pi).toEqual({ extensions: ['./dist/pi.js'], skills: ['./integrations/pi/skills/thoth-mem'] });
     expect(manifest.keywords).toContain('pi-package');
     expect(manifest.peerDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '*', typebox: '*' });
-    expect(manifest.devDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '0.84.4', typebox: '1.3.7' });
+    expect(manifest.devDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '1.0.1', typebox: '1.3.7' });
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
       '@modelcontextprotocol/sdk',
       '@opencode-ai/plugin',

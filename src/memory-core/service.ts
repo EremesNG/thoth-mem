@@ -398,6 +398,8 @@ export class MemoryService {
       const event = sessionId && eventDefaults ? appendSessionEvent(this.database, sessionId, evidenceId, eventDefaults) : null;
       if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, event, projectId, sessionId, duplicate: false }; }
       if (!filteredMemory.title.trim() || !filteredMemory.content.trim()) throw new Error('Promoted memory title and content are required');
+      // A stable workstream topic lets a later handoff or closure memory supersede this one.
+      if (filteredMemory.kind === 'handoff' && !filteredMemory.topicKey?.trim()) throw new Error('A handoff memory requires topic_key so it can be closed or replaced');
       let supersedesId = filteredMemory.supersedesId ?? null;
       if (!supersedesId && filteredMemory.topicKey) {
         supersedesId = (this.database.prepare("SELECT id FROM memories WHERE project_id=? AND topic_key=? AND status='current'").get(projectId, filteredMemory.topicKey) as { id: string } | undefined)?.id ?? null;
@@ -901,15 +903,20 @@ export class MemoryService {
     const rows = selection === 'session_summary_only' ? [] : this.database.prepare(`
       SELECT m.*,
         CASE
-          WHEN kind='handoff' THEN 0
+          WHEN kind='handoff' AND handoff_rank=1 THEN 0
           WHEN kind IN ('decision','convention') THEN 1
           WHEN kind='failure' AND outcome IN ('failed','mixed') THEN 2
           WHEN kind='failure' THEN 3
           WHEN kind='project_structure' THEN 4
+          WHEN kind='handoff' THEN 6
           ELSE 5
         END AS continuation_priority
-      FROM memories m
-      WHERE project_id=? AND status='current'
+      FROM (
+        -- Only the newest open handoff leads; older unclosed handoffs must not crowd it.
+        SELECT *, CASE WHEN kind='handoff' THEN ROW_NUMBER() OVER (PARTITION BY kind='handoff' ORDER BY created_at DESC,id ASC) END AS handoff_rank
+        FROM memories
+        WHERE project_id=? AND status='current'
+      ) m
       ORDER BY continuation_priority,created_at DESC,id ASC
       LIMIT 20
     `).all(project.id) as Array<Record<string, unknown>>;

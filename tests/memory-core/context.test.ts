@@ -18,6 +18,25 @@ describe('progressive context funnel', () => {
     } finally { service.close(); }
   });
 
+  it('requires closable handoffs, leads with only the newest open one, and drops a closed one', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:handoffs', name: 'handoffs' };
+    const handoff = (topicKey: string, title: string, capturedAt: string) => service.save({ project, evidence: { kind: 'handoff', content: title, capturedAt }, memory: { kind: 'handoff', title, content: `Objective: ${title}.`, topicKey } }).memory!;
+    try {
+      expect(() => service.save({ project, evidence: { kind: 'handoff', content: 'Open forever.' }, memory: { kind: 'handoff', title: 'Unclosable', content: 'Open forever.' } })).toThrow('requires topic_key');
+      const stale = handoff('handoff/stale', 'Stale workstream', '2026-01-01T00:00:00.000Z');
+      service.save({ project, evidence: { kind: 'explicit_save', content: 'Decision.', capturedAt: '2026-01-02T00:00:00.000Z' }, memory: { kind: 'decision', title: 'Lane', content: 'Use the lexical lane.', topicKey: 'lane' } });
+      const fresh = handoff('handoff/fresh', 'Fresh workstream', '2026-01-03T00:00:00.000Z');
+      expect(service.context({ projectKey: project.key }).items.map((item) => item.id)).toEqual([fresh.id, expect.any(String), stale.id]);
+
+      const closure = service.save({ project, evidence: { kind: 'explicit_save', content: 'Fresh workstream verified.' }, memory: { kind: 'decision', title: 'Fresh workstream completed', content: 'Result: verified.', topicKey: 'handoff/fresh', outcome: 'succeeded' } }).memory!;
+      expect(closure.supersedesId).toBe(fresh.id);
+      const ids = service.context({ projectKey: project.key }).items.map((item) => item.id);
+      expect(ids[0]).toBe(stale.id);
+      expect(ids).not.toContain(fresh.id);
+    } finally { service.close(); }
+  });
+
   it('selects a deterministic handoff-first continuation with failure lessons and project isolation', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -25,7 +44,7 @@ describe('progressive context funnel', () => {
       const current = service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'explicit_save', content: 'RAW-EVIDENCE-SHOULD-NOT-APPEAR' }, memory: { kind: 'decision', title: 'Lane', content: 'Use current lane.', topicKey: 'lane', outcome: 'succeeded' } }).memory!;
       service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'explicit_save', content: 'Failure evidence.' }, memory: { kind: 'failure', title: 'Bun native driver', content: 'Attempted better-sqlite3 in Bun; it failed to load. Use the Node sidecar.', outcome: 'mixed' } });
       service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'explicit_save', content: 'Structure evidence.' }, memory: { kind: 'project_structure', title: 'Runtime split', content: 'Bun adapter is pure; persistence runs in Node.' } });
-      service.save({ project: { key: 'repo:foreign', name: 'foreign' }, evidence: { kind: 'explicit_save', content: 'Foreign evidence.' }, memory: { kind: 'handoff', title: 'Foreign handoff', content: 'FOREIGN-PROJECT-MARKER' } });
+      service.save({ project: { key: 'repo:foreign', name: 'foreign' }, evidence: { kind: 'explicit_save', content: 'Foreign evidence.' }, memory: { kind: 'handoff', topicKey: 'handoff/test-line-28', title: 'Foreign handoff', content: 'FOREIGN-PROJECT-MARKER' } });
       const handoffContent = 'Objective: MEMORY-OPERATING-MODEL. Completed: research and Skill contract. Archive path: openspec/changes/archive/memory-operating-model. First pending action: IMPLEMENT-CONTINUATION-SELECTOR. Blockers: none. Key files/checks: src/memory-core/service.ts.';
       const checkpoint = service.save({ project: { key: 'repo:context', name: 'context' }, evidence: { kind: 'handoff', content: handoffContent }, memory: { kind: 'handoff', title: 'Legacy continuation', content: handoffContent, topicKey: 'session/root/checkpoint' } });
       const briefing = service.context({ projectKey: 'repo:context', budgetChars: 1_400 });
@@ -70,7 +89,7 @@ describe('progressive context funnel', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:summary-context', name: 'summary-context' };
     try {
-      service.save({ project, evidence: { kind: 'handoff', content: 'Fallback evidence.' }, memory: { kind: 'handoff', title: 'Fallback', content: 'LEGACY-HANDOFF-FALLBACK' } });
+      service.save({ project, evidence: { kind: 'handoff', content: 'Fallback evidence.' }, memory: { kind: 'handoff', topicKey: 'handoff/test-line-73', title: 'Fallback', content: 'LEGACY-HANDOFF-FALLBACK' } });
       const support = service.save({ project, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Session one support.' } });
       const baseSummary = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent' as const, name: 'codex' }, claims: [{ kind: 'objective' as const, content: 'SESSION-ONE-SUMMARY', supportIds: [support.evidence.id] }] };
       const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'checkpoint', summary: { ...baseSummary, kind: 'checkpoint' } });

@@ -155,7 +155,7 @@ describe('MCP boundary', () => {
         expect(result.isError, kind).not.toBe(true);
       }
       for (const [index, kind] of memoryKinds.entries()) {
-        const result = await handlers.mem_save({ project_key: `repo:memory:${index}`, project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: `Evidence ${kind}` }, memory: { kind, title: `Memory ${kind}`, content: `Memory ${kind}` } });
+        const result = await handlers.mem_save({ project_key: `repo:memory:${index}`, project_name: 'taxonomy', evidence: { kind: 'explicit_save', content: `Evidence ${kind}` }, memory: { kind, title: `Memory ${kind}`, content: `Memory ${kind}`, topic_key: `taxonomy/${kind}` } });
         expect(result.isError, kind).not.toBe(true);
       }
       for (const [index, outcome] of memoryOutcomes.entries()) {
@@ -209,7 +209,7 @@ describe('MCP boundary', () => {
       const old = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'explicit_save', content: 'Old decision evidence.' }, memory: { kind: 'decision', title: 'Runtime', content: 'Use the old runtime.', topic_key: 'runtime' } });
       const current = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'explicit_save', content: 'Current decision evidence.' }, memory: { kind: 'decision', title: 'Runtime', content: 'Use the current runtime.', topic_key: 'runtime' } });
       const handoff = await handlers.mem_save({ project_key: 'repo:progressive', project_name: 'progressive', evidence: { kind: 'handoff', content: 'Handoff evidence.' }, memory: { kind: 'handoff', title: 'Continuation', content: 'First pending action: finish the MCP boundary.', topic_key: 'handoff/current' } });
-      await handlers.mem_save({ project_key: 'repo:foreign', project_name: 'foreign', evidence: { kind: 'handoff', content: 'Foreign evidence.' }, memory: { kind: 'handoff', title: 'Foreign', content: 'FOREIGN-PROJECT-CONTEXT' } });
+      await handlers.mem_save({ project_key: 'repo:foreign', project_name: 'foreign', evidence: { kind: 'handoff', content: 'Foreign evidence.' }, memory: { kind: 'handoff', topic_key: 'handoff/test-line-212', title: 'Foreign', content: 'FOREIGN-PROJECT-CONTEXT' } });
       const oldMemory = (old.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
       const currentMemory = (current.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;
       const handoffMemory = (handoff.structuredContent.data as { memory: { id: string; evidenceIds: string[] } }).memory;

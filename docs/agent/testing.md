@@ -36,7 +36,7 @@ The supported-host contract has exactly four native hosts:
 | OpenCode | `setup opencode`; Bun loads the thin native entry and Node owns SQLite/MCP lifecycle work. | `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/lifecycle.test.ts` |
 | Codex | `setup codex`; native plugin hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
 | Claude Code | `setup claude`; native hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
-| Pi | `setup pi`; admission is capability-based with no version allowlist. The native extension shares one lazy Node MCP child for tools and lifecycle calls. Reproducible SDK baseline: `0.84.4`; packed smoke reports the host selected by `PATH`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts`, `tests/integration/pi-tool-error.test.ts` |
+| Pi | `setup pi`; admission is capability-based with no version allowlist. The native extension shares one lazy Node MCP child for tools and lifecycle calls. Reproducible SDK baseline: `1.0.1`; packed smoke reports the host selected by `PATH`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts`, `tests/integration/pi-tool-error.test.ts` |
 
 For the Pi lane, run the terminating focused suite after a build:
 

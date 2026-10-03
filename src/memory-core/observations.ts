@@ -105,6 +105,7 @@ export function canonicalizeObservation(value: ObservationCandidateInput): Canon
     ...(proposed.topicKey === undefined ? {} : { topicKey: optionalText(proposed.topicKey, 'observation.proposedMemory.topicKey', 500) }),
     ...(proposed.outcome === undefined ? {} : { outcome: requireCanonicalValue('observation.proposedMemory.outcome', MEMORY_OUTCOME_VALUES, proposed.outcome) }),
   };
+  if (proposedMemory.kind === 'handoff' && !proposedMemory.topicKey) throw new Error('observation.proposedMemory.topicKey is required for a handoff so it can be closed or replaced');
 
   const supportIds = supportIdList(candidate.supportIds, 'observation.supportIds');
 

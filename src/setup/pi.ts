@@ -142,6 +142,12 @@ function localSourceMatches(record: PiPackageRecord, localRoot: string): boolean
     && samePath(record.installedPath, localRoot);
 }
 
+// Pi 1.0 lists local sources relative to its agent directory but resolves
+// `remove` arguments from the caller's cwd; the absolute installed path is stable.
+function removalTarget(record: PiPackageRecord): string {
+  return isLocalSource(record.source) && record.installedPath !== null && isAbsolute(record.installedPath) ? record.installedPath : record.source;
+}
+
 function isThothMemPackagePath(path: string): boolean {
   try { return manifest(join(path, 'package.json')).name === 'thoth-mem'; } catch { return false; }
 }
@@ -320,11 +326,11 @@ function restorePriorPackage(executor: PiExecutor, command: string, journal: PiJ
   const exactPrior = records.filter((record) => isJournalPrior(record, journal));
   for (const record of journalRelated(records, journal)) {
     if (exactPrior.length === 1 && record === exactPrior[0]) continue;
-    checked(executor, command, ['remove', record.source, '--no-approve'], 'Pi rollback remove');
+    checked(executor, command, ['remove', removalTarget(record), '--no-approve'], 'Pi rollback remove');
   }
   records = inspect(executor, command);
   if (records.filter((record) => isJournalPrior(record, journal)).length === 0) {
-    checked(executor, command, ['install', journal.priorSource, '--no-approve'], 'Pi rollback reinstall');
+    checked(executor, command, ['install', isLocalSource(journal.priorSource) ? journal.priorInstalledPath : journal.priorSource, '--no-approve'], 'Pi rollback reinstall');
     records = inspect(executor, command);
   }
   const restored = records.filter((record) => isJournalPrior(record, journal));
@@ -351,7 +357,7 @@ function rollback(executor: PiExecutor, command: string, journalPath: string, jo
   if (commandMayHaveMutated) {
     if (journal.priorSource) restorePriorPackage(executor, command, journal);
     else {
-      for (const record of journalRelated(inspect(executor, command), journal)) checked(executor, command, ['remove', record.source, '--no-approve'], 'Pi rollback remove');
+      for (const record of journalRelated(inspect(executor, command), journal)) checked(executor, command, ['remove', removalTarget(record), '--no-approve'], 'Pi rollback remove');
     }
   }
   if (journal.providerChanged) {
@@ -446,7 +452,7 @@ export function setupPi(options: PiSetupOptions = {}): PiSetupResult {
   const wantedDataDir = options.dataDir ? resolve(options.dataDir) : null;
   const providerCurrent = wantedDataDir === null || runtime.provider?.dataDir === wantedDataDir;
   const actions = [
-    ...(current && (!currentMatchesDesired || repairCurrent) ? [`${command} remove ${current.source} --no-approve`] : []),
+    ...(current && (!currentMatchesDesired || repairCurrent) ? [`${command} remove ${removalTarget(current)} --no-approve`] : []),
     ...(!current || !currentMatchesDesired || repairCurrent ? [`${command} install ${desiredSource} --no-approve`] : []),
     `verify ${desiredSource} manifest and resources`,
     ...(wantedDataDir ? [`bind data directory ${wantedDataDir}`] : []),
@@ -474,7 +480,7 @@ export function setupPi(options: PiSetupOptions = {}): PiSetupResult {
     }
     if (current && (!currentMatchesDesired || repairCurrent)) {
       journal.mutationPhase = 'remove-intent'; writeJournal(journalPath, journal);
-      checked(executor, command, ['remove', current.source, '--no-approve'], 'Pi package removal');
+      checked(executor, command, ['remove', removalTarget(current), '--no-approve'], 'Pi package removal');
       if (options.interruptAfter === 'remove') throw new Error('Simulated Pi setup interruption after remove');
       journal.mutationPhase = 'remove-complete'; writeJournal(journalPath, journal);
       if (options.failAfter === 'remove') throw new Error('Injected Pi setup failure after remove');

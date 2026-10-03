@@ -37,7 +37,7 @@ export const TOOL_DESCRIPTIONS: Readonly<Record<MemoryToolName, string>> = {
     'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs.',
     'For a direct promoted memory other than a handoff, write memory.content as concise labeled Result, Rationale, Scope, and Caveat / safe action lines.',
     'Omit Scope or Caveat / safe action when it does not apply, and never invent details to fill the template.',
-    'Keep evidence compact and factual. Handoff memories keep the dedicated Objective, Completed, First pending action, Blockers, and Key files/checks format.',
+    'Keep evidence compact and factual. Handoff memories keep the dedicated Objective, Completed, First pending action, Blockers, and Key files/checks format and require a stable workstream topic_key; close a finished handoff by saving its outcome under the same topic_key.',
     'Also submit, review, or promote supported observation candidates.',
   ].join(' '),
   mem_recall: 'Search current or historical project memory in compact or context mode before expanding only selected records.',

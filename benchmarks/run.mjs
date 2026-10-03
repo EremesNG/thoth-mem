@@ -133,7 +133,7 @@ try {
     project: { key: 'benchmark:foreign', name: 'foreign' },
     eventKey: 'fixture:foreign-handoff',
     evidence: { kind: 'handoff', content: 'FOREIGN-PROJECT-CONTEXT' },
-    memory: { kind: 'handoff', title: 'Foreign continuation', content: 'FOREIGN-PROJECT-CONTEXT' },
+    memory: { kind: 'handoff', title: 'Foreign continuation', content: 'FOREIGN-PROJECT-CONTEXT', topicKey: 'continuity/foreign' },
   });
   const checkpoint = service.lifecycle({
     operation: 'checkpoint_pre_compact', harness: 'mcp',
