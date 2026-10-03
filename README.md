@@ -46,7 +46,7 @@ thoth-mem gives every supported harness one durable local memory without turning
 
 ## Install
 
-Requirements: Node.js `>=22.12.0` and a supported harness. Pi setup has no version allowlist or upper version limit: it checks package-manager capabilities and verifies the installed extension and resources. New Pi releases do not require a version override. The reproducible SDK test baseline is `@earendil-works/pi-coding-agent` `0.84.4`; passing setup is not certification of every runtime behavior on future releases.
+Requirements: Node.js `>=22.12.0` and a supported harness. Pi setup has no version allowlist or upper version limit: it checks package-manager capabilities and verifies the installed extension and resources. New Pi releases do not require a version override. The reproducible SDK test baseline is `@earendil-works/pi-coding-agent` `1.0.1`; passing setup is not certification of every runtime behavior on future releases.
 
 thoth-mem installs memory tooling and lifecycle integration—not agents or subagents. Add `--plan --json` to any managed `npx` setup command to preview its changes without writing.
 

@@ -27,7 +27,7 @@ describe('first-product native setup boundary', () => {
   it('parses the exact Pi setup flags and rejects duplicate or unknown options', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-pi-cli-'));
     const localRoot = join(root, 'package'); const dataDir = join(root, 'data');
-    setupPiMock.mockReturnValue({ host: 'pi', status: 'planned', changed: false, source: localRoot, version: '0.5.1', piVersion: '0.84.4', actions: [], receiptPath: null, recovered: false, verification: { package: false, source: false, manifest: false }, warnings: [] });
+    setupPiMock.mockReturnValue({ host: 'pi', status: 'planned', changed: false, source: localRoot, version: '0.5.1', piVersion: '1.0.1', actions: [], receiptPath: null, recovered: false, verification: { package: false, source: false, manifest: false }, warnings: [] });
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {

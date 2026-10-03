@@ -97,7 +97,7 @@ Setup admits Pi versions by package-manager capabilities, with no version
 allowlist or upper limit, and verifies the exact
 `dist/pi.js` extension and `integrations/pi/skills/thoth-mem` Skill after
 installation. It does not imply project-local `pi install -l` or mutate an
-unowned Pi package. The SDK regression baseline remains pinned to `0.84.4`
+unowned Pi package. The SDK regression baseline remains pinned to `1.0.1`
 for reproducibility; the packed smoke uses and reports the Pi selected by
 the invoking environment's `PATH`. Setup does not certify all runtime behavior
 on an untested release. `--force-version` is not a Pi setup option.

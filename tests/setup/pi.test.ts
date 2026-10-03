@@ -28,7 +28,7 @@ class FakePi implements PiExecutor {
   records: PiPackageRecord[] = [];
   readonly calls: string[][] = [];
   private fault: { command: 'install' | 'remove'; outcome: 'nonzero' | 'throw' } | null = null;
-  constructor(private readonly publicRoot: string, private readonly version = '0.84.4', private readonly help = true, private readonly malformed = false, private readonly normalizeLocalSource = false, private readonly publicInstallRoot?: string) {}
+  constructor(private readonly publicRoot: string, private readonly version = '1.0.1', private readonly help = true, private readonly malformed = false, private readonly normalizeLocalSource = false, private readonly publicInstallRoot?: string) {}
   failNext(command: 'install' | 'remove', outcome: 'nonzero' | 'throw'): void { this.fault = { command, outcome }; }
   private finishMutation(command: 'install' | 'remove') {
     if (this.fault?.command !== command) return { status: 0, stdout: '', stderr: '' };
@@ -58,8 +58,12 @@ class FakePi implements PiExecutor {
       return this.finishMutation('install');
     }
     if (args[0] === 'remove') {
-      const removed = this.records.find((record) => record.source === args[1]);
-      this.records = this.records.filter((record) => record.source !== args[1]);
+      // Pi 1.0 resolves a local remove argument from the caller's cwd, so an
+      // agent-relative listed source no longer matches; its absolute path does.
+      const matches = (record: PiPackageRecord) => this.normalizeLocalSource && !record.source.startsWith('npm:') ? record.installedPath === args[1] : record.source === args[1];
+      const removed = this.records.find(matches);
+      if (!removed) return { status: 1, stdout: '', stderr: `No matching package found for ${args[1]}` };
+      this.records = this.records.filter((record) => !matches(record));
       if (removed?.installedPath === this.publicInstallRoot) rmSync(this.publicInstallRoot, { recursive: true, force: true });
       return this.finishMutation('remove');
     }
@@ -95,7 +99,7 @@ function treeSnapshot(root: string): Array<[string, string]> {
 function repairFixture() {
   const { root, homeDir, publicRoot, localRoot } = fixture();
   const installedRoot = join(root, 'installed');
-  const executor = new FakePi(publicRoot, '0.84.4', true, false, false, installedRoot);
+  const executor = new FakePi(publicRoot, '1.0.1', true, false, false, installedRoot);
   const dataDir = join(root, 'data');
   setupPi({ homeDir, executor, dataDir });
   writeFileSync(join(installedRoot, 'prior-only.txt'), 'prior-only bytes\n');
@@ -178,7 +182,7 @@ describe('Pi managed setup', () => {
 
   it('accepts Pi Windows-normalized local source while retaining the absolute source receipt', () => {
     const { homeDir, localRoot } = fixture();
-    const executor = new FakePi(join(tmpdir(), 'unused-public'), '0.84.4', true, false, true);
+    const executor = new FakePi(join(tmpdir(), 'unused-public'), '1.0.1', true, false, true);
     const first = setupPi({ homeDir, executor, packageRoot: localRoot });
     expect(first).toMatchObject({ status: 'complete', changed: true, source: localRoot, verification: { package: true, source: true, manifest: true } });
     expect(executor.records).toEqual([{ scope: 'user', source: '..\\..\\...\\DEV\\...\\thoth-mem', installedPath: localRoot }]);
@@ -188,14 +192,15 @@ describe('Pi managed setup', () => {
     expect(repeat).toMatchObject({ status: 'complete', changed: false, source: localRoot });
   });
 
-  it('removes the literal normalized source when replacing a receipt-owned local package', () => {
+  it('removes a receipt-owned local package by its installed path when Pi lists a relative source', () => {
     const { root, homeDir, localRoot } = fixture();
     const replacementRoot = packageFixture(join(root, 'replacement'));
     const normalizedSource = '..\\..\\...\\DEV\\...\\thoth-mem';
-    const executor = new FakePi(join(tmpdir(), 'unused-public'), '0.84.4', true, false, true);
+    const executor = new FakePi(join(tmpdir(), 'unused-public'), '1.0.1', true, false, true);
     setupPi({ homeDir, executor, packageRoot: localRoot });
     setupPi({ homeDir, executor, packageRoot: replacementRoot });
-    expect(executor.calls).toContainEqual(['remove', normalizedSource, '--no-approve']);
+    expect(executor.calls).toContainEqual(['remove', localRoot, '--no-approve']);
+    expect(executor.calls).not.toContainEqual(['remove', normalizedSource, '--no-approve']);
     expect(executor.records).toEqual([{ scope: 'user', source: normalizedSource, installedPath: replacementRoot }]);
   });
 
@@ -224,7 +229,7 @@ describe('Pi managed setup', () => {
     const { root, homeDir, publicRoot } = fixture();
     const installedRoot = join(root, 'installed');
     const broadUnrelatedRoot = join(root, 'broad-unrelated');
-    const executor = new FakePi(publicRoot, '0.84.4', true, false, false, installedRoot);
+    const executor = new FakePi(publicRoot, '1.0.1', true, false, false, installedRoot);
     const installed = setupPi({ homeDir, executor });
     const source = installed.source;
     mkdirSync(join(broadUnrelatedRoot, 'unrelated'), { recursive: true });
@@ -256,7 +261,7 @@ describe('Pi managed setup', () => {
   it('repairs receipt-owned matching provenance transactionally and then repeats without mutation', () => {
     const { root, homeDir, publicRoot } = fixture();
     const installedRoot = join(root, 'installed');
-    const executor = new FakePi(publicRoot, '0.84.4', true, false, false, installedRoot);
+    const executor = new FakePi(publicRoot, '1.0.1', true, false, false, installedRoot);
     const unrelatedPath = join(root, 'unrelated.txt');
     writeFileSync(unrelatedPath, 'unrelated bytes\n');
     setupPi({ homeDir, executor });
@@ -291,7 +296,7 @@ describe('Pi managed setup', () => {
   it('rolls a failed matching-provenance repair back to the exact prior owned resources', () => {
     const { root, homeDir, publicRoot } = fixture();
     const installedRoot = join(root, 'installed');
-    const executor = new FakePi(publicRoot, '0.84.4', true, false, false, installedRoot);
+    const executor = new FakePi(publicRoot, '1.0.1', true, false, false, installedRoot);
     setupPi({ homeDir, executor });
     const extensionPath = join(installedRoot, 'dist', 'pi.js');
     const skillPath = join(installedRoot, 'integrations', 'pi', 'skills', 'thoth-mem', 'SKILL.md');
@@ -484,7 +489,7 @@ describe('Pi managed setup', () => {
     (failure) => {
       const { root, homeDir, publicRoot } = fixture();
       const installedRoot = join(root, 'installed');
-      const executor = new FakePi(publicRoot, '0.84.4', true, false, false, installedRoot);
+      const executor = new FakePi(publicRoot, '1.0.1', true, false, false, installedRoot);
       const dataDir = join(root, 'data');
       const receiptsRoot = join(homeDir, '.config', 'thoth-mem', 'receipts');
       const journalPath = join(receiptsRoot, 'pi.in-progress.json');
