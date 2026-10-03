@@ -220,7 +220,7 @@ describe('host-neutral lifecycle', () => {
       service.save({
         project: { key: 'repo:no-fit', name: 'no-fit' },
         evidence: { kind: 'handoff', content: 'Useful continuation evidence.' },
-        memory: { kind: 'handoff', title: 'title '.repeat(300), content: 'Useful continuation content.' },
+        memory: { kind: 'handoff', topicKey: 'handoff/test-line-223', title: 'title '.repeat(300), content: 'Useful continuation content.' },
       });
       const recovered = service.lifecycle({ operation: 'recover', harness: 'codex', project: { key: 'repo:no-fit', name: 'no-fit' }, rootSessionKey: 'root-no-fit', eventKey: 'recover-no-fit' });
       expect(recovered.recovery).toMatchObject({ items: [], selectedMemoryIds: [], sources: [] });
@@ -237,7 +237,7 @@ describe('host-neutral lifecycle', () => {
       const saved = service.save({
         project: { key: 'repo:degraded-recovery', name: 'degraded-recovery' },
         evidence: { kind: 'handoff', content: 'Sensitive project continuation.' },
-        memory: { kind: 'handoff', title: 'Project continuation', content: 'Sensitive project continuation.' },
+        memory: { kind: 'handoff', topicKey: 'handoff/test-line-240', title: 'Project continuation', content: 'Sensitive project continuation.' },
       });
       const recovered = service.lifecycle({ operation: 'recover', harness: 'codex', project: { key: 'repo:degraded-recovery', name: 'degraded-recovery' }, rootSessionKey: 'root-degraded', eventKey: 'recover-degraded', identityConfidence: 'degraded' });
       expect(recovered).toMatchObject({ outcome: 'degraded', recovery: { items: [], selectedMemoryIds: [], sources: [] }, capability: { memoryConfirmed: false, contextDelivered: false, modelConsumed: false } });
@@ -280,7 +280,7 @@ describe('host-neutral lifecycle', () => {
       const unrelated = service.save({
         project,
         evidence: { kind: 'handoff', content: 'UNRELATED-PROJECT-HANDOFF' },
-        memory: { kind: 'handoff', title: 'Unrelated project handoff', content: 'UNRELATED-PROJECT-HANDOFF' },
+        memory: { kind: 'handoff', topicKey: 'handoff/test-line-283', title: 'Unrelated project handoff', content: 'UNRELATED-PROJECT-HANDOFF' },
       });
       const foreignPrompt = service.lifecycle({
         operation: 'capture_root', harness, project, rootSessionKey: 'foreign-root', eventKey: 'foreign-prompt', content: 'Foreign work.',
