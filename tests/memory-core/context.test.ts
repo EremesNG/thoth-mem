@@ -34,6 +34,10 @@ describe('progressive context funnel', () => {
       const ids = service.context({ projectKey: project.key }).items.map((item) => item.id);
       expect(ids[0]).toBe(stale.id);
       expect(ids).not.toContain(fresh.id);
+      // The closure record stays retrievable but never occupies continuation slots.
+      expect(ids).not.toContain(closure.id);
+      expect(service.get({ id: closure.id }).record.status).toBe('current');
+      expect(service.recall({ projectKey: project.key, query: 'Fresh workstream completed' }).items.map((item) => item.id)).toContain(closure.id);
     } finally { service.close(); }
   });
 

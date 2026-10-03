@@ -914,8 +914,10 @@ export class MemoryService {
       FROM (
         -- Only the newest open handoff leads; older unclosed handoffs must not crowd it.
         SELECT *, CASE WHEN kind='handoff' THEN ROW_NUMBER() OVER (PARTITION BY kind='handoff' ORDER BY created_at DESC,id ASC) END AS handoff_rank
-        FROM memories
+        FROM memories c
         WHERE project_id=? AND status='current'
+          -- A non-handoff memory that supersedes a handoff only records its closure; keep it out of continuation.
+          AND NOT (kind<>'handoff' AND EXISTS (SELECT 1 FROM memories h WHERE h.id=c.supersedes_id AND h.kind='handoff'))
       ) m
       ORDER BY continuation_priority,created_at DESC,id ASC
       LIMIT 20
