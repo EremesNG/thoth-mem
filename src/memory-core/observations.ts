@@ -309,7 +309,7 @@ export function insertObservationProjection(database: Database.Database, input: 
 }
 
 export function listObservationRecords(database: Database.Database, input: ListObservationsInput): ListObservationsResult {
-  if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
+  if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error(input.rootSessionKey ? 'root_session_key supplied without harness' : 'harness supplied without root_session_key');
   const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
   const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
   const project = resolveProjectIdentityKey(database, input.projectKey);

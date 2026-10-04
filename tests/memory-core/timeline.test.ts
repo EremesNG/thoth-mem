@@ -163,11 +163,15 @@ describe('promoted-memory timeline', () => {
       const cursor = service.timeline({ projectKey: 'repo:cursor-a', limit: 1 }).nextCursor!;
       const before = service.listProjects();
 
-      expect(() => service.timeline({ projectKey: 'repo:cursor-a', since: 'not-a-time' })).toThrow(/ISO-8601/iu);
-      expect(() => service.timeline({ projectKey: 'repo:cursor-a', since: '2026-03-02T00:00:00Z', until: '2026-03-01T00:00:00Z' })).toThrow(/since/iu);
-      expect(() => service.timeline({ projectKey: 'repo:cursor-a', cursor: 'not+a+base64url+cursor' })).toThrow(/cursor/iu);
-      expect(() => service.timeline({ projectKey: 'repo:cursor-b', cursor })).toThrow(/cursor.*project/iu);
-      expect(() => service.timeline({ projectKey: 'repo:cursor-a', cursor, since: '2026-01-01T00:00:00Z' })).toThrow(/cursor.*time range/iu);
+      expect(() => service.timeline({ projectKey: 'repo:cursor-a', since: 'not-a-time' })).toThrow(new Error('since must be an ISO-8601 instant for action="timeline"; send e.g. "2026-01-01T00:00:00Z"'));
+      expect(() => service.timeline({ projectKey: 'repo:cursor-a', until: '2026-02-30T00:00:00Z' })).toThrow(new Error('until must be an ISO-8601 instant for action="timeline"; send e.g. "2026-01-01T00:00:00Z"'));
+      expect(() => service.timeline({ projectKey: 'repo:cursor-a', since: '2026-03-02T00:00:00Z', until: '2026-03-01T00:00:00Z' })).toThrow(new Error('since must be earlier than or equal to until for action="timeline"; send an ordered inclusive range'));
+      expect(() => service.timeline({ projectKey: 'repo:cursor-a', cursor: 'not+a+base64url+cursor' })).toThrow(new Error('cursor must be an unchanged nextCursor from mem_project action="timeline"'));
+      expect(() => service.timeline({ projectKey: 'repo:cursor-b', cursor })).toThrow(new Error('cursor belongs to another project_key or since/until range; keep project_key, since, and until unchanged when continuing mem_project action="timeline"'));
+      expect(() => service.timeline({ projectKey: 'repo:cursor-a', cursor, since: '2026-01-01T00:00:00Z' })).toThrow(new Error('cursor belongs to another project_key or since/until range; keep project_key, since, and until unchanged when continuing mem_project action="timeline"'));
+      expect(() => service.timeline({ projectKey: 'repo:unknown', cursor })).toThrow(new Error('cursor belongs to another project_key or since/until range; keep project_key, since, and until unchanged when continuing mem_project action="timeline"'));
+      for (const limit of [0, 101, 1.5]) expect(() => service.timeline({ projectKey: 'repo:cursor-a', limit })).toThrow(new Error('limit must be an integer from 1 to 100 for action="timeline"'));
+      for (const budgetChars of [0, -1, 1.5]) expect(() => service.timeline({ projectKey: 'repo:cursor-a', budgetChars })).toThrow(new Error('budget_chars must be a positive integer for action="timeline"'));
       expect(service.timeline({ projectKey: 'repo:unknown' })).toEqual({ items: [], nextCursor: null, hasMore: false, requestedChars: 4_000, returnedChars: 0 });
       expect(service.listProjects()).toEqual(before);
     } finally {
@@ -188,12 +192,14 @@ describe('promoted-memory timeline', () => {
         { label: 'empty project ID', value: { ...payload, projectId: '' } },
         { label: 'empty last ID', value: { ...payload, lastId: '' } },
         { label: 'empty cursor position', value: { ...payload, lastValidFrom: '' } },
+        { label: 'invalid cursor since', value: { ...payload, since: 'not-a-time' } },
+        { label: 'invalid cursor until', value: { ...payload, until: '2026-02-30T00:00:00Z' } },
       ];
       const before = service.listProjects();
 
       for (const corrupted of corruptedPayloads) {
         const encoded = Buffer.from(JSON.stringify(corrupted.value), 'utf8').toString('base64url');
-        expect(() => service.timeline({ projectKey: 'repo:cursor-shape', cursor: encoded }), corrupted.label).toThrow(/cursor/iu);
+        expect(() => service.timeline({ projectKey: 'repo:cursor-shape', cursor: encoded }), corrupted.label).toThrow(new Error('cursor must be an unchanged nextCursor from mem_project action="timeline"'));
       }
       expect(service.listProjects()).toEqual(before);
     } finally {

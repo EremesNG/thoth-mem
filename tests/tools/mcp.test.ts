@@ -21,6 +21,73 @@ describe('MCP boundary', () => {
       await client.connect(clientTransport);
       const listed = (await client.listTools()).tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
       expect(listed).toEqual(MEMORY_TOOL_CATALOG);
+      const saveTool = listed.find((tool) => tool.name === 'mem_save');
+      expect(saveTool?.description).toContain('Send exactly one branch: evidence (optionally + memory for a direct promoted save; structured evidence with metadata forbids memory and requires event_key plus the session pair), observation (requires event_key; session scope also requires the session pair and coverage), observation_review or observation_promotion (each requires event_key plus the session pair).');
+      expect(saveTool?.description).toContain('Supply root_session_key and harness together or omit both.');
+      expect(saveTool?.inputSchema).toMatchObject({
+        properties: {
+          root_session_key: { description: 'Verified root session key; supply with harness or omit both. Required for session-scoped observations, observation_review, observation_promotion, and evidence with metadata; blank counts as absent.' },
+          harness: { description: 'Native harness for root_session_key; supply both or omit both. Required wherever root_session_key is required.' },
+          event_key: { description: 'Stable event key for idempotency; required for observation, observation_review, observation_promotion, and evidence with metadata.' },
+          evidence: { description: 'Direct evidence { kind, content }; optionally add memory for a promoted save. Structured metadata forbids memory and requires event_key, root_session_key, and harness.' },
+          memory: { description: 'Promoted memory for direct evidence only; requires evidence without metadata. Do not combine with observation, observation_review, or observation_promotion.' },
+          observation: { description: 'Submit a supported candidate without promotion; requires event_key. Session scope also requires root_session_key, harness, and coverage.' },
+          observation_review: { description: 'Review one supported observation; requires event_key, root_session_key, and harness. Send no other operation branch or memory.' },
+          observation_promotion: { description: 'Promote one accepted observation without new prose; requires event_key, root_session_key, and harness. Send no other operation branch or memory.' },
+        },
+      });
+      const contextTool = listed.find((tool) => tool.name === 'mem_context');
+      expect(contextTool?.description).toContain('project_key is always required. Supply both root_session_key and harness for session context, or omit both for project context.');
+      expect(contextTool?.inputSchema).toMatchObject({
+        required: ['project_key'],
+        properties: {
+          root_session_key: { description: 'Optional verified root session key; supply with harness for session context, or omit both for project context.' },
+          harness: { description: 'Native harness for root_session_key; supply both for session context, or omit both for project context.' },
+        },
+      });
+      const recallTool = listed.find((tool) => tool.name === 'mem_recall');
+      expect(recallTool?.description).toContain('temporal="current" (default) searches current guidance; temporal="history" includes historical records.');
+      expect(recallTool?.inputSchema).toMatchObject({ properties: {
+        query: { minLength: 1, description: 'Non-empty search string for promoted project memory.' },
+        mode: { description: 'compact (default) returns bounded snippets; context adds selected memory content.' },
+        temporal: { description: 'current (default) searches current guidance; history includes historical records.' },
+      } });
+      const getTool = listed.find((tool) => tool.name === 'mem_get');
+      expect(getTool?.description).toContain('memory, summary, observation, or evidence id returned by a prior tool result.');
+      expect(getTool?.description).toContain('history:true');
+      expect(getTool?.inputSchema).toMatchObject({ properties: {
+        id: { description: 'Memory, summary, observation, or evidence id returned by a prior tool result.' },
+        history: { description: 'Set true to expand predecessor lineage for memory, summary, or observation records; evidence ids have no lineage.' },
+      } });
+      const projectTool = listed.find((tool) => tool.name === 'mem_project');
+      expect(projectTool?.description).toContain('action="list": no fields required.');
+      expect(projectTool?.description).toContain('action="timeline": project_key required; optionally since, until, cursor, limit, and budget_chars.');
+      expect(projectTool?.description).toContain('action="briefing", "summaries", or "observations": project_key required; optionally supply both root_session_key and harness to select that session\'s summaries/observations (briefing still includes project-wide memories).');
+      expect(projectTool?.description).toContain('action="history": id required from a prior result. temporal filters summaries/observations, not timeline.');
+      expect(projectTool?.inputSchema).toMatchObject({ properties: {
+        id: { description: 'Required for action="history"; send a record id returned by a prior tool result.' },
+        root_session_key: { description: 'Optional session filter for action="briefing", "summaries", or "observations"; supply with harness or omit both.' },
+        cursor: { description: 'Unchanged nextCursor from a prior mem_project action="timeline" result; keep project_key, since, and until unchanged.' },
+      } });
+      const sessionTool = listed.find((tool) => tool.name === 'mem_session');
+      expect(sessionTool?.description).toContain('summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final".');
+      expect(sessionTool?.inputSchema).toMatchObject({ properties: {
+        event_key: { description: 'Stable lifecycle event key; retries for the same operation must resend identical content/summary.' },
+        summary: {
+          description: 'Optional only for operation="checkpoint_pre_compact" (kind="checkpoint") or operation="finalize" (kind="final"). coverage starts at 1 and to_sequence must advance the current summary for this session and kind. support_ids must be evidence ids from this project_key + root_session_key/harness session inside coverage. Canonical submission limit: 20000 UTF-16 units.',
+          properties: {
+            kind: { description: 'Send checkpoint for operation="checkpoint_pre_compact" or final for operation="finalize".' },
+            coverage: { properties: {
+              from_sequence: { description: 'Inclusive first session event sequence; must start at 1.' },
+              to_sequence: { description: 'Inclusive last session event sequence; must be >= from_sequence and exceed the current summary ending sequence for this session and kind.' },
+            } },
+            claims: { items: { properties: {
+              content: { description: 'Atomic claim content; at most 2000 code points after privacy filtering.' },
+              support_ids: { description: '1-16 distinct evidence ids from this project_key + root_session_key/harness session inside summary.coverage; never memory, summary, or observation ids.' },
+            } } },
+          },
+        },
+      } });
     } finally {
       await client.close();
       await built.server.close();
@@ -117,12 +184,72 @@ describe('MCP boundary', () => {
       const listWithTimelineField = await handlers.mem_project({ action: 'list', since: '2026-01-01T00:00:00Z' });
       const briefingWithTimelineField = await handlers.mem_project({ action: 'briefing', project_key: 'repo:missing', until: '2026-01-01T00:00:00Z' });
       const legacy = await handlers.mem_project({ action: 'briefing', project_key: 'repo:missing', include_timeline: true });
+      expect(invalid).toMatchObject({ structuredContent: { error: { message: 'since must be an ISO-8601 instant for action="timeline"; send e.g. "2026-01-01T00:00:00Z"' } } });
+      expect(malformed).toMatchObject({ structuredContent: { error: { message: 'cursor must be an unchanged nextCursor from mem_project action="timeline"' } } });
+      for (const cursor of ['', 'x'.repeat(4_097)]) {
+        expect(await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', cursor })).toMatchObject({ isError: true, structuredContent: { error: { message: 'cursor: cursor must be an unchanged nextCursor from mem_project action="timeline"' } } });
+      }
+      const invalidBudget = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', budget_chars: 0 });
+      expect(invalidBudget).toMatchObject({ isError: true, structuredContent: { error: { message: 'budget_chars must be a positive integer for action="timeline"' } } });
+      const invalidLimit = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', limit: 0 });
+      expect(invalidLimit).toMatchObject({ isError: true, structuredContent: { error: { message: 'limit: limit must be an integer from 1 to 100 for action="timeline" or action="observations"' } } });
       for (const result of [invalid, malformed, unsupported, listWithTimelineField, briefingWithTimelineField, legacy]) expect(result.isError).toBe(true);
+      expect(unsupported).toMatchObject({ structuredContent: { error: { message: 'action="timeline" does not accept temporal; send only project_key, since, until, cursor, limit, and budget_chars' } } });
+      expect(listWithTimelineField).toMatchObject({ structuredContent: { error: { message: 'received since for action="list"; omit these timeline-only fields or use action="timeline"' } } });
+      expect(briefingWithTimelineField).toMatchObject({ structuredContent: { error: { message: 'received until for action="briefing"; omit these timeline-only fields or use action="timeline"' } } });
+      const multipleForbidden = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing', id: 'record', root_session_key: 'root', harness: 'codex', temporal: 'current', state: 'pending' });
+      expect(multipleForbidden).toMatchObject({ isError: true, structuredContent: { error: { message: 'action="timeline" does not accept id, root_session_key, harness, temporal, state; send only project_key, since, until, cursor, limit, and budget_chars' } } });
+      const multipleTimelineFields = await handlers.mem_project({ action: 'history', id: 'record', since: '2026-01-01T00:00:00Z', cursor: 'cursor' });
+      expect(multipleTimelineFields).toMatchObject({ isError: true, structuredContent: { error: { message: 'received since, cursor for action="history"; omit these timeline-only fields or use action="timeline"' } } });
 
       const unknown = await handlers.mem_project({ action: 'timeline', project_key: 'repo:missing' });
       expect(unknown).toMatchObject({ structuredContent: { data: { action: 'timeline', items: [], nextCursor: null, hasMore: false }, sources: [], warnings: [] } });
       expect(service.listProjects()).toEqual(before);
       expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('names the required identifier for each project action', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      for (const action of ['timeline', 'briefing', 'summaries', 'observations']) {
+        const result = await handlers.mem_project({ action });
+        expect(result).toMatchObject({ isError: true, structuredContent: { error: { message: `project_key is required for action="${action}"` } } });
+      }
+      const history = await handlers.mem_project({ action: 'history' });
+      expect(history).toMatchObject({ isError: true, structuredContent: { error: { message: 'id is required for action="history"; send a record id from a prior result' } } });
+      expect((await handlers.mem_project({ action: 'list' })).isError).not.toBe(true);
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('directs missing-record lookups to prior result ids and accepts evidence ids', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const missing = await handlers.mem_get({ id: 'missing-selected-id' });
+      expect(missing).toMatchObject({
+        isError: true,
+        structuredContent: { error: { message: 'id: no memory, summary, observation, or evidence record exists for "missing-selected-id"; send an id returned by a prior tool result' } },
+      });
+      const saved = service.save({ project: { key: 'repo:evidence-get', name: 'evidence-get' }, evidence: { kind: 'explicit_save', content: 'Evidence record.' } });
+      const expanded = await handlers.mem_get({ id: saved.evidence.id, history: true });
+      expect(expanded).toMatchObject({ structuredContent: { data: { record: { id: saved.evidence.id, content: 'Evidence record.' }, lineage: [] } } });
+    } finally { service.close(); }
+  });
+
+  it('advertises and enforces a non-empty recall query', async () => {
+    expect(MEMORY_TOOL_CATALOG.find((tool) => tool.name === 'mem_recall')?.inputSchema).toMatchObject({ properties: { query: { minLength: 1 } } });
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      for (const query of ['', ' \t ', undefined, 7]) {
+        const result = await handlers.mem_recall({ project_key: 'repo:missing', query });
+        expect(result).toMatchObject({ isError: true, structuredContent: { error: { message: 'query must be a non-empty search string' } } });
+      }
+      expect(await handlers.mem_recall({ project_key: ' ', query: ' ' })).toMatchObject({ isError: true, structuredContent: { error: { message: 'project_key is required' } } });
+      expect(service.listProjects()).toEqual([]);
     } finally { service.close(); }
   });
 
@@ -303,6 +430,45 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it.each([
+    { operation: 'capture_root', kind: 'checkpoint', message: 'summary is only valid for operation="checkpoint_pre_compact" or operation="finalize"; received operation="capture_root"' },
+    { operation: 'checkpoint_pre_compact', kind: 'final', message: 'summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "final" for operation="checkpoint_pre_compact"' },
+    { operation: 'finalize', kind: 'checkpoint', message: 'summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "checkpoint" for operation="finalize"' },
+  ])('explains the allowed summary for operation=$operation and kind=$kind', async ({ operation, kind, message }) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_session({
+        operation, harness: 'codex', project_key: 'repo:invalid-operation', project_name: 'invalid', root_session_key: 'root-1', event_key: 'invalid',
+        summary: { kind, coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: ['missing'] }] },
+      });
+      expect(result).toMatchObject({ isError: true, structuredContent: { error: { message } } });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('requires identical content and summary when retrying a session event_key', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:summary-retry', name: 'summary-retry' };
+    const session = { rootSessionKey: 'root-1', harness: 'codex' as const };
+    try {
+      const support = service.save({ project, session, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Support.' } });
+      const handlers = createToolHandlers(service);
+      const input = {
+        operation: 'checkpoint_pre_compact', harness: session.harness, project_key: project.key, project_name: project.name, root_session_key: session.rootSessionKey, event_key: 'checkpoint', content: 'Checkpoint content.',
+        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [support.evidence.id] }] },
+      };
+      expect((await handlers.mem_session(input)).isError).not.toBe(true);
+      for (const retry of [
+        { ...input, content: 'Changed content.' },
+        { ...input, summary: { ...input.summary, claims: [{ ...input.summary.claims[0]!, content: 'Changed summary.' }] } },
+      ]) {
+        expect(await handlers.mem_session(retry)).toMatchObject({ isError: true, structuredContent: { error: { message: 'event_key was reused with different content/summary for operation="checkpoint_pre_compact"; retries with the same event_key must resend identical content/summary' } } });
+      }
+      expect(await handlers.mem_session(input)).toMatchObject({ structuredContent: { data: { duplicate: true } } });
+      expect(service.save({ project, session, eventKey: 'after-retry', evidence: { kind: 'explicit_save', content: 'Next support.' } }).event?.sequence).toBe(4);
+    } finally { service.close(); }
+  });
+
   it('rejects malformed nested summaries and partial session identity without side effects', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -314,10 +480,17 @@ describe('MCP boundary', () => {
       expect(malformed).toMatchObject({ isError: true, structuredContent: { error: { retryable: false } } });
       expect(service.listProjects()).toEqual([]);
 
-      const partialContext = await handlers.mem_context({ project_key: 'repo:test', root_session_key: 'root-1' });
-      const partialBriefing = await handlers.mem_project({ action: 'briefing', project_key: 'repo:test', harness: 'codex' });
-      expect(partialContext.isError).toBe(true);
-      expect(partialBriefing.isError).toBe(true);
+      for (const { identity, message } of [
+        { identity: { root_session_key: 'root-1' }, message: 'root_session_key supplied without harness' },
+        { identity: { harness: 'codex' }, message: 'harness supplied without root_session_key' },
+      ]) {
+        const partialContext = await handlers.mem_context({ project_key: 'repo:test', ...identity });
+        expect(partialContext).toMatchObject({ isError: true, structuredContent: { error: { message: `Supply both root_session_key and harness for session context, or omit both for project context; ${message}` } } });
+        for (const action of ['briefing', 'summaries', 'observations']) {
+          const partialProject = await handlers.mem_project({ action, project_key: 'repo:test', ...identity });
+          expect(partialProject).toMatchObject({ isError: true, structuredContent: { error: { message } } });
+        }
+      }
       expect(ALL_TOOLS).toHaveLength(6);
     } finally { service.close(); }
   });
@@ -367,6 +540,155 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('tells memory-only saves to include direct evidence without a generic branch error', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({
+        project_key: 'repo:missing-evidence', project_name: 'validation',
+        memory: { kind: 'decision', title: 'Validation', content: 'Require direct evidence.' },
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(result.structuredContent).toEqual({
+        schema: 'thoth-mem.mcp.error',
+        error: { code: 'invalid_request', message: 'memory: memory requires direct evidence: send { evidence: { kind, content }, memory }', retryable: false },
+      });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('lists the allowed branches when a save has no operation or memory', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({ project_key: 'repo:no-branch', project_name: 'validation' });
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { message: 'request: send exactly one of evidence, observation, observation_review, observation_promotion' } },
+      });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it.each([
+    { label: 'harness only', identity: { harness: 'codex' }, message: 'harness supplied without root_session_key' },
+    { label: 'empty root with harness', identity: { root_session_key: '', harness: 'codex' }, message: 'harness supplied without root_session_key' },
+    { label: 'blank root with harness', identity: { root_session_key: ' \t ', harness: 'codex' }, message: 'harness supplied without root_session_key' },
+    { label: 'root only', identity: { root_session_key: 'root-1' }, message: 'root_session_key supplied without harness' },
+  ])('names the missing session field for a save with $label', async ({ identity, message }) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({
+        project_key: 'repo:partial-session', project_name: 'validation', ...identity,
+        evidence: { kind: 'explicit_save', content: 'Must not persist.' },
+      });
+      expect(result).toMatchObject({ isError: true, structuredContent: { error: { code: 'invalid_request', message, retryable: false } } });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('keeps blank roots absent when no harness is supplied', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      for (const rootSessionKey of ['', ' \t ']) {
+        const result = await handlers.mem_save({ project_key: 'repo:blank-session', project_name: 'validation', root_session_key: rootSessionKey, evidence: { kind: 'explicit_save', content: 'No session identity.' } });
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({ schema: 'thoth-mem.mcp.mem_save' });
+      }
+    } finally { service.close(); }
+  });
+
+  it.each([
+    {
+      label: 'review with root only', identity: { root_session_key: 'root-1' },
+      branch: { observation_review: { observation_id: 'missing', verdict: 'accepted', basis: 'root_user_confirmed', policy: { id: 'policy', version: '1' }, reason: 'Confirmed.', support_ids: ['missing'] } },
+      message: 'harness: root_session_key supplied without harness',
+    },
+    {
+      label: 'promotion with harness only', identity: { harness: 'codex' },
+      branch: { observation_promotion: { observation_id: 'missing' } },
+      message: 'root_session_key: harness supplied without root_session_key',
+    },
+    {
+      label: 'structured support with blank root', identity: { root_session_key: ' \t ', harness: 'codex' },
+      branch: { evidence: { kind: 'explicit_save', content: 'Validation.', metadata: { observation_validation: { observation_id: 'missing', result: 'passed', method: 'vitest' } } } },
+      message: 'root_session_key: harness supplied without root_session_key',
+    },
+    {
+      label: 'promotion with neither session field', identity: {},
+      branch: { observation_promotion: { observation_id: 'missing' } },
+      message: 'root_session_key: root_session_key and harness are required for this operation',
+    },
+  ])('names required session fields for $label before persistence', async ({ identity, branch, message }) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({ project_key: 'repo:required-session', project_name: 'validation', event_key: 'required-session', ...identity, ...branch });
+      expect(result).toMatchObject({ isError: true, structuredContent: { error: { message } } });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('reports all missing fields for a session-scoped observation together', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({
+        project_key: 'repo:session-observation', project_name: 'validation', harness: 'codex',
+        observation: {
+          kind: 'fact', scope: 'session', title: 'Candidate', claim: 'Candidate claim.',
+          proposed_memory: { kind: 'discovery', title: 'Candidate', content: 'Candidate claim.' },
+          support_ids: ['missing'], generator: { kind: 'root_agent', name: 'codex' },
+        },
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { message: 'event_key: event_key is required for observation operations; root_session_key: harness supplied without root_session_key; observation.coverage: coverage is required for session scope' } },
+      });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('reports every schema issue with its field path or request prefix', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const result = await createToolHandlers(service).mem_save({
+        project_key: '', project_name: '', evidence: { kind: 'certification', content: 'Invalid kind.' }, unexpected: true,
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(result.structuredContent).toEqual({
+        schema: 'thoth-mem.mcp.error',
+        error: {
+          code: 'invalid_request', retryable: false,
+          message: 'project_key: Too small: expected string to have >=1 characters; project_name: Too small: expected string to have >=1 characters; evidence.kind: Invalid input; request: Unrecognized key: "unexpected"',
+        },
+      });
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('retains joined validation guidance beyond 500 characters while capping errors at 1000', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const result = await handlers.mem_session({
+        operation: 'finalize', harness: 'codex', project_key: '', project_name: '', root_session_key: '', event_key: '',
+        summary: { kind: 'final', coverage: { from_sequence: 0, to_sequence: 0 }, generator: { kind: 'root_agent', name: '' }, claims: [{ kind: 'completed', content: '', support_ids: [] }] },
+      });
+      expect(result).toMatchObject({ isError: true, structuredContent: { error: { message: [
+        'project_key: Too small: expected string to have >=1 characters',
+        'project_name: Too small: expected string to have >=1 characters',
+        'root_session_key: Too small: expected string to have >=1 characters',
+        'event_key: Too small: expected string to have >=1 characters',
+        'summary.coverage.from_sequence: Too small: expected number to be >0',
+        'summary.coverage.to_sequence: Too small: expected number to be >0',
+        'summary.generator.name: Too small: expected string to have >=1 characters',
+        'summary.claims.0.content: Too small: expected string to have >=1 characters',
+        'summary.claims.0.support_ids: Too small: expected array to have >=1 items',
+      ].join('; ') } } });
+      const bounded = await handlers.mem_get({ id: 'x'.repeat(1_100) });
+      expect((bounded.structuredContent.error as { message: string }).message).toHaveLength(1_000);
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
   it('rejects ambiguous observation branches and untyped support metadata before persistence', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -378,6 +700,7 @@ describe('MCP boundary', () => {
         support_ids: ['missing'], generator: { kind: 'root_agent', name: 'codex' },
       };
       const ambiguous = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.' }, observation: candidate });
+      expect(ambiguous).toMatchObject({ structuredContent: { error: { message: 'request: received evidence and observation; send exactly one of evidence, observation, observation_review, observation_promotion' } } });
       const arbitraryMetadata = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.', metadata: { arbitrary: true } } });
       const wrongPair = await handlers.mem_save({ ...identity, evidence: { kind: 'handoff', content: 'Source.', metadata: { observation_validation: { observation_id: 'missing', result: 'passed', method: 'vitest' } } } });
       const supportWithMemory = await handlers.mem_save({ ...identity, evidence: { kind: 'explicit_save', content: 'Source.', metadata: { observation_validation: { observation_id: 'missing', result: 'passed', method: 'vitest' } } }, memory: { kind: 'discovery', title: 'No', content: 'No' } });

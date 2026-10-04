@@ -77,7 +77,7 @@ try {
   assert.equal(toolResults.length, 2);
   assert.equal(toolResults[0].isError, true, 'Pi tool_result must mark the failed call as an error');
   assert.equal(modelResults.get('call-1')?.isError, true, 'the model must receive the failed call as an error');
-  assert.match(JSON.stringify(modelResults.get('call-1').content), /Memory record not found/);
+  assert.match(JSON.stringify(modelResults.get('call-1').content), /id: no memory, summary, observation, or evidence record exists for .*missing-native-error-regression.*; send an id returned by a prior tool result/u);
   assert.equal(toolResults[1].isError, false, 'the next call must succeed after reconnect');
   assert.equal(modelResults.get('call-2')?.isError, false);
   assert.equal(toolResults[1].details.data.projects.length, 1);

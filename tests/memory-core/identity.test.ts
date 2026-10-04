@@ -25,7 +25,7 @@ describe('project/session identity', () => {
       const first = service.lifecycle(input); service.close();
       service = new MemoryService({ databasePath: path }); const second = service.lifecycle(input);
       expect(second).toMatchObject({ duplicate: true, projectId: first.projectId, sessionId: first.sessionId, evidenceId: first.evidenceId });
-      expect(() => service.save({ project: { key: '', name: 'placeholder' }, evidence: { kind: 'explicit_save', content: 'no' } })).toThrow(/verified project identity/i);
+      expect(() => service.save({ project: { key: '', name: 'placeholder' }, evidence: { kind: 'explicit_save', content: 'no' } })).toThrow(new Error('project_key is required; send the exact verified project_key'));
       service.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

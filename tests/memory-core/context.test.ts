@@ -3,6 +3,23 @@ import { describe, expect, it } from 'vitest';
 import { MemoryService } from '../../src/memory-core/service.js';
 
 describe('progressive context funnel', () => {
+  it('names the missing session field and explains project-only context', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      for (const { identity, message } of [
+        { identity: { rootSessionKey: 'root-1' }, message: 'root_session_key supplied without harness' },
+        { identity: { harness: 'codex' as const }, message: 'harness supplied without root_session_key' },
+      ]) {
+        const input = { projectKey: 'repo:missing', ...identity };
+        expect(() => service.context(input)).toThrow(new Error(`Supply both root_session_key and harness for session context, or omit both for project context; ${message}`));
+        expect(() => service.projectSummaries(input)).toThrow(new Error(message));
+        expect(() => service.listObservations(input)).toThrow(new Error(message));
+      }
+      expect(service.context({ projectKey: 'repo:missing' }).items).toEqual([]);
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
   it('moves compact to context to full fetch with stable IDs and explicit measurements', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -111,7 +128,7 @@ describe('progressive context funnel', () => {
       const projectOnly = service.context({ projectKey: project.key, budgetChars: 2_000 });
       expect(projectOnly.items[0]).toMatchObject({ kind: 'handoff', content: 'LEGACY-HANDOFF-FALLBACK' });
       expect(projectOnly.selectedSummaryIds).toEqual([]);
-      expect(() => service.context({ projectKey: project.key, rootSessionKey: 'root-1' })).toThrow(/supplied together/i);
+      expect(() => service.context({ projectKey: project.key, rootSessionKey: 'root-1' })).toThrow(new Error('Supply both root_session_key and harness for session context, or omit both for project context; root_session_key supplied without harness'));
     } finally { service.close(); }
   });
 });

@@ -50,7 +50,7 @@ function text(value: unknown, label: string, maxCodePoints: number): string {
   if (typeof value !== 'string') throw new Error(`${label} must be a string`);
   const sanitized = sanitizePrivateContent(value).normalize('NFC').trim();
   if (!sanitized) throw new Error(`${label} is required after privacy filtering`);
-  if ([...sanitized].length > maxCodePoints) throw new Error(`${label} exceeds ${maxCodePoints} code points`);
+  if ([...sanitized].length > maxCodePoints) throw new Error(`${label} exceeds ${maxCodePoints} code points; send a shorter value`);
   return sanitized;
 }
 
@@ -59,8 +59,8 @@ function optionalText(value: unknown, label: string, maxCodePoints: number): str
   return text(value, label, maxCodePoints);
 }
 
-function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error(`${label} must be a positive integer`);
+function positiveInteger(value: unknown, label: string, requirement = 'a positive integer'): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error(`${label} must be ${requirement}`);
   return Number(value);
 }
 
@@ -71,21 +71,21 @@ export function canonicalizeSessionSummary(value: SessionSummaryInput): Canonica
 
   const coverageInput = object(input.coverage, 'summary.coverage');
   exactKeys(coverageInput, ['fromSequence', 'toSequence'], 'summary.coverage');
-  const fromSequence = positiveInteger(coverageInput.fromSequence, 'summary.coverage.fromSequence');
-  const toSequence = positiveInteger(coverageInput.toSequence, 'summary.coverage.toSequence');
-  if (fromSequence !== 1) throw new Error('summary coverage must start at sequence 1');
-  if (toSequence < fromSequence) throw new Error('summary coverage must not regress');
+  const fromSequence = positiveInteger(coverageInput.fromSequence, 'summary.coverage.from_sequence');
+  const toSequence = positiveInteger(coverageInput.toSequence, 'summary.coverage.to_sequence', `a positive integer >= summary.coverage.from_sequence (${fromSequence})`);
+  if (fromSequence !== 1) throw new Error(`summary.coverage.from_sequence must start at 1; received ${fromSequence}`);
+  if (toSequence < fromSequence) throw new Error(`summary.coverage.to_sequence must be >= summary.coverage.from_sequence (${fromSequence}); received ${toSequence}`);
 
   const generatorInput = object(input.generator, 'summary.generator');
   exactKeys(generatorInput, ['kind', 'name', 'version', 'configHash'], 'summary.generator');
   const generatorKind = requireCanonicalValue('summary.generator.kind', SESSION_SUMMARY_GENERATOR_KIND_VALUES, generatorInput.kind);
   const generatorName = text(generatorInput.name, 'summary.generator.name', 200);
   const generatorVersion = optionalText(generatorInput.version, 'summary.generator.version', 200);
-  const generatorConfigHash = generatorInput.configHash === undefined ? undefined : text(generatorInput.configHash, 'summary.generator.configHash', 64);
-  if (generatorConfigHash !== undefined && !/^[0-9a-f]{64}$/u.test(generatorConfigHash)) throw new Error('summary generator config hash must be lowercase SHA-256');
+  const generatorConfigHash = generatorInput.configHash === undefined ? undefined : text(generatorInput.configHash, 'summary.generator.config_hash', 64);
+  if (generatorConfigHash !== undefined && !/^[0-9a-f]{64}$/u.test(generatorConfigHash)) throw new Error('summary.generator.config_hash must be a lowercase SHA-256 hash; send 64 lowercase hexadecimal characters');
 
   if (!Array.isArray(input.claims) || input.claims.length < SESSION_SUMMARY_LIMITS.minClaims || input.claims.length > SESSION_SUMMARY_LIMITS.maxClaims) {
-    throw new Error(`summary claims must contain ${SESSION_SUMMARY_LIMITS.minClaims}-${SESSION_SUMMARY_LIMITS.maxClaims} items`);
+    throw new Error(`summary.claims must contain ${SESSION_SUMMARY_LIMITS.minClaims}-${SESSION_SUMMARY_LIMITS.maxClaims} items; send bounded atomic claims`);
   }
   const claims = input.claims.map((value, ordinal) => {
     const claim = object(value, `summary.claims[${ordinal}]`);
@@ -94,10 +94,14 @@ export function canonicalizeSessionSummary(value: SessionSummaryInput): Canonica
     const content = text(claim.content, `summary.claims[${ordinal}].content`, SESSION_SUMMARY_LIMITS.maxClaimCodePoints);
     const outcome = claim.outcome === undefined ? undefined : requireCanonicalValue(`summary.claims[${ordinal}].outcome`, MEMORY_OUTCOME_VALUES, claim.outcome);
     if (!Array.isArray(claim.supportIds) || claim.supportIds.length < SESSION_SUMMARY_LIMITS.minSupportsPerClaim || claim.supportIds.length > SESSION_SUMMARY_LIMITS.maxSupportsPerClaim) {
-      throw new Error(`summary.claims[${ordinal}].supportIds must contain ${SESSION_SUMMARY_LIMITS.minSupportsPerClaim}-${SESSION_SUMMARY_LIMITS.maxSupportsPerClaim} items`);
+      throw new Error(`summary.claims[${ordinal}].support_ids must contain ${SESSION_SUMMARY_LIMITS.minSupportsPerClaim}-${SESSION_SUMMARY_LIMITS.maxSupportsPerClaim} evidence ids`);
     }
-    const supportIds = claim.supportIds.map((supportId, index) => text(supportId, `summary.claims[${ordinal}].supportIds[${index}]`, 200));
-    if (new Set(supportIds).size !== supportIds.length) throw new Error(`summary.claims[${ordinal}] contains a duplicate support ID`);
+    const supportIds = claim.supportIds.map((supportId, index) => text(supportId, `summary.claims[${ordinal}].support_ids[${index}]`, 200));
+    const seen = new Set<string>();
+    for (const supportId of supportIds) {
+      if (seen.has(supportId)) throw new Error(`summary.claims[${ordinal}].support_ids contains duplicate support id ${JSON.stringify(supportId)}; send each evidence id once`);
+      seen.add(supportId);
+    }
     supportIds.sort();
     return { kind: claimKind, content, ...(outcome ? { outcome } : {}), supportIds };
   });
@@ -114,7 +118,7 @@ export function canonicalizeSessionSummary(value: SessionSummaryInput): Canonica
     claims,
   };
   const canonicalJson = JSON.stringify({ schema: SUMMARY_EVIDENCE_SCHEMA, summary: sanitized });
-  if (canonicalJson.length > SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units) throw new Error(`summary canonical submission exceeds ${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 units`);
+  if (canonicalJson.length > SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units) throw new Error(`summary exceeds the ${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 unit canonical submission limit; send fewer or shorter summary.claims`);
   return { input: sanitized, canonicalJson };
 }
 
@@ -163,20 +167,26 @@ export function sessionSummaryFromId(database: Database.Database, id: string): S
 export function insertSessionSummaryProjection(database: Database.Database, input: InsertSummaryInput): SessionSummaryRecord {
   const canonical = canonicalizeSessionSummary(input.summary).input;
   const session = database.prepare('SELECT project_id FROM sessions WHERE id=?').get(input.sessionId) as { project_id: string } | undefined;
-  if (!session || session.project_id !== input.projectId) throw new Error('Summary requires a verified session in the same project');
+  if (!session || session.project_id !== input.projectId) throw new Error('summary requires root_session_key and harness in this project_key; send the verified session pair');
 
   const supportIds = [...new Set(canonical.claims.flatMap((claim) => claim.supportIds))];
   const placeholders = supportIds.map(() => '?').join(',');
   const supports = database.prepare(`SELECT e.id,e.project_id,e.session_id,se.sequence FROM evidence e JOIN session_events se ON se.evidence_id=e.id WHERE e.id IN (${placeholders})`).all(...supportIds) as Array<{ id: string; project_id: string; session_id: string; sequence: number }>;
-  if (supports.length !== supportIds.length || supports.some((support) => support.project_id !== input.projectId || support.session_id !== input.sessionId)) {
-    throw new Error('Every summary support must belong to the same project and session');
-  }
-  if (supports.some((support) => support.sequence < canonical.coverage.fromSequence || support.sequence > canonical.coverage.toSequence)) {
-    throw new Error('Every summary support must be inside the covered event range');
+  const supportsById = new Map(supports.map((support) => [support.id, support]));
+  const claimedSupports = canonical.claims.flatMap((claim, claimIndex) => claim.supportIds.map((supportId) => ({ claimIndex, supportId })));
+  const invalidSupport = claimedSupports.find(({ supportId }) => {
+    const support = supportsById.get(supportId);
+    return !support || support.project_id !== input.projectId || support.session_id !== input.sessionId;
+  }) ?? claimedSupports.find(({ supportId }) => {
+    const support = supportsById.get(supportId)!;
+    return support.sequence < canonical.coverage.fromSequence || support.sequence > canonical.coverage.toSequence;
+  });
+  if (invalidSupport) {
+    throw new Error(`summary.claims[${invalidSupport.claimIndex}].support_ids: support id ${JSON.stringify(invalidSupport.supportId)} must reference evidence from this project_key + root_session_key/harness session within summary.coverage (${canonical.coverage.fromSequence}-${canonical.coverage.toSequence})`);
   }
 
   const current = database.prepare("SELECT id,version,source_sequence_to FROM session_summaries WHERE session_id=? AND kind=? AND status='current'").get(input.sessionId, canonical.kind) as { id: string; version: number; source_sequence_to: number } | undefined;
-  if (current && canonical.coverage.toSequence <= current.source_sequence_to) throw new Error('Summary coverage must strictly advance the current summary');
+  if (current && canonical.coverage.toSequence <= current.source_sequence_to) throw new Error(`summary.coverage.to_sequence must exceed the current summary's ending sequence ${current.source_sequence_to} for this session and kind="${canonical.kind}"; received ${canonical.coverage.toSequence}`);
   const version = (current?.version ?? 0) + 1;
   const id = stableUuid(`session-summary:${input.submissionEvidenceId}`);
   if (current) database.prepare("UPDATE session_summaries SET status='superseded' WHERE id=?").run(current.id);

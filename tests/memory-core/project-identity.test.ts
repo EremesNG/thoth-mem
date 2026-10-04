@@ -134,7 +134,7 @@ describe('canonical project adoption', () => {
         expect(() => memory.save({
           project: { key: unsafe, name: 'Unsafe' },
           evidence: { kind: 'explicit_save', content: 'must not persist' },
-        })).toThrow(/project identity/i);
+        })).toThrow(/project_key/i);
         expect(() => memory.save({
           project: { key: 'git:88888888-8888-4888-8888-888888888888', name: 'Unsafe alias', aliases: [unsafe] },
           evidence: { kind: 'explicit_save', content: 'must not persist alias' },

@@ -24,7 +24,7 @@ export function resolveProjectIdentityKey(database: Database.Database, key: stri
 
 export function projectIdentityFromId(database: Database.Database, id: string): StoredProjectIdentity {
   const project = database.prepare('SELECT id,identity_key AS key,display_name AS name FROM projects WHERE id=?').get(id) as StoredProjectIdentity | undefined;
-  if (!project) throw new Error('Verified project identity is required');
+  if (!project) throw new Error('project_key must identify an existing project; send the exact verified project_key');
   return project;
 }
 
@@ -47,7 +47,9 @@ function bindAliases(database: Database.Database, projectId: string, aliases: st
 
 export function ensureProject(database: Database.Database, input: ProjectIdentityInput): string {
   const key = input.key;
-  if (!key.trim() || Array.from(key).length > 4096 || PROHIBITED_PROJECT_IDENTITY_CHARACTERS.test(key) || !input.name.trim()) throw new Error('Verified project identity is required');
+  if (!key.trim()) throw new Error('project_key is required; send the exact verified project_key');
+  if (Array.from(key).length > 4096 || PROHIBITED_PROJECT_IDENTITY_CHARACTERS.test(key)) throw new Error('project_key must contain at most 4096 code points and no control or line-separator characters; send the exact verified project_key');
+  if (!input.name.trim()) throw new Error('project_name is required; send creation/display metadata for project_key');
   const aliases = canonicalAliases(input);
   const at = now();
   const found = resolveProjectIdentityKey(database, key);
@@ -86,7 +88,7 @@ export function ensureProject(database: Database.Database, input: ProjectIdentit
 }
 
 export function ensureSession(database: Database.Database, projectId: string, input: SessionIdentityInput): string {
-  if (!input.rootSessionKey.trim()) throw new Error('Stable root session identity is required');
+  if (!input.rootSessionKey.trim()) throw new Error('root_session_key is required; send the stable verified root session key with harness');
   const found = database.prepare('SELECT id FROM sessions WHERE project_id=? AND root_session_key=? AND harness=?').get(projectId, input.rootSessionKey, input.harness) as { id: string } | undefined;
   if (found) return found.id;
   const id = stableUuid(`session:${projectId}:${input.harness}:${input.rootSessionKey}`);
@@ -113,7 +115,7 @@ export function eventForEvidence(database: Database.Database, evidenceId: string
 
 export function appendSessionEvent(database: Database.Database, sessionId: string, evidenceId: string, input: SessionEventInput): SessionEventRecord {
   const allocated = database.prepare('UPDATE sessions SET next_event_sequence=next_event_sequence+1 WHERE id=? RETURNING next_event_sequence').get(sessionId) as { next_event_sequence: number } | undefined;
-  if (!allocated) throw new Error('Verified session is required for event allocation');
+  if (!allocated) throw new Error('root_session_key and harness must identify an existing session in project_key before recording an event; send the verified session pair');
   database.prepare('INSERT INTO session_events(evidence_id,session_id,sequence,actor,authority,retention_class,privacy_class) VALUES(?,?,?,?,?,?,?)').run(
     evidenceId, sessionId, allocated.next_event_sequence, input.actor, input.authority, input.retentionClass, input.privacyClass,
   );

@@ -99,6 +99,8 @@ const MAX_CORRELATION_STATES = 1_024;
 export const PROJECT_ALIAS_INSPECTION_LIMIT = 256;
 const PROHIBITED_PROJECT_IDENTITY_CHARACTERS = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 const TIMELINE_CURSOR_VERSION = 1;
+const TIMELINE_CURSOR_ERROR = 'cursor must be an unchanged nextCursor from mem_project action="timeline"';
+const TIMELINE_CURSOR_SCOPE_ERROR = 'cursor belongs to another project_key or since/until range; keep project_key, since, and until unchanged when continuing mem_project action="timeline"';
 const TIMELINE_MIN_BUDGET_CHARS = 1_024;
 const TIMELINE_MAX_BUDGET_CHARS = 20_000;
 const TIMELINE_TITLE_CODE_POINTS = 64;
@@ -116,8 +118,9 @@ interface TimelineCursorPayload {
 }
 
 function normalizeInstant(value: string, label: string): string {
+  const message = `${label} must be an ISO-8601 instant for action="timeline"; send e.g. "2026-01-01T00:00:00Z"`;
   const match = ISO_INSTANT_PATTERN.exec(value);
-  if (!match) throw new Error(`${label} must be an ISO-8601 instant`);
+  if (!match) throw new Error(message);
   const [, year, month, day, hour, minute, second] = match;
   const numericYear = Number(year);
   const numericMonth = Number(month);
@@ -125,22 +128,22 @@ function normalizeInstant(value: string, label: string): string {
   const leapYear = numericYear % 4 === 0 && (numericYear % 100 !== 0 || numericYear % 400 === 0);
   const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][numericMonth - 1] ?? 0;
   if (numericMonth < 1 || numericMonth > 12 || numericDay < 1 || numericDay > daysInMonth || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) {
-    throw new Error(`${label} must be an ISO-8601 instant`);
+    throw new Error(message);
   }
   const milliseconds = Date.parse(value);
-  if (!Number.isFinite(milliseconds)) throw new Error(`${label} must be an ISO-8601 instant`);
+  if (!Number.isFinite(milliseconds)) throw new Error(message);
   return new Date(milliseconds).toISOString();
 }
 
 function normalizeTimelineLimit(value: number | undefined): number {
   const limit = value ?? 20;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Timeline limit must be an integer from 1 to 100');
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('limit must be an integer from 1 to 100 for action="timeline"');
   return limit;
 }
 
 function normalizeTimelineBudget(value: number | undefined): number {
   const requested = value ?? 4_000;
-  if (!Number.isSafeInteger(requested) || requested < 1) throw new Error('Timeline character budget must be a positive integer');
+  if (!Number.isSafeInteger(requested) || requested < 1) throw new Error('budget_chars must be a positive integer for action="timeline"');
   return Math.max(TIMELINE_MIN_BUDGET_CHARS, Math.min(requested, TIMELINE_MAX_BUDGET_CHARS));
 }
 
@@ -150,16 +153,16 @@ function clipCodePoints(value: string, maximum: number): string {
 }
 
 function decodeTimelineCursor(value: string): TimelineCursorPayload {
-  if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error('Timeline cursor is invalid');
+  if (!value || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error(TIMELINE_CURSOR_ERROR);
   let parsed: unknown;
   try {
     const bytes = Buffer.from(value, 'base64url');
-    if (bytes.toString('base64url') !== value) throw new Error('non-canonical cursor');
+    if (bytes.toString('base64url') !== value) throw new Error(TIMELINE_CURSOR_ERROR);
     parsed = JSON.parse(bytes.toString('utf8'));
   } catch {
-    throw new Error('Timeline cursor is invalid');
+    throw new Error(TIMELINE_CURSOR_ERROR);
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Timeline cursor is invalid');
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error(TIMELINE_CURSOR_ERROR);
   const record = parsed as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   if (keys.join(',') !== 'lastId,lastValidFrom,projectId,since,until,v'
@@ -168,17 +171,21 @@ function decodeTimelineCursor(value: string): TimelineCursorPayload {
     || typeof record.lastId !== 'string' || !record.lastId.trim()
     || typeof record.lastValidFrom !== 'string'
     || (record.since !== null && typeof record.since !== 'string')
-    || (record.until !== null && typeof record.until !== 'string')) throw new Error('Timeline cursor is invalid');
-  const since = record.since === null ? null : normalizeInstant(record.since, 'Timeline cursor since');
-  const until = record.until === null ? null : normalizeInstant(record.until, 'Timeline cursor until');
-  return {
-    v: 1,
-    projectId: record.projectId,
-    since,
-    until,
-    lastValidFrom: normalizeInstant(record.lastValidFrom, 'Timeline cursor position'),
-    lastId: record.lastId,
-  };
+    || (record.until !== null && typeof record.until !== 'string')) throw new Error(TIMELINE_CURSOR_ERROR);
+  try {
+    const since = record.since === null ? null : normalizeInstant(record.since, 'cursor.since');
+    const until = record.until === null ? null : normalizeInstant(record.until, 'cursor.until');
+    return {
+      v: 1,
+      projectId: record.projectId,
+      since,
+      until,
+      lastValidFrom: normalizeInstant(record.lastValidFrom, 'cursor'),
+      lastId: record.lastId,
+    };
+  } catch {
+    throw new Error(TIMELINE_CURSOR_ERROR);
+  }
 }
 
 function encodeTimelineCursor(payload: TimelineCursorPayload): string {
@@ -213,7 +220,7 @@ function timelineItemFromRow(row: Record<string, unknown>, allowance: number): {
     item = build();
     chars = JSON.stringify(item).length;
   }
-  if (chars > allowance) throw new Error('Timeline character budget cannot fit one compact item');
+  if (chars > allowance) throw new Error('budget_chars cannot fit one compact timeline item; send a larger budget_chars');
   return { item, chars };
 }
 
@@ -462,16 +469,16 @@ export class MemoryService {
   timeline(input: TimelineInput): TimelineResult {
     const limit = normalizeTimelineLimit(input.limit);
     const requestedChars = normalizeTimelineBudget(input.budgetChars);
-    const since = input.since === undefined ? null : normalizeInstant(input.since, 'Timeline since');
-    const until = input.until === undefined ? null : normalizeInstant(input.until, 'Timeline until');
-    if (since && until && since > until) throw new Error('Timeline since must not be later than until');
+    const since = input.since === undefined ? null : normalizeInstant(input.since, 'since');
+    const until = input.until === undefined ? null : normalizeInstant(input.until, 'until');
+    if (since && until && since > until) throw new Error('since must be earlier than or equal to until for action="timeline"; send an ordered inclusive range');
     const cursor = input.cursor === undefined ? null : decodeTimelineCursor(input.cursor);
     const project = resolveProjectIdentityKey(this.database, input.projectKey);
     if (!project) {
-      if (cursor) throw new Error('Timeline cursor does not match this project and time range');
+      if (cursor) throw new Error(TIMELINE_CURSOR_SCOPE_ERROR);
       return { items: [], nextCursor: null, hasMore: false, requestedChars, returnedChars: 0 };
     }
-    if (cursor && (cursor.projectId !== project.id || cursor.since !== since || cursor.until !== until)) throw new Error('Timeline cursor does not match this project and time range');
+    if (cursor && (cursor.projectId !== project.id || cursor.since !== since || cursor.until !== until)) throw new Error(TIMELINE_CURSOR_SCOPE_ERROR);
     const clauses = ['project_id=?'];
     const parameters: unknown[] = [project.id];
     if (since) { clauses.push('julianday(valid_from)>=julianday(?)'); parameters.push(since); }
@@ -822,12 +829,12 @@ export class MemoryService {
       return { record, lineage };
     }
     const evidenceRow = this.database.prepare('SELECT * FROM evidence WHERE id=?').get(input.id) as Record<string, unknown> | undefined;
-    if (!evidenceRow) throw new Error('Memory record not found');
+    if (!evidenceRow) throw new Error(`id: no memory, summary, observation, or evidence record exists for ${JSON.stringify(input.id)}; send an id returned by a prior tool result`);
     return { record: evidenceFromRow(evidenceRow), lineage: [] };
   }
 
   projectSummaries(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; history?: boolean; budgetChars?: number }): { items: SessionSummaryRecord[]; requestedChars: number; returnedChars: number; truncated: boolean } {
-    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
+    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error(input.rootSessionKey ? 'root_session_key supplied without harness' : 'harness supplied without root_session_key');
     const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
     const project = resolveProjectIdentityKey(this.database, input.projectKey);
     if (!project) return { items: [], requestedChars, returnedChars: 0, truncated: false };
@@ -854,7 +861,7 @@ export class MemoryService {
   }
 
   private contextSelection(input: ContextInput, selection: ContextSelection): ContextResult {
-    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error('root_session_key and harness must be supplied together');
+    if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error(`Supply both root_session_key and harness for session context, or omit both for project context; ${input.rootSessionKey ? 'root_session_key supplied without harness' : 'harness supplied without root_session_key'}`);
     const requested = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000));
     const correlationId = input.correlationId ?? randomUUID();
     const lanes = { lexical: 'ready' as const, ...this.projections.effectiveStates() };
@@ -960,8 +967,8 @@ export class MemoryService {
     requireCanonicalValue('operation', LIFECYCLE_OPERATION_VALUES, input.operation);
     requireCanonicalValue('harness', HARNESS_VALUES, input.harness);
     const canonicalSummary = input.summary ? canonicalizeSessionSummary(input.summary) : null;
-    if (canonicalSummary && input.operation !== 'checkpoint_pre_compact' && input.operation !== 'finalize') throw new Error('Structured summaries are accepted only for checkpoint_pre_compact or finalize');
-    if (canonicalSummary && ((input.operation === 'checkpoint_pre_compact' && canonicalSummary.input.kind !== 'checkpoint') || (input.operation === 'finalize' && canonicalSummary.input.kind !== 'final'))) throw new Error('Summary kind must match the lifecycle operation');
+    if (canonicalSummary && input.operation !== 'checkpoint_pre_compact' && input.operation !== 'finalize') throw new Error(`summary is only valid for operation="checkpoint_pre_compact" or operation="finalize"; received operation="${input.operation}"`);
+    if (canonicalSummary && ((input.operation === 'checkpoint_pre_compact' && canonicalSummary.input.kind !== 'checkpoint') || (input.operation === 'finalize' && canonicalSummary.input.kind !== 'final'))) throw new Error(`summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "${canonicalSummary.input.kind}" for operation="${input.operation}"`);
     if (canonicalSummary && input.identityConfidence === 'degraded') throw new Error('A verified root identity is required to submit a summary');
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
@@ -1009,7 +1016,7 @@ export class MemoryService {
         };
       };
       if (found) {
-        if (found.payload_hash !== payloadHash) throw new Error('Lifecycle event key was reused with a different payload');
+        if (found.payload_hash !== payloadHash) throw new Error(`event_key was reused with different content/summary for operation="${input.operation}"; retries with the same event_key must resend identical content/summary`);
         return result(found.outcome, true, found.evidence_id, found.summary_id);
       }
       if (input.operation === 'guide_post_compact') {

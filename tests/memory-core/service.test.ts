@@ -9,6 +9,19 @@ import type { SaveMemoryInput } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 
 describe('MemoryService', () => {
+  it('names missing or invalid public identity fields without persisting a project', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const evidence = { kind: 'explicit_save' as const, content: 'Must not persist.' };
+    try {
+      expect(() => service.save({ project: { key: ' \t ', name: 'test' }, evidence })).toThrow(new Error('project_key is required; send the exact verified project_key'));
+      expect(() => service.save({ project: { key: 'repo:\ntest', name: 'test' }, evidence })).toThrow(new Error('project_key must contain at most 4096 code points and no control or line-separator characters; send the exact verified project_key'));
+      expect(() => service.save({ project: { key: 'x'.repeat(4_097), name: 'test' }, evidence })).toThrow(new Error('project_key must contain at most 4096 code points and no control or line-separator characters; send the exact verified project_key'));
+      expect(() => service.save({ project: { key: 'repo:test', name: ' \t ' }, evidence })).toThrow(new Error('project_name is required; send creation/display metadata for project_key'));
+      expect(() => service.save({ project: { key: 'repo:test', name: 'test' }, session: { rootSessionKey: ' \t ', harness: 'codex' }, evidence })).toThrow(new Error('root_session_key is required; send the stable verified root session key with harness'));
+      expect(service.listProjects()).toEqual([]);
+    } finally { service.close(); }
+  });
+
   it('captures evidence without promotion and keeps punctuation recall safe', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
