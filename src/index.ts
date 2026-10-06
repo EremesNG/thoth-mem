@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -14,6 +15,12 @@ export { ALL_TOOLS, createToolHandlers } from './tools/index.js';
 export function shouldRunCli(args: string[]): boolean {
   const command = args[0];
   return args.includes('--help') || args.includes('-h') || (command !== undefined && !command.startsWith('-') && command !== 'mcp');
+}
+
+// Node resolves the main module to its real path, while package-manager shims may pass a linked path.
+export function isMainModule(moduleUrl: string, entry: string | undefined): boolean {
+  if (!entry) return false;
+  try { return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(entry); } catch { return false; }
 }
 
 export async function startMcpServer(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -32,4 +39,4 @@ export async function main(): Promise<void> {
   await startMcpServer(args[0] === 'mcp' ? args.slice(1) : args);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+if (isMainModule(import.meta.url, process.argv[1])) void main().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
