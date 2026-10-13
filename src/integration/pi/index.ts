@@ -1,5 +1,5 @@
 import type { LifecycleInput, LifecycleResult } from '../../memory-core/contracts.js';
-import { MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
+import { MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
 import { verifiedRecovery } from '../recovery.js';
 import { createPiMcpClient, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
 import { createToolRenderers } from './render.js';
@@ -29,6 +29,8 @@ interface PiExtensionApi {
     name: string;
     label: string;
     description: string;
+    promptGuidelines?: string[];
+    promptSnippet?: string;
     parameters: Record<string, unknown>;
     execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<PiToolResult>;
   } & Partial<ReturnType<typeof createToolRenderers>>): void;
@@ -97,6 +99,11 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
         label: tool.name,
         description: tool.description,
         parameters: tool.inputSchema,
+        ...(tool.name === 'mem_recall' ? {
+          promptGuidelines: MEMORY_INSTRUCTION_SENTENCES.slice(1),
+          promptSnippet: 'Recall project memory before non-trivial repository work.',
+        } : {}),
+        ...(tool.name === 'mem_save' ? { promptSnippet: 'Save verified project knowledge and continuation handoffs.' } : {}),
         ...createToolRenderers(tool.name),
         async execute(_toolCallId, params, signal) {
           try {

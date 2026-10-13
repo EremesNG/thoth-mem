@@ -26,6 +26,16 @@ import {
 } from '../memory-core/contracts.js';
 import type { MemoryService } from '../memory-core/service.js';
 
+export const MEMORY_INSTRUCTION_SENTENCES = [
+  'Persistent project memory for coding agents.',
+  'At the start of non-trivial repository work, recall with task key terms before exploring, unprompted.',
+  'Expand only selected records. Skip memory for trivial or conversational turns.',
+  'Save verified decisions, root causes, failed approaches, and non-obvious conventions immediately, unprompted.',
+  'When a recovered handoff\'s pending action is done, save its outcome under the same topic_key.',
+  'Save one handoff before meaningful work ends if continuation helps.',
+  'Use verified identity for attribution, exclude private, transient, canonical, user-forbidden, and duplicate content, and reserve mem_session for actual root lifecycle events.',
+] as const;
+
 export const ALL_TOOLS = ['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session'] as const;
 export type MemoryToolName = typeof ALL_TOOLS[number];
 export interface ToolResult { [key: string]: unknown; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown>; isError?: boolean }
