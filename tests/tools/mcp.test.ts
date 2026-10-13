@@ -7,10 +7,25 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { MemoryService } from '../../src/memory-core/service.js';
-import { createServer } from '../../src/server.js';
-import { ALL_TOOLS, createToolHandlers, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
+import { createServer, SERVER_INSTRUCTIONS } from '../../src/server.js';
+import { ALL_TOOLS, createToolHandlers, MEMORY_TOOL_CATALOG, TOOL_DESCRIPTIONS } from '../../src/tools/index.js';
 
 describe('MCP boundary', () => {
+  it('keeps proactive memory triggers within the always-visible text budgets', () => {
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(699);
+    // Measured pre-adoption baseline: all six descriptions, including joined spaces.
+    const descriptionBaseline = 2_790;
+    expect(Object.values(TOOL_DESCRIPTIONS).reduce((total, text) => total + text.length, 0)).toBeLessThanOrEqual(descriptionBaseline + 200);
+    expect(SERVER_INSTRUCTIONS).toContain('At the start of non-trivial repository work, recall with task key terms before exploring, unprompted.');
+    expect(SERVER_INSTRUCTIONS).toContain('Save verified decisions, root causes, failed approaches, and non-obvious conventions immediately, unprompted.');
+    expect(SERVER_INSTRUCTIONS).toContain('When a recovered handoff\'s pending action is done, save its outcome under the same topic_key.');
+    expect(SERVER_INSTRUCTIONS).toContain('Skip memory for trivial or conversational turns.');
+    expect(SERVER_INSTRUCTIONS).toContain('Use verified identity for attribution, exclude private, transient, canonical, user-forbidden, and duplicate content, and reserve mem_session for actual root lifecycle events.');
+    expect(TOOL_DESCRIPTIONS.mem_recall).toContain('Call at the start of non-trivial repository work before exploring, with task key terms, unprompted.');
+    expect(TOOL_DESCRIPTIONS.mem_save).toContain('Save unprompted as soon as decisions, root causes, failed approaches, or non-obvious conventions are verified.');
+    expect(TOOL_DESCRIPTIONS.mem_save).toContain('close a finished handoff by saving its outcome under the same topic_key');
+  });
+
   it('derives tools/list names, descriptions, and schemas from the authoritative catalog', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-catalog-'));
     const built = createServer({ dataDir: root });

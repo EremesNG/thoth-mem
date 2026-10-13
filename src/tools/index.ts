@@ -34,14 +34,14 @@ type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
 export const TOOL_DESCRIPTIONS: Readonly<Record<MemoryToolName, string>> = {
   mem_save: [
-    'Save verified durable decisions, discoveries, failures, conventions, and continuation handoffs.',
+    'Save unprompted as soon as decisions, root causes, failed approaches, or non-obvious conventions are verified. Also save durable discoveries and continuation handoffs.',
     'For a direct promoted memory other than a handoff, write memory.content as concise labeled Result, Rationale, Scope, and Caveat / safe action lines.',
     'Omit Scope or Caveat / safe action when it does not apply, and never invent details to fill the template.',
     'Keep evidence compact and factual. Handoff memories keep the dedicated Objective, Completed, First pending action, Blockers, and Key files/checks format and require a stable workstream topic_key; close a finished handoff by saving its outcome under the same topic_key.',
     'Send exactly one branch: evidence (optionally + memory for a direct promoted save; structured evidence with metadata forbids memory and requires event_key plus the session pair), observation (requires event_key; session scope also requires the session pair and coverage), observation_review or observation_promotion (each requires event_key plus the session pair).',
     'Supply root_session_key and harness together or omit both.',
   ].join(' '),
-  mem_recall: 'Search promoted project memory with a non-empty query before expanding selected records. temporal="current" (default) searches current guidance; temporal="history" includes historical records. mode="compact" (default) returns bounded snippets; mode="context" adds selected memory content.',
+  mem_recall: 'Call at the start of non-trivial repository work before exploring, with task key terms, unprompted. Search promoted project memory with a non-empty query before expanding selected records. temporal="current" (default) searches current guidance; temporal="history" includes historical records. mode="compact" (default) returns bounded snippets; mode="context" adds selected memory content.',
   mem_context: 'Build bounded handoff-first continuity. project_key is always required. Supply both root_session_key and harness for session context, or omit both for project context.',
   mem_get: 'Expand one selected memory, summary, observation, or evidence id returned by a prior tool result. Set history:true to include predecessor lineage for memory, summary, or observation records; evidence ids return evidence without lineage.',
   mem_project: 'Inspect project views without mutation. action="list": no fields required. action="timeline": project_key required; optionally since, until, cursor, limit, and budget_chars. action="briefing", "summaries", or "observations": project_key required; optionally supply both root_session_key and harness to select that session\'s summaries/observations (briefing still includes project-wide memories). action="history": id required from a prior result. temporal filters summaries/observations, not timeline. list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.',

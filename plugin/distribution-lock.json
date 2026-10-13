@@ -8,7 +8,7 @@
     "plugin/hooks/hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
     "plugin/runners/public-runner.mjs": "ca08ff730a7b6295341b0ee3a1a663d524124aa1d56af0a2c3c3101bb7231114",
     "plugin/runtime.json": "7095505abd59b1380caa66dc5d57fbe7e7ea127da9793e1eb7cc37b446483614",
-    "plugin/skills/thoth-mem/SKILL.md": "07c9f8fc35822d05ad55e6478d7729fe9e5d22ff33b452f8694d1ae73e301175",
+    "plugin/skills/thoth-mem/SKILL.md": "07cf560ccd12a05eb2ead4d3cf4e08e556e7896de4d554bcc5b1dd09d352030a",
     "plugin/skills/thoth-mem/references/claude-code.md": "6db493777b74c38be8cb7281f51f61801e7a7c043a176a60fc23b18db4693b0e",
     "plugin/skills/thoth-mem/references/codex.md": "ed56c8e74dfd38febdc49c329bc9bc33abca58a8464c125773fc49a25cdf5676",
     "plugin/skills/thoth-mem/references/observation-review.md": "a1be9d79acb5dd990015313f53e6e1ffafbe0e260fafebc802ffddb526a9a248"

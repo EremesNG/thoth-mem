@@ -201,6 +201,11 @@ describe('first-product packed boundary', () => {
     const frontmatter = canonical.match(/^---\r?\n([\s\S]*?)\r?\n---/u)?.[1] ?? '';
     expect(frontmatter).toMatch(/description:[\s\S]*recall[\s\S]*save[\s\S]*handoff/iu);
     expect(canonical.length).toBeLessThan(7_244);
+    expect(frontmatter).toContain('At the start of any non-trivial repository task');
+    expect(canonical).toContain('Before exploring any non-trivial repository task, recall unprompted with the task\'s key terms.');
+    expect(canonical).toContain('Skip memory for trivial edits or conversational turns.');
+    expect(canonical).toContain('Save without waiting for an explicit “remember this” request, immediately when');
+    expect(canonical).toMatch(/pending action of a recovered handoff is done, close it:[\s\S]*under the same `topic_key`/u);
     for (const phrase of [
       'Before acting',
       'At a durable boundary',

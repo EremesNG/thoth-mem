@@ -90,6 +90,23 @@ flowchart LR
 
 ## Use the memory
 
+### Optional agent instructions
+
+Optionally paste this snippet into your `AGENTS.md` or `CLAUDE.md` for proactive memory use. thoth-mem never writes it or edits those files.
+
+```markdown
+## Memory (thoth-mem)
+- Before exploring or planning any non-trivial task, run `mem_recall` with the task's key terms. Don't wait to be asked.
+- When a decision is accepted, a root cause is verified, an approach fails, or a non-obvious convention is found, save it with `mem_save` right away.
+- If a recovered handoff's pending action is done, close it: save the outcome under the same `topic_key`.
+- Before ending meaningful unfinished work, save one handoff (`topic_key: handoff/<workstream>`).
+- Skip memory for trivial or purely conversational turns.
+```
+
+### Check adoption
+
+Run `thoth-mem adoption --project <exact-key-or-alias> [--json] [--data-dir <dir>]` against an existing database for a read-only baseline. It never creates or migrates a database. It reports open handoffs with ages in seconds, replaced handoffs (superseded by another handoff), and closed handoffs (superseded by a non-handoff under the same topic key). Session totals include zero-save sessions and per-session counts of distinct agent `explicit_save`/`handoff` evidence IDs; automatic captures and unattributed evidence are excluded. Recall usage is not measured.
+
 ### Retrieve progressively
 
 ```text

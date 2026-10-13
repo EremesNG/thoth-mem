@@ -1,10 +1,10 @@
 ---
 name: thoth-mem
 description: >-
-  Use thoth-mem during meaningful repository work to recall prior project context
-  before acting, save durable decisions, discoveries, failures, and conventions as
-  they become verified, and preserve a continuation handoff before work ends. Not
-  for generic SQLite administration or transient status.
+  At the start of any non-trivial repository task, recall prior project context
+  before exploring, save durable decisions and findings unprompted when verified,
+  and close finished handoffs or preserve a continuation handoff before work ends.
+  Skip trivial or conversational turns; not for generic SQLite administration.
 ---
 
 # thoth-mem memory recipe
@@ -16,7 +16,8 @@ Use only the six MCP tools: `mem_save`, `mem_recall`, `mem_context`,
 
 ### Before acting
 
-When prior project work may change the task, recall before making assumptions:
+Before exploring any non-trivial repository task, recall unprompted with the task's key terms.
+Skip memory for trivial edits or conversational turns.
 
 1. Start with `mem_recall` in compact mode and a small limit.
 2. Expand only strong candidates in context mode; use `mem_context` for a bounded
@@ -37,8 +38,8 @@ selected stable IDs with `mem_get` when their full content is necessary.
 
 ### At a durable boundary
 
-Save without waiting for an explicit “remember this” request when verified work
-will materially change how a future coding agent acts. Good boundaries include:
+Save without waiting for an explicit “remember this” request, immediately when
+verified work will materially change how a future coding agent acts. Good boundaries include:
 
 - an accepted product, architecture, or implementation decision;
 - a verified root cause, failed approach, or reusable safe next action;

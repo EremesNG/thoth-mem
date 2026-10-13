@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { MemoryKind, RecallItem, SummaryContextItem } from '../../src/memory-core/contracts.js';
+import { resolveLocalProjectIdentity } from '../../src/integration/project-identity.js';
+import { verifiedRecovery } from '../../src/integration/recovery.js';
+import type { LifecycleResult, MemoryKind, RecallItem, SummaryContextItem } from '../../src/memory-core/contracts.js';
 import {
   MAX_HOST_OUTPUT_CODE_POINTS,
   MIN_TRUNCATED_CONTENT_CODE_POINTS,
   RECOVERY_TAG_END,
   RECOVERY_TAG_START,
   renderContinuation,
+  type ContinuationRenderResult,
 } from '../../src/memory-core/continuation.js';
 
 const codePoints = (value: string): number => Array.from(value).length;
@@ -44,7 +47,173 @@ const summaryItem = (id: string): SummaryContextItem => ({
   ],
 });
 
+function verifiedRendered(rendered: ContinuationRenderResult): string | undefined {
+  const project = resolveLocalProjectIdentity(process.cwd());
+  const result: LifecycleResult = {
+    outcome: 'confirmed', duplicate: false, projectId: 'project-fixture', projectKey: project.key,
+    projectName: project.name, sessionId: 'session-fixture', evidenceId: null, event: null, summaryId: null,
+    capability: { hookExecuted: true, memoryConfirmed: true, contextDelivered: rendered.contextDelivered, modelConsumed: false },
+    recovery: {
+      context: rendered.context, items: rendered.selectedItems,
+      selectedSummaryIds: rendered.selectedSummaryIds, selectedMemoryIds: rendered.selectedMemoryIds,
+      selectedRecordIds: rendered.selectedRecordIds, sources: [], rendering: rendered.measurements,
+      budget: { requestedChars: 1000, returnedChars: 0, truncatedChars: 0, sourceChars: 0, evidenceChars: 0, fullChars: 0, compressionRatio: 0, tokenBasis: 'estimated_chars_div_4' },
+    },
+  };
+  return verifiedRecovery(result, 'root-verified', process.cwd());
+}
+
+const verifiedInput = (items: Array<RecallItem | SummaryContextItem>) => {
+  const project = resolveLocalProjectIdentity(process.cwd());
+  return { rootSessionKey: 'root-verified', projectKey: project.key, projectName: project.name, items };
+};
+
 describe('continuation renderer', () => {
+  it('inserts a bounded closure hint after the handoff marker without changing baseline bytes or allocation', () => {
+    const handoff = item('memory-close', 'handoff', 'Resume work', 'Run the focused checks.');
+    const input = { rootSessionKey: 'root-close', projectName: 'thoth-mem', items: [handoff] };
+    const baseline = renderContinuation(input);
+    handoff.topicKey = 'renderer-close';
+    const hinted = renderContinuation(input);
+    const hint = ' close: save outcome under topic_key=renderer-close';
+
+    expect(hinted.context).toBe(baseline.context.replace('(memory:memory-close)', `(memory:memory-close)${hint}`));
+    expect(codePoints(hinted.context) - codePoints(baseline.context)).toBe(codePoints(hint));
+    expect(codePoints(hint)).toBeLessThanOrEqual(100);
+    expect(hinted.selectedRecordIds).toEqual(baseline.selectedRecordIds);
+    expect(hinted.measurements.contentCodePoints).toBe(baseline.measurements.contentCodePoints);
+    expect(hinted.measurements.totalCodePoints).toBe(codePoints(hinted.context));
+    const identityPrefix = hinted.context.slice(0, hinted.context.indexOf('\n\n'));
+    expect(hinted.measurements.usefulContentRatio).toBe(hinted.measurements.contentCodePoints / (codePoints(hinted.context) - codePoints(identityPrefix)));
+  });
+  it.each([
+    ['long', 'x'.repeat(61)],
+    ['decomposed Unicode', 'cafe\u0301'],
+    ['line control', 'topic\nkey'],
+    ['separator', 'topic\u2028key'],
+    ['extra whitespace', 'topic  key'],
+    ['trimmed whitespace', ' topic'],
+    ['recovery delimiter', RECOVERY_TAG_END],
+    ['memory marker', '(memory:fake)'],
+    ['summary marker', '(summary:fake)'],
+    ['private tag', '<private>hidden</private>'],
+    ['private brackets', '[private]hidden[/private]'],
+    ['credential token', `sk-${'a'.repeat(20)}`],
+    ['credential assignment', 'password=abcdefgh'],
+    ['empty', ''],
+    ['missing', null],
+  ])('abstains without changing baseline output for a %s topic key', (_label, key) => {
+    const handoff = item('memory-ineligible', 'handoff', 'Resume work', 'Run the focused checks.');
+    const input = { rootSessionKey: 'root-ineligible', projectName: 'thoth-mem', items: [handoff] };
+    const baseline = renderContinuation(input);
+    handoff.topicKey = key;
+    const result = renderContinuation(input);
+    expect(result.context).toBe(baseline.context);
+    expect(result.measurements).toEqual(baseline.measurements);
+  });
+
+  it.each(['own memory', 'other memory', 'summary submission'])('abstains for a key containing selected %s evidence while baseline passes verifiedRecovery', (source) => {
+    const handoff = item('memory-cross', 'handoff', 'Resume work', 'Run the checks.');
+    const other = item('memory-other', 'decision', 'Decision', 'Keep the storage contract.');
+    const summary = summaryItem('summary-cross');
+    summary.claims = [{ kind: 'objective', content: 'Resume verified work.' }];
+    const input = verifiedInput([handoff, other, summary]);
+    const baseline = renderContinuation(input);
+    expect(baseline.selectedRecordIds).toHaveLength(3);
+    expect(verifiedRendered(baseline)).toBe(baseline.context);
+    const evidenceId = source === 'own memory' ? handoff.evidenceIds[0]! : source === 'other memory' ? other.evidenceIds[0]! : summary.submissionEvidenceId;
+    handoff.topicKey = `close-${evidenceId}`;
+    const result = renderContinuation(input);
+    expect(result.context).toBe(baseline.context);
+    expect(result.measurements).toEqual(baseline.measurements);
+    expect(verifiedRendered(result)).toBe(result.context);
+  });
+
+  it('adds exactly one hint to the first rendered handoff among multiple handoffs and passes verifiedRecovery', () => {
+    const first = item('memory-first', 'handoff', 'First', 'Run focused checks.');
+    const second = item('memory-second', 'handoff', 'Second', 'Continue follow-up work.');
+    const input = verifiedInput([first, second]);
+    const baseline = renderContinuation(input);
+    first.topicKey = 'first-topic';
+    second.topicKey = 'second-topic';
+    const result = renderContinuation(input);
+    const hint = ' close: save outcome under topic_key=first-topic';
+    expect(result.selectedMemoryIds).toEqual(['memory-first', 'memory-second']);
+    expect(result.context).toBe(baseline.context.replace('(memory:memory-first)', `(memory:memory-first)${hint}`));
+    expect(result.context.split(' close: save outcome under topic_key=')).toHaveLength(2);
+    expect(codePoints(result.context) - codePoints(baseline.context)).toBeLessThanOrEqual(100);
+    expect(verifiedRendered(result)).toBe(result.context);
+  });
+
+  it('does not fall through to a later handoff when the first rendered handoff key is ineligible', () => {
+    const first = item('memory-first', 'handoff', 'First', 'Run focused checks.');
+    const second = item('memory-second', 'handoff', 'Second', 'Continue follow-up work.');
+    const input = { rootSessionKey: 'root-first', projectName: 'thoth-mem', items: [first, second] };
+    const baseline = renderContinuation(input);
+    second.topicKey = 'eligible-second';
+    expect(renderContinuation(input).context).toBe(baseline.context);
+  });
+
+  it.each([60, 61])('counts an astral topic key of %i code points without truncating it', (length) => {
+    const handoff = item('memory-astral', 'handoff', 'Resume', 'Run focused checks.');
+    const input = { rootSessionKey: 'root-astral', projectName: 'thoth-mem', items: [handoff] };
+    const baseline = renderContinuation(input);
+    handoff.topicKey = '😀'.repeat(length);
+    const result = renderContinuation(input);
+    const hint = ` close: save outcome under topic_key=${handoff.topicKey}`;
+    expect(result.context).toBe(length === 60 ? baseline.context.replace('(memory:memory-astral)', `(memory:memory-astral)${hint}`) : baseline.context);
+    expect(codePoints(result.context) - codePoints(baseline.context)).toBeLessThanOrEqual(100);
+    expect(handoff.topicKey).toBe('😀'.repeat(length));
+  });
+
+  it('abstains with byte-identical output in a saturated handoff plus decision block', () => {
+    const handoff = item('memory-saturated', 'handoff', 'Resume', 'Useful handoff detail. '.repeat(200));
+    const decision = item('memory-decision', 'decision', 'Decision', 'Useful decision detail. '.repeat(200));
+    const input = { rootSessionKey: 'root-saturated', projectName: 'thoth-mem', items: [handoff, decision] };
+    const baseline = renderContinuation(input);
+    expect(baseline.selectedMemoryIds).toEqual(['memory-saturated', 'memory-decision']);
+    expect(codePoints(baseline.context)).toBe(1000);
+    handoff.topicKey = 'close-saturated';
+    const result = renderContinuation(input);
+    expect(result.context).toBe(baseline.context);
+    expect(result.measurements).toEqual(baseline.measurements);
+  });
+
+  it('uses the caller cap below 1000 and abstains when the hint has no slack', () => {
+    const handoff = item('memory-caller-cap', 'handoff', 'Resume', 'Useful handoff detail. '.repeat(200));
+    const input = { rootSessionKey: 'root-cap', projectName: 'thoth-mem', items: [handoff], maxCodePoints: 500 };
+    const baseline = renderContinuation(input);
+    expect(codePoints(baseline.context)).toBe(500);
+    expect(baseline.selectedMemoryIds).toEqual(['memory-caller-cap']);
+    handoff.topicKey = 'close-caller-cap';
+    const result = renderContinuation(input);
+    expect(result.context).toBe(baseline.context);
+    expect(result.measurements).toEqual(baseline.measurements);
+  });
+
+  it('accepts exactly fitting hint slack but abstains one code point below it', () => {
+    const handoff = item('memory-exact', 'handoff', 'Resume', 'Run checks.');
+    const input = { rootSessionKey: 'root-exact', projectName: 'thoth-mem', items: [handoff] };
+    const baseline = renderContinuation(input);
+    handoff.topicKey = 'exact';
+    const hint = ' close: save outcome under topic_key=exact';
+    const exactCap = codePoints(baseline.context) + codePoints(hint);
+    const result = renderContinuation({ ...input, maxCodePoints: exactCap });
+    expect(result.context).toBe(baseline.context.replace('(memory:memory-exact)', `(memory:memory-exact)${hint}`));
+    expect(result.measurements.totalCodePoints).toBe(exactCap);
+    expect(renderContinuation({ ...input, maxCodePoints: exactCap - 1 }).context).toBe(baseline.context);
+  });
+
+  it('leaves non-handoff-only output unchanged even when keys are eligible', () => {
+    const decision = item('memory-no-handoff', 'decision', 'Decision', 'Keep the storage contract.');
+    const input = { rootSessionKey: 'root-no-handoff', projectName: 'thoth-mem', items: [decision] };
+    const baseline = renderContinuation(input);
+    decision.topicKey = 'eligible-topic';
+    const result = renderContinuation(input);
+    expect(result.context).toBe(baseline.context);
+    expect(result.measurements).toEqual(baseline.measurements);
+  });
+
   it('preserves an individually fitting primary handoff before competing memories', () => {
     const primaryContent = `Objective: resume the certified plugin. Completed: native hook delivery is verified. ${'Relevant handoff detail. '.repeat(14)}First pending action: HIDDEN-EXACT-OPENCODE-ACTION. Blockers: none. Key files/checks: continuation renderer and real-host smoke.`;
     const result = renderContinuation({

@@ -344,6 +344,47 @@ export class MemoryService {
     });
   }
 
+  adoption(selector: string, asOf = new Date()) {
+    const project = resolveProjectIdentityKey(this.database, selector);
+    if (!project) throw new Error('Project selector did not match a project');
+    const handoffs = this.database.prepare(`
+      SELECT h.id,h.topic_key,h.created_at,h.status,
+        successor.kind AS successor_kind
+      FROM memories h LEFT JOIN memories successor
+        ON successor.supersedes_id=h.id AND successor.project_id=h.project_id
+        AND (successor.kind='handoff' OR successor.topic_key=h.topic_key)
+      WHERE h.project_id=? AND h.kind='handoff'
+      ORDER BY h.created_at,h.id
+    `).all(project.id) as Array<{ id: string; topic_key: string | null; created_at: string; status: string; successor_kind: string | null }>;
+    const openAges = handoffs.filter((row) => row.status === 'current').map((row) => ({
+      memoryId: row.id, topicKey: row.topic_key, createdAt: row.created_at,
+      ageSeconds: Math.max(0, Math.floor((asOf.getTime() - Date.parse(row.created_at)) / 1000)),
+    }));
+    const perSession = this.database.prepare(`
+      SELECT s.id AS sessionId,s.root_session_key AS rootSessionKey,s.harness,
+        count(DISTINCT e.id) AS saves
+      FROM sessions s LEFT JOIN evidence e
+        ON e.session_id=s.id AND e.project_id=s.project_id AND e.kind IN ('explicit_save','handoff')
+        AND EXISTS (SELECT 1 FROM session_events se WHERE se.evidence_id=e.id AND se.session_id=s.id AND se.actor='agent')
+      WHERE s.project_id=? GROUP BY s.id ORDER BY s.started_at,s.id
+    `).all(project.id) as Array<{ sessionId: string; rootSessionKey: string; harness: string; saves: number }>;
+    return {
+      project, asOf: asOf.toISOString(), recallUsage: 'not measured' as const,
+      handoffs: {
+        open: openAges.length,
+        replaced: handoffs.filter((row) => row.status === 'superseded' && row.successor_kind === 'handoff').length,
+        closed: handoffs.filter((row) => row.status === 'superseded' && row.successor_kind !== null && row.successor_kind !== 'handoff').length,
+        openAges,
+      },
+      sessions: {
+        count: perSession.length,
+        zeroSaves: perSession.filter((row) => row.saves === 0).length,
+        totalSaves: perSession.reduce((total, row) => total + row.saves, 0),
+        perSession,
+      },
+    };
+  }
+
   renameProject(input: ProjectRenameInput): { projectId: string; key: string; oldName: string; newName: string; changed: boolean } {
     const { selector, name } = validateProjectRenameInput(input);
     return this.database.transaction(() => {

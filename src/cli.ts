@@ -11,9 +11,29 @@ import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
 import { setupPi } from './setup/pi.js';
 
-const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>]\n    --force-version: Codex version override; Pi uses capability checks without a version allowlist.\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>]\n    --force-version: Codex version override; Pi uses capability checks without a version allowlist.\n  adoption --project <exact-key-or-alias> [--json] [--data-dir <dir>]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
+
+function adoptionArguments(args: string[], commandIndex: number): { project: string; dataDir?: string; json: boolean } | null {
+  const parsed: { project?: string; dataDir?: string; json: boolean } = { json: false };
+  const options = new Map([['--project', 'project' as const], ['--data-dir', 'dataDir' as const]]);
+  for (let index = commandIndex + 1; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === '--json') {
+      if (parsed.json) return null;
+      parsed.json = true;
+      continue;
+    }
+    const equals = token.indexOf('=');
+    const property = options.get(equals >= 0 ? token.slice(0, equals) : token);
+    if (!property || parsed[property] !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue || (equals < 0 && optionValue.startsWith('--'))) return null;
+    parsed[property] = optionValue;
+  }
+  return parsed.project ? { project: parsed.project, json: parsed.json, ...(parsed.dataDir ? { dataDir: parsed.dataDir } : {}) } : null;
+}
 
 function projectRenameArguments(args: string[], commandIndex: number): { selector: string; name: string; dataDir?: string } | null {
   const parsed: Partial<{ selector: string; name: string; dataDir: string }> = {};
@@ -157,6 +177,27 @@ function createOrVerifyImportPlanBinding(path: string, binding: ImportPlanBindin
 export async function runCli(args: string[]): Promise<number> {
   const command = args.find((arg) => !arg.startsWith('-'));
   if (!command || command === 'help' || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return 0; }
+  if (command === 'adoption') {
+    const parsed = adoptionArguments(args, args.indexOf(command));
+    if (!parsed) { process.stderr.write('adoption requires exact --project and accepts only --json and --data-dir with no duplicate options\n'); return 2; }
+    try {
+      const databasePath = join(loadRuntimeConfig({ explicitDataDir: parsed.dataDir }).dataDir, 'memory.sqlite');
+      if (!existsSync(databasePath)) throw new Error('Adoption database does not exist; run against an existing memory.sqlite');
+      const service = new MemoryService({ databasePath, readonly: true });
+      try {
+        const data = service.adoption(parsed.project);
+        if (parsed.json) process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.adoption.v1', data }, null, 2)}\n`);
+        else {
+          process.stdout.write(`Adoption: ${data.project.key}\nHandoffs: open=${data.handoffs.open}; replaced=${data.handoffs.replaced}; closed=${data.handoffs.closed}\n`);
+          for (const handoff of data.handoffs.openAges) process.stdout.write(`- ${handoff.memoryId}: age=${handoff.ageSeconds}s; topic_key=${handoff.topicKey ?? '(none)'}\n`);
+          process.stdout.write(`Sessions: count=${data.sessions.count}; zero saves=${data.sessions.zeroSaves}; saves=${data.sessions.totalSaves}\n`);
+          for (const session of data.sessions.perSession) process.stdout.write(`- ${session.harness}/${session.rootSessionKey}: saves=${session.saves}\n`);
+          process.stdout.write('Recall usage is not measured.\n');
+        }
+      } finally { service.close(); }
+      return 0;
+    } catch (error) { process.stderr.write(`Adoption failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }
+  }
   if (command === 'lifecycle') {
     try {
       const event = JSON.parse(readFileSync(0, 'utf8')) as AdapterEvent; const nativeHarness = value(args, '--harness') as 'opencode' | 'codex' | 'claude' | undefined;
@@ -225,6 +266,7 @@ export async function runCli(args: string[]): Promise<number> {
         if (result.receiptPath) process.stdout.write(`Receipt: ${result.receiptPath}\n`);
         if ('warnings' in result) for (const warning of result.warnings) process.stdout.write(`Warning: ${warning}\n`);
         if ('diagnostics' in result) for (const diagnostic of result.diagnostics) process.stdout.write(`Diagnostic: ${diagnostic}\n`);
+        process.stdout.write('Optional AGENTS.md/CLAUDE.md instructions: README.md#optional-agent-instructions\n');
       }
       return 'strategy' in result && (result.status === 'unsupported' || result.status === 'requires-user-action') ? 1 : 0;
     } catch (error) { process.stderr.write(`Setup failed: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}\n`); return 1; }

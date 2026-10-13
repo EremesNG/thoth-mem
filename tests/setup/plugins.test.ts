@@ -12,6 +12,22 @@ import { CANONICAL_PLUGIN_INVENTORY } from '../../src/integration/package-invent
 import { runCli } from '../../src/cli.js';
 
 describe('first-product native setup boundary', () => {
+  it('points human setup to the optional README instructions once and leaves JSON output unchanged', async () => {
+    const result = { host: 'pi', status: 'planned', changed: false, actions: [], receiptPath: null, warnings: [] };
+    setupPiMock.mockReturnValue(result);
+    let stdout = '';
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((value) => { stdout += String(value); return true; });
+    try {
+      expect(await runCli(['setup', 'pi', '--plan'])).toBe(0);
+      const pointer = 'Optional AGENTS.md/CLAUDE.md instructions: README.md#optional-agent-instructions';
+      expect(stdout.split('\n').filter((line) => line === pointer)).toHaveLength(1);
+      stdout = '';
+      expect(await runCli(['setup', 'pi', '--plan', '--json'])).toBe(0);
+      expect(stdout).toBe(`${JSON.stringify(result, null, 2)}\n`);
+      expect(stdout).not.toContain(pointer);
+    } finally { stdoutSpy.mockRestore(); setupPiMock.mockClear(); }
+  });
+
   it('advertises Pi setup and rejects project scope before manager access', async () => {
     let stdout = ''; let stderr = '';
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((value) => { stdout += String(value); return true; });

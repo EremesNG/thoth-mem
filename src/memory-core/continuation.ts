@@ -1,4 +1,5 @@
 import { MEMORY_KIND_VALUES, SESSION_SUMMARY_KIND_VALUES, type ContextItem, type RecallItem, type SummaryContextItem } from './contracts.js';
+import { sanitizePrivateContent } from './privacy.js';
 
 export const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
 export const RECOVERY_TAG_END = '<!-- thoth-mem:recovery:end -->';
@@ -225,8 +226,24 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
     contentCodePoints += content.length;
     return `${candidate.prefix}${content.join('')}${candidate.suffix}`;
   });
-  const context = `${contextualPrefix}\n${lines.join('\n')}${contextualSuffix}`;
+  let context = `${contextualPrefix}\n${lines.join('\n')}${contextualSuffix}`;
   const selectedItems = selected.map((candidate) => candidate.item);
+  const handoffIndex = selectedItems.findIndex((item) => !isSummaryItem(item) && item.kind === 'handoff');
+  const handoff = selectedItems[handoffIndex];
+  const topicKey = handoff && !isSummaryItem(handoff) ? handoff.topicKey : null;
+  // Use only post-render slack: closure guidance must never affect selection or allocation.
+  if (topicKey
+    && codePoints(topicKey).length <= 60
+    && safeDisplay(topicKey, []) === topicKey
+    && sanitizePrivateContent(topicKey) === topicKey
+    && !selectedItems.some((item) => (isSummaryItem(item) ? [item.submissionEvidenceId] : item.evidenceIds)
+      .some((id) => topicKey.includes(id)))) {
+    const hint = ` close: save outcome under topic_key=${topicKey}`;
+    if (codePoints(context).length + codePoints(hint).length <= maxCodePoints) {
+      lines[handoffIndex] += hint;
+      context = `${contextualPrefix}\n${lines.join('\n')}${contextualSuffix}`;
+    }
+  }
   return {
     context,
     selectedItems,
