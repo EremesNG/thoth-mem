@@ -156,7 +156,7 @@ function verifiedIdentity(identity, data, payload) {
 
 function identityOnlyContext(identity) {
   if (!identity) return undefined;
-  const context = `${RECOVERY_TAG_START}\n${identity}\n${RECOVERY_TAG_END}`;
+  const context = `${RECOVERY_TAG_START}\n${identity}\nMemory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.\n${RECOVERY_TAG_END}`;
   return Array.from(context).length <= MAX_HOST_OUTPUT_CODE_POINTS ? context : undefined;
 }
 

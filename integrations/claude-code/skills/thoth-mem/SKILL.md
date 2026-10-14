@@ -9,8 +9,8 @@ description: >-
 
 # thoth-mem memory recipe
 
-Use only the six MCP tools: `mem_save`, `mem_recall`, `mem_context`,
-`mem_get`, `mem_project`, and `mem_session`.
+Use only the six memory tools — MCP tools on most hosts, native tools in Pi:
+`mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
 
 ## Default cadence
 

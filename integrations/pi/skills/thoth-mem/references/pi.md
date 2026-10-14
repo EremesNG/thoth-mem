@@ -19,3 +19,9 @@ must not infer root authority or community delegation semantics from extension
 metadata, prompts, tool output, package sources, or third-party agent plugins.
 Ambiguous, incomplete, or child-key-mismatched identity receives no root-only
 capture or recovery authority.
+
+A delegated child may use the `project_key` passed by the root, copied verbatim,
+for project-scoped reads: `mem_recall`, `mem_context` in project mode,
+`mem_project`, and `mem_get`. Its saves are project-only: omit `root_session_key` and `harness`,
+report them as unattributed and never claim session continuity.
+Children never call `mem_session`, review or promote observations, or use the root session key.

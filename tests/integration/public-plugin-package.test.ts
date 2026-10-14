@@ -93,7 +93,7 @@ describe('public plugin release inventory', () => {
     ['manifest', 'plugin/.codex-plugin/plugin.json', '"./.mcp.json"', '"./stale.mcp.json"'],
     ['MCP descriptor', 'plugin/.mcp.json', './runners/public-runner.mjs', './runners/stale-runner.mjs'],
     ['hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
-    ['Skill', 'plugin/skills/thoth-mem/SKILL.md', 'six MCP tools', 'seven legacy MCP tools'],
+    ['Skill', 'plugin/skills/thoth-mem/SKILL.md', 'six memory tools', 'seven legacy memory tools'],
     ['launcher', 'plugin/runners/public-runner.mjs', "['lifecycle', '--harness'", "['lifecycle-stale', '--harness'"],
   ])('fails release verification for a stale %s asset', (_category, relativePath, current, stale) => {
     const root = copyPublicReleaseFixture();

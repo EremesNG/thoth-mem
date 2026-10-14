@@ -5,6 +5,8 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { identityOnlyRecovery } from '../../src/integration/recovery.js';
+
 const runner = join(process.cwd(), 'plugin', 'runners', 'public-runner.mjs');
 const packageVersion = (JSON.parse(
   readFileSync(join(process.cwd(), 'package.json'), 'utf8'),
@@ -353,7 +355,7 @@ describe('public plugin runner', () => {
         cwd: tmpdir(), input: payload, encoding: 'utf8', env: { ...baseEnvironment, RECOVERY_CONTENT: 'x'.repeat(2_000) }, windowsHide: true,
       });
       const boundedContext = JSON.parse(bounded.stdout).hookSpecificOutput.additionalContext as string;
-      expect(boundedContext).toBe(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=root; project_key=${project.key}; project_name=fixture\n<!-- thoth-mem:recovery:end -->`);
+      expect(boundedContext).toBe(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=root; project_key=${project.key}; project_name=fixture\nMemory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.\n<!-- thoth-mem:recovery:end -->`);
       expect(boundedContext).not.toContain('x'.repeat(100));
 
       const rejected = spawnSync(process.execPath, [runner, '--harness', 'codex'], {
@@ -380,6 +382,22 @@ describe('public plugin runner', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it.each(['codex', 'claude'] as const)('uses the same unavailable marker as native recovery for %s', (harness) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth fallback parity '));
+    try {
+      const workspace = join(root, 'fixture');
+      mkdirSync(workspace);
+      const shim = createNpxShim(root);
+      const result = spawnSync(process.execPath, [runner, '--harness', harness], {
+        cwd: tmpdir(), encoding: 'utf8', windowsHide: true,
+        input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'root', cwd: workspace, source: 'startup' }),
+        env: { ...process.env, XDG_CONFIG_HOME: join(root, 'config'), THOTH_MEM_PUBLIC_NPX_COMMAND: shim.command, CAPTURE_PATH: shim.capture, RECOVERY_CONTENT: 'x'.repeat(2_000) },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toBe(identityOnlyRecovery('root', workspace));
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('delivers the Claude pre-compaction checkpoint on SessionStart compact with verified identity first', () => {
@@ -413,7 +431,7 @@ describe('public plugin runner', () => {
       });
       expect(compactStart.status, compactStart.stderr).toBe(0);
       const context = JSON.parse(compactStart.stdout).hookSpecificOutput?.additionalContext as string;
-      expect(context).toBe(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-compact-root; project_key=${project.key}; project_name=fixture\n<!-- thoth-mem:recovery:end -->`);
+      expect(context).toBe(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-compact-root; project_key=${project.key}; project_name=fixture\nNo memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.\n<!-- thoth-mem:recovery:end -->`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -458,7 +476,7 @@ describe('public plugin runner', () => {
       expect(JSON.parse(valid.stdout)).toEqual({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
-          additionalContext: `<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=provider-root; project_key=${project.key}; project_name=fixture\n<!-- thoth-mem:recovery:end -->`,
+          additionalContext: `<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=provider-root; project_key=${project.key}; project_name=fixture\nNo memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.\n<!-- thoth-mem:recovery:end -->`,
         },
       });
     expect(existsSync(join(dataDir, 'memory.sqlite'))).toBe(true);

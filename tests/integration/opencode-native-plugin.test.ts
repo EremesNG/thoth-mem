@@ -575,7 +575,7 @@ process.stdout.write(JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: {
       const output = { system: ['stable-system-prefix'] };
       await hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, output);
 
-      expect(output.system.at(-1)).toBe(`${RECOVERY_TAG_START}\nthoth-mem verified identity: root_session_id=root-session; project_key=${projectKey}; project_name=thoth-mem\n${RECOVERY_TAG_END}`);
+      expect(output.system.at(-1)).toBe(`${RECOVERY_TAG_START}\nthoth-mem verified identity: root_session_id=root-session; project_key=${projectKey}; project_name=thoth-mem\nMemory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.\n${RECOVERY_TAG_END}`);
       expect(output.system.at(-1)).not.toContain('RENDERED-CANDIDATE-WOULD-BE-A-BUG');
     } finally {
       rmSync(root, { recursive: true, force: true });

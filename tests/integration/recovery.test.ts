@@ -11,12 +11,12 @@ import { identityOnlyRecovery, verifiedRecovery } from '../../src/integration/re
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function resultFixture(): { result: LifecycleResult; cwd: string } {
+function resultFixture(withMemory = true): { result: LifecycleResult; cwd: string } {
   const cwd = mkdtempSync(join(tmpdir(), 'thoth-recovery-')); roots.push(cwd);
   const service = new MemoryService({ databasePath: ':memory:' });
   try {
     const project = { key: `path:${cwd.replaceAll('\\', '/')}`, name: cwd.split(/[\\/]/u).at(-1)! };
-    service.save({ project, evidence: { kind: 'explicit_save', content: 'support' }, memory: { kind: 'decision', title: 'Decision', content: 'Use the verified path.' } });
+    if (withMemory) service.save({ project, evidence: { kind: 'explicit_save', content: 'support' }, memory: { kind: 'decision', title: 'Decision', content: 'Use the verified path.' } });
     service.lifecycle({ operation: 'enroll', harness: 'pi', project, rootSessionKey: 'session-1', eventKey: 'enroll' });
     return { result: service.lifecycle({ operation: 'recover', harness: 'pi', project, rootSessionKey: 'session-1', eventKey: 'recover' }), cwd };
   } finally { service.close(); }
@@ -29,6 +29,15 @@ describe('shared native recovery validation', () => {
     const identity = identityOnlyRecovery('session-1', cwd)!;
     expect(identity).toContain('root_session_id=session-1');
     expect(identity).not.toContain('(memory:');
+    expect(identity.split('\n')[2]).toBe('Memory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.');
+    expect(verifiedRecovery(undefined, 'session-1', cwd, 'pi')).toBe(identity);
+  });
+
+  it('accepts valid empty recovery without misreporting it as unavailable', () => {
+    const { result, cwd } = resultFixture(false);
+    expect(result.recovery!.context.split('\n')[2]).toBe('No memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.');
+    expect(verifiedRecovery(result, 'session-1', cwd, 'pi')).toBe(result.recovery!.context);
+    expect(verifiedRecovery(result, 'session-1', cwd, 'pi')).not.toBe(identityOnlyRecovery('session-1', cwd));
   });
 
   it('rejects identity, taxonomy, delimiter, source leakage, and size mismatches to identity only', () => {

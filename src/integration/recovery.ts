@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 
 import { MEMORY_KIND_VALUES, SESSION_SUMMARY_KIND_VALUES, type ContextItem, type Harness, type LifecycleResult, type SummaryContextItem } from '../memory-core/contracts.js';
-import { MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START, renderContinuation } from '../memory-core/continuation.js';
+import { EMPTY_RECOVERY_NOTICE, MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START, UNAVAILABLE_RECOVERY_NOTICE, renderContinuation } from '../memory-core/continuation.js';
 import { resolveLocalProjectIdentity } from './project-identity.js';
 
 const MAX_IDENTITY_CODE_POINTS = 128;
@@ -33,7 +33,8 @@ export function identityOnlyRecovery(rootSessionKey: string, directory: string):
   if (!boundedIdentifier(rootSessionKey)) return undefined;
   try {
     const project = resolveLocalProjectIdentity(directory);
-    return renderContinuation({ rootSessionKey, projectKey: project.key, projectName: project.name || basename(directory), items: [] }).context;
+    return renderContinuation({ rootSessionKey, projectKey: project.key, projectName: project.name || basename(directory), items: [] }).context
+      .replace(`\n${EMPTY_RECOVERY_NOTICE}\n`, `\n${UNAVAILABLE_RECOVERY_NOTICE}\n`);
   } catch { return undefined; }
 }
 

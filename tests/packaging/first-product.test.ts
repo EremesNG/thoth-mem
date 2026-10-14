@@ -141,6 +141,10 @@ describe('first-product packed boundary', () => {
     for (const phrase of ['harness=pi', 'root_session_id', 'session_start', 'session_before_compact', 'session_compact', 'session_shutdown']) expect(reference).toContain(phrase);
     expect(reference).toMatch(/privacy[\s\S]*before[\s\S]*identity/iu);
     expect(reference).toMatch(/must not infer[\s\S]*community[\s\S]*delegat/iu);
+    expect(reference).toContain('project_key` passed by the root, copied verbatim');
+    expect(reference).toContain('omit `root_session_key` and `harness`');
+    expect(reference).toContain('report them as unattributed and never claim session continuity');
+    expect(reference).toContain('Children never call `mem_session`');
   });
 
   it('routes canonical and Pi Skills to the Pi identity reference', () => {
@@ -154,6 +158,7 @@ describe('first-product packed boundary', () => {
     const skills = skillPaths.map((path) => readFileSync(path, 'utf8'));
     expect(new Set(skills)).toHaveLength(1);
     const canonical = skills[0]!;
+    expect(canonical).toContain('Use only the six memory tools — MCP tools on most hosts, native tools in Pi:');
     for (const host of ['opencode', 'codex', 'claude-code', 'pi']) expect(canonical).toContain(`references/${host}.md`);
     for (const [index, skill] of skills.entries()) expect(skill, skillPaths[index]).toMatch(/For Pi, select\s+`references\/pi\.md`\s+for identity and lifecycle operations\./u);
   });

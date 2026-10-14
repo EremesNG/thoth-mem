@@ -226,6 +226,7 @@ describe('host-neutral lifecycle', () => {
       expect(recovered.recovery).toMatchObject({ items: [], selectedMemoryIds: [], sources: [] });
       expect(recovered.recovery?.context.startsWith(`${RECOVERY_TAG_START}\nthoth-mem verified identity:`)).toBe(true);
       expect(recovered.recovery?.context.endsWith(`\n${RECOVERY_TAG_END}`)).toBe(true);
+      expect(recovered.recovery?.context.split('\n')[2]).toBe('No memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.');
       expect(Array.from(recovered.recovery?.context ?? '')).toHaveLength(recovered.recovery?.rendering.totalCodePoints ?? -1);
       expect(recovered.capability).toMatchObject({ contextDelivered: false, modelConsumed: false });
     } finally { service.close(); }
@@ -242,6 +243,7 @@ describe('host-neutral lifecycle', () => {
       const recovered = service.lifecycle({ operation: 'recover', harness: 'codex', project: { key: 'repo:degraded-recovery', name: 'degraded-recovery' }, rootSessionKey: 'root-degraded', eventKey: 'recover-degraded', identityConfidence: 'degraded' });
       expect(recovered).toMatchObject({ outcome: 'degraded', recovery: { items: [], selectedMemoryIds: [], sources: [] }, capability: { memoryConfirmed: false, contextDelivered: false, modelConsumed: false } });
       expect(recovered.recovery?.context).not.toContain(saved.memory!.id);
+      expect(recovered.recovery?.context.split('\n')[2]).toBe('No memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.');
     } finally { service.close(); }
   });
 

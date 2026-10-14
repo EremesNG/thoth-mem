@@ -25,7 +25,7 @@ describe('Pi native extension', () => {
     expect(handlers.size).toBe(8);
   });
 
-  it('exposes shared proactive guidelines only on recall within the MCP instruction budget', () => {
+  it('partitions shared proactive guidelines between recall and save within the MCP instruction budget', () => {
     const tools: Array<Record<string, unknown>> = [];
     const client: PiMcpClient = { callTool: vi.fn(async () => ({ content: [] })), close: vi.fn(async () => undefined) };
     createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: () => undefined });
@@ -34,15 +34,18 @@ describe('Pi native extension', () => {
     expect(guidelines).toEqual([
       'At the start of non-trivial repository work, recall with task key terms before exploring, unprompted.',
       'Expand only selected records. Skip memory for trivial or conversational turns.',
+    ]);
+    const saveGuidelines = tools.find((tool) => tool.name === 'mem_save')!.promptGuidelines as string[];
+    expect(saveGuidelines).toEqual([
       'Save verified decisions, root causes, failed approaches, and non-obvious conventions immediately, unprompted.',
       'When a recovered handoff\'s pending action is done, save its outcome under the same topic_key.',
       'Save one handoff before meaningful work ends if continuation helps.',
       'Use verified identity for attribution, exclude private, transient, canonical, user-forbidden, and duplicate content, and reserve mem_session for actual root lifecycle events.',
     ]);
-    expect(guidelines).toEqual(MEMORY_INSTRUCTION_SENTENCES.slice(1));
-    expect(guidelines.join(' ').length).toBeLessThanOrEqual(SERVER_INSTRUCTIONS.length);
+    expect([...guidelines, ...saveGuidelines]).toEqual(MEMORY_INSTRUCTION_SENTENCES.slice(1));
+    expect([...guidelines, ...saveGuidelines].join(' ').length).toBeLessThanOrEqual(SERVER_INSTRUCTIONS.length);
     expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(699);
-    for (const tool of tools.filter((tool) => tool.name !== 'mem_recall')) {
+    for (const tool of tools.filter((tool) => tool.name !== 'mem_recall' && tool.name !== 'mem_save')) {
       expect(tool).not.toHaveProperty('promptGuidelines');
     }
   });
@@ -80,6 +83,7 @@ describe('Pi native extension', () => {
     const sections: Record<string, string> = { other: 'keep', thoth_mem_recovery: 'old' };
     expect(await handlers.get('before_agent_start')!({ prompt: 'root prompt', systemPromptOptions: { sections } }, context)).toBeUndefined();
     expect(sections.other).toBe('keep');
+    expect(sections.thoth_mem_recovery!.split('\n')[2]).toBe('Memory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.');
     expect(sections.thoth_mem_recovery).toMatch(/^<!-- thoth-mem:recovery:start -->\n.*root_session_id=session-1;/u);
     expect(handlers.has('context')).toBe(false);
     await handlers.get('session_compact_failed')!({ reason: 'manual' }, context);

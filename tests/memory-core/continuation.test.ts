@@ -298,6 +298,7 @@ describe('continuation renderer', () => {
 
   it('returns truthful identity-only output when no candidate useful-content floor fits', () => {
     const identityOnly = renderContinuation({ rootSessionKey: 'root-small', projectName: 'project-small', items: [] });
+    expect(identityOnly.context.split('\n')[2]).toBe('No memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.');
     const constrained = renderContinuation({
       rootSessionKey: 'root-small',
       projectName: 'project-small',

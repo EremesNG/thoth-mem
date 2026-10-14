@@ -5,6 +5,8 @@ export const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
 export const RECOVERY_TAG_END = '<!-- thoth-mem:recovery:end -->';
 export const MAX_HOST_OUTPUT_CODE_POINTS = 1_000;
 export const MIN_TRUNCATED_CONTENT_CODE_POINTS = 120;
+export const EMPTY_RECOVERY_NOTICE = 'No memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.';
+export const UNAVAILABLE_RECOVERY_NOTICE = 'Memory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.';
 
 const MAX_IDENTITY_CODE_POINTS = 128;
 const MAX_CONTINUATION_ITEMS = 3;
@@ -168,7 +170,7 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
   const maxCodePoints = Math.max(1, Math.min(input.maxCodePoints ?? MAX_HOST_OUTPUT_CODE_POINTS, MAX_HOST_OUTPUT_CODE_POINTS));
   const identity = safeIdentity(input.rootSessionKey, input.projectKey ?? 'p', input.projectName);
   const identityPrefix = `${RECOVERY_TAG_START}\n${identity}`;
-  const identityOnly = `${identityPrefix}\n${RECOVERY_TAG_END}`;
+  const identityOnly = `${identityPrefix}\n${EMPTY_RECOVERY_NOTICE}\n${RECOVERY_TAG_END}`;
   if (codePoints(identityOnly).length > maxCodePoints) throw new Error('Continuation identity exceeds the host output cap');
 
   const contextualPrefix = `${identityPrefix}\n\n${TRUST_BOUNDARY}`;
