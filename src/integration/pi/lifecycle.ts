@@ -70,8 +70,9 @@ export function piPreCompactInput(state: PiLifecycleState, event: { firstKeptEnt
   return base(state, 'checkpoint_pre_compact', eventKey('pre-compact', [state.rootSessionKey, event.firstKeptEntryId ?? '', event.reason, event.isRetry === true]));
 }
 
-export function piPostCompactInput(state: PiLifecycleState, event: { compactionEntryId?: string; reason: string; isRetry?: boolean }): LifecycleInput {
-  return base(state, 'guide_post_compact', eventKey('post-compact', [state.rootSessionKey, event.compactionEntryId ?? '', event.reason, event.isRetry === true]));
+export function piPostCompactInput(state: PiLifecycleState, event: { compactionEntryId?: string; summary?: string; reason: string; isRetry?: boolean }): LifecycleInput {
+  const content = event.summary?.trim() ? sanitizePrivateContent(event.summary.trim()) : undefined;
+  return { ...base(state, 'guide_post_compact', eventKey('post-compact', [state.rootSessionKey, event.compactionEntryId ?? '', event.reason, event.isRetry === true])), ...(content ? { content } : {}) };
 }
 
 export function piShutdownInput(state: PiLifecycleState, event: { reason: string; sessionFile?: string }): LifecycleInput | undefined {

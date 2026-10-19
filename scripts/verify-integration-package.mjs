@@ -31,9 +31,12 @@ const versioned = [
   ['plugin/.claude-plugin/plugin.json', JSON.parse(readFileSync(resolve(root, 'plugin/.claude-plugin/plugin.json'), 'utf8')).version],
 ];
 for (const [path, version] of versioned) if (version !== packageManifest.version) errors.push(`stale-version:${path}:${version ?? 'missing'}`);
-const publicMcp = JSON.parse(readFileSync(resolve(root, 'plugin/.mcp.json'), 'utf8')).mcpServers?.['thoth-mem'];
-if (publicMcp?.cwd !== '.' || publicMcp?.command !== 'node' || JSON.stringify(publicMcp?.args) !== JSON.stringify(['./runners/public-runner.mjs', '--mcp'])) {
-  errors.push('stale-runtime:plugin/.mcp.json');
+for (const [path, host] of [['plugin/.mcp.json', 'claude'], ['plugin/codex.mcp.json', 'codex']]) {
+  if (!existsSync(resolve(root, path))) { errors.push(`stale-runtime:${path}`); continue; }
+  const mcp = JSON.parse(readFileSync(resolve(root, path), 'utf8')).mcpServers?.['thoth-mem'];
+  if (mcp?.cwd !== '.' || mcp?.command !== 'node' || JSON.stringify(mcp?.args) !== JSON.stringify(['./runners/public-runner.mjs', '--mcp']) || mcp?.env?.THOTH_MEM_NATIVE_HOST !== host) {
+    errors.push(`stale-runtime:${path}`);
+  }
 }
 const lock = JSON.parse(readFileSync(resolve(root, 'plugin/distribution-lock.json'), 'utf8'));
 const expectedLockedPaths = [

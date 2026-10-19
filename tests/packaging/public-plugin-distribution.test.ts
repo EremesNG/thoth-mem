@@ -60,7 +60,7 @@ describe('public plugin distribution', () => {
     expect(manifest).toMatchObject({
       name: 'thoth-mem',
       version: packageVersion,
-      mcpServers: './.mcp.json',
+      mcpServers: './codex.mcp.json',
       skills: './skills/',
       interface: { displayName: 'thoth-mem Persistent Memory', category: 'Productivity' },
     });
@@ -89,6 +89,7 @@ describe('public plugin distribution', () => {
       cwd: '.',
       command: 'node',
       args: ['./runners/public-runner.mjs', '--mcp'],
+      env: { THOTH_MEM_NATIVE_HOST: 'codex' },
     });
   });
 
@@ -117,7 +118,7 @@ describe('public plugin distribution', () => {
     }
 
     const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>> }>(resolve(pluginRoot, manifest.hooks));
-    expect(Object.keys(hooks.hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PreCompact', 'SessionEnd']);
+    expect(Object.keys(hooks.hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'SessionEnd']);
     for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
       expect(hook.type).toBe('command');
       expect(hook.command).toContain('${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs');
@@ -128,6 +129,7 @@ describe('public plugin distribution', () => {
       cwd: '.',
       command: 'node',
       args: ['./runners/public-runner.mjs', '--mcp'],
+      env: { THOTH_MEM_NATIVE_HOST: 'claude' },
     });
   });
 });

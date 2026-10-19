@@ -33,7 +33,7 @@
   },
   "environment": {
     "runtime": "node",
-    "runtime_version": "24.11.1",
+    "runtime_version": "24.21.0",
     "platform": "win32",
     "arch": "x64"
   },
@@ -175,12 +175,12 @@
       "actionable_fields_expected": 5,
       "control_actionable_fields_recovered": 5,
       "candidate_actionable_fields_recovered": 5,
-      "control_injected_code_points": 2122,
-      "candidate_injected_code_points": 2035,
+      "control_injected_code_points": 2302,
+      "candidate_injected_code_points": 2032,
       "control_useful_content_code_points": 869,
       "candidate_useful_content_code_points": 869,
-      "baseline_useful_content_ratio": 0.4095193213949105,
-      "summary_useful_content_ratio": 0.42702702702702705,
+      "baseline_useful_content_ratio": 0.37749782797567333,
+      "summary_useful_content_ratio": 0.42765748031496065,
       "useful_content_non_inferiority": 1,
       "control_selected_memory_ids": [
         "f92eaa64-8087-588a-a4c8-6e7fe45a80d0",
@@ -197,12 +197,12 @@
       "network_calls": 0
     },
     "resources": {
-      "latency_p50_ms": 0.5992999999999711,
-      "latency_p95_ms": 2.679299999999955,
-      "ingestion_ms": 2.5617000000000303,
-      "startup_ms": 294.1658,
-      "peak_memory_bytes": 99487744,
-      "database_bytes": 376832,
+      "latency_p50_ms": 1.5032999999999674,
+      "latency_p95_ms": 5.139999999999986,
+      "ingestion_ms": 3.301899999999989,
+      "startup_ms": 291.8199,
+      "peak_memory_bytes": 98033664,
+      "database_bytes": 450560,
       "model_bytes": 0,
       "network_calls": 0,
       "llm_calls": 0,
@@ -211,22 +211,22 @@
       "truncated_chars": 0,
       "samples": {
         "latency_ms": [
-          2.6037999999999784,
-          0.5726000000000226,
-          0.568300000000022,
-          0.550200000000018,
-          2.679299999999955,
-          0.6138999999999442,
-          0.5992999999999711
+          5.139999999999986,
+          1.3050999999999817,
+          1.5032999999999674,
+          1.372199999999964,
+          1.5871000000000208,
+          1.416499999999985,
+          1.5144999999999982
         ],
         "memory_bytes": [
-          95789056,
-          95854592,
-          95854592,
-          95858688,
-          99487744,
-          99487744,
-          99487744
+          97562624,
+          97644544,
+          97722368,
+          97783808,
+          97824768,
+          97939456,
+          98033664
         ]
       }
     }
@@ -386,41 +386,41 @@
         "useful_content_ratio": 1
       },
       "resources": {
-        "recall_latency_p95_ms": 0.6394600000000026,
+        "recall_latency_p95_ms": 1.565455000000003,
         "recall_latency_samples_ms": [
-          0.52106,
-          0.6394600000000026,
-          0.5335149999999999,
-          0.5648900000000026,
-          0.5555900000000008,
-          0.5230000000000018,
-          0.4785000000000025,
-          0.580279999999999,
-          0.5925849999999968,
-          0.5607150000000047,
-          0.6298299999999927,
-          0.5132299999999986,
-          0.44502999999999704,
-          0.4918199999999956,
-          1.3888400000000047,
-          0.5244050000000016,
-          0.4403750000000059,
-          0.4384750000000054,
-          0.4368000000000052,
-          0.5148649999999975,
-          0.4248499999999922,
-          0.49714500000000045,
-          0.5074299999999994,
-          0.5077299999999922,
-          0.5159449999999992,
-          0.5482200000000035,
-          0.5378749999999968,
-          0.4548149999999964,
-          0.4959150000000022,
-          0.4822549999999978,
-          0.5119599999999991
+          0.9138800000000004,
+          0.7373850000000004,
+          0.9259500000000003,
+          0.8429899999999975,
+          0.8304750000000013,
+          0.8729399999999998,
+          0.7282699999999978,
+          1.565455000000003,
+          0.7712300000000027,
+          0.7525949999999966,
+          0.7997749999999997,
+          0.8876099999999951,
+          0.855675000000008,
+          0.6935949999999934,
+          0.6677849999999921,
+          0.6823399999999993,
+          0.7372600000000034,
+          0.6448550000000068,
+          1.4541799999999967,
+          0.742349999999999,
+          0.8477150000000051,
+          0.6762500000000046,
+          0.7102600000000052,
+          0.6846000000000003,
+          0.7434450000000083,
+          0.9922950000000015,
+          0.9287000000000034,
+          0.7288350000000037,
+          0.6531100000000037,
+          0.7549549999999954,
+          1.8558700000000043
         ],
-        "sqlite_bytes": 335872
+        "sqlite_bytes": 401408
       },
       "operations": [
         {
@@ -460,7 +460,7 @@
             "content_json": "The product requirement fixes the core to local SQLite storage.",
             "content_hash": "d140abed41a7594be6a52e9b717b68d74daf469631aef0e0916d075a1311ba58",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.176Z",
+            "captured_at": "2026-10-19T20:00:58.859Z",
             "metadata_json": "{}"
           },
           {
@@ -469,7 +469,7 @@
             "content_json": "Preserve the initial local architecture before its SQLite refinement.",
             "content_hash": "b67c2ebbbcb714e9fb0f4bde72a49013104588b1054019921b28fff567d84201",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.176Z",
+            "captured_at": "2026-10-19T20:00:58.860Z",
             "metadata_json": "{}"
           },
           {
@@ -478,7 +478,7 @@
             "content_json": "Deliberately preserve the approved local SQLite architecture.",
             "content_hash": "273116b074435b8f0c84c50520ac6b7aaaeea82bd8f631d9f9935b57e84ea565",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.177Z",
+            "captured_at": "2026-10-19T20:00:58.860Z",
             "metadata_json": "{}"
           }
         ],
@@ -496,7 +496,7 @@
             "outcome": "succeeded",
             "status": "current",
             "supersedes_id": "9ee77662-1909-5dc9-a1ae-e297de0ebc90",
-            "valid_from": "2026-09-01T22:51:43.177Z",
+            "valid_from": "2026-10-19T20:00:58.860Z",
             "evidence_ids": [
               "f2264881-c690-5482-a7b3-fcf0d0d6beb8"
             ]
@@ -510,7 +510,7 @@
             "outcome": "succeeded",
             "status": "superseded",
             "supersedes_id": null,
-            "valid_from": "2026-09-01T22:51:43.176Z",
+            "valid_from": "2026-10-19T20:00:58.860Z",
             "evidence_ids": [
               "9d1246ac-3eb4-5d13-a8ae-30aac1c4fc92"
             ]
@@ -557,41 +557,41 @@
         "useful_content_ratio": 1
       },
       "resources": {
-        "recall_latency_p95_ms": 0.6573499999999968,
+        "recall_latency_p95_ms": 0.9080250000000035,
         "recall_latency_samples_ms": [
-          0.6543399999999963,
-          0.557710000000003,
-          0.530970000000002,
-          0.7269049999999992,
-          0.4849249999999984,
-          0.45134500000000344,
-          0.4519000000000005,
-          0.5526849999999968,
-          0.5282850000000053,
-          0.5903349999999989,
-          0.5975300000000061,
-          0.5597700000000032,
-          0.4874300000000062,
-          0.6188049999999976,
-          0.4889599999999973,
-          0.5254050000000007,
-          0.4528500000000008,
-          0.4703449999999975,
-          0.43318499999999177,
-          0.4507200000000012,
-          0.4922800000000052,
-          0.452355,
-          0.5288549999999986,
-          0.49860499999999774,
-          0.5066050000000019,
-          0.46338000000000645,
-          0.5339599999999904,
-          0.6573499999999968,
-          0.5278400000000033,
-          0.48451999999999773,
-          0.5078399999999987
+          0.8281799999999976,
+          0.8115099999999984,
+          0.8270550000000014,
+          0.7843900000000019,
+          0.746165000000002,
+          0.7960300000000018,
+          0.9080250000000035,
+          0.8587699999999984,
+          0.8735299999999995,
+          0.8590350000000058,
+          0.8831350000000043,
+          0.878819999999996,
+          0.8455500000000029,
+          0.8460199999999987,
+          0.7414500000000089,
+          0.7167050000000017,
+          0.7429300000000012,
+          0.7361050000000091,
+          0.8228550000000041,
+          0.830785000000003,
+          0.6405700000000024,
+          0.9237500000000068,
+          0.6476800000000026,
+          0.6525800000000004,
+          0.8419649999999933,
+          0.7910349999999994,
+          0.8224150000000009,
+          0.6119299999999953,
+          0.6368299999999977,
+          0.7619450000000029,
+          0.7800000000000068
         ],
-        "sqlite_bytes": 348160
+        "sqlite_bytes": 413696
       },
       "operations": [
         {
@@ -690,13 +690,13 @@
             "memories": 1,
             "fts": 1
           },
-          "latency_p50_ms": 1.1447999999999183,
-          "latency_p95_ms": 1.1447999999999183,
+          "latency_p50_ms": 1.941699999999969,
+          "latency_p95_ms": 1.941699999999969,
           "latency_samples_ms": [
-            1.1447999999999183
+            1.941699999999969
           ],
-          "sqlite_bytes_before": 741416,
-          "sqlite_bytes_after": 811456,
+          "sqlite_bytes_before": 807336,
+          "sqlite_bytes_after": 877376,
           "sqlite_bytes_delta": 70040,
           "payload_chars": 698
         },
@@ -728,13 +728,13 @@
             "memories": 1,
             "fts": 1
           },
-          "latency_p50_ms": 1.1525000000000318,
-          "latency_p95_ms": 1.1525000000000318,
+          "latency_p50_ms": 1.088200000000029,
+          "latency_p95_ms": 1.088200000000029,
           "latency_samples_ms": [
-            1.1525000000000318
+            1.088200000000029
           ],
-          "sqlite_bytes_before": 811456,
-          "sqlite_bytes_after": 873256,
+          "sqlite_bytes_before": 877376,
+          "sqlite_bytes_after": 939176,
           "sqlite_bytes_delta": 61800,
           "payload_chars": 453
         },
@@ -766,13 +766,13 @@
             "memories": 2,
             "fts": 2
           },
-          "latency_p50_ms": 1.3432999999999993,
-          "latency_p95_ms": 1.3432999999999993,
+          "latency_p50_ms": 1.6417999999999893,
+          "latency_p95_ms": 1.6417999999999893,
           "latency_samples_ms": [
-            1.3432999999999993
+            1.6417999999999893
           ],
-          "sqlite_bytes_before": 873256,
-          "sqlite_bytes_after": 988616,
+          "sqlite_bytes_before": 939176,
+          "sqlite_bytes_after": 1054536,
           "sqlite_bytes_delta": 115360,
           "payload_chars": 248
         }
@@ -1159,7 +1159,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\",\"promotion\":{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}",
             "content_hash": "5114ddc5fcd56a5d78f0cfe3cd95b3f0b9b4772de59f11a19e47cba786a2778a",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.227Z",
+            "captured_at": "2026-10-19T20:00:58.886Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\"}"
           },
           {
@@ -1168,7 +1168,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"756441b4-973b-5993-aebf-713ab2bb9e46\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The procedure is stale.\",\"supportIds\":[\"c681721a-3ccc-5395-ac97-af9d8a6ac7c2\"]}}",
             "content_hash": "9356097c6a1c858234dd4fbe04c004b00022c4eab8521cd4d44265afa7da0c57",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.319Z",
+            "captured_at": "2026-10-19T20:00:58.992Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
           },
           {
@@ -1177,7 +1177,7 @@
             "content_json": "Confirm the initial local architecture.",
             "content_hash": "3def84e73403125cdf314e05df2a1cf27ded6eb1bf5e92200fc611796dba8221",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.178Z",
+            "captured_at": "2026-10-19T20:00:58.862Z",
             "metadata_json": "{}"
           },
           {
@@ -1186,7 +1186,7 @@
             "content_json": "The product requirement fixes the core to local SQLite storage.",
             "content_hash": "d140abed41a7594be6a52e9b717b68d74daf469631aef0e0916d075a1311ba58",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.178Z",
+            "captured_at": "2026-10-19T20:00:58.861Z",
             "metadata_json": "{}"
           },
           {
@@ -1195,7 +1195,7 @@
             "content_json": "The failure was reproduced.",
             "content_hash": "50d6367a1c027215d54b5aa542734319e6477274d442cb1f989e6d32146b3d28",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.301Z",
+            "captured_at": "2026-10-19T20:00:58.971Z",
             "metadata_json": "{\"observation_validation\":{\"observation_id\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"result\":\"passed\",\"method\":\"offline reproduction\"}}"
           },
           {
@@ -1204,7 +1204,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"78e86102-7e3f-5a20-a8c8-af55bc926fb2\",\"verdict\":\"accepted\",\"basis\":\"observable_validation\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"The failure is reproducible.\",\"supportIds\":[\"20ee227e-c681-5ce9-a2a1-6104426afdaa\"]}}",
             "content_hash": "786d162ccb7a771445479a57fc4291cb4da814e56dbf4d998159ca71436d6844",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.302Z",
+            "captured_at": "2026-10-19T20:00:58.971Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
           },
           {
@@ -1213,7 +1213,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"failure\",\"scope\":\"project\",\"title\":\"Observed failed check\",\"claim\":\"The compatibility check fails under the recorded fixture.\",\"proposedMemory\":{\"kind\":\"failure\",\"title\":\"Observed failed check\",\"content\":\"Remember the attributable failed compatibility check.\",\"outcome\":\"failed\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
             "content_hash": "6970758f86a2a5c8987664703b537a77d85a714c8d2125024dc1a6b8ee4fa2a5",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.300Z",
+            "captured_at": "2026-10-19T20:00:58.969Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1222,7 +1222,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Initial local requirement confirmed.\",\"supportIds\":[\"13b4484f-2856-5761-a061-ccab3239c4cd\"]}}",
             "content_hash": "823dee951cc75fef5c4380bba3f614b302ea5a722669176f846b3b95af34c1c5",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.225Z",
+            "captured_at": "2026-10-19T20:00:58.883Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
           },
           {
@@ -1231,7 +1231,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"4ab3af9c-93e2-5931-acac-7a8deb770e2f\",\"verdict\":\"rejected\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Benchmark rejection fixture.\",\"supportIds\":[\"bf719f16-3329-583b-a42f-11926357a585\"]}}",
             "content_hash": "71bdac240c8718b691bc5fa036478e6ded158fa1e68052042a4a4c11f9f53c7d",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.278Z",
+            "captured_at": "2026-10-19T20:00:58.942Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
           },
           {
@@ -1240,7 +1240,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Rejected fixture\",\"claim\":\"This rejected candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Rejected fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
             "content_hash": "8d37a47bf0babec5507f08990c8e98c472601352c3556e0a387baddcdbaa024a",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.277Z",
+            "captured_at": "2026-10-19T20:00:58.940Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1249,7 +1249,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local SQLite core\",\"claim\":\"The persistent memory core remains fully local and SQLite-first.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local SQLite core\",\"content\":\"Keep the persistent memory core fully local and SQLite-first.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"},\"predecessorId\":\"3bdfa95f-8e0c-5434-a0ea-5b6058ac2e50\"}}",
             "content_hash": "fda7f252ae45cd6d92cf5bd56df5fca61788a01aa24afa7114f332a48341eb3f",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.236Z",
+            "captured_at": "2026-10-19T20:00:58.896Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1258,7 +1258,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"constraint\",\"scope\":\"project\",\"title\":\"Local file core\",\"claim\":\"The persistent memory core remains local.\",\"proposedMemory\":{\"kind\":\"architecture\",\"title\":\"Local file core\",\"content\":\"Keep the persistent memory core local.\",\"topicKey\":\"core/local\",\"outcome\":\"succeeded\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
             "content_hash": "cabcc620d0e2cb67a5be176baff64c08284a913878e279d580413cffc077ad9d",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.224Z",
+            "captured_at": "2026-10-19T20:00:58.880Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1267,7 +1267,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\",\"promotion\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\"}}",
             "content_hash": "bb4cd183d5f916395e49dd7cece7669afeb71a14a2c32e07e7be598a188b12d1",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.261Z",
+            "captured_at": "2026-10-19T20:00:58.921Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-promotion.v1\"}"
           },
           {
@@ -1276,7 +1276,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"fact\",\"scope\":\"project\",\"title\":\"Unreviewed fixture\",\"claim\":\"This unreviewed candidate must never be promoted.\",\"proposedMemory\":{\"kind\":\"discovery\",\"title\":\"Unreviewed fixture\",\"content\":\"This content must remain outside recall.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
             "content_hash": "c8b19fc8fdf5fa8aa0b25a1ea7302a35ff4ea70c65d26eb18c0d0e3423aa4fb8",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.269Z",
+            "captured_at": "2026-10-19T20:00:58.930Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1285,7 +1285,7 @@
             "content_json": "Reject the benchmark-only invalid candidate.",
             "content_hash": "b07930481e766eb649391ecb670204d1decc14879ebcac34d2851ae44295b322",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.271Z",
+            "captured_at": "2026-10-19T20:00:58.932Z",
             "metadata_json": "{}"
           },
           {
@@ -1294,7 +1294,7 @@
             "content_json": "Reject the stale procedure.",
             "content_hash": "13ff26987c70263b8c022f058980ed29eb7125c64cfd42873dfb68a9d302f4e7",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.309Z",
+            "captured_at": "2026-10-19T20:00:58.981Z",
             "metadata_json": "{}"
           },
           {
@@ -1303,7 +1303,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation.v1\",\"observation\":{\"kind\":\"procedure\",\"scope\":\"project\",\"title\":\"Stale procedure\",\"claim\":\"Use the superseded setup procedure.\",\"proposedMemory\":{\"kind\":\"convention\",\"title\":\"Stale procedure\",\"content\":\"Use the superseded setup procedure.\"},\"supportIds\":[\"2025523b-3149-5b6a-a84b-6b3cbc80226e\"],\"generator\":{\"kind\":\"root_agent\",\"name\":\"benchmark\"}}}",
             "content_hash": "911e50f405ae1c2fbfe7ac2f5edc47437375e6b7768988f207873665cc209f18",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.318Z",
+            "captured_at": "2026-10-19T20:00:58.990Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation.v1\"}"
           },
           {
@@ -1312,7 +1312,7 @@
             "content_json": "Confirm the local SQLite architecture as durable project memory.",
             "content_hash": "e2f1aa84e7278354cb2c0f3473fa455fe176c0abf12f39f3fbe74e9414bd0547",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.228Z",
+            "captured_at": "2026-10-19T20:00:58.887Z",
             "metadata_json": "{}"
           },
           {
@@ -1321,7 +1321,7 @@
             "content_json": "{\"schema\":\"thoth-mem.observation-review.v1\",\"review\":{\"observationId\":\"cafa83e8-31ee-5c3f-ad72-46800ce86ddb\",\"verdict\":\"accepted\",\"basis\":\"root_user_confirmed\",\"policy\":{\"id\":\"benchmark\",\"version\":\"1\"},\"reason\":\"Explicitly confirmed by the root user.\",\"supportIds\":[\"f11255f1-ec6f-5c67-abc2-27f114f430a8\"]}}",
             "content_hash": "abad96cf1461d068d32af43a29577eda540ed8d44d4c6b61883a53876c5dff09",
             "source_ref": null,
-            "captured_at": "2026-09-01T22:51:43.247Z",
+            "captured_at": "2026-10-19T20:00:58.910Z",
             "metadata_json": "{\"schema\":\"thoth-mem.observation-review.v1\"}"
           }
         ],
@@ -1605,7 +1605,7 @@
             "outcome": "succeeded",
             "status": "superseded",
             "supersedes_id": null,
-            "valid_from": "2026-09-01T22:51:43.227Z",
+            "valid_from": "2026-10-19T20:00:58.886Z",
             "evidence_ids": [
               "0a50fcc3-11e3-55a6-ae95-2bbeb9777b56",
               "13b4484f-2856-5761-a061-ccab3239c4cd",
@@ -1623,7 +1623,7 @@
             "outcome": "succeeded",
             "status": "current",
             "supersedes_id": "33aeab00-b3d9-5414-ab07-39e3d40d5b48",
-            "valid_from": "2026-09-01T22:51:43.261Z",
+            "valid_from": "2026-10-19T20:00:58.921Z",
             "evidence_ids": [
               "2025523b-3149-5b6a-a84b-6b3cbc80226e",
               "784f683e-789e-5646-a2fb-55bb2e6e2852",
@@ -2163,8 +2163,8 @@
       "recall_payload_equal": true,
       "delivery_ratio_equal": true,
       "useful_content_ratio_equal": true,
-      "recall_latency_p95_ratio": 1.0279767303662373,
-      "sqlite_bytes_ratio": 1.0365853658536586
+      "recall_latency_p95_ratio": 0.5800390301861131,
+      "sqlite_bytes_ratio": 1.030612244897959
     },
     "errors": [],
     "decision": {

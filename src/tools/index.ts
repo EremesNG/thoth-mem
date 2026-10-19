@@ -21,6 +21,7 @@ import {
   type Harness,
   type RecallItem,
   type SaveMemoryInput,
+  type SessionIdentityInput,
   type SessionSummaryInput,
   type SummaryContextItem,
 } from '../memory-core/contracts.js';
@@ -44,6 +45,9 @@ export const MEMORY_INSTRUCTION_SENTENCES = [
   ...MEMORY_SAVE_INSTRUCTION_SENTENCES,
 ] as const;
 
+// Reserved for unverified server-assigned identities, including across process restarts.
+export const MCP_CONNECTION_SESSION_PREFIX = 'thoth-mem:mcp-connection:';
+
 export const ALL_TOOLS = ['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session'] as const;
 export type MemoryToolName = typeof ALL_TOOLS[number];
 export interface ToolResult { [key: string]: unknown; content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown>; isError?: boolean }
@@ -63,7 +67,7 @@ export const TOOL_DESCRIPTIONS: Readonly<Record<MemoryToolName, string>> = {
   mem_context: 'Build bounded handoff-first continuity. project_key is always required. Supply both root_session_key and harness for session context, or omit both for project context.',
   mem_get: 'Expand one selected memory, summary, observation, or evidence id returned by a prior tool result. Set history:true to include predecessor lineage for memory, summary, or observation records; evidence ids return evidence without lineage.',
   mem_project: 'Inspect project views without mutation. action="list": no fields required. action="timeline": project_key required; optionally since, until, cursor, limit, and budget_chars. action="briefing", "summaries", or "observations": project_key required; optionally supply both root_session_key and harness to select that session\'s summaries/observations (briefing still includes project-wide memories). action="history": id required from a prior result. temporal filters summaries/observations, not timeline. list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.',
-  mem_session: 'Record verified root lifecycle events; never use it as an ordinary save. summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final". summary.coverage starts at 1 and its to_sequence must advance the current ending sequence for this session and kind. Each claim\'s support_ids must be evidence ids from this project_key + root_session_key/harness session inside summary.coverage.',
+  mem_session: 'Record verified root lifecycle events; never use it as an ordinary save. summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final". summary.coverage starts at 1; to_sequence must advance for this session and kind. content on guide_post_compact carries host compaction text. Each claim\'s support_ids must be evidence ids from this project_key + root_session_key/harness session inside summary.coverage.',
 };
 
 const DIRECT_EVIDENCE_KIND_VALUES = EVIDENCE_KIND_VALUES.filter((kind) => !['observation', 'observation_review', 'observation_promotion'].includes(kind)) as [typeof EVIDENCE_KIND_VALUES[number], ...Array<typeof EVIDENCE_KIND_VALUES[number]>];
@@ -279,12 +283,27 @@ function recordSourceIds(record: Record<string, unknown>): string[] {
   return [id, ...(Array.isArray(record.evidenceIds) ? record.evidenceIds.map(String) : [])];
 }
 
-export function createToolHandlers(service: MemoryService): ToolHandlers {
+export interface ToolSessionPolicy {
+  connectionSession(projectKey: string): SessionIdentityInput | undefined;
+}
+
+export function createToolHandlers(service: MemoryService, sessions?: ToolSessionPolicy): ToolHandlers {
+  const attribute = (input: Record<string, unknown>): Record<string, unknown> => {
+    const root = input.root_session_key;
+    const rootAbsent = root === undefined || (typeof root === 'string' && !root.trim());
+    if (!rootAbsent || input.harness !== undefined) return input;
+    const session = sessions?.connectionSession(string(input.project_key, 'project_key'));
+    return session ? { ...input, root_session_key: session.rootSessionKey, harness: session.harness } : input;
+  };
+  const requireRoot = (session: SessionIdentityInput): void => {
+    if (session.harness === 'mcp' && session.rootSessionKey.startsWith(MCP_CONNECTION_SESSION_PREFIX)) throw new Error('Connection sessions are unverified and cannot authorize observation review, promotion, or mem_session operations.');
+  };
   return {
     mem_save: guarded(async (input) => {
-      const parsed = parseToolInput(memSaveInputSchema, input);
+      const parsed = parseToolInput(memSaveInputSchema, attribute(input));
       const project = { key: parsed.project_key, name: parsed.project_name };
       const session = sessionIdentity(optionalString(parsed.root_session_key), parsed.harness);
+      if (session && (parsed.observation_review || parsed.observation_promotion)) requireRoot(session);
       if (parsed.observation) {
         const proposed = parsed.observation.proposed_memory;
         const data = service.submitObservation({ project, ...(session ? { session } : {}), eventKey: parsed.event_key!, observation: {
@@ -316,7 +335,7 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
       const mode = input.mode === 'context' ? 'context' : 'compact'; const result = service.recall({ projectKey: string(input.project_key, 'project_key'), query: string(input.query, 'query', 'query must be a non-empty search string'), mode, history: input.temporal === 'history', budgetChars: number(input.budget_chars, mode === 'context' ? 4000 : 1200), limit: number(input.limit, 5), correlationId: optionalString(input.correlation_id) });
       return success('mem_recall', { mode, items: result.items.map(publicRecallItem) }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, mode, input.finalize_answer === true) });
     }),
-    mem_context: guarded(async (input) => { const parsed = parseToolInput(memContextInputSchema, input); const result = service.context({ projectKey: parsed.project_key, rootSessionKey: parsed.root_session_key, harness: parsed.harness, budgetChars: number(parsed.budget_chars, 4000), correlationId: optionalString(parsed.correlation_id) }); return success('mem_context', { items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', parsed.finalize_answer === true) }); }),
+    mem_context: guarded(async (input) => { const attributed = attribute(input); const parsed = parseToolInput(memContextInputSchema, attributed); const result = service.context({ projectKey: parsed.project_key, rootSessionKey: parsed.root_session_key, harness: parsed.harness, budgetChars: number(parsed.budget_chars, 4000), correlationId: optionalString(parsed.correlation_id) }, attributed === input ? 'explicit' : 'recovery'); return success('mem_context', { items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', parsed.finalize_answer === true) }); }),
     mem_get: guarded(async (input) => { const result = service.get({ id: string(input.id, 'id'), history: input.history === true }); const correlationId = optionalString(input.correlation_id); return success('mem_get', result, { sources: [...new Set([recordSourceIds(result.record as unknown as Record<string, unknown>), ...result.lineage.map((item) => recordSourceIds(item as unknown as Record<string, unknown>))].flat())], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } }); }),
     mem_project: guarded(async (input) => {
       const parsed = parseToolInput(memProjectInputSchema, input); const action = parsed.action;
@@ -330,18 +349,18 @@ export function createToolHandlers(service: MemoryService): ToolHandlers {
       if (timelineFields.length > 0) throw new Error(`received ${timelineFields.join(', ')} for action="${action}"; omit these timeline-only fields or use action="timeline"`);
       if (action === 'list') return success('mem_project', { projects: service.listProjects() });
       const identity = sessionIdentity(parsed.root_session_key, parsed.harness);
-      if (action === 'briefing') { const result = service.context({ projectKey: string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`), ...(identity ?? {}), budgetChars: number(parsed.budget_chars, 5000) }); return success('mem_project', { action, items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, compression_ratio: result.budget.compressionRatio } }); }
+      if (action === 'briefing') { const projectKey = string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`); const connection = identity ? undefined : sessions?.connectionSession(projectKey); const result = service.context({ projectKey, ...(identity ?? connection ?? {}), budgetChars: number(parsed.budget_chars, 5000) }, connection ? 'recovery' : 'explicit'); return success('mem_project', { action, items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, compression_ratio: result.budget.compressionRatio } }); }
       if (action === 'history') { const result = service.get({ id: string(parsed.id, 'id', 'id is required for action="history"; send a record id from a prior result'), history: true }); return success('mem_project', { action, lineage: result.lineage }, { sources: [...new Set(result.lineage.flatMap((item) => recordSourceIds(item as unknown as Record<string, unknown>)))] }); }
       if (action === 'summaries') { const result = service.projectSummaries({ projectKey: string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`), ...(identity ?? {}), history: parsed.temporal === 'history', budgetChars: number(parsed.budget_chars, 4_000) }); return success('mem_project', { action, items: result.items }, { sources: [...new Set(result.items.flatMap((item) => recordSourceIds(item as unknown as Record<string, unknown>)))], budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars }, warnings: result.truncated ? ['payload_truncated'] : [] }); }
       if (action === 'observations') { const result = service.listObservations({ projectKey: string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`), ...(identity ?? {}), temporal: parsed.temporal, state: parsed.state, limit: parsed.limit, budgetChars: number(parsed.budget_chars, 4_000) }); return success('mem_project', { action, items: result.items }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars }, warnings: result.truncated ? ['payload_truncated'] : [] }); }
       return failure(`Unsupported mem_project action: ${action}`);
     }),
-    mem_session: guarded(async (input) => { const parsed = parseToolInput(memSessionInputSchema, input); const data = service.lifecycle({ operation: parsed.operation, harness: parsed.harness, project: { key: parsed.project_key, name: parsed.project_name }, rootSessionKey: parsed.root_session_key, eventKey: parsed.event_key, content: optionalString(parsed.content), ...(parsed.summary ? { summary: internalSummary(parsed.summary) } : {}) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : []), ...(data.summaryId ? [data.summaryId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
+    mem_session: guarded(async (input) => { const parsed = parseToolInput(memSessionInputSchema, input); requireRoot({ rootSessionKey: parsed.root_session_key, harness: parsed.harness }); const data = service.lifecycle({ operation: parsed.operation, harness: parsed.harness, project: { key: parsed.project_key, name: parsed.project_name }, rootSessionKey: parsed.root_session_key, eventKey: parsed.event_key, content: optionalString(parsed.content), ...(parsed.summary ? { summary: internalSummary(parsed.summary) } : {}) }); return success('mem_session', data, { sources: [data.projectId, data.sessionId, ...(data.evidenceId ? [data.evidenceId] : []), ...(data.summaryId ? [data.summaryId] : [])], lanes: { structured: 'ready' }, warnings: [] }); }),
   };
 }
 
-export function registerTools(server: McpServer, service: MemoryService): void {
-  const handlers = createToolHandlers(service);
+export function registerTools(server: McpServer, service: MemoryService, sessions?: ToolSessionPolicy): void {
+  const handlers = createToolHandlers(service, sessions);
   for (const item of MEMORY_TOOL_CATALOG) server.tool(item.name, item.description, TOOL_SCHEMA_SHAPES[item.name], async (args) => handlers[item.name](args));
 }
 export function getToolCount(): number { return ALL_TOOLS.length; }

@@ -57,6 +57,39 @@ describe('native adapters', () => {
     expect(normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'open:prompt', project: { key: 'repo:open', name: 'open' }, properties: { info: { id: 'root' }, message: { role: 'user', sessionID: 'root', content: 'root request' } } })).toMatchObject({ operation: 'capture_root', harness: 'opencode', content: 'root request' });
   });
 
+  it('recovers Claude SessionStart sources with distinct retry-stable keys and context injection', () => {
+    const base = { hook_event_name: 'SessionStart', session_id: 'root', cwd: '/repo', transcript_path: '/repo/transcript.jsonl' };
+    const sources = ['startup', 'clear', 'fork', 'resume', 'compact'] as const;
+    const starts = sources.map((source) => normalizeNativePayload('claude', { ...base, source }));
+
+    expect(starts.map((start) => start.operation)).toEqual(['recover', 'recover', 'recover', 'recover', 'guide_post_compact']);
+    for (const [index, source] of sources.entries()) {
+      expect(starts[index]?.capability).toMatchObject({ nativeEvent: 'SessionStart', contextInjection: true });
+      expect(normalizeNativePayload('claude', { ...base, source }).eventKey).toBe(starts[index]?.eventKey);
+    }
+    expect(new Set(starts.map((start) => start.eventKey)).size).toBe(sources.length);
+    expect(normalizeNativePayload('claude', { ...base, source: 'startup', session_id: 'next-root' }).eventKey).not.toBe(starts[0]?.eventKey);
+  });
+
+  it('forwards Claude PostCompact text with sanitized retry identity separate from compact SessionStart', () => {
+    const base = { session_id: 'root', cwd: '/repo', transcript_path: '/repo/transcript.jsonl', trigger: 'auto' };
+    const compact = (compact_summary: string) => normalizeNativePayload('claude', { ...base, hook_event_name: 'PostCompact', compact_summary });
+    const first = compact('## Goal\nFirst compaction. <private>one</private>');
+    const second = compact('## Goal\nSecond compaction.');
+    const retry = compact('## Goal\nFirst compaction. <private>two</private>');
+    expect(first).toMatchObject({ operation: 'guide_post_compact', content: '## Goal\nFirst compaction. ' });
+    expect(second.content).toBe('## Goal\nSecond compaction.');
+    expect(first.eventKey).not.toBe(second.eventKey);
+    expect(retry.eventKey).toBe(first.eventKey);
+    expect(retry.content).toBe(first.content);
+    const start = normalizeNativePayload('claude', { ...base, hook_event_name: 'SessionStart', source: 'compact', compact_summary: 'ignored', summary: 'ignored' });
+    expect(start.operation).toBe('guide_post_compact');
+    expect(start).not.toHaveProperty('content');
+    expect(start.eventKey).not.toBe(first.eventKey);
+    expect(compact('   ')).not.toHaveProperty('content');
+    expect(normalizeNativePayload('codex', { ...base, hook_event_name: 'PostCompact', turn_id: 'turn', compact_summary: 'must not harvest', summary: 'must not harvest' })).not.toHaveProperty('content');
+  });
+
   it('derives retry-stable Codex identity and degrades missing turn identity', () => {
     const base = { hook_event_name: 'UserPromptSubmit', session_id: 'root', transcript_path: null, cwd: 'C:/repo', prompt: 'same request' };
     const first = normalizeNativePayload('codex', { ...base, turn_id: 'turn-1' });

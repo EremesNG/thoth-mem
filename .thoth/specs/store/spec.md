@@ -539,3 +539,13 @@ The system MUST publish one fully written UUID marker atomically without replaci
 - **GIVEN** two independent clones of the same remote
 - **WHEN** each resolves identity
 - **THEN** each receives a different local UUID unless a future explicit linking operation is requested
+
+### Requirement: Session Summaries MUST Be Derived Deterministically When Not Supplied
+
+When `checkpoint_pre_compact` or `finalize` carries no submitted summary, or the previous session needed by automatic recovery has no current summary covering its latest non-summary evidence, the service MUST derive a harness-generated summary without any model or network call from that session's own evidence: root prompts as objective; promoted decision, convention, architecture, and preference memories as decision; discovery and project-structure memories as completed; failure memories as completed with outcome failed; open handoffs as next action; closed handoffs as completed; and the newest parsed host compaction claims; every claim MUST cite in-session evidence inside its coverage and respect the existing claim and size limits, a session without citable evidence MUST receive no summary, and a lazily derived summary MUST be final only when the session has ended and checkpoint otherwise.
+
+#### Scenario: Session Summaries MUST Be Derived Deterministically When Not Supplied
+
+- **GIVEN** an ended Codex session with two root prompts, one decision memory, and one open handoff and no submitted summary
+- **WHEN** finalize runs or a later session's recovery needs it
+- **THEN** exactly one harness final summary exists whose objective, decision, and next-action claims cite those evidence events within coverage

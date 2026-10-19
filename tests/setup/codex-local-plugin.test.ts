@@ -53,15 +53,19 @@ describe('Codex local plugin setup', () => {
         version: '0.4.13',
         entry: runtimeEntry,
       });
-      expect(json(join(pluginTarget, '.mcp.json'))).toEqual({
-        mcpServers: {
-          'thoth-mem': {
-            cwd: resolve(repositoryRoot),
-            command: process.execPath,
-            args: [runtimeEntry, 'mcp', '--no-http'],
+      expect(json(join(pluginTarget, '.codex-plugin', 'plugin.json')).mcpServers).toBe('./codex.mcp.json');
+      for (const [descriptor, host] of [['.mcp.json', 'claude'], ['codex.mcp.json', 'codex']] as const) {
+        expect(json(join(pluginTarget, descriptor))).toEqual({
+          mcpServers: {
+            'thoth-mem': {
+              cwd: resolve(repositoryRoot),
+              command: process.execPath,
+              args: [runtimeEntry, 'mcp', '--no-http'],
+              env: { THOTH_MEM_NATIVE_HOST: host },
+            },
           },
-        },
-      });
+        });
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

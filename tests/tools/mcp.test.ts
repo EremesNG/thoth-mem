@@ -86,6 +86,7 @@ describe('MCP boundary', () => {
         cursor: { description: 'Unchanged nextCursor from a prior mem_project action="timeline" result; keep project_key, since, and until unchanged.' },
       } });
       const sessionTool = listed.find((tool) => tool.name === 'mem_session');
+      expect(sessionTool?.description).toContain('content on guide_post_compact carries host compaction text.');
       expect(sessionTool?.description).toContain('summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final".');
       expect(sessionTool?.inputSchema).toMatchObject({ properties: {
         event_key: { description: 'Stable lifecycle event key; retries for the same operation must resend identical content/summary.' },

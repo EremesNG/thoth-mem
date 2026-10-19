@@ -168,11 +168,11 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
       if (!state) return;
       try {
         const entry = asRecord(event.compactionEntry) ?? {};
-        const guidance = piPostCompactInput(state, { compactionEntryId: typeof entry.id === 'string' ? entry.id : undefined, reason: typeof event.reason === 'string' ? event.reason : 'manual', isRetry: event.willRetry === true });
+        const guidance = piPostCompactInput(state, { compactionEntryId: typeof entry.id === 'string' ? entry.id : undefined, summary: typeof entry.summary === 'string' ? entry.summary : undefined, reason: typeof event.reason === 'string' ? event.reason : 'manual', isRetry: event.willRetry === true });
         const result = await dispatch(guidance, context);
         recovery = verifiedRecovery(result, state.rootSessionKey, state.directory, 'pi') ?? recovery;
-        // Later prompts keep session-summary-only guidance for the compacted session.
-        if (result) refresh = guidance;
+        // Refresh project recovery without replaying harvested content under its receipt key.
+        refresh = piRecoveryInput(state, 'context');
       } catch { report('pi_post_compact_failed', context); }
     });
     pi.on('session_compact_failed', (_event, context) => { report('pi_compact_failed', context); });

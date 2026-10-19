@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { LifecycleInput, LifecycleResult } from '../../src/memory-core/contracts.js';
+import { MemoryService } from '../../src/memory-core/service.js';
 import { createPiExtension } from '../../src/integration/pi/index.js';
 import type { PiMcpClient } from '../../src/integration/pi/mcp-client.js';
 import { SERVER_INSTRUCTIONS } from '../../src/server.js';
@@ -104,6 +106,53 @@ describe('Pi native extension', () => {
     await expect(handlers.get('input')!({ text: 'keep working', source: 'rpc' }, context)).resolves.toEqual({ action: 'continue' });
     await expect((tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call', {})).rejects.toThrow('child unavailable');
     await expect(handlers.get('session_shutdown')!({ reason: 'quit' }, context)).resolves.toBeUndefined();
+  });
+
+  it('forwards distinct compaction summaries once per identity and refreshes project and predecessor recovery', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-summaries-')); roots.push(cwd);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: `path:${cwd.replaceAll('\\', '/')}`, name: cwd.split(/[\\/]/u).at(-1)! };
+    const previous = { harness: 'claude' as const, project, rootSessionKey: 'previous' };
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const calls: Record<string, unknown>[] = [];
+    const results: LifecycleResult[] = [];
+    const client: PiMcpClient = {
+      callTool: async (_name, args) => {
+        calls.push(args);
+        const result = service.lifecycle({
+          operation: args.operation as LifecycleInput['operation'], harness: 'pi', project,
+          rootSessionKey: String(args.root_session_key), eventKey: String(args.event_key),
+          ...(typeof args.content === 'string' ? { content: args.content } : {}),
+        });
+        results.push(result);
+        return { structuredContent: { data: result } };
+      },
+      close: async () => undefined,
+    };
+    try {
+      service.lifecycle({ ...previous, operation: 'capture_root', eventKey: 'old', content: 'Previous objective.' });
+      service.save({ project, evidence: { kind: 'explicit_save', content: 'support' }, memory: { kind: 'decision', title: 'Project choice', content: 'Keep project recovery.' } });
+      createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+      const context = { cwd, sessionManager: { getSessionId: () => 'current', getLeafId: () => 'leaf' } };
+      await handlers.get('session_start')!({ reason: 'startup' }, context);
+      for (const id of ['compact-1', 'compact-2', 'compact-2']) {
+        await handlers.get('session_before_compact')!({ reason: 'manual', preparation: { firstKeptEntryId: id } }, context);
+        await handlers.get('session_compact')!({ reason: 'manual', compactionEntry: { id, summary: `## Goal\nOwn ${id}. <private>secret</private>` } }, context);
+      }
+      const compactions = calls.filter((args) => args.operation === 'guide_post_compact');
+      expect(compactions.map((args) => args.content)).toEqual(['## Goal\nOwn compact-1. ', '## Goal\nOwn compact-2. ', '## Goal\nOwn compact-2. ']);
+      expect(compactions[0]!.event_key).not.toBe(compactions[1]!.event_key);
+      expect(compactions[1]!.event_key).toBe(compactions[2]!.event_key);
+      expect(results.at(-1)).toMatchObject({ duplicate: true });
+      service.lifecycle({ ...previous, operation: 'capture_root', eventKey: 'new', content: 'Updated predecessor.' });
+      const sections: Record<string, string> = {};
+      await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context);
+      expect(calls.at(-1)).toMatchObject({ operation: 'recover' });
+      expect(calls.at(-1)).not.toHaveProperty('content');
+      expect(sections.thoth_mem_recovery).toContain('Updated predecessor.');
+      expect(sections.thoth_mem_recovery).toContain('Keep project recovery.');
+      expect(sections.thoth_mem_recovery).not.toContain('Own compact-');
+    } finally { service.close(); }
   });
 
   it('dispatches successful compact guidance and finalizes only a true quit', async () => {

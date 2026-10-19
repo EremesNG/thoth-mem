@@ -113,6 +113,28 @@ export function eventForEvidence(database: Database.Database, evidenceId: string
   return row ? sessionEventFromRow(row) : null;
 }
 
+export function sessionActivityWatermark(database: Database.Database, sessionId: string): number {
+  return (database.prepare("SELECT coalesce(max(se.sequence),0) AS watermark FROM session_events se JOIN evidence e ON e.id=se.evidence_id WHERE se.session_id=? AND e.kind<>'session_summary'").get(sessionId) as { watermark: number }).watermark;
+}
+
+/** One project-scoped aggregate over indexed session events; summary writes never count as activity. */
+export function previousSessionByActivity(database: Database.Database, projectId: string, currentSessionId: string | null): { id: string; state: string; watermark: number } | undefined {
+  return database.prepare(`
+    SELECT s.id,s.state,max(se.sequence) AS watermark
+    FROM sessions s JOIN session_events se ON se.session_id=s.id
+    JOIN evidence e ON e.id=se.evidence_id
+    WHERE s.project_id=? AND s.id<>? AND e.kind<>'session_summary'
+    GROUP BY s.id
+    ORDER BY max(julianday(e.captured_at)) DESC,s.id ASC
+    LIMIT 1
+  `).get(projectId, currentSessionId ?? '') as { id: string; state: string; watermark: number } | undefined;
+}
+
+export function sessionEvidence(database: Database.Database, sessionId: string, watermark: number): Array<EvidenceRecord & { event: SessionEventRecord }> {
+  const rows = database.prepare("SELECT e.*,se.evidence_id,se.sequence,se.actor,se.authority,se.retention_class,se.privacy_class FROM evidence e JOIN session_events se ON se.evidence_id=e.id AND se.session_id=e.session_id WHERE e.session_id=? AND se.sequence<=? AND e.kind<>'session_summary' ORDER BY se.sequence").all(sessionId, watermark) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({ ...evidenceFromRow(row), event: sessionEventFromRow(row) }));
+}
+
 export function appendSessionEvent(database: Database.Database, sessionId: string, evidenceId: string, input: SessionEventInput): SessionEventRecord {
   const allocated = database.prepare('UPDATE sessions SET next_event_sequence=next_event_sequence+1 WHERE id=? RETURNING next_event_sequence').get(sessionId) as { next_event_sequence: number } | undefined;
   if (!allocated) throw new Error('root_session_key and harness must identify an existing session in project_key before recording an event; send the verified session pair');

@@ -82,14 +82,15 @@ export function normalizeNativePayload(harness: NativeHarness, value: unknown): 
     const summary = structuredSummary(payload.thoth_mem_summary, operation, identityConfidence === 'confirmed');
     return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, identityConfidence, ...(content ? { content: content.slice(0, 20_000) } : {}), ...(summary ? { summary } : {}), capability: { nativeEvent: event, contextInjection: event === 'SessionStart', modelConsumption: false } };
   }
-  const sessionStartOperation: LifecycleInput['operation'] = payload.source === 'compact'
-    ? 'guide_post_compact'
-    : payload.source === 'resume' ? 'recover' : 'enroll';
+  const sessionStartOperation: LifecycleInput['operation'] = payload.source === 'compact' ? 'guide_post_compact' : 'recover';
   const operations: Record<string, LifecycleInput['operation']> = { SessionStart: sessionStartOperation, UserPromptSubmit: 'capture_root', PreCompact: 'checkpoint_pre_compact', PostCompact: 'guide_post_compact', Stop: 'finalize', SessionEnd: 'finalize' };
   const operation = operations[event]; if (!operation) throw new Error(`Unsupported ${harness} lifecycle event`);
-  const content = operation === 'capture_root' ? sanitizedOptional(payload.prompt) : sanitizedOptional(payload.summary ?? payload.content);
+  let content: string | undefined;
+  if (operation === 'capture_root') content = sanitizedOptional(payload.prompt);
+  else if (event === 'PostCompact') content = sanitizedOptional(payload.compact_summary);
+  else if (event !== 'SessionStart' || payload.source !== 'compact') content = sanitizedOptional(payload.summary ?? payload.content);
   const nativeIdentity = [sanitizedOptional(payload.transcript_path), sanitizedOptional(payload.source), sanitizedOptional(payload.trigger), content];
   const eventKey = claudeEventKey([rootSessionKey, event, operation, nativeIdentity]);
   const summary = structuredSummary(payload.thoth_mem_summary, operation);
-  return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), ...(summary ? { summary } : {}), capability: { nativeEvent: event, contextInjection: event === 'PostCompact' || (event === 'SessionStart' && operation !== 'enroll'), modelConsumption: false } };
+  return { operation, harness, project: projectFrom(directory), rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), ...(summary ? { summary } : {}), capability: { nativeEvent: event, contextInjection: event === 'PostCompact' || event === 'SessionStart', modelConsumption: false } };
 }

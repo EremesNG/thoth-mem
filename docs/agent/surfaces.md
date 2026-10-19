@@ -8,6 +8,15 @@ There is no v1 schema negotiation, graph action, HTTP route, dashboard, model pr
 
 `mem_project action=timeline` is the project-wide chronological read for promoted memories. It requires the exact `project_key`, accepts optional inclusive `since`/`until` ISO instants plus an opaque cursor, and returns a bounded page ordered by semantic `validFrom` descending and ID ascending. All four memory statuses are eligible by default. Compact items expose stable IDs and bounded memory/validity metadata only; raw evidence, summaries, observations, and session events remain behind their existing explicit routes, and full memory expansion remains a `mem_get` operation. Timeline cursors are bound to the project and normalized bounds, represent a live traversal rather than a database snapshot, and reject reuse under a different scope. Timeline-only fields fail on every other project action.
 
+Non-native MCP connections attribute sessionless `mem_save` calls to one
+server-assigned `mcp` session, with root key
+`thoth-mem:mcp-connection:<uuid>`. Sessionless `mem_context` and briefing use it
+for recovery selection, not root authority; it cannot authorize observation
+review, promotion, or `mem_session`. Native MCP launches set
+`THOTH_MEM_NATIVE_HOST=opencode|codex|claude|pi` to the active host and preserve
+existing attribution. See [MCP launch attribution](native-lifecycle.md#mcp-launch-attribution)
+for shutdown and lazy-summary behavior.
+
 `mem_save` is one strict four-branch union:
 
 - direct `{ evidence, memory? }` preserves the deliberate save path; metadata is forbidden except for the closed evidence-only `observation_validation` and `observation_review_attestation` forms, which require paired verified session identity, a stable event key, an existing same-project candidate, and no memory;

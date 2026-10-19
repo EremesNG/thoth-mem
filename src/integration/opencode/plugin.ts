@@ -133,6 +133,7 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
           'thoth-mem': {
             type: 'local',
             command: ['node', runtimeEntry, 'mcp', '--no-http'],
+            environment: { THOTH_MEM_NATIVE_HOST: 'opencode' },
           },
         };
       },
@@ -149,7 +150,23 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
         }
         if (event.type === 'session.compacted') {
           const state = sessions.get(event.properties.sessionID);
-          if (state?.root) await dispatch({ operation: 'guide_post_compact', directory: state.directory, rootSessionKey: event.properties.sessionID, eventKey: `session-compacted:${event.properties.sessionID}` });
+          if (!state?.root) return;
+          const sessionID = event.properties.sessionID;
+          let messageID: string | undefined;
+          let content: string | undefined;
+          try {
+            const response = await client.session.messages({ path: { id: sessionID } });
+            const summary = response.data
+              ?.filter(({ info }) => info.sessionID === sessionID && info.role === 'assistant' && info.summary === true)
+              .sort((left, right) => right.info.time.created - left.info.time.created)[0];
+            if (summary) {
+              messageID = summary.info.id;
+              content = sanitizePrivateContent(summary.parts
+                .filter((part): part is Extract<(typeof summary.parts)[number], { type: 'text' }> => part.type === 'text')
+                .map((part) => part.text).join('\n').trim());
+            }
+          } catch { reportDiagnostic('compaction_summary_lookup_failed'); }
+          await dispatch({ operation: 'guide_post_compact', directory: state.directory, rootSessionKey: sessionID, eventKey: `session-compacted:${sessionID}${messageID ? `:${messageID}` : ''}`, ...(content ? { content } : {}) });
           return;
         }
         if (event.type === 'session.deleted') {

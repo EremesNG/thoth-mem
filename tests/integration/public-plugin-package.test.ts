@@ -68,12 +68,32 @@ describe('public plugin release inventory', () => {
     const claude = readJson<{ version: string }>('plugin/.claude-plugin/plugin.json');
     const claudeMcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>('plugin/.mcp.json');
     expect([runtime.version, codex.version, claude.version]).toEqual(Array(3).fill(packageManifest.version));
-    expect(claudeMcp.mcpServers['thoth-mem']).toEqual({ cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] });
+    expect(claudeMcp.mcpServers['thoth-mem']).toEqual({ cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'], env: { THOTH_MEM_NATIVE_HOST: 'claude' } });
     expect(packageManifest.files).toContain('plugin');
     expect(packageManifest.files).not.toContain('.agents/plugins/marketplace.json');
     expect(packageManifest.files).not.toContain('.claude-plugin/marketplace.json');
     expect(packageManifest.scripts.version).toContain('integration:sync');
     expect(packageManifest.scripts.prepublishOnly).toContain('integration:verify');
+  });
+
+  it('marks every bundled native MCP launch with its host and registers both Claude PostCompact hooks', () => {
+    const codexManifest = readJson<{ mcpServers: string }>('plugin/.codex-plugin/plugin.json');
+    expect(codexManifest.mcpServers).toBe('./codex.mcp.json');
+    for (const [path, host, wrapped, name] of [
+      ['plugin/.mcp.json', 'claude', true, 'thoth-mem'],
+      ['plugin/codex.mcp.json', 'codex', true, 'thoth-mem'],
+      ['integrations/claude-code/.mcp.json', 'claude', true, 'thoth-mem'],
+      ['integrations/codex/mcp.json', 'codex', false, 'thoth_mem'],
+    ] as const) {
+      const config = readJson<Record<string, Record<string, unknown>>>(path);
+      const server = wrapped ? config.mcpServers![name] : config[name];
+      expect(server, path).toMatchObject({ env: { THOTH_MEM_NATIVE_HOST: host } });
+    }
+    for (const path of ['plugin/hooks/claude-hooks.json', 'integrations/claude-code/hooks/hooks.json']) {
+      const hooks = readJson<{ hooks: Record<string, unknown[]> }>(path);
+      expect(hooks.hooks.PostCompact, path).toHaveLength(1);
+      expect(JSON.stringify(hooks.hooks.PostCompact), path).toContain('runner.mjs');
+    }
   });
 
   it('fails release verification for a stale public runtime fixture', () => {
@@ -90,7 +110,7 @@ describe('public plugin release inventory', () => {
   });
 
   it.each([
-    ['manifest', 'plugin/.codex-plugin/plugin.json', '"./.mcp.json"', '"./stale.mcp.json"'],
+    ['manifest', 'plugin/.codex-plugin/plugin.json', '"./codex.mcp.json"', '"./stale.mcp.json"'],
     ['MCP descriptor', 'plugin/.mcp.json', './runners/public-runner.mjs', './runners/stale-runner.mjs'],
     ['hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
     ['Skill', 'plugin/skills/thoth-mem/SKILL.md', 'six memory tools', 'seven legacy memory tools'],

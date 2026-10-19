@@ -26,89 +26,23 @@ Every supported host bundle, including Pi, MUST package its supported lifecycle 
 
 ### Requirement: Runtime Lifecycle MUST Preserve the Core Contract
 
-OpenCode, Codex, Claude Code, and Pi lifecycle adapters MUST normalize only fields their supported native contracts actually provide and MUST apply shared privacy sanitation before content-derived identity. Pi MUST map documented session start, admitted root input, context preparation, pre-compaction, successful compaction, failed compaction, settled-agent, and shutdown events onto enroll, recover, capture-root, checkpoint-pre-compact, guide-post-compact, non-finalizing degradation or flush, and finalize semantics without automatically promoting prompt, model, tool, summary, or lifecycle content.
+OpenCode, Codex, Claude Code, and Pi lifecycle adapters MUST normalize only fields their supported native contracts actually provide and MUST apply shared privacy sanitation before content-derived identity; Pi MUST map documented session start, admitted root input, context preparation, pre-compaction, successful compaction, failed compaction, settled-agent, and shutdown events onto enroll, recover, capture-root (one ordered root-prompt evidence event per distinct sanitized interactive or RPC input), checkpoint-pre-compact, guide-post-compact, non-finalizing degradation or flush, and a single finalize, and agent-settled or failed-compaction events MUST NOT finalize; where a native contract provides the host's own generated compaction summary text (Pi `session_compact` compaction entry summary, Claude Code `PostCompact` `compact_summary`, and the OpenCode assistant summary message readable after `session.compacted`) the adapter MUST forward it as `guide_post_compact` content, while Codex and any host without such a documented field MUST NOT parse transcripts for it; forwarded compaction text and prompt, model, tool, summary, or lifecycle content MUST NOT be automatically promoted to memories or observations and MAY only become session evidence and harness-derived session summaries.
 
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
+#### Scenario: Runtime Lifecycle MUST Preserve the Core Contract
 
-- **GIVEN** a root Pi session with a verified working directory and session ID
-- **WHEN** the session starts and prepares model context
-- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
-
-- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
-- **WHEN** Pi admits them
-- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
-
-- **GIVEN** Pi is about to compact and later reports successful compaction
+- **GIVEN** Pi reports a successful compaction whose entry carries the default structured summary text
 - **WHEN** the lifecycle hooks execute
-- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
-
-- **GIVEN** the root Pi session shuts down
-- **WHEN** the shutdown event fires
-- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
-
-- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
-- **WHEN** the Pi-capable runtime opens it
-- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
+- **THEN** thoth-mem checkpoints before compaction, forwards the text with guide-post-compact so it is stored as checkpoint evidence with a harness checkpoint summary citing it, creates no memory or observation, and refreshes the next bounded recovery block
 
 ### Requirement: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
-Native adapters, including Pi, MUST resolve the Git common-directory UUID or explicit non-Git path identity from the host working directory, pass an initial display-name hint only for adoption, and preserve the exact canonical project key with a stable root session identity. Pi MUST use its documented session identity and working directory, while delegated, ambiguous, incomplete, or child-key-mismatched identity MUST NOT receive root authority.
+Native adapters, including Pi, MUST resolve the Git common-directory UUID or explicit non-Git path identity from the host working directory, pass an initial display-name hint only for adoption, and preserve the exact canonical project key with a stable root session identity; Pi MUST use its documented session identity and working directory, while delegated, ambiguous, incomplete, or child-key-mismatched identity and any server-assigned generic MCP connection session MUST NOT receive root authority.
 
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
+#### Scenario: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
-- **GIVEN** a root Pi session with a verified working directory and session ID
-- **WHEN** the session starts and prepares model context
-- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
-
-- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
-- **WHEN** Pi admits them
-- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
-
-- **GIVEN** Pi is about to compact and later reports successful compaction
-- **WHEN** the lifecycle hooks execute
-- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
-
-- **GIVEN** the root Pi session shuts down
-- **WHEN** the shutdown event fires
-- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
-
-- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
-- **WHEN** the Pi-capable runtime opens it
-- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
-
-#### Scenario: US4 - Fail safely without blocking Pi 1
-
-- **GIVEN** the thoth-mem child cannot start, times out, exits nonzero, or returns an invalid or oversized envelope
-- **WHEN** a Pi prompt or lifecycle hook continues
-- **THEN** no unverified memory is injected, the prompt is not rejected, and only a bounded diagnostic is emitted
-
-#### Scenario: US4 - Fail safely without blocking Pi 2
-
-- **GIVEN** the MCP child and lifecycle child reach a fresh shared data directory concurrently
-- **WHEN** both initialize
-- **THEN** schema bootstrap converges safely or one path degrades truthfully without corrupting the database or blocking Pi
-
-#### Scenario: US4 - Fail safely without blocking Pi 3
-
-- **GIVEN** a delegated, ambiguous, incomplete, or child-key-mismatched Pi identity
-- **WHEN** lifecycle attempts root-only capture or recovery
-- **THEN** it receives no root authority and injects no unverified context
+- **GIVEN** a delegated, ambiguous, incomplete, or child-key-mismatched Pi identity or a generic MCP connection session
+- **WHEN** it attempts root-only capture, recovery injection, lifecycle summary submission, or observation review or promotion
+- **THEN** it receives no root authority and no unverified context is injected
 
 ### Requirement: Automatic Capture MUST Remain Privacy-Safe and Minimal
 
@@ -228,37 +162,13 @@ Model-visible verified identity MUST carry the exact canonical `project_key` plu
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 
-Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn. A native immutable message ID MUST be used when available; otherwise, including for Pi root input, a deterministic key MUST bind documented stable session or turn fields with the sanitized prompt fingerprint so different prompts remain distinct and exact retries remain idempotent.
+Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn; a native immutable message ID MUST be used when available, otherwise, including for Pi root input, a deterministic key MUST bind documented stable session or turn fields with the sanitized prompt fingerprint so different prompts remain distinct and exact retries remain idempotent; harness-derived and host-harvested session summaries MUST be idempotent per session, kind, and latest non-summary evidence sequence, so a replayed lifecycle event or lazy derivation returns the identical canonical summary or none, and persisting a summary MUST NOT itself trigger another derivation.
 
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 1
+#### Scenario: Lifecycle Events MUST Be Idempotent and Truthful
 
-- **GIVEN** a root Pi session with a verified working directory and session ID
-- **WHEN** the session starts and prepares model context
-- **THEN** thoth-mem enrolls and recovers once and injects only a bounded, source-attributed, identity-validated recovery block
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 2
-
-- **GIVEN** two different interactive or RPC root inputs during one active agent cycle
-- **WHEN** Pi admits them
-- **THEN** both sanitized prompts receive distinct deterministic capture keys and each appends one ordered root-prompt evidence event; an exact retry remains a duplicate
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 3
-
-- **GIVEN** Pi is about to compact and later reports successful compaction
-- **WHEN** the lifecycle hooks execute
-- **THEN** thoth-mem checkpoints before compaction, guides after compaction, and refreshes the next bounded recovery block without treating Pi's generated compaction text as an automatic memory or supported session summary
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 4
-
-- **GIVEN** the root Pi session shuts down
-- **WHEN** the shutdown event fires
-- **THEN** thoth-mem finalizes once; agent-settled or failed-compaction events do not falsely finalize the root session
-
-#### Scenario: US3 - Preserve memory across the Pi session lifecycle 5
-
-- **GIVEN** a valid revision-9 database containing existing sessions and their dependent evidence, events, summaries, and receipts
-- **WHEN** the Pi-capable runtime opens it
-- **THEN** one verified revision-10 migration locks and rechecks the live source against its retained backup before mutation, preserves every authoritative row and relation, and allows a new `pi` session; a structurally valid but logically different backup is rejected
+- **GIVEN** two different interactive or RPC root inputs, an exact retry of one, and then a replayed finalize
+- **WHEN** the events are processed
+- **THEN** the prompts receive distinct capture keys, the retry is a duplicate, and the replayed finalize returns the original derived final summary without creating a new version
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
@@ -351,3 +261,13 @@ The shared Skill MUST front-load recall, save, and handoff applicability in its 
 - **GIVEN** a reusable claim lacks direct authority
 - **WHEN** policy review is actually needed
 - **THEN** the Skill loads the conditional observation-review reference and preserves candidate, review, and promotion requirements without burdening ordinary recall or direct authorized saves
+
+### Requirement: Host Compaction Text MUST Become Cited Checkpoint Evidence
+
+When `guide_post_compact` carries host compaction text, the service MUST sanitize and store it as `checkpoint` session evidence and MUST derive a harness checkpoint summary only from recognized section headings (goal, request, or intent as objective; done or completed as completed; in progress or pending as pending; blocked as blocker; decisions as decision; next steps as next action; modified files as changed surface), each claim citing that evidence; text without recognized headings MUST remain evidence only, and the text MUST never become a memory or observation.
+
+#### Scenario: Host Compaction Text MUST Become Cited Checkpoint Evidence
+
+- **GIVEN** Pi compaction text with Goal, Done, In Progress, Blocked, Key Decisions, and Next Steps sections and another text with no recognized headings
+- **WHEN** each arrives on `guide_post_compact`
+- **THEN** the first yields a checkpoint summary with objective, completed, pending, blocker, decision, and next-action claims citing its evidence, and the second yields evidence only

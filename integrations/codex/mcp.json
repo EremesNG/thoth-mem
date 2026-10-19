@@ -2,6 +2,7 @@
   "thoth_mem": {
     "command": "node",
     "args": ["runner.mjs", "--mcp"],
-    "cwd": "."
+    "cwd": ".",
+    "env": { "THOTH_MEM_NATIVE_HOST": "codex" }
   }
 }

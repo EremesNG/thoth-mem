@@ -25,9 +25,12 @@ for (const path of ['plugin/.codex-plugin/plugin.json', 'plugin/.claude-plugin/p
 }
 
 writeJson('plugin/runtime.json', { package: packageManifest.name, version });
-const claudeMcp = readJson('plugin/.mcp.json');
-claudeMcp.mcpServers['thoth-mem'] = { cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'] };
-writeJson('plugin/.mcp.json', claudeMcp);
+for (const [path, host] of [['plugin/.mcp.json', 'claude'], ['plugin/codex.mcp.json', 'codex']]) {
+  writeJson(path, { mcpServers: { 'thoth-mem': {
+    cwd: '.', command: 'node', args: ['./runners/public-runner.mjs', '--mcp'],
+    env: { THOTH_MEM_NATIVE_HOST: host },
+  } } });
+}
 
 for (const destination of [
   'integrations/opencode/skills/thoth-mem/SKILL.md',

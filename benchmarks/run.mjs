@@ -226,7 +226,7 @@ try {
       content: `Non-empty checkpoint content for ${harness}.`,
       summary: {
         ...firstSummaryInput,
-        coverage: { fromSequence: 1, toSequence: secondSupport.event.sequence },
+        coverage: { fromSequence: 1, toSequence: secondSupport.event.sequence + 1 },
         claims: [
           { kind: 'objective', content: actionableValues[0], supportIds: [secondSupport.evidence.id] },
           { kind: 'completed', content: actionableValues[1], outcome: 'succeeded', supportIds: [secondSupport.evidence.id] },
@@ -237,8 +237,11 @@ try {
       },
     });
     if (secondSummary.event && secondSummary.evidenceId) checkpointContentEventsRecorded += 1;
-    const recovered = service.lifecycle({ operation: 'recover', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:recover` });
-    if (recovered.recovery?.selectedSummaryIds[0] !== secondSummary.summaryId || recovered.recovery?.selectedSummaryIds.includes(firstSummary.summaryId)) versionPrecedence = 0;
+    // Automatic recovery belongs to a later session, never the summary's own root.
+    const readerSessionKey = `benchmark-reader-${harness}`;
+    const recovered = service.lifecycle({ operation: 'recover', harness, project: candidateProject, rootSessionKey: readerSessionKey, eventKey: `summary:${harness}:recover` });
+    const ownRecovery = service.lifecycle({ operation: 'recover', harness, project: candidateProject, rootSessionKey, eventKey: `summary:${harness}:own-recover` });
+    if (recovered.recovery?.selectedSummaryIds[0] !== secondSummary.summaryId || recovered.recovery?.selectedSummaryIds.includes(firstSummary.summaryId) || ownRecovery.recovery?.selectedSummaryIds.length !== 0) versionPrecedence = 0;
     candidateSummaryIds.push(secondSummary.summaryId);
     candidateSelectedMemoryIds.push(...(recovered.recovery?.selectedMemoryIds ?? []));
     summaryRecoveries.push({ recovery: recovered, actionableValues });
@@ -282,9 +285,9 @@ try {
     hidden_markers_recovered: hiddenMarkers.filter((marker) => recoveryContext.includes(marker)).length,
     restart_recovery_success: restartRecovery.outcome === 'confirmed' && restartRecovery.capability.contextDelivered ? 1 : 0,
     post_compaction_recovery_success: postCompactionRecovery.outcome === 'confirmed'
-      && !postCompactionRecovery.capability.contextDelivered
-      && postCompactionRecovery.recovery?.selectedRecordIds.length === 0
-      && postCompactionRecovery.recovery.sources.length === 0 ? 1 : 0,
+      && postCompactionRecovery.capability.contextDelivered
+      && postCompactionRecovery.recovery?.context === restartRecovery.recovery?.context
+      && JSON.stringify(postCompactionRecovery.recovery?.selectedRecordIds) === JSON.stringify(restartRecovery.recovery?.selectedRecordIds) ? 1 : 0,
     abstention_success: irrelevant.items.length === 0 ? 1 : 0,
     project_isolation_success: recoveryContext.includes('FOREIGN-PROJECT-CONTEXT') ? 0 : 1,
     delegated_rejection_success: delegatedRecovery.outcome === 'degraded' && !delegatedRecovery.capability.contextDelivered && delegatedRecovery.recovery?.selectedMemoryIds.length === 0 ? 1 : 0,
@@ -309,7 +312,12 @@ try {
     checkpoint_content_events_expected: 3,
     checkpoint_content_events_recorded: checkpointContentEventsRecorded,
     host_recoveries_expected: 3,
-    three_host_recovery: summaryRecoveries.filter((entry) => entry.recovery.outcome === 'confirmed' && entry.recovery.capability.contextDelivered && entry.recovery.recovery?.selectedSummaryIds.length === 1 && entry.recovery.recovery.selectedMemoryIds.length === 0).length,
+    three_host_recovery: summaryRecoveries.filter((entry) => {
+      const selected = entry.recovery.recovery?.selectedSummaryIds ?? [];
+      return entry.recovery.outcome === 'confirmed' && entry.recovery.capability.contextDelivered
+        && selected.length === 1 && entry.recovery.recovery.selectedMemoryIds.length === 0
+        && service.get({ id: selected[0] }).record.sessionId !== entry.recovery.sessionId;
+    }).length,
     support_leakage: supportLeakage,
     actionable_field_names: actionableFields,
     actionable_fields_expected: actionableFields.length,
