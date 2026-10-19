@@ -106,17 +106,83 @@ describe('progressive context funnel', () => {
     } finally { service.close(); }
   });
 
+  it.each([false, true])('lazily recovers the active predecessor across harnesses (ended=%s) and refreshes duplicate recovery receipts', (ended) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:previous', name: 'previous' };
+    const previous = { project, harness: 'claude' as const, rootSessionKey: 'previous' };
+    const current = { project, harness: 'pi' as const, rootSessionKey: 'current' };
+    try {
+      // Empty newer sessions, other projects, and late summary submissions are not activity.
+      if (ended) service.lifecycle({ ...previous, operation: 'finalize', eventKey: 'end-empty' });
+      const first = service.save({ project, session: previous, eventKey: 'first', evidence: { kind: 'root_prompt', content: 'PREVIOUS-OBJECTIVE', capturedAt: '2026-01-02T00:00:00Z' } });
+      service.save({ project, session: { rootSessionKey: 'older', harness: 'codex' }, eventKey: 'older', evidence: { kind: 'root_prompt', content: 'OLDER-SESSION', capturedAt: '2026-01-01T00:00:00Z' } });
+      service.lifecycle({ project, harness: 'codex', rootSessionKey: 'older', operation: 'finalize', eventKey: 'older-final' });
+      service.lifecycle({ project, harness: 'opencode', rootSessionKey: 'empty', operation: 'enroll', eventKey: 'empty' });
+      service.save({ project: { key: 'repo:other', name: 'other' }, session: { harness: 'pi', rootSessionKey: 'foreign' }, evidence: { kind: 'root_prompt', content: 'FOREIGN-PROJECT', capturedAt: '2026-01-09T00:00:00Z' } });
+      service.save({ project, session: current, eventKey: 'own', evidence: { kind: 'root_prompt', content: 'OWN-SUMMARY', capturedAt: '2026-01-10T00:00:00Z' } });
+      const own = service.lifecycle({ ...current, operation: 'checkpoint_pre_compact', eventKey: 'own-checkpoint' });
+      const stale = service.save({ project, evidence: { kind: 'handoff', content: 'Stale work.', capturedAt: '2026-01-01T00:00:00Z' }, memory: { kind: 'handoff', topicKey: 'handoff/stale', title: 'Stale', content: 'Stale work.' } }).memory!;
+      const handoff = service.save({ project, evidence: { kind: 'handoff', content: 'Continue current work.', capturedAt: '2026-01-03T00:00:00Z' }, memory: { kind: 'handoff', topicKey: 'handoff/current', title: 'Current', content: 'Continue current work.' } }).memory!;
+      const decision = service.save({ project, evidence: { kind: 'explicit_save', content: 'Keep SQLite.' }, memory: { kind: 'decision', title: 'Storage', content: 'Keep SQLite.' } }).memory!;
+      const input = { ...current, operation: 'recover' as const, eventKey: 'refresh' };
+      const recovered = service.lifecycle(input);
+      const summaryId = recovered.recovery!.selectedSummaryIds[0]!;
+      expect(recovered.recovery?.selectedRecordIds).toEqual([handoff.id, summaryId, decision.id]);
+      expect(recovered.recovery?.selectedSummaryIds).toHaveLength(1);
+      // The internal read seam gives connection sessions recovery selection without lifecycle authority.
+      expect(service.context({ projectKey: project.key, rootSessionKey: current.rootSessionKey, harness: current.harness }, 'recovery').selectedRecordIds).toEqual([handoff.id, summaryId, decision.id, stale.id]);
+      expect(service.context({ projectKey: project.key, rootSessionKey: current.rootSessionKey, harness: current.harness }).selectedSummaryIds).toEqual([own.summaryId]);
+      expect(recovered.recovery?.selectedRecordIds).not.toContain(stale.id);
+      expect(recovered.recovery?.selectedRecordIds).not.toContain(own.summaryId);
+      expect(recovered.recovery?.context).toContain('PREVIOUS-OBJECTIVE');
+      expect(recovered.recovery?.context).not.toMatch(/OWN-SUMMARY|OLDER-SESSION|FOREIGN-PROJECT/u);
+      expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, kind: ended ? 'final' : 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
+      expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([summaryId, service.get({ id: summaryId }).record.submissionEvidenceId]));
+      expect(service.lifecycle(input)).toMatchObject({ duplicate: true, recovery: { selectedSummaryIds: [summaryId] } });
+      const later = service.save({ project, session: previous, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'PREVIOUS-UPDATED', capturedAt: '2026-01-04T00:00:00Z' } });
+      const replay = service.lifecycle(input);
+      const refreshedId = replay.recovery!.selectedSummaryIds[0]!;
+      expect(replay.duplicate).toBe(true);
+      expect(refreshedId).not.toBe(summaryId);
+      expect(replay.recovery?.context).toContain('PREVIOUS-UPDATED');
+      expect(service.get({ id: refreshedId }).record).toMatchObject({ sessionId: first.sessionId, kind: ended ? 'final' : 'checkpoint', version: 2, coverage: { toSequence: later.event!.sequence } });
+      expect(service.lifecycle(input).recovery?.selectedSummaryIds).toEqual([refreshedId]);
+      expect(service.projectSummaries({ projectKey: project.key, rootSessionKey: previous.rootSessionKey, harness: previous.harness, history: true }).items).toHaveLength(2);
+      expect(replay.recovery!.rendering.totalCodePoints).toBeLessThanOrEqual(1_000);
+      const guided = service.lifecycle({ ...current, operation: 'guide_post_compact', eventKey: 'post' });
+      expect(guided.recovery).toEqual(replay.recovery);
+    } finally { service.close(); }
+  });
+
+  it('uses activity instants with a deterministic session-ID tie and never falls through a summaryless predecessor', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:activity-tie', name: 'tie' };
+    try {
+      const a = service.save({ project, session: { harness: 'codex', rootSessionKey: 'a' }, evidence: { kind: 'root_prompt', content: 'Objective A.', capturedAt: '2026-01-01T01:00:00+01:00' } });
+      const b = service.save({ project, session: { harness: 'pi', rootSessionKey: 'b' }, evidence: { kind: 'root_prompt', content: 'Objective B.', capturedAt: '2026-01-01T00:00:00Z' } });
+      const expected = [a.sessionId!, b.sessionId!].sort()[0];
+      const first = service.context({ projectKey: project.key });
+      expect(first.selectedSummaryIds).toHaveLength(1);
+      expect(service.get({ id: first.selectedSummaryIds[0]! }).record.sessionId).toBe(expected);
+      expect(service.context({ projectKey: project.key }).selectedSummaryIds).toEqual(first.selectedSummaryIds);
+      const latest = service.save({ project, session: { harness: 'mcp', rootSessionKey: 'uncitable' }, evidence: { kind: 'explicit_save', content: 'Uninterpreted evidence.', capturedAt: '2026-02-01T00:00:00Z' } });
+      expect(latest.event).not.toBeNull();
+      expect(service.context({ projectKey: project.key }).selectedSummaryIds).toEqual([]);
+      expect(service.context({ projectKey: project.key, rootSessionKey: 'unknown', harness: 'pi' }).selectedSummaryIds).toEqual([]);
+    } finally { service.close(); }
+  });
+
   it('selects only the verified session newest summary, preferring final on a coverage tie', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:summary-context', name: 'summary-context' };
     try {
       service.save({ project, evidence: { kind: 'handoff', content: 'Fallback evidence.' }, memory: { kind: 'handoff', topicKey: 'handoff/test-line-73', title: 'Fallback', content: 'LEGACY-HANDOFF-FALLBACK' } });
-      const support = service.save({ project, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Session one support.' } });
+      const support = service.save({ project, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Session one support.', capturedAt: '2026-01-01T00:00:00.000Z' } });
       const baseSummary = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent' as const, name: 'codex' }, claims: [{ kind: 'objective' as const, content: 'SESSION-ONE-SUMMARY', supportIds: [support.evidence.id] }] };
       const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'checkpoint', summary: { ...baseSummary, kind: 'checkpoint' } });
       const final = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'final', summary: { ...baseSummary, kind: 'final' } });
-      const foreignSupport = service.save({ project, session: { rootSessionKey: 'root-2', harness: 'codex' }, eventKey: 'foreign-support', evidence: { kind: 'explicit_save', content: 'Session two support.' } });
-      service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-2', eventKey: 'foreign-final', summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignSupport.evidence.id] }] } });
+      const foreignSupport = service.save({ project, session: { rootSessionKey: 'root-2', harness: 'codex' }, eventKey: 'foreign-support', evidence: { kind: 'explicit_save', content: 'Session two support.', capturedAt: '2026-01-02T00:00:00.000Z' } });
+      const previousFinal = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-2', eventKey: 'foreign-final', summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignSupport.evidence.id] }] } });
 
       const scoped = service.context({ projectKey: project.key, rootSessionKey: 'root-1', harness: 'codex', budgetChars: 2_000 });
       expect(scoped.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId, kind: 'final' });
@@ -127,7 +193,15 @@ describe('progressive context funnel', () => {
 
       const projectOnly = service.context({ projectKey: project.key, budgetChars: 2_000 });
       expect(projectOnly.items[0]).toMatchObject({ kind: 'handoff', content: 'LEGACY-HANDOFF-FALLBACK' });
-      expect(projectOnly.selectedSummaryIds).toEqual([]);
+      expect(projectOnly.items[1]).toMatchObject({ recordType: 'summary', id: previousFinal.summaryId });
+      expect(projectOnly.selectedSummaryIds).toEqual([previousFinal.summaryId]);
+      for (const budgetChars of [64, 120, 700, 1_000]) {
+        const bounded = service.context({ projectKey: project.key, budgetChars });
+        expect(bounded.budget.returnedChars).toBeLessThanOrEqual(budgetChars);
+        expect(bounded.items.reduce((sum, item) => sum + item.snippet.length, 0)).toBeLessThanOrEqual(budgetChars);
+        expect(bounded.selectedSummaryIds.every((id) => id === previousFinal.summaryId)).toBe(true);
+        expect(service.context({ projectKey: project.key, budgetChars }).selectedRecordIds).toEqual(bounded.selectedRecordIds);
+      }
       expect(() => service.context({ projectKey: project.key, rootSessionKey: 'root-1' })).toThrow(new Error('Supply both root_session_key and harness for session context, or omit both for project context; root_session_key supplied without harness'));
     } finally { service.close(); }
   });

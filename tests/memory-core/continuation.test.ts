@@ -345,12 +345,16 @@ describe('continuation renderer', () => {
     expect(result.measurements.usefulContentRatio).toBeGreaterThanOrEqual(0.5);
   });
 
-  it('renders a supported summary before memory with truthful record-specific IDs and a protected next action', () => {
+  it('keeps the newest handoff before the previous summary, preserving protected claims and the three-item cap', () => {
     const summary = summaryItem('summary-123');
     const memory = item('memory-fallback', 'handoff', 'Legacy fallback', 'First pending action: use the legacy handoff.');
-    const result = renderContinuation({ rootSessionKey: 'root-summary', projectName: 'summary-project', items: [memory, summary] });
+    const decision = item('memory-decision', 'decision', 'Storage', 'Keep SQLite authoritative.');
+    const older = item('memory-older', 'handoff', 'Older handoff', 'Deferred work.');
+    const result = renderContinuation({ rootSessionKey: 'root-summary', projectName: 'summary-project', items: [memory, summary, decision, older] });
 
-    expect(result.selectedItems[0]).toBe(summary);
+    expect(result.selectedItems[0]).toBe(memory);
+    expect(result.selectedRecordIds).toEqual([memory.id, summary.id, decision.id]);
+    expect(result.context.indexOf(`(memory:${memory.id})`)).toBeLessThan(result.context.indexOf(`(summary:${summary.id})`));
     expect(result.selectedSummaryIds).toEqual(['summary-123']);
     expect(result.selectedMemoryIds).toContain('memory-fallback');
     expect(result.selectedRecordIds).toEqual(result.selectedItems.map((selected) => selected.id));

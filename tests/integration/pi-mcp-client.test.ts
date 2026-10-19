@@ -1,8 +1,33 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { createPiMcpClient, type PiMcpConnection } from '../../src/integration/pi/mcp-client.js';
 
 describe('Pi MCP client', () => {
+  it('marks its native MCP child as Pi even when the inherited environment names another host', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-pi-child-marker-'));
+    const runtimeEntry = join(root, 'runtime.mjs');
+    writeFileSync(runtimeEntry, `
+import { createInterface } from 'node:readline';
+const lines = createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === 'initialize'
+    ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+    : { content: [{ type: 'text', text: process.env.THOTH_MEM_NATIVE_HOST ?? 'missing' }] };
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+});
+`);
+    const client = createPiMcpClient({ runtimeEntry, env: { ...process.env, THOTH_MEM_NATIVE_HOST: 'codex' } });
+    try {
+      await expect(client.callTool('mem_project', { action: 'list' })).resolves.toMatchObject({ content: [{ type: 'text', text: 'pi' }] });
+    } finally { await client.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('shares one lazy connection across concurrent tool and lifecycle calls and owns close', async () => {
     const close = vi.fn(async () => undefined);
     const callTool = vi.fn(async (name: string) => ({ content: [{ type: 'text', text: name }], structuredContent: { name } }));

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { MemoryService } from '../../src/memory-core/service.js';
 import { identityOnlyRecovery } from '../../src/integration/recovery.js';
 
 const runner = join(process.cwd(), 'plugin', 'runners', 'public-runner.mjs');
@@ -400,6 +401,42 @@ describe('public plugin runner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('persists two Claude PostCompact summaries with an exact retry and injects only on SessionStart', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-claude-post-compact-'));
+    try {
+      const project = projectFixture(root);
+      const command = createPackedRuntimeShim(root);
+      const configRoot = join(root, 'config');
+      const dataDir = join(root, 'data');
+      mkdirSync(join(configRoot, 'thoth-mem'), { recursive: true });
+      writeFileSync(join(configRoot, 'thoth-mem', 'config.json'), JSON.stringify({ version: 2, dataDir }));
+      const run = (payload: Record<string, unknown>) => spawnSync(process.execPath, [runner, '--harness', 'claude'], {
+        cwd: tmpdir(), encoding: 'utf8', windowsHide: true,
+        input: JSON.stringify({ session_id: 'root', cwd: project.path, ...payload }),
+        env: { ...process.env, XDG_CONFIG_HOME: configRoot, THOTH_MEM_PUBLIC_NPX_COMMAND: command },
+      });
+      const pre = run({ hook_event_name: 'PreCompact', trigger: 'auto' });
+      expect(pre.status, pre.stderr).toBe(0);
+      for (const compact_summary of ['## Goal\nFirst.', '## Goal\nSecond. <private>secret</private>', '## Goal\nSecond. <private>rotated</private>']) {
+        const result = run({ hook_event_name: 'PostCompact', trigger: 'auto', compact_summary });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({});
+      }
+      const start = run({ hook_event_name: 'SessionStart', source: 'compact' });
+      expect(start.status, start.stderr).toBe(0);
+      expect(JSON.parse(start.stdout).hookSpecificOutput.additionalContext).toContain('root_session_id=root;');
+      expect(start.stdout).not.toContain('Second.');
+      const service = new MemoryService({ databasePath: join(dataDir, 'memory.sqlite') });
+      try {
+        const summaries = service.projectSummaries({ projectKey: project.key, history: true }).items;
+        expect(summaries).toHaveLength(2);
+        expect(summaries.map((summary) => summary.version).sort()).toEqual([1, 2]);
+        expect(summaries.find((summary) => summary.version === 2)?.claims).toMatchObject([{ kind: 'objective', content: 'Second.' }]);
+        expect(JSON.stringify(summaries)).not.toMatch(/secret|rotated/u);
+      } finally { service.close(); }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('delivers the Claude pre-compaction checkpoint on SessionStart compact with verified identity first', () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth claude compact recovery '));
     try {
@@ -432,6 +469,44 @@ describe('public plugin runner', () => {
       expect(compactStart.status, compactStart.stderr).toBe(0);
       const context = JSON.parse(compactStart.stdout).hookSpecificOutput?.additionalContext as string;
       expect(context).toBe(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-compact-root; project_key=${project.key}; project_name=fixture\nNo memory was recovered; this does not show the project has none. Use mem_recall before relying on prior context.\n<!-- thoth-mem:recovery:end -->`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('injects the previous Claude session summary on startup with verified identity first', () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth claude startup recovery '));
+    try {
+      const project = projectFixture(root);
+      const command = createPackedRuntimeShim(root);
+      const configRoot = join(root, 'config');
+      const providerDirectory = join(configRoot, 'thoth-mem');
+      mkdirSync(providerDirectory, { recursive: true });
+      writeFileSync(join(providerDirectory, 'config.json'), JSON.stringify({ version: 2, dataDir: join(root, 'data') }));
+      const environment = { ...process.env, XDG_CONFIG_HOME: configRoot, THOTH_MEM_PUBLIC_NPX_COMMAND: command };
+      const run = (payload: Record<string, unknown>) => {
+        const result = spawnSync(process.execPath, [runner, '--harness', 'claude'], {
+          cwd: tmpdir(), encoding: 'utf8', windowsHide: true,
+          input: JSON.stringify({ cwd: project.path, ...payload }),
+          env: environment,
+        });
+        expect(result.status, result.stderr).toBe(0);
+        return JSON.parse(result.stdout);
+      };
+
+      expect(run({ session_id: 'claude-root', hook_event_name: 'UserPromptSubmit', prompt: 'Keep packed Claude compact recovery.' })).toEqual({});
+      expect(run({ session_id: 'claude-root', hook_event_name: 'PreCompact', content: 'Non-empty packed Claude checkpoint content.' })).toEqual({});
+      const compactContext = run({ session_id: 'claude-root', hook_event_name: 'SessionStart', source: 'compact' }).hookSpecificOutput.additionalContext as string;
+      expect(compactContext).not.toContain('(summary:');
+
+      const startup = { session_id: 'claude-next', hook_event_name: 'SessionStart', source: 'startup' };
+      const context = run(startup).hookSpecificOutput.additionalContext as string;
+      expect(context.startsWith(`<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-next; project_key=${project.key}; project_name=fixture\n`)).toBe(true);
+      expect(context).toContain('(summary:');
+      expect(context).toContain('Keep packed Claude compact recovery.');
+      expect(context).not.toContain('Memory recovery was unavailable');
+      expect(Array.from(context).length).toBeLessThanOrEqual(1_000);
+      expect(run(startup).hookSpecificOutput.additionalContext).toBe(context);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

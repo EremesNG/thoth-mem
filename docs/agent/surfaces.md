@@ -1,12 +1,23 @@
 # MCP and CLI surfaces
 
-The model-visible registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
+The model-visible MCP registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Pi exposes only the first five as native tools; its extension hooks call `mem_session` through the shared MCP client. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
+
+Shared tool and field descriptions stay compact without changing input structure or runtime validation. Pi's registered schemas omit `$schema`; MCP keeps the SDK-generated marker. `tests/tools/tool-budget.test.ts` and `tests/integration/pi-tool-budget.test.ts` pin exact names and aggregate serialized definition sizes (`JSON.stringify(...).length`, not tokens), with about 5% headroom; budget increases require a deliberate definition change.
 
 `project_key` is the exact opaque verified identity on every project-scoped call. `project_name` is creation/display metadata only and never participates in identity equality. `mem_project action=list` exposes at most 256 exact aliases per project, `aliasCount`, `aliasesTruncated`, and shadowed historical path rows without mutating, merging, or limiting exact alias resolution.
 
 There is no v1 schema negotiation, graph action, HTTP route, dashboard, model provider, or hidden Store fallback. Errors use bounded safe messages. Structured JSON is authoritative and text is a bounded rendering.
 
 `mem_project action=timeline` is the project-wide chronological read for promoted memories. It requires the exact `project_key`, accepts optional inclusive `since`/`until` ISO instants plus an opaque cursor, and returns a bounded page ordered by semantic `validFrom` descending and ID ascending. All four memory statuses are eligible by default. Compact items expose stable IDs and bounded memory/validity metadata only; raw evidence, summaries, observations, and session events remain behind their existing explicit routes, and full memory expansion remains a `mem_get` operation. Timeline cursors are bound to the project and normalized bounds, represent a live traversal rather than a database snapshot, and reject reuse under a different scope. Timeline-only fields fail on every other project action.
+
+Non-native MCP connections attribute sessionless `mem_save` calls to one
+server-assigned `mcp` session, with root key
+`thoth-mem:mcp-connection:<uuid>`. Sessionless `mem_context` and briefing use it
+for recovery selection, not root authority; it cannot authorize observation
+review, promotion, or `mem_session`. Native MCP launches set
+`THOTH_MEM_NATIVE_HOST=opencode|codex|claude|pi` to the active host and preserve
+existing attribution. See [MCP launch attribution](native-lifecycle.md#mcp-launch-attribution)
+for shutdown and lazy-summary behavior.
 
 `mem_save` is one strict four-branch union:
 

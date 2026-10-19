@@ -50,15 +50,18 @@ export function syncCodexLocalPlugin({
     version: packageManifest.version,
     entry: runtimeEntry,
   });
-  writeJson(join(pluginTarget, '.mcp.json'), {
-    mcpServers: {
-      'thoth-mem': {
-        cwd: checkout,
-        command: process.execPath,
-        args: [runtimeEntry, 'mcp', '--no-http'],
+  for (const [descriptor, host] of [['.mcp.json', 'claude'], ['codex.mcp.json', 'codex']]) {
+    writeJson(join(pluginTarget, descriptor), {
+      mcpServers: {
+        'thoth-mem': {
+          cwd: checkout,
+          command: process.execPath,
+          args: [runtimeEntry, 'mcp', '--no-http'],
+          env: { THOTH_MEM_NATIVE_HOST: host },
+        },
       },
-    },
-  });
+    });
+  }
 
   return { pluginTarget, runtimeEntry, version };
 }

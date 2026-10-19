@@ -26,11 +26,28 @@ export function isMainModule(moduleUrl: string, entry: string | undefined): bool
 export async function startMcpServer(argv: string[] = process.argv.slice(2)): Promise<void> {
   const dataIndex = argv.findIndex((arg) => arg === '--data-dir');
   const dataDir = dataIndex >= 0 ? argv[dataIndex + 1] : argv.find((arg) => arg.startsWith('--data-dir='))?.slice(11);
-  const { server, service } = createServer({ ...(dataDir ? { dataDir } : {}) });
+  const { server, service, finalizeConnectionSessions } = createServer({ ...(dataDir ? { dataDir } : {}) });
   const transport = new StdioServerTransport();
-  const close = (): void => service.close();
-  process.once('SIGINT', close); process.once('SIGTERM', close); process.once('exit', close);
-  await server.connect(transport);
+  let closing: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => closing ??= Promise.resolve().then(async () => {
+    process.stdin.off('end', stop); process.stdin.off('close', stop);
+    process.off('SIGINT', stop); process.off('SIGTERM', stop);
+    try { finalizeConnectionSessions(); }
+    finally {
+      try { await server.close(); }
+      finally { service.close(); }
+    }
+  });
+  const stop = (): void => { void shutdown().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }); };
+  // SDK 1.29 stdio does not report stdin EOF through transport.onclose.
+  process.stdin.once('end', stop); process.stdin.once('close', stop);
+  process.once('SIGINT', stop); process.once('SIGTERM', stop);
+  transport.onclose = stop;
+  try { await server.connect(transport); }
+  catch (error) { await shutdown(); throw error; }
 }
 
 export async function main(): Promise<void> {

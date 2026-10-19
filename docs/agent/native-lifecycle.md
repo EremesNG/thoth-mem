@@ -8,7 +8,7 @@ OpenCode loads `dist/opencode.js` through its native npm/file plugin loader and 
 
 OpenCode also exposes one read-only host-native `thoth_mem_root_identity` tool. It is not part of the six-tool MCP registry: it resolves a bounded `parentID` chain, distinguishes root from delegated callers, and grants root lifecycle authorization only to the root caller. OpenCode recovery plus Codex and Claude `SessionStart` output carry the already verified host root ID and project in a complete identity-first bounded block; the core maps that host ID to `root_session_key`. Pi instead resolves its documented session-manager ID and `cwd` during `session_start`, refreshes its validated recovery block once per root prompt, and injects it only as the named `thoth_mem_recovery` system-prompt section from `before_agent_start`. Codex may target `CODEX_THREAD_ID` only when no injected identity is visible and may use one unambiguous current-task inventory entry as a cross-check. Claude uses official hook `session_id` and `cwd` and defines no synthetic session environment variable. Pi's tested `1.0.1` SDK baseline has no delegated-agent identity; this adapter never grants root authority from child or community metadata.
 
-Codex and Claude Code use the central `thoth-plugins` marketplace and the shared `plugin/` root from the pinned `thoth-mem` tag. Setup registers `https://github.com/EremesNG/thoth-plugins.git` and manages only `thoth-mem@thoth-plugins` through supported native-manager commands. Their native managers own marketplace/cache state; setup independently rereads marketplace provenance plus enabled-plugin state. Both hooks and `.mcp.json` enter through the root-relative `plugin/runners/public-runner.mjs`. It delegates public lifecycle/MCP to the exact npm version in `plugin/runtime.json`, or uses the absolute package-identity-checked `runtimeEntry` persisted by explicit local setup. It does not edit manager caches or use an OpenCode loader.
+Codex and Claude Code use the central `thoth-plugins` marketplace and the shared `plugin/` root from the pinned `thoth-mem` tag. Setup registers `https://github.com/EremesNG/thoth-plugins.git` and manages only `thoth-mem@thoth-plugins` through supported native-manager commands. Their native managers own marketplace/cache state; setup independently rereads marketplace provenance plus enabled-plugin state. Hooks and the separate MCP descriptors (`plugin/.mcp.json` for Claude, `plugin/codex.mcp.json` for Codex) enter through the root-relative `plugin/runners/public-runner.mjs`. It delegates public lifecycle/MCP to the exact npm version in `plugin/runtime.json`, or uses the absolute package-identity-checked `runtimeEntry` persisted by explicit local setup. It does not edit manager caches or use an OpenCode loader.
 
 Pi is a native package with a reproducible SDK test baseline at
 `@earendil-works/pi-coding-agent` `1.0.1`. Setup has no version allowlist or
@@ -19,10 +19,13 @@ does not certify every runtime behavior on an untested release.
 `thoth-mem setup pi` uses Pi's global
 package manager and records a receipt for either the exact public source
 `npm:thoth-mem@<version>` or an explicitly supplied absolute local package
-root. The extension registers exactly the six catalog tools, each with self-framed
+root. The extension registers exactly five model-facing native tools:
+`mem_save`, `mem_recall`, `mem_context`, `mem_get`, and `mem_project`.
+`mem_session` remains hook-only in Pi; the shared MCP catalog still has six tools.
+Each native tool has self-framed
 `renderCall`/`renderResult` output in the Thoth Pi theme style (titled frame,
 tool-aware call summary, structured result lines, status footer) that imports
-no Pi TUI module at runtime, and shares one lazy,
+no Pi TUI module at runtime. The extension shares one lazy,
 time/size-bounded MCP SDK child running the package-relative
 `dist/index.js mcp --no-http` entry for both tool and lifecycle calls. The Pi
 process never loads `MemoryService` or `better-sqlite3`; a failed child is
@@ -50,6 +53,23 @@ provenance conflict. Plan mode performs no writes, repeated matching setup is
 `changed=false`, and an interrupted or failed operation rolls back only the
 receipt-owned package/configuration state while preserving unrelated Pi data.
 
+## MCP launch attribution
+
+Native bundles, setup-written MCP configs, and Pi's MCP child set
+`THOTH_MEM_NATIVE_HOST=opencode|codex|claude|pi` to the active host. This launch
+marker preserves native attribution; client info is only a fallback and neither
+supplies root authority. A non-native connection receives a server-assigned
+`mcp` session with a root key in `thoth-mem:mcp-connection:<uuid>` for sessionless
+saves. Sessionless `mem_context` and `mem_project action=briefing` use that pair
+as the current session for recovery selection. The reserved namespace never
+authorizes observation review, promotion, or `mem_session`. Native/project-only
+callers can still save without session attribution.
+
+Stdin EOF/close, transport close, SIGINT, and SIGTERM share an idempotent shutdown
+path that finalizes the connection session once before the service closes. A
+crash has no finalization guarantee; a later recovery can derive its summary
+lazily. Connection lifetime is not a verified conversation boundary.
+
 ## Pi lifecycle mapping
 
 The Pi extension maps documented events as follows:
@@ -58,9 +78,9 @@ The Pi extension maps documented events as follows:
 | --- | --- |
 | `session_start` | Resolve `cwd` and session-manager ID, enroll idempotently, recover, and cache only a verified bounded block. |
 | `input` | Capture only `interactive` or `rpc` root input after privacy sanitation; hash the session, leaf, source, streaming mode, and sanitized text for idempotency. `extension` input is excluded. |
-| `before_agent_start` | Replay the session's recovery event key (or, after a successful compaction, its post-compaction guidance key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
-| `session_before_compact` | Record a checkpoint event from stable IDs/reason/retry metadata without copying model, tool, or branch content. |
-| `session_compact` | Request session-summary-only post-compaction guidance and refresh the verified cache. Pi's free-form compaction text is not an automatic summary or memory. |
+| `before_agent_start` | Replay the session's recovery event key (after a successful compaction, a content-free `context` recover key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
+| `session_before_compact` | Record a checkpoint event from stable IDs/reason/retry metadata and derive a checkpoint summary from citable session evidence, without copying model, tool, or branch content. |
+| `session_compact` | Forward `compactionEntry.summary` as `guide_post_compact` content, keyed by the compaction entry ID, and refresh the same project recovery as ordinary recovery. |
 | `session_compact_failed` / `agent_settled` | Emit bounded degradation when needed; preserve safe recovery and never finalize. |
 | `session_shutdown` | Finalize for quit/session replacement, skip finalization on hot reload, and close the owned MCP child in every case. |
 
@@ -69,6 +89,19 @@ record IDs, source omission, taxonomy, and the 1,000-code-point bound. Invalid,
 degraded, mismatched, or oversized results fall back to the locally rendered
 identity-only block with an unavailable-recovery notice. A native failure never
 rejects a valid Pi prompt and never injects unverified memory.
+
+## Host compaction forwarding
+
+Claude's public and managed bundles register `PostCompact` and forward
+`compact_summary`, keyed by its sanitized-content fingerprint. After
+`session.compacted`, OpenCode reads the newest `summary:true` assistant message
+and forwards its text with a message-ID key; an absent or unreadable message
+degrades safely. These keys distinguish compactions and keep exact retries
+idempotent. Codex has no
+documented summary field and does not parse transcripts. The service stores
+forwarded text as sanitized checkpoint evidence and parses recognized headings
+into harness claims; unrecognized text stays evidence only, never a memory or
+observation.
 
 ## Revision-10 migration
 
@@ -98,13 +131,17 @@ If official removal leaves orphaned state, setup may delete only `plugins/cache/
 
 Hook execution, memory confirmation, context delivery, and model consumption are different facts. Automatic capture is limited to verified root prompts and checkpoints; arbitrary tool/subagent streams are excluded. OpenCode identifies each root prompt with the native immutable message ID. Codex combines `turn_id` with the sanitized prompt so multiple steers inside one active turn remain distinct. Claude derives a deterministic fingerprint from documented session/event fields and the sanitized prompt; it does not require a synthetic `event_id`. Exact retries reuse one key. Because Claude exposes no per-submission ID, two byte-different prompts that become identical after sanitization are intentionally treated as one retry-safe submission.
 
-Lifecycle persistence separates authoritative capture from derived continuity. A verified root prompt appends filtered immutable evidence and one ordered session event. A non-empty pre-compaction payload appends checkpoint evidence, but never promotes a handoff. On verified checkpoint or finalization, a harness may additionally submit one structured externally generated summary with source coverage, generator metadata, atomic claims, and per-claim support IDs. The core validates and versions that summary without generating semantics; invalid, unsupported, cross-scope, delegated, or degraded submissions commit nothing. Explicit promoted memories remain root-owned. Assistant reasoning, arbitrary tool traffic, delegated output, filesystem sweeps, full transcripts, secrets, and private blocks are never automatic capture sources. One local policy removes private blocks and recognizable credential forms before OpenCode/Codex derive content-dependent event keys; the core reapplies it before persisted content or hashes are derived. Stable event keys are bound to the original session identity and make allowed retries idempotent across restart.
+Lifecycle persistence separates authoritative capture from derived continuity. A verified root prompt appends filtered immutable evidence and one ordered session event. Non-empty pre- and post-compaction content becomes checkpoint evidence, never an automatic handoff. On verified checkpoint or finalization, the core validates and versions a submitted structured summary or deterministically derives a harness summary from citable session evidence, with no model or network call. Invalid, unsupported, cross-scope, delegated, or degraded summary submissions commit nothing. Derivation, coverage, and claim mapping are detailed in [persistence and retrieval](persistence-retrieval.md).
 
-Recovery first obtains deterministic candidates, then `src/memory-core/continuation.ts` renders the only model-visible representation. Post-compaction guidance is session-summary-only: it may select the newest eligible current summary for that exact verified root session, but it never substitutes project memories or another session's summary. If the compacted session has no eligible summary, the result is the verified identity-only block with empty selected IDs, empty sources, and `contextDelivered=false`. Ordinary session recovery, `mem_context`, and project briefing retain the project-wide handoff-first policy and may use promoted project memory without fabricating a session summary. The renderer preserves the verified identity and owned delimiters, labels all recovered history as untrusted data rather than instructions, selects at most three records, exposes complete summary or memory IDs, withholds summary support payloads and memory evidence IDs, and caps the complete block at 1,000 Unicode code points. Summary claims are included whole or omitted, and a supported next action is protected when it fits. When memory truncation is necessary, every selected long item receives at least 120 useful code points; candidates that cannot meet the floor or whose complete metadata would starve abundant useful content below 50% are omitted.
+Explicit promoted memories remain root-owned. Assistant reasoning, arbitrary tool traffic, delegated output, filesystem sweeps, full transcripts, secrets, and private blocks are never automatic capture sources. Shared sanitation removes private blocks and recognizable credentials before adapters derive content-dependent keys; the core reapplies it before persistence or hashing. Stable event keys bind the original session identity and make allowed retries idempotent across restart.
+
+Recovery first obtains deterministic candidates, then `src/memory-core/continuation.ts` renders the only model-visible representation. Ordinary recovery, per-prompt refresh, and `guide_post_compact` use the same selection: newest open handoff, then the previous session's newest current summary, then other project memories. Previous means the most recent other root session in this project by non-summary activity, from any harness; its summary is lazily derived when missing or stale. Automatic recovery never selects the current session's own summary. Explicit `mem_context` or briefing with a verified session pair can still select that session's summary first. Degraded identity and premature post-compaction events still fail closed.
+
+The renderer preserves the verified identity and owned delimiters, labels all recovered history as untrusted data rather than instructions, selects at most three records, exposes complete summary or memory IDs, withholds summary support payloads and memory evidence IDs, and caps the complete block at 1,000 Unicode code points. Summary claims are included whole or omitted, and a supported next action is protected when it fits. When memory truncation is necessary, every selected long item receives at least 120 useful code points; candidates that cannot meet the floor or whose complete metadata would starve abundant useful content below 50% are omitted.
 
 OpenCode, Codex, Claude, and Pi validate that final block and inject it unchanged. They do not reselect, summarize, truncate, or reconstruct it. A missing, degraded, malformed, or oversized result falls back to verified identity only or no block. `contextDelivered` is true only when the final renderer selected at least one useful item; an identity-only block is not recovered context. Empty service recovery adds a
 notice that no memory was recovered, not proof that the project has none; local
 fallback adds a distinct unavailable-recovery notice. Both appear immediately
 after identity and direct the agent to `mem_recall` before relying on prior context. `modelConsumed` remains false until a real host observation proves consumption, regardless of hook execution, persistence, candidate availability, or delivery.
 
-`integration:smoke` installs the actual tarball in a disposable directory, imports and executes the OpenCode `main` with Bun, delegates its persistence/recovery fixture to the separate Node CLI, converges public and local OpenCode state twice, synchronizes the Skill, enumerates exactly six tools, and executes OpenCode, Codex, Claude Code, and Pi lifecycle fixtures from unrelated paths. Its OpenCode checkpoint-only fixture proves identity fallback without automatic handoff promotion; its Claude fixture persists ordered support plus a structured summary and recovers that summary without mixed memory; its Pi fixture loads `dist/pi.js`, exercises all six native tools and lifecycle events, and proves the real Pi home is unchanged. It also rejects an OpenCode bundle containing the Node-native persistence graph. It never reads or mutates real homes. It cannot prove that a real host model consumes returned guidance; host acceptance and paid Claude model use remain separate real-host evidence dimensions.
+`integration:smoke` installs the actual tarball in a disposable directory, imports and executes the OpenCode `main` with Bun, delegates its persistence/recovery fixture to the separate Node CLI, converges public and local OpenCode state twice, synchronizes the Skill, enumerates exactly six MCP tools, and executes OpenCode, Codex, Claude Code, and Pi lifecycle fixtures from unrelated paths. Its host-shaped fixtures exercise checkpoint capture, structured summaries, recovery, and isolation; the Pi fixture loads `dist/pi.js`, exercises all five model-facing native tools plus hook-driven lifecycle events via `mem_session`, and proves the real Pi home is unchanged. It also rejects an OpenCode bundle containing the Node-native persistence graph. It never reads or mutates real homes. It cannot prove that a real host model consumes returned guidance; host acceptance and paid Claude model use remain separate real-host evidence dimensions.

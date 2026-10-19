@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Config, Hooks, PluginInput } from '@opencode-ai/plugin';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { LifecycleResult, RecallItem } from '../../src/memory-core/contracts.js';
 import {
@@ -18,7 +18,7 @@ import {
 
 type EventInput = Parameters<NonNullable<Hooks['event']>>[0];
 
-function pluginInput(directory: string, sessions: Map<string, Record<string, unknown>>): PluginInput {
+function pluginInput(directory: string, sessions: Map<string, Record<string, unknown>>, messages: (input: { path: { id: string } }) => Promise<unknown> = async () => ({ data: [] })): PluginInput {
   return {
     directory,
     worktree: directory,
@@ -27,6 +27,7 @@ function pluginInput(directory: string, sessions: Map<string, Record<string, unk
       app: { log: async () => ({ data: true }) },
       session: {
         get: async ({ path }: { path: { id: string } }) => ({ data: sessions.get(path.id) }),
+        messages,
       },
     },
   } as unknown as PluginInput;
@@ -355,11 +356,54 @@ process.stdout.write(JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: {
         'thoth-mem': {
           type: 'local',
           command: ['node', runtimeEntry, 'mcp', '--no-http'],
+          environment: { THOTH_MEM_NATIVE_HOST: 'opencode' },
         },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('forwards the newest assistant summary text with message-bound compaction keys and exact retries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-compactions-'));
+    const dispatched: OpenCodeLifecycleDispatchInput[] = [];
+    const message = (id: string, created: number, summary: boolean, text: string, role = 'assistant', sessionID = 'root-session') => ({
+      info: { id, sessionID, role, summary, time: { created } },
+      parts: [{ type: 'text', text }, { type: 'reasoning', text: 'never harvest reasoning' }, { type: 'text', text: 'Next part. <private>secret</private>' }],
+    });
+    let data = [message('old', 1, true, 'Old.'), message('first', 2, true, '## Goal\nFirst.'), message('normal', 5, false, 'Not a summary.'), message('user', 6, true, 'Not assistant.', 'user'), message('other', 7, true, 'Wrong session.', 'assistant', 'other')];
+    const messages = vi.fn(async () => ({ data }));
+    try {
+      const hooks = await createThothMemPlugin({ lifecycleDispatch: async (input) => { dispatched.push(input); return undefined; } })(pluginInput(root, new Map(), messages));
+      await hooks.event?.(sessionEvent('session.created', root, 'root-session'));
+      const compacted: EventInput = { event: { type: 'session.compacted', properties: { sessionID: 'root-session' } } };
+      await hooks.event?.(compacted);
+      data = [message('second', 8, true, '## Goal\nSecond.'), ...data];
+      await hooks.event?.(compacted);
+      await hooks.event?.(compacted);
+      const inputs = dispatched.filter((input) => input.operation === 'guide_post_compact');
+      expect(inputs.map((input) => input.content)).toEqual(['## Goal\nFirst.\nNext part. ', '## Goal\nSecond.\nNext part. ', '## Goal\nSecond.\nNext part. ']);
+      expect(inputs.map((input) => input.eventKey)).toEqual(['session-compacted:root-session:first', 'session-compacted:root-session:second', 'session-compacted:root-session:second']);
+      expect(messages).toHaveBeenCalledWith({ path: { id: 'root-session' } });
+      await hooks.event?.(sessionEvent('session.created', root, 'child', 'root-session'));
+      await hooks.event?.({ event: { type: 'session.compacted', properties: { sessionID: 'child' } } });
+      expect(messages).toHaveBeenCalledTimes(3);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['absent', 'failed', 'error-response'] as const)('degrades a %s OpenCode summary lookup to content-less guidance', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-no-summary-'));
+    const dispatched: OpenCodeLifecycleDispatchInput[] = [];
+    const messages = async () => {
+      if (mode === 'failed') throw new Error('host unavailable');
+      return mode === 'absent' ? { data: [] } : { error: { message: 'not found' } };
+    };
+    try {
+      const hooks = await createThothMemPlugin({ lifecycleDispatch: async (input) => { dispatched.push(input); return undefined; } })(pluginInput(root, new Map(), messages));
+      await hooks.event?.(sessionEvent('session.created', root, 'root-session'));
+      await expect(hooks.event?.({ event: { type: 'session.compacted', properties: { sessionID: 'root-session' } } })).resolves.toBeUndefined();
+      expect(dispatched.at(-1)).toEqual({ operation: 'guide_post_compact', directory: root, rootSessionKey: 'root-session', eventKey: 'session-compacted:root-session' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('captures checkpoint evidence and keeps prompt flow non-blocking when no summary is supplied', async () => {

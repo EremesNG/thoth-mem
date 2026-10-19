@@ -13,6 +13,7 @@ export const CANONICAL_PUBLIC_PLUGIN_INVENTORY = [
   '.codex-plugin/plugin.json',
   '.claude-plugin/plugin.json',
   '.mcp.json',
+  'codex.mcp.json',
   'hooks/hooks.json',
   'hooks/claude-hooks.json',
   'runners/public-runner.mjs',

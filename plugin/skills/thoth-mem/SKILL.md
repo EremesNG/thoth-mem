@@ -9,8 +9,9 @@ description: >-
 
 # thoth-mem memory recipe
 
-Use only the six memory tools — MCP tools on most hosts, native tools in Pi:
+MCP hosts expose six memory tools:
 `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
+Pi exposes five native tools (the first five above); `mem_session` is hook-only.
 
 ## Default cadence
 
@@ -90,14 +91,14 @@ outcome as a direct promoted memory (usually `decision` or `discovery` with
 it no longer leads recovery. Only the newest open handoff leads recovery, so
 close finished workstreams rather than leaving them open.
 
-Do not create a handoff merely because a response is ending. Do not call
-`mem_session` for ordinary completion; reserve it for an actual verified root
-lifecycle event.
+Do not create a handoff merely because a response is ending.
+On MCP hosts, do not call `mem_session` for ordinary completion; reserve it for
+an actual verified root lifecycle event.
 
 ## Identity and ownership
 
-Before a session-attributed write or lifecycle operation, load exactly one identity
-reference for the active host: `references/opencode.md`, `references/codex.md`,
+On native hosts, before a session-attributed write or lifecycle operation, load exactly
+one identity reference for the active host: `references/opencode.md`, `references/codex.md`,
 `references/claude-code.md`, or `references/pi.md`. For Pi, select
 `references/pi.md` for identity and lifecycle operations.
 
@@ -107,11 +108,14 @@ verified lifecycle or project output. Never derive the key from a path, basename
 Git remote or branch, worktree name, host project ID, database listing, or recalled
 content.
 
-For session attribution, pass the verified `root_session_key` together with its
+For native session attribution, pass the verified `root_session_key` together with its
 matching `harness`. Never substitute a child, message, turn, prompt, or tool-call
 identifier. The root agent owns lifecycle and handoffs; delegated agents stay within
 explicitly authorized scope. If only the project is verified, a project-only save is
-allowed, but report it as unattributed and do not claim session continuity.
+allowed. Generic MCP servers attribute sessionless saves to an unverified connection
+session; native/project-only callers may remain unattributed. Report the confirmed
+bounds, never claim native root continuity from a connection session, and never use
+it for observation review, promotion, or `mem_session`.
 
 ## Keep memory useful and safe
 

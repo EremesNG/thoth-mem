@@ -3,7 +3,6 @@ dist/
 /test-results/
 /benchmarks/.cache/longmemeval/
 *.db
-.thoth/
 *.tsbuildinfo
 /nul
 

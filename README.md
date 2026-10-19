@@ -128,13 +128,14 @@ mem_get only for selected stable IDs
 | Inspect timelines, summaries, observations, or project state | `mem_project` |
 | Record verified root lifecycle events and supported summaries | `mem_session` |
 
-The MCP server exposes exactly these six tools. OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool; it is session metadata, not a memory operation.
+The MCP server exposes exactly these six tools. OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool; it is session metadata, not a memory operation. Generic MCP connections attribute sessionless saves to a server-assigned connection session, not a verified native root session.
 
 <details>
 <summary><strong>Temporal history, summaries, and observation review</strong></summary>
 
 - Use `mem_project` with `action=timeline` when you need to understand how promoted knowledge changed, rather than which memories best match a query.
-- At `checkpoint_pre_compact` or `finalize`, `mem_session` can validate and version an externally produced summary whose claims cite in-range evidence from the same project and root session. The core never generates that summary.
+- At `checkpoint_pre_compact` or `finalize`, the core validates a submitted summary or deterministically derives one from the session's evidence, without model or network calls. Pi, Claude Code, and OpenCode also forward available host compaction text as checkpoint evidence; recognized headings yield a cited harness summary, never promoted memory.
+- Automatic recovery, including after compaction, shows the newest open handoff, then the previous session's summary, then other project memories within the existing caps. It never shows the current session's own summary; explicit session reads still can.
 - Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory.
 
 </details>

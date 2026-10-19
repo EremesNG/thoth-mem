@@ -312,7 +312,7 @@ import assert from 'node:assert/strict';
 const extension = (await import(${JSON.stringify(pathToFileURL(join(packageRoot, 'dist', 'pi.js')).href)})).default;
 const tools = []; const handlers = new Map();
 extension({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
-if (tools.map((tool) => tool.name).join(',') !== 'mem_save,mem_recall,mem_context,mem_get,mem_project,mem_session') throw new Error('wrong Pi tool catalog');
+if (tools.map((tool) => tool.name).join(',') !== 'mem_save,mem_recall,mem_context,mem_get,mem_project') throw new Error('wrong Pi tool catalog');
 const plainTheme = { fg: (_color, text) => text, bold: (text) => text };
 if (tools.some((tool) => tool.renderShell !== 'self' || !tool.renderCall(tool.name === 'mem_save' ? { memory: { kind: 'decision', title: 'Packed' } } : {}, plainTheme, { state: {} }).render(60)[0].includes(tool.name))) throw new Error('missing framed Pi tool rendering');
 const context = { cwd: ${JSON.stringify(nativeProject)}, sessionManager: { getSessionId: () => 'packed-pi-root', getLeafId: () => 'packed-pi-leaf' }, ui: { notify: () => undefined } };
@@ -445,8 +445,15 @@ process.stdout.write('native-pi-ok');
       });
       const compactOutput = JSON.parse(compactRunner.stdout).hookSpecificOutput?.additionalContext;
   assert(compactOutput?.startsWith('<!-- thoth-mem:recovery:start -->\nthoth-mem verified identity: root_session_id=claude-root; project_key=path:') && compactOutput.includes('; project_name=project with spaces'), 'Packed Claude compact recovery omitted verified identity.');
-      assert(compactOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude compact recovery omitted the pre-compaction checkpoint.');
-      assert(compactOutput.includes('(summary:') && !compactOutput.includes('(memory:'), 'Packed Claude compact recovery did not isolate the supported summary.');
+      assert(!compactOutput.includes('(summary:'), 'Packed Claude compact recovery showed the session its own summary.');
+      const nextRunner = run(process.execPath, [join(installedPlugin, 'runners', 'public-runner.mjs'), '--harness', harness], {
+        cwd: tmpdir(),
+        input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'claude-next', event_id: 'packed-claude-next-start', cwd: join(scratch, 'project with spaces'), source: 'startup' }),
+        env: managerEnv,
+      });
+      const nextOutput = JSON.parse(nextRunner.stdout).hookSpecificOutput?.additionalContext;
+      assert(nextOutput?.includes('root_session_id=claude-next;'), 'Packed Claude next-session recovery omitted verified identity.');
+      assert(nextOutput.includes('(summary:') && nextOutput.includes('Keep packed Claude compact recovery.'), 'Packed Claude next-session recovery omitted the previous session summary.');
     }
   }
 

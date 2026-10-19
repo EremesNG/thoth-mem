@@ -192,31 +192,13 @@ Default current retrieval MUST prefer valid guidance over comparable superseded,
 
 ### Requirement: Project Briefing MUST Be Deterministic and Bounded
 
-`guide_post_compact` MUST select only the newest eligible current summary for the exact verified project, harness, and root session. It MUST NOT fill remaining budget from project memories; when no eligible session summary can be delivered, it MUST abstain with verified identity only and truthful empty selection metadata.
+Automatic recovery for a verified root session (enroll/recover, per-prompt refresh, and `guide_post_compact`) MUST render one deterministic bounded selection that never includes that session's own summaries, and `guide_post_compact` MUST render the same project recovery as ordinary recovery instead of abstaining; the selection MUST order the newest open handoff first, then the newest current summary of the previous session (the most recent other root session of the same project by last non-summary activity, from any harness), then the remaining project memories in the existing kind order, within the existing aggregate and host rendering caps, and summaries of every other session MUST stay absent; explicit `mem_context` with a verified session pair MAY still return that session's own newest summary; degraded or premature post-compaction events MUST keep failing closed without injecting memory.
 
-#### Scenario: US2 - Recover only the compacted conversation 1
+#### Scenario: Project Briefing MUST Be Deterministic and Bounded
 
-- **GIVEN** a compacted root session with a supported current checkpoint summary plus unrelated current project memories
+- **GIVEN** a compacted root session with its own checkpoint summary, an open project handoff, and a previous root session with a final summary
 - **WHEN** `guide_post_compact` runs
-- **THEN** only the newest eligible summary from that exact project, harness, and root session is eligible for rendering
-
-#### Scenario: US2 - Recover only the compacted conversation 2
-
-- **GIVEN** a compacted root session with no eligible current summary and one or more current project handoffs from other sessions
-- **WHEN** `guide_post_compact` runs
-- **THEN** recovery renders verified identity only, returns empty selected record IDs, and reports `contextDelivered=false`
-
-#### Scenario: US2 - Recover only the compacted conversation 3
-
-- **GIVEN** a summary belonging to another root session or harness
-- **WHEN** post-compaction recovery runs
-- **THEN** that summary and every project memory remain absent
-
-#### Scenario: US2 - Recover only the compacted conversation 4
-
-- **GIVEN** a degraded or premature post-compaction event
-- **WHEN** recovery is evaluated
-- **THEN** existing fail-closed behavior remains unchanged and no memory is injected
+- **THEN** recovery renders the open handoff, then the previous session's summary, then remaining memories within the caps and omits the compacted session's own summary
 
 ### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 

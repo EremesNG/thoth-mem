@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "thoth-mem": {
+      "cwd": ".",
+      "command": "node",
+      "args": [
+        "./runners/public-runner.mjs",
+        "--mcp"
+      ],
+      "env": {
+        "THOTH_MEM_NATIVE_HOST": "codex"
+      }
+    }
+  }
+}

@@ -178,15 +178,14 @@ export function renderContinuation(input: ContinuationRenderInput): Continuation
   const fixedEnvelopeCodePoints = codePoints(`${contextualPrefix}${contextualSuffix}`).length;
   const identityPrefixCodePoints = codePoints(identityPrefix).length;
   const candidates = input.items.map((item) => candidateFrom(item, maxCodePoints)).filter((candidate): candidate is Candidate => candidate !== undefined);
-  const primary = candidates.find((candidate) => isSummaryItem(candidate.item)) ?? candidates.find((candidate) => candidate.item.kind === 'handoff');
+  // Selection already orders the leading handoff, previous summary, and remaining memories.
+  const first = candidates[0];
+  const primary = first && (isSummaryItem(first.item) || first.item.kind === 'handoff') ? first : undefined;
   const primaryFitsCompletely = primary !== undefined
     && fixedEnvelopeCodePoints + fixedItemCodePoints(primary) + primary.content.length <= maxCodePoints;
-  const orderedCandidates = primary
-    ? [primary, ...candidates.filter((candidate) => candidate !== primary)]
-    : candidates;
   const selected: Candidate[] = [];
   let reservedCodePoints = fixedEnvelopeCodePoints;
-  for (const candidate of orderedCandidates) {
+  for (const candidate of candidates) {
     if (selected.length === MAX_CONTINUATION_ITEMS) break;
     const budgetedCandidate = primaryFitsCompletely && candidate === primary
       ? { ...candidate, minimumContentCodePoints: candidate.content.length }

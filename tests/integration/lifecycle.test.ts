@@ -10,6 +10,98 @@ import { MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START } fro
 import { MemoryService } from '../../src/memory-core/service.js';
 
 describe('host-neutral lifecycle', () => {
+  it('stores sanitized host compaction evidence and cited claims, reusing only the newest parsed host sections', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const base = { harness: 'pi' as const, project: { key: 'repo:host-compaction', name: 'host' }, rootSessionKey: 'root' };
+    try {
+      service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre' });
+      const input = { ...base, operation: 'guide_post_compact' as const, eventKey: 'host-1', content: '## Goal\nRestore continuity. <private>secret</private>\n## Done\nParser added.\n## Next Steps\nRun tests.' };
+      const guided = service.lifecycle(input);
+      expect(guided).toMatchObject({ outcome: 'confirmed', evidenceId: expect.any(String), summaryId: expect.any(String), event: { sequence: 1 } });
+      expect(service.get({ id: guided.evidenceId! }).record).toMatchObject({ kind: 'checkpoint', content: '## Goal\nRestore continuity. \n## Done\nParser added.\n## Next Steps\nRun tests.' });
+      expect(service.get({ id: guided.summaryId! }).record).toMatchObject({ kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness' }, claims: expect.arrayContaining([
+        expect.objectContaining({ kind: 'objective', content: 'Restore continuity.', supportIds: [guided.evidenceId] }),
+        expect.objectContaining({ kind: 'completed', content: 'Parser added.', supportIds: [guided.evidenceId] }),
+        expect.objectContaining({ kind: 'next_action', content: 'Run tests.', supportIds: [guided.evidenceId] }),
+      ]) });
+      service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'A later objective.' });
+      expect(service.lifecycle(input)).toMatchObject({ duplicate: true, summaryId: guided.summaryId, evidenceId: guided.evidenceId, event: guided.event });
+      expect(() => service.lifecycle({ ...input, content: '## Goal\nChanged.' })).toThrow(/reused with different content\/summary/u);
+      service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre-2' });
+      const newer = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'host-2', content: '## Goal\nNew host objective.\n## Next Steps\nFinish adapters.' });
+      const unrecognized = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'unrecognized', content: 'Unstructured host text.' });
+      expect(unrecognized).toMatchObject({ evidenceId: expect.any(String), summaryId: null });
+      expect(service.get({ id: unrecognized.evidenceId! }).record).toMatchObject({ kind: 'checkpoint', content: 'Unstructured host text.' });
+      const final = service.lifecycle({ ...base, operation: 'finalize', eventKey: 'final' });
+      const record = service.get({ id: final.summaryId! }).record;
+      expect(record).toMatchObject({ claims: expect.arrayContaining([
+        expect.objectContaining({ kind: 'objective', content: 'A later objective.' }),
+        expect.objectContaining({ kind: 'objective', content: 'New host objective.', supportIds: [newer.evidenceId] }),
+        expect.objectContaining({ kind: 'next_action', content: 'Finish adapters.', supportIds: [newer.evidenceId] }),
+      ]) });
+      expect(JSON.stringify(record)).not.toContain('Run tests.');
+      expect(JSON.stringify(record)).not.toContain('Unstructured host text.');
+      expect(JSON.stringify(record)).not.toContain('secret');
+      expect(service.context({ projectKey: base.project.key })).toMatchObject({ selectedMemoryIds: [], selectedSummaryIds: [final.summaryId] });
+      expect(service.listObservations({ projectKey: base.project.key }).items).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('keeps host text without an ordered session event as evidence only', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const base = { harness: 'import' as const, project: { key: 'repo:unordered-host', name: 'unordered' }, rootSessionKey: 'root' };
+    try {
+      service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre' });
+      const receipt = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'post', content: '## Goal\nNot ordered session support.' });
+      expect(receipt).toMatchObject({ evidenceId: expect.any(String), event: null, summaryId: null });
+      expect(service.projectSummaries({ projectKey: base.project.key }).items).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('keeps premature and degraded host text fail-closed and binds retries to sanitized content', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const base = { harness: 'claude' as const, project: { key: 'repo:host-closed', name: 'closed' }, rootSessionKey: 'root' };
+    try {
+      service.save({ project: base.project, session: { harness: 'pi', rootSessionKey: 'previous' }, evidence: { kind: 'root_prompt', content: 'Previous objective.' } });
+      service.save({ project: base.project, evidence: { kind: 'handoff', content: 'Project work.' }, memory: { kind: 'handoff', title: 'Continue', content: 'Project work.', topicKey: 'handoff/current' } });
+      const input = { ...base, operation: 'guide_post_compact' as const, eventKey: 'early', content: '## Goal\nPremature text.' };
+      expect(service.lifecycle(input)).toMatchObject({ outcome: 'degraded', evidenceId: null, summaryId: null, recovery: { selectedRecordIds: [], sources: [] }, capability: { contextDelivered: false } });
+      service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'pre' });
+      expect(service.lifecycle(input)).toMatchObject({ outcome: 'degraded', duplicate: true, evidenceId: null, summaryId: null });
+      expect(() => service.lifecycle({ ...input, content: 'Different text.' })).toThrow(/reused with different content\/summary/u);
+      const degraded = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'degraded', identityConfidence: 'degraded', content: '## Goal\nUnverified text.' });
+      expect(degraded).toMatchObject({ outcome: 'degraded', evidenceId: null, summaryId: null, recovery: { selectedRecordIds: [], sources: [] }, capability: { contextDelivered: false } });
+      expect(service.projectSummaries({ projectKey: base.project.key }).items).toEqual([]);
+    } finally { service.close(); }
+  });
+
+  it('derives checkpoint and final summaries when omitted, preserving original receipts after newer evidence', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const base = { harness: 'pi' as const, project: { key: 'repo:derived-lifecycle', name: 'derived' }, rootSessionKey: 'root' };
+    try {
+      const empty = service.lifecycle({ ...base, rootSessionKey: 'empty', operation: 'finalize', eventKey: 'empty-final' });
+      expect(empty.summaryId).toBeNull();
+      const prompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'Implement summaries.' });
+      const checkpointInput = { ...base, operation: 'checkpoint_pre_compact' as const, eventKey: 'checkpoint' };
+      const checkpoint = service.lifecycle(checkpointInput);
+      expect(checkpoint.summaryId).toEqual(expect.any(String));
+      expect(service.get({ id: checkpoint.summaryId! }).record).toMatchObject({ kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness' }, claims: [expect.objectContaining({ kind: 'objective', content: 'Implement summaries.', supportIds: [prompt.evidenceId] })] });
+      const finalInput = { ...base, operation: 'finalize' as const, eventKey: 'final' };
+      const final = service.lifecycle(finalInput);
+      expect(final.summaryId).toEqual(expect.any(String));
+      expect(service.get({ id: final.summaryId! }).record).toMatchObject({ kind: 'final', coverage: { fromSequence: 1, toSequence: 1 } });
+      service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'later', content: 'New evidence after those receipts.' });
+      expect(service.lifecycle(checkpointInput)).toMatchObject({ duplicate: true, summaryId: checkpoint.summaryId, evidenceId: checkpoint.evidenceId });
+      expect(service.lifecycle(finalInput)).toMatchObject({ duplicate: true, summaryId: final.summaryId, evidenceId: final.evidenceId });
+      expect(service.projectSummaries({ projectKey: base.project.key, history: true }).items).toHaveLength(2);
+      const next = service.lifecycle({ ...base, operation: 'checkpoint_pre_compact', eventKey: 'checkpoint-2' });
+      expect(service.get({ id: next.summaryId! }).record).toMatchObject({ version: 2, coverage: { fromSequence: 1, toSequence: 4 } });
+      expect(() => service.lifecycle({ ...checkpointInput, content: 'Changed content.' })).toThrow(/reused with different content\/summary/u);
+      const degraded = service.lifecycle({ ...base, operation: 'finalize', eventKey: 'degraded-final', identityConfidence: 'degraded' });
+      expect(degraded).toMatchObject({ outcome: 'degraded', summaryId: null, evidenceId: null });
+    } finally { service.close(); }
+  });
+
   it('covers enroll, recover, one prompt, checkpoint, guidance, and finalize receipts', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -34,7 +126,7 @@ describe('host-neutral lifecycle', () => {
       service = new MemoryService({ databasePath: path }); const duplicate = service.lifecycle(input);
       expect(first).toMatchObject({ outcome: 'confirmed', duplicate: false });
       expect(duplicate).toMatchObject({ outcome: 'confirmed', duplicate: true, evidenceId: first.evidenceId });
-      expect(service.context({ projectKey: 'repo:life' }).items).toEqual([]);
+      expect(service.context({ projectKey: 'repo:life' })).toMatchObject({ selectedMemoryIds: [], selectedSummaryIds: [expect.any(String)] });
       service.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -111,7 +203,7 @@ describe('host-neutral lifecycle', () => {
         kind: 'root_prompt',
         content: 'Keep the public request. ',
       });
-      expect(service.context({ projectKey: 'repo:layers' }).items).toEqual([]);
+      expect(service.context({ projectKey: 'repo:layers' }).selectedMemoryIds).toEqual([]);
 
       const checkpointInput = {
         ...base,
@@ -123,7 +215,7 @@ describe('host-neutral lifecycle', () => {
       const replay = service.lifecycle(checkpointInput);
       expect(replay).toMatchObject({ duplicate: true, evidenceId: checkpoint.evidenceId });
       expect(service.get({ id: checkpoint.evidenceId! }).record).toMatchObject({ kind: 'checkpoint', content: checkpointInput.content });
-      expect(service.context({ projectKey: 'repo:layers' }).items).toEqual([]);
+      expect(service.context({ projectKey: 'repo:layers' }).selectedMemoryIds).toEqual([]);
       expect(service.recall({ projectKey: 'repo:layers', query: 'continuity' }).items).toEqual([]);
       expect(service.listObservations({ projectKey: 'repo:layers' }).items).toEqual([]);
     } finally { service.close(); }
@@ -163,7 +255,9 @@ describe('host-neutral lifecycle', () => {
       expect(promptRecord.content).toContain('Keep this request');
       expect(checkpointRecord.content).toContain('Objective: continue safely');
       expect(checkpointReplay).toMatchObject({ duplicate: true, evidenceId: checkpoint.evidenceId });
-      expect(service.context({ projectKey: base.project.key }).items).toHaveLength(0);
+      const context = service.context({ projectKey: base.project.key });
+      expect(context.selectedMemoryIds).toEqual([]);
+      expect(JSON.stringify(context.items)).not.toContain(credential);
     } finally { service.close(); }
   });
 
@@ -247,35 +341,36 @@ describe('host-neutral lifecycle', () => {
     } finally { service.close(); }
   });
 
-  it('recovers checkpoint and final summaries for the verified root with truthful capability and selected IDs', () => {
+  it('excludes its own checkpoint and final summaries from automatic recovery but preserves explicit reads', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const base = { harness: 'codex' as const, project: { key: 'repo:summary-lifecycle', name: 'summary-lifecycle' }, rootSessionKey: 'root-summary' };
     try {
+      const memory = service.save({ project: base.project, evidence: { kind: 'explicit_save', content: 'Project decision.' }, memory: { kind: 'decision', title: 'Recovery', content: 'Keep project recovery after compaction.' } }).memory!;
       const prompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt', content: 'Implement supported session summaries.' });
       const checkpoint = service.lifecycle({
         ...base, operation: 'checkpoint_pre_compact', eventKey: 'checkpoint',
-        summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'CHECKPOINT-SUMMARY-CONTENT', supportIds: [prompt.evidenceId!] }, { kind: 'next_action', content: 'CONTINUE-AFTER-COMPACTION', supportIds: [prompt.evidenceId!] }] },
+        summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'OWN-CHECKPOINT-SUMMARY', supportIds: [prompt.evidenceId!] }] },
       });
-      expect(checkpoint).toMatchObject({ summaryId: expect.any(String), capability: { modelConsumed: false } });
       const guided = service.lifecycle({ ...base, operation: 'guide_post_compact', eventKey: 'post' });
-      expect(guided.recovery).toMatchObject({ selectedSummaryIds: [checkpoint.summaryId], selectedMemoryIds: [], selectedRecordIds: [checkpoint.summaryId] });
-      expect(guided.recovery?.context).toContain(`(summary:${checkpoint.summaryId})`);
-      expect(guided.recovery?.context).toContain('CONTINUE-AFTER-COMPACTION');
-
-      const secondPrompt = service.lifecycle({ ...base, operation: 'capture_root', eventKey: 'prompt-2', content: 'Finalize with verified evidence.' });
-      const final = service.lifecycle({
-        ...base, operation: 'finalize', eventKey: 'final',
-        summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: secondPrompt.event!.sequence }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'completed', content: 'FINAL-SUMMARY-CONTENT', outcome: 'succeeded', supportIds: [secondPrompt.evidenceId!] }] },
-      });
-      const recovered = service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover-final' });
-      expect(recovered.recovery?.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId, kind: 'final' });
-      expect(recovered.recovery?.selectedSummaryIds).toEqual([final.summaryId]);
-      expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([final.summaryId, service.get({ id: final.summaryId! }).record.submissionEvidenceId]));
-      expect(recovered.capability).toMatchObject({ hookExecuted: true, memoryConfirmed: true, contextDelivered: true, modelConsumed: false });
+      const ordinary = service.lifecycle({ ...base, operation: 'recover', eventKey: 'recover' });
+      for (const receipt of [guided, ordinary]) {
+        expect(receipt.recovery).toMatchObject({ selectedSummaryIds: [], selectedMemoryIds: [memory.id], selectedRecordIds: [memory.id] });
+        expect(receipt.recovery?.context).not.toContain('OWN-CHECKPOINT-SUMMARY');
+        expect(receipt.recovery?.context).toContain('Keep project recovery after compaction.');
+      }
+      expect(guided.recovery).toEqual(ordinary.recovery);
+      expect(service.context({ projectKey: base.project.key, rootSessionKey: base.rootSessionKey, harness: base.harness }).selectedSummaryIds).toEqual([checkpoint.summaryId]);
+      const final = service.lifecycle({ ...base, operation: 'finalize', eventKey: 'final' });
+      const input = { ...base, operation: 'recover' as const, eventKey: 'recover-final' };
+      for (const receipt of [service.lifecycle(input), service.lifecycle(input)]) {
+        expect(receipt.recovery?.selectedSummaryIds).toEqual([]);
+        expect(receipt.recovery?.selectedMemoryIds).toEqual([memory.id]);
+        expect(receipt.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
+      }
+      expect(service.context({ projectKey: base.project.key, rootSessionKey: base.rootSessionKey, harness: base.harness }).selectedSummaryIds).toEqual([final.summaryId]);
     } finally { service.close(); }
   });
-
-  it.each(['codex', 'opencode', 'claude'] as const)('limits %s post-compaction recovery to the exact session summary', (harness) => {
+  it.each(['codex', 'opencode', 'claude', 'pi'] as const)('renders the same project recovery after %s compaction, excluding its own summary', (harness) => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: `repo:compact-${harness}`, name: `compact-${harness}` };
     try {
@@ -287,20 +382,20 @@ describe('host-neutral lifecycle', () => {
       const foreignPrompt = service.lifecycle({
         operation: 'capture_root', harness, project, rootSessionKey: 'foreign-root', eventKey: 'foreign-prompt', content: 'Foreign work.',
       });
-      service.lifecycle({
+      const previousSummary = service.lifecycle({
         operation: 'checkpoint_pre_compact', harness, project, rootSessionKey: 'foreign-root', eventKey: 'foreign-checkpoint',
         summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: harness }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignPrompt.evidenceId!] }] },
       });
 
       service.lifecycle({ operation: 'checkpoint_pre_compact', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'summaryless-checkpoint' });
       const summaryless = service.lifecycle({ operation: 'guide_post_compact', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'summaryless-guide' });
-      expect(summaryless.recovery).toMatchObject({ items: [], selectedSummaryIds: [], selectedMemoryIds: [], selectedRecordIds: [], sources: [] });
-      expect(summaryless.recovery?.context).not.toContain('UNRELATED-PROJECT-HANDOFF');
-      expect(summaryless.recovery?.context).not.toContain('FOREIGN-SESSION-SUMMARY');
-      expect(summaryless.capability).toMatchObject({ contextDelivered: false, modelConsumed: false });
+      expect(summaryless.recovery).toMatchObject({ selectedSummaryIds: [previousSummary.summaryId], selectedMemoryIds: [unrelated.memory!.id], selectedRecordIds: [unrelated.memory!.id, previousSummary.summaryId] });
+      expect(summaryless.recovery?.context).toContain('UNRELATED-PROJECT-HANDOFF');
+      expect(summaryless.recovery?.context).toContain('FOREIGN-SESSION-SUMMARY');
+      expect(summaryless.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
 
       const ordinary = service.lifecycle({ operation: 'recover', harness, project, rootSessionKey: 'summaryless-root', eventKey: 'ordinary-recover' });
-      expect(ordinary.recovery).toMatchObject({ selectedMemoryIds: [unrelated.memory!.id], selectedRecordIds: [unrelated.memory!.id] });
+      expect(ordinary.recovery).toEqual(summaryless.recovery);
       expect(ordinary.recovery?.context).toContain('UNRELATED-PROJECT-HANDOFF');
       expect(ordinary.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
 
@@ -312,9 +407,10 @@ describe('host-neutral lifecycle', () => {
         summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: harness }, claims: [{ kind: 'next_action', content: 'EXACT-SESSION-NEXT-ACTION', supportIds: [exactPrompt.evidenceId!] }] },
       });
       const exact = service.lifecycle({ operation: 'guide_post_compact', harness, project, rootSessionKey: 'exact-root', eventKey: 'exact-guide' });
-      expect(exact.recovery).toMatchObject({ selectedSummaryIds: [checkpoint.summaryId], selectedMemoryIds: [], selectedRecordIds: [checkpoint.summaryId] });
-      expect(exact.recovery?.context).toContain('EXACT-SESSION-NEXT-ACTION');
-      expect(exact.recovery?.context).not.toContain('UNRELATED-PROJECT-HANDOFF');
+      expect(exact.recovery).toMatchObject({ selectedSummaryIds: [previousSummary.summaryId], selectedMemoryIds: [unrelated.memory!.id], selectedRecordIds: [unrelated.memory!.id, previousSummary.summaryId] });
+      expect(exact.recovery?.selectedSummaryIds).not.toContain(checkpoint.summaryId);
+      expect(exact.recovery?.context).not.toContain('EXACT-SESSION-NEXT-ACTION');
+      expect(exact.recovery?.context).toContain('UNRELATED-PROJECT-HANDOFF');
       expect(exact.capability).toMatchObject({ contextDelivered: true, modelConsumed: false });
     } finally { service.close(); }
   });

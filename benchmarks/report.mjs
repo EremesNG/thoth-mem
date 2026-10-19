@@ -90,7 +90,11 @@ export function validateReport(report) {
   if (!summary || summary.version_precedence !== 1) errors.push('summary.version_precedence');
   if (!summary || summary.no_auto_promotion !== 1 || summary.promoted_handoffs !== 0) errors.push('summary.promotion');
   if (!summary || summary.checkpoint_content_events_expected !== 3 || summary.checkpoint_content_events_recorded !== 3) errors.push('summary.checkpoint_capture');
-  if (!summary || summary.host_recoveries_expected !== 3 || summary.three_host_recovery !== 3 || !uniqueStrings(summary.control_selected_memory_ids, 3) || !uniqueStrings(summary.candidate_selected_summary_ids, 3)) errors.push('summary.recovery');
+  // Keep the published three-host envelope; candidate IDs now measure previous-session recovery.
+  const validPreviousSessionRecovery = summary && summary.host_recoveries_expected === 3 && summary.three_host_recovery === 3
+    && uniqueStrings(summary.control_selected_memory_ids, 3) && uniqueStrings(summary.candidate_selected_summary_ids, 3)
+    && summary.candidate_selected_summary_ids.every((id) => !summary.control_selected_memory_ids.includes(id));
+  if (!validPreviousSessionRecovery) errors.push('summary.recovery');
   if (!summary || summary.support_leakage !== 0) errors.push('summary.support_leakage');
   if (!summary || JSON.stringify(summary.actionable_field_names) !== JSON.stringify(ACTIONABLE_FIELDS) || summary.actionable_fields_expected !== ACTIONABLE_FIELDS.length || summary.control_actionable_fields_recovered !== ACTIONABLE_FIELDS.length || summary.candidate_actionable_fields_recovered !== ACTIONABLE_FIELDS.length) errors.push('summary.actionable_fields');
   if (!summary || !Array.isArray(summary.candidate_selected_memory_ids) || summary.candidate_selected_memory_ids.length !== 0) errors.push('summary.contamination');

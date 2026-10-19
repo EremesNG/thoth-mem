@@ -49,7 +49,7 @@ const forbiddenAffirmativeRequirements = [
 
 describe('canonical product contract', () => {
   it('contains exactly the nine current capabilities', () => {
-    const capabilities = readdirSync('openspec/specs', { withFileTypes: true })
+    const capabilities = readdirSync('.thoth/specs', { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
@@ -60,7 +60,7 @@ describe('canonical product contract', () => {
 
   it('keeps current invariants and no affirmative retired requirements', () => {
     const canonical = expectedCapabilities
-      .map((capability) => readFileSync(join('openspec', 'specs', capability, 'spec.md'), 'utf8'))
+      .map((capability) => readFileSync(join('.thoth', 'specs', capability, 'spec.md'), 'utf8'))
       .join('\n');
     const transitionalGeneration = `v${2}`;
     const transitionalLabel = new RegExp(String.raw`\b${transitionalGeneration}\b|[-_.]${transitionalGeneration}\b|${transitionalGeneration}[-_.]`, 'i');
@@ -68,15 +68,5 @@ describe('canonical product contract', () => {
     for (const title of requiredTitles) expect(canonical).toContain(`### Requirement: ${title}`);
     for (const pattern of forbiddenAffirmativeRequirements) expect(canonical).not.toMatch(pattern);
     expect(canonical).not.toMatch(transitionalLabel);
-  });
-
-  it('describes the actual current repository context', () => {
-    const context = readFileSync('openspec/config.yaml', 'utf8');
-
-    expect(context).toContain('Node.js >=22.12.0');
-    expect(context).toContain('src/memory-core/');
-    expect(context).toContain('exactly six MCP tools');
-    expect(context).not.toContain('src/ with store/, tools/, utils/, sync/, http-* modules');
-    expect(context).not.toContain('CI: none configured');
   });
 });

@@ -35,6 +35,9 @@ import {
   type SubmitObservationInput,
   type SubmitObservationResult,
   type SessionEventInput,
+  type SessionIdentityInput,
+  type SessionSummaryInput,
+  type SessionSummaryKind,
   type SessionSummaryRecord,
   type SummaryContextItem,
   type TimelineInput,
@@ -45,8 +48,9 @@ import { renderContinuation } from './continuation.js';
 import { canonicalizeObservation, canonicalizeObservationReview, insertObservationProjection, insertObservationReviewProjection, listObservationRecords, observationFromId } from './observations.js';
 import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
+import { buildDerivedSessionSummary, deriveSessionSummary, parseHostCompactionClaims } from './session-summary-derivation.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
-import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, projectIdentityFromId, resolveProjectIdentityKey, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
@@ -90,7 +94,7 @@ export interface RecallDiagnostic {
 interface ServiceOptions { databasePath: string; readonly?: boolean; recallObserver?: (observation: RecallDiagnostic) => void }
 interface RecallInput { projectKey: string; query: string; mode?: 'compact' | 'context'; history?: boolean; budgetChars?: number; limit?: number; correlationId?: string; lexicalStrategy?: LexicalQueryStrategyId }
 interface ContextInput { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; budgetChars?: number; correlationId?: string }
-type ContextSelection = 'project' | 'session_summary_only';
+type ContextSelection = 'explicit' | 'recovery';
 export interface RetrievalTelemetry { stage: 'compact' | 'context' | 'full_fetch'; finalized: boolean; escalated: boolean; avoided: boolean; full_fetches: 0 | 1; avoided_full_fetches: 0 | 1 }
 export interface ProjectRenameInput { selector: string; name: string }
 export interface ProjectListing { id: string; key: string; name: string; aliases: string[]; aliasCount: number; aliasesTruncated: boolean; shadowed: boolean }
@@ -897,11 +901,7 @@ export class MemoryService {
     return { items, requestedChars, returnedChars, truncated: items.length < rows.length };
   }
 
-  context(input: ContextInput): ContextResult {
-    return this.contextSelection(input, 'project');
-  }
-
-  private contextSelection(input: ContextInput, selection: ContextSelection): ContextResult {
+  context(input: ContextInput, selection: ContextSelection = 'explicit'): ContextResult {
     if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error(`Supply both root_session_key and harness for session context, or omit both for project context; ${input.rootSessionKey ? 'root_session_key supplied without harness' : 'harness supplied without root_session_key'}`);
     const requested = Math.max(64, Math.min(input.budgetChars ?? 4000, 20_000));
     const correlationId = input.correlationId ?? randomUUID();
@@ -918,37 +918,43 @@ export class MemoryService {
     let remaining = requested;
     let sourceChars = 0;
     let evidenceChars = 0;
-    if (sessionId) {
-      const selected = this.database.prepare("SELECT id FROM session_summaries WHERE session_id=? AND status='current' ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id LIMIT 1").get(sessionId) as { id: string } | undefined;
-      if (selected) {
-        const record = sessionSummaryFromId(this.database, selected.id)!;
-        const claimOrder = ['objective', 'completed', 'decision', 'verification', 'changed_surface', 'pending', 'blocker', 'next_action'] as const;
-        const orderedClaims = record.claims.slice().sort((left, right) => claimOrder.indexOf(left.kind) - claimOrder.indexOf(right.kind));
-        const nextActions = orderedClaims.filter((claim) => claim.kind === 'next_action');
-        const selectedClaims: SummaryContextItem['claims'] = [];
-        let claimChars = nextActions.reduce((sum, claim) => sum + [...claim.content].length, 0);
-        if (claimChars <= Math.min(remaining, 700)) {
-          for (const claim of orderedClaims) {
-            if (claim.kind === 'next_action') continue;
-            const size = [...claim.content].length;
-            if (claimChars + size > Math.min(remaining, 700)) continue;
-            selectedClaims.push({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) });
-            claimChars += size;
-          }
-          selectedClaims.push(...nextActions.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) })));
-        }
-        const fullSummaryChars = record.claims.reduce((sum, claim) => sum + claim.content.length, 0);
-        sourceChars += fullSummaryChars;
-        evidenceChars += Number((this.database.prepare('SELECT length(content) AS value FROM evidence WHERE id=?').get(record.submissionEvidenceId) as { value: number }).value);
-        const snippet = selectedClaims.map((claim) => `${claim.kind.replace('_', ' ')}: ${claim.content}`).join(' ');
-        if (snippet && snippet.length <= remaining) {
-          items.push({ recordType: 'summary', id: record.id, kind: record.kind, version: record.version, coverage: record.coverage, snippet, status: 'current', score: 200, submissionEvidenceId: record.submissionEvidenceId, claims: selectedClaims });
-          remaining -= snippet.length;
-        }
-      }
+    const explicitSession = selection === 'explicit' && Boolean(input.rootSessionKey);
+    const previous = explicitSession ? undefined : previousSessionByActivity(this.database, project.id, sessionId);
+    const summarySessionId = explicitSession ? sessionId : previous?.id;
+    const selected = summarySessionId ? this.database.prepare("SELECT id FROM session_summaries WHERE session_id=? AND status='current' ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id LIMIT 1").get(summarySessionId) as { id: string } | undefined : undefined;
+    let summary = selected ? sessionSummaryFromId(this.database, selected.id)! : null;
+    if (previous && (!summary || summary.coverage.toSequence < previous.watermark)) {
+      summary = this.deriveAndPersistSessionSummary(previous.id, previous.state === 'ended' ? 'final' : 'checkpoint') ?? summary;
     }
+    const appendSummary = (): void => {
+      const record = summary;
+      if (!record) return;
+      const claimOrder = ['objective', 'completed', 'decision', 'verification', 'changed_surface', 'pending', 'blocker', 'next_action'] as const;
+      const orderedClaims = record.claims.slice().sort((left, right) => claimOrder.indexOf(left.kind) - claimOrder.indexOf(right.kind));
+      const nextActions = orderedClaims.filter((claim) => claim.kind === 'next_action');
+      const selectedClaims: SummaryContextItem['claims'] = [];
+      let claimChars = nextActions.reduce((sum, claim) => sum + [...claim.content].length, 0);
+      if (claimChars <= Math.min(remaining, 700)) {
+        for (const claim of orderedClaims) {
+          if (claim.kind === 'next_action') continue;
+          const size = [...claim.content].length;
+          if (claimChars + size > Math.min(remaining, 700)) continue;
+          selectedClaims.push({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) });
+          claimChars += size;
+        }
+        selectedClaims.push(...nextActions.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}) })));
+      }
+      const fullSummaryChars = record.claims.reduce((sum, claim) => sum + claim.content.length, 0);
+      sourceChars += fullSummaryChars;
+      evidenceChars += Number((this.database.prepare('SELECT length(content) AS value FROM evidence WHERE id=?').get(record.submissionEvidenceId) as { value: number }).value);
+      const snippet = selectedClaims.map((claim) => `${claim.kind.replace('_', ' ')}: ${claim.content}`).join(' ');
+      if (snippet && snippet.length <= remaining) {
+        items.push({ recordType: 'summary', id: record.id, kind: record.kind, version: record.version, coverage: record.coverage, snippet, status: 'current', score: 200, submissionEvidenceId: record.submissionEvidenceId, claims: selectedClaims });
+        remaining -= snippet.length;
+      }
+    };
 
-    const rows = selection === 'session_summary_only' ? [] : this.database.prepare(`
+    const rows = this.database.prepare(`
       SELECT m.*,
         CASE
           WHEN kind='handoff' AND handoff_rank=1 THEN 0
@@ -971,8 +977,8 @@ export class MemoryService {
       LIMIT 20
     `).all(project.id) as Array<Record<string, unknown>>;
     sourceChars += rows.reduce((sum, row) => sum + String(row.content).length, 0);
-    for (const row of rows) {
-      if (remaining < 32) break;
+    const appendMemory = (row: Record<string, unknown>): void => {
+      if (remaining < 32) return;
       const record = memoryFromRow(this.database, row);
       const perItemLimit = record.kind === 'handoff'
         ? 1_200
@@ -996,12 +1002,40 @@ export class MemoryService {
         lane: 'structured',
         evidenceIds: record.evidenceIds,
       });
-    }
+    };
+    // Explicit session reads retain summary-first selection; recovery leads with the newest open handoff.
+    if (!explicitSession && Number(rows[0]?.continuation_priority) === 0) appendMemory(rows.shift()!);
+    appendSummary();
+    for (const row of rows) appendMemory(row);
     const returned = items.reduce((sum, item) => sum + item.snippet.length, 0);
     evidenceChars += items.reduce((sum, item) => sum + (isSummaryContextItem(item) ? 0 : Number((this.database.prepare('SELECT coalesce(sum(length(content)),0) AS value FROM evidence WHERE id IN (SELECT evidence_id FROM memory_evidence WHERE memory_id=?)').get(item.id) as { value: number }).value)), 0);
     const selectedSummaryIds = items.filter(isSummaryContextItem).map((item) => item.id);
     const selectedMemoryIds = items.filter((item): item is RecallItem => !isSummaryContextItem(item)).map((item) => item.id);
     return { items, selectedSummaryIds, selectedMemoryIds, selectedRecordIds: items.map((item) => item.id), budget: measure(requested, sourceChars, evidenceChars, returned), lanes, warnings: returned < sourceChars ? ['payload_truncated'] : [], correlationId };
+  }
+
+  /** Internal lifecycle/recovery seam; accepts an existing session, never root authority. */
+  deriveAndPersistSessionSummary(sessionId: string, kind: SessionSummaryKind): SessionSummaryRecord | null {
+    return this.database.transaction(() => {
+      const session = this.database.prepare('SELECT project_id,root_session_key,harness FROM sessions WHERE id=?').get(sessionId) as { project_id: string; root_session_key: string; harness: LifecycleInput['harness'] } | undefined;
+      if (!session) return null;
+      const watermark = sessionActivityWatermark(this.database, sessionId);
+      const current = this.database.prepare("SELECT id,source_sequence_to FROM session_summaries WHERE session_id=? AND kind=? AND status='current'").get(sessionId, kind) as { id: string; source_sequence_to: number } | undefined;
+      if (current && current.source_sequence_to >= watermark) return sessionSummaryFromId(this.database, current.id);
+      const summary = deriveSessionSummary(this.database, sessionId, kind, watermark);
+      if (!summary) return null;
+      const project = projectIdentityFromId(this.database, session.project_id);
+      return this.persistSessionSummary(project, { rootSessionKey: session.root_session_key, harness: session.harness }, `derived-summary:${sessionId}:${kind}:${watermark}`, summary);
+    })();
+  }
+
+  private persistSessionSummary(project: LifecycleInput['project'], session: SessionIdentityInput, eventKey: string, summary: SessionSummaryInput): SessionSummaryRecord {
+    const canonical = canonicalizeSessionSummary(summary);
+    const submitted = this.save({ project, session, eventKey, evidence: { kind: 'session_summary', content: canonical.canonicalJson } });
+    return insertSessionSummaryProjection(this.database, {
+      projectId: submitted.projectId, sessionId: submitted.sessionId!, submissionEvidenceId: submitted.evidence.id,
+      summary: canonical.input, createdAt: submitted.evidence.capturedAt,
+    });
   }
 
   lifecycle(input: LifecycleInput): LifecycleResult {
@@ -1019,14 +1053,12 @@ export class MemoryService {
       const found = this.database.prepare('SELECT payload_hash,outcome,evidence_id,summary_id FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND event_key=? AND operation=?').get(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation) as { payload_hash: string; outcome: LifecycleResult['outcome']; evidence_id: string | null; summary_id: string | null } | undefined;
       const recovery = (outcome: LifecycleResult['outcome']): NonNullable<LifecycleResult['recovery']> => {
         const contextInput = { projectKey: storedProject.key, rootSessionKey: input.rootSessionKey, harness: input.harness };
-        const briefing = input.operation === 'guide_post_compact'
-          ? this.contextSelection(contextInput, 'session_summary_only')
-          : this.context(contextInput);
+        const briefing = outcome === 'confirmed' ? this.context(contextInput, 'recovery') : null;
         const rendered = renderContinuation({
           rootSessionKey: input.rootSessionKey,
           projectKey: storedProject.key,
           projectName: storedProject.name,
-          items: outcome === 'confirmed' ? briefing.items : [],
+          items: briefing?.items ?? [],
         });
         const items = rendered.selectedItems;
         return {
@@ -1036,7 +1068,7 @@ export class MemoryService {
           selectedMemoryIds: rendered.selectedMemoryIds,
           selectedRecordIds: rendered.selectedRecordIds,
           sources: [...new Set(items.flatMap((item) => isSummaryContextItem(item) ? [item.id, item.submissionEvidenceId] : [item.id, ...item.evidenceIds]))],
-          budget: briefing.budget,
+          budget: briefing?.budget ?? measure(4_000, 0, 0, 0),
           rendering: rendered.measurements,
         };
       };
@@ -1062,26 +1094,30 @@ export class MemoryService {
       }
       if (input.operation === 'guide_post_compact') {
         const state = (this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string }).state;
-        if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, hashContent(''), 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null, null); }
+        if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, payloadHash, 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null, null); }
       }
       const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
       let evidenceId: string | null = null;
       let summaryId: string | null = null;
-      if (outcome === 'confirmed' && (input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact') && lifecycleContent.trim()) {
-        const checkpoint = input.operation === 'checkpoint_pre_compact';
-        const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent } });
+      let summaryToPersist = canonicalSummary?.input ?? null;
+      const hostCompaction = input.operation === 'guide_post_compact';
+      if (outcome === 'confirmed' && (input.operation === 'capture_root' || input.operation === 'checkpoint_pre_compact' || hostCompaction) && lifecycleContent.trim()) {
+        const checkpoint = input.operation !== 'capture_root';
+        const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent, ...(hostCompaction ? { metadata: { source: 'host_compaction' } } : {}) } });
         evidenceId = saved.evidence.id;
+        if (hostCompaction && saved.event) {
+          const parsed = buildDerivedSessionSummary('checkpoint', saved.event.sequence, parseHostCompactionClaims(saved.evidence.content).map((claim) => ({ ...claim, supportIds: [saved.evidence.id] })));
+          summaryToPersist = parsed;
+        }
       }
-      if (canonicalSummary) {
-        const submitted = this.save({
-          project: input.project,
-          session: { rootSessionKey: input.rootSessionKey, harness: input.harness },
-          eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}:summary`,
-          evidence: { kind: 'session_summary', content: canonicalSummary.canonicalJson },
-        });
-        const record = insertSessionSummaryProjection(this.database, { projectId, sessionId, submissionEvidenceId: submitted.evidence.id, summary: canonicalSummary.input, createdAt: submitted.evidence.capturedAt });
+      if (summaryToPersist) {
+        const record = this.persistSessionSummary(input.project, { rootSessionKey: input.rootSessionKey, harness: input.harness }, `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}:summary`, summaryToPersist);
         summaryId = record.id;
-        evidenceId ??= submitted.evidence.id;
+        evidenceId ??= record.submissionEvidenceId;
+      } else if (outcome === 'confirmed' && (input.operation === 'checkpoint_pre_compact' || input.operation === 'finalize')) {
+        const derived = this.deriveAndPersistSessionSummary(sessionId, input.operation === 'finalize' ? 'final' : 'checkpoint');
+        summaryId = derived?.id ?? null;
+        evidenceId ??= derived?.submissionEvidenceId ?? null;
       }
       if (input.operation === 'finalize') this.database.prepare("UPDATE sessions SET state='ended',ended_at=? WHERE id=?").run(now(), sessionId);
       if (input.operation === 'checkpoint_pre_compact') this.database.prepare("UPDATE sessions SET state='compacted' WHERE id=?").run(sessionId);

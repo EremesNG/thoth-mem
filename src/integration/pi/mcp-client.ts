@@ -47,7 +47,7 @@ async function productionConnection(options: PiMcpClientOptions): Promise<PiMcpC
   const transport = new StdioClientTransport({
     command: options.nodeCommand ?? process.execPath,
     args: [resolve(options.runtimeEntry ?? defaultRuntimeEntry()), 'mcp', '--no-http'],
-    env: environment,
+    env: { ...environment, THOTH_MEM_NATIVE_HOST: 'pi' },
     stderr: 'pipe',
   });
   await client.connect(transport);
