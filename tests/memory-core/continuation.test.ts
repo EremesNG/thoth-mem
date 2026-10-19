@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveLocalProjectIdentity } from '../../src/integration/project-identity.js';
 import { verifiedRecovery } from '../../src/integration/recovery.js';
 import type { LifecycleResult, MemoryKind, RecallItem, SummaryContextItem } from '../../src/memory-core/contracts.js';
+import { MemoryService } from '../../src/memory-core/service.js';
 import {
   MAX_HOST_OUTPUT_CODE_POINTS,
   MIN_TRUNCATED_CONTENT_CODE_POINTS,
@@ -362,6 +363,41 @@ describe('continuation renderer', () => {
     expect(result.context).toContain('RUN-EXACT-NEXT-ACTION.');
     expect(result.context).not.toContain(summary.submissionEvidenceId);
     expect(result.measurements.totalCodePoints).toBeLessThanOrEqual(MAX_HOST_OUTPUT_CODE_POINTS);
+  });
+
+  it('renders a non-next-action claim from a realistic v2 previous-session summary within unchanged recovery caps', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:v2-recovery', name: 'summary-recovery' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'previous-root' };
+    try {
+      const prompt = service.save({ project, session, evidence: { kind: 'root_prompt', content: `Implement deterministic session summaries without changing recovery caps. ${'Preserve same-session citations, privacy filtering, and immutable evidence. '.repeat(10)}` } });
+      service.save({ project, session, evidence: { kind: 'explicit_save', content: 'Validated SQLite as the authoritative ledger.' }, memory: {
+        kind: 'decision', title: 'Keep SQLite authoritative',
+        content: `Result: The SQLite ledger owns deterministic session ordering. ${'Derived summaries cite in-session evidence rather than copying raw support. '.repeat(12)}\nRationale: Keep the core independent of host adapters.`,
+      } });
+      service.save({ project, session, evidence: { kind: 'explicit_save', content: 'The parser passed focused checks.' }, memory: {
+        kind: 'discovery', title: 'Compaction parser verified',
+        content: `Result: Split-turn compaction preserves only the first objective and merges changed paths. ${'Read-file blocks remain evidence only and modified-file paths retain source order. '.repeat(12)}\nChecks: Focused parser and lifecycle tests passed.`,
+      } });
+      service.save({ project, session, evidence: { kind: 'handoff', content: 'Continue integration verification.' }, memory: {
+        kind: 'handoff', title: 'Verify native recovery', topicKey: 'summary/recovery',
+        content: `Objective: Verify all supported native hosts.\nCompleted: ${'The deterministic derivation and citations passed focused tests. '.repeat(20)}\nFirst pending action: Run the integration suite after building.\nBlockers: None.`,
+      } });
+      const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!, 'final')!;
+      expect(summary.generator.name).toBe('thoth-mem.session-evidence.v2');
+      expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'next_action', 'decision', 'completed']);
+      expect(summary.claims.every((claim) => codePoints(claim.content) <= 300)).toBe(true);
+      service.lifecycle({ ...session, project, operation: 'finalize', eventKey: 'final' });
+
+      const recovery = service.lifecycle({ harness: 'codex', rootSessionKey: 'next-root', project, operation: 'recover', eventKey: 'recover' }).recovery!;
+      expect(recovery.selectedSummaryIds).toEqual([summary.id]);
+      expect(recovery.context).toContain('objective: Implement deterministic session summaries without changing recovery caps.');
+      expect(recovery.context).toContain('next action: Verify native recovery: Run the integration suite after building.');
+      expect(recovery.context).not.toContain('Supported session summary.');
+      expect(recovery.selectedRecordIds.length).toBeLessThanOrEqual(3);
+      expect(codePoints(recovery.context)).toBeLessThanOrEqual(1_000);
+      expect(recovery.rendering.maxCodePoints).toBe(1_000);
+    } finally { service.close(); }
   });
 
   it('normalizes poisoned summary claims while preserving a complete summary ID', () => {

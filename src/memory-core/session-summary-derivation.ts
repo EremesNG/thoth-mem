@@ -7,6 +7,9 @@ import { hydrateMemoryRows, sessionEvidence } from './sqlite/ledger.js';
 
 type ParsedClaim = Omit<SessionSummaryClaimInput, 'supportIds'>;
 
+const MAX_DERIVED_CLAIM_CODE_POINTS = 300;
+const MIN_SUBSTANTIVE_PROMPT_CODE_POINTS = 40;
+
 const HEADING_KINDS: ReadonlyArray<readonly [RegExp, SessionSummaryClaimKind]> = [
   [/\bnext steps?\b/iu, 'next_action'],
   [/\b(?:modified files|files modified|changed files)\b/iu, 'changed_surface'],
@@ -17,8 +20,15 @@ const HEADING_KINDS: ReadonlyArray<readonly [RegExp, SessionSummaryClaimKind]> =
   [/\b(?:goals?|requests?|intent|objectives?)\b/iu, 'objective'],
 ];
 
-function boundedContent(value: string, maximum: number = SESSION_SUMMARY_LIMITS.maxClaimCodePoints): string {
-  return Array.from(sanitizePrivateContent(value).normalize('NFC').trim()).slice(0, maximum).join('');
+function boundedContent(value: string): string {
+  return Array.from(sanitizePrivateContent(value).normalize('NFC').trim()).slice(0, MAX_DERIVED_CLAIM_CODE_POINTS).join('');
+}
+
+function memoryClaimContent(title: string, content: string, handoff = false): string {
+  const lines = sanitizePrivateContent(content).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const label = handoff ? /^First pending action:\s*(.+)$/iu : /^Result:\s*(.+)$/iu;
+  const primary = lines.map((line) => label.exec(line)?.[1]).find(Boolean) ?? lines[0];
+  return primary ? boundedContent(`${title}: ${primary}`) : '';
 }
 
 function parsedClaim(kind: SessionSummaryClaimKind, body: string): ParsedClaim | null {
@@ -31,21 +41,35 @@ function parsedClaim(kind: SessionSummaryClaimKind, body: string): ParsedClaim |
 /** Host text is untrusted evidence, never a promoted memory. */
 export function parseHostCompactionClaims(value: string): ParsedClaim[] {
   const claims: ParsedClaim[] = [];
-  const modifiedFiles: string[] = [];
-  // Pi appends these exact XML blocks after its Markdown summary (compaction/utils.js).
-  const text = sanitizePrivateContent(value).replace(/^<(read-files|modified-files)>\r?\n([\s\S]*?)\r?\n<\/\1>[ \t]*$/gmu, (_block, tag: string, body: string) => {
-    if (tag === 'modified-files') modifiedFiles.push(body);
-    return '';
-  });
+  const modifiedFiles = new Set<string>();
+  const addFiles = (lines: string[]): void => {
+    for (const line of lines) {
+      const path = line.trim().replace(/^(?:[-*+]|\d+[.)])\s+/u, '').replace(/^`(.+)`$/u, '$1').normalize('NFC').trim();
+      if (parsedClaim('changed_surface', path)) modifiedFiles.add(path);
+    }
+  };
   let kind: SessionSummaryClaimKind | undefined;
   let body: string[] = [];
+  let objectiveSeen = false;
   const flush = (): void => {
-    const claim = kind ? parsedClaim(kind, body.join('\n')) : null;
-    if (claim) claims.push(claim);
+    if (kind === 'changed_surface') addFiles(body);
+    else {
+      const claim = kind ? parsedClaim(kind, body.join('\n')) : null;
+      if (claim) claims.push(claim);
+    }
     body = [];
   };
   let fence: string | undefined;
-  for (const line of text.split(/\r?\n/u)) {
+  let fileBlock: string | undefined;
+  for (const line of sanitizePrivateContent(value).split(/\r?\n/u)) {
+    if (fileBlock) {
+      if (line.trim() === `</${fileBlock}>`) {
+        if (fileBlock === 'modified-files') addFiles(body);
+        body = [];
+        fileBlock = undefined;
+      } else body.push(line);
+      continue;
+    }
     const delimiter = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1];
     if (delimiter && !fence) fence = delimiter;
     else if (delimiter && fence && delimiter[0] === fence[0] && delimiter.length >= fence.length) {
@@ -57,19 +81,29 @@ export function parseHostCompactionClaims(value: string): ParsedClaim[] {
       body.push(line);
       continue;
     }
+    // Pi can repeat these exact XML blocks after its split-turn context.
+    const tag = /^<(read-files|modified-files)>[ \t]*$/u.exec(line)?.[1];
+    if (tag) {
+      flush();
+      kind = undefined;
+      fileBlock = tag;
+      continue;
+    }
     const heading = /^\s{0,3}#+\s+(.+?)(?:\s+#+)?\s*$/u.exec(line);
     if (heading) {
       flush();
       kind = HEADING_KINDS.find(([pattern]) => pattern.test(heading[1]!))?.[1];
+      if (kind === 'objective') {
+        if (objectiveSeen) kind = undefined;
+        objectiveSeen = true;
+      }
     } else {
       body.push(line);
     }
   }
   flush();
-  for (const files of modifiedFiles) {
-    const claim = parsedClaim('changed_surface', files);
-    if (claim) claims.push(claim);
-  }
+  const changedSurface = parsedClaim('changed_surface', [...modifiedFiles].join('\n'));
+  if (changedSurface) claims.push(changedSurface);
   return claims;
 }
 
@@ -77,12 +111,14 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
   const evidence = sessionEvidence(database, sessionId, watermark);
   const evidenceById = new Map(evidence.map((item) => [item.id, item]));
   const claims: SessionSummaryClaimInput[] = [];
-  const prompts = evidence.filter((item) => item.kind === 'root_prompt');
-  const first = prompts[0];
-  const latest = first && prompts.slice().reverse().find((item) => item.content.normalize('NFC').trim() !== first.content.normalize('NFC').trim());
+  // Substance counts source code points after whitespace collapse; claim rendering applies NFC.
+  const prompts = evidence.filter((item) => item.kind === 'root_prompt').map((item) => ({ ...item, content: item.content.replace(/\s+/gu, ' ').trim() }));
+  const substantive = prompts.filter((item) => Array.from(item.content).length >= MIN_SUBSTANTIVE_PROMPT_CODE_POINTS);
+  const first = substantive[0] ?? prompts[0];
+  const latest = first && substantive.slice().reverse().find((item) => item.content.normalize('NFC') !== first.content.normalize('NFC'));
   const objectives = first ? (latest ? [first, latest] : [first]) : [];
   for (const prompt of objectives) {
-    const content = boundedContent(prompt.content, 500);
+    const content = boundedContent(prompt.content);
     if (content) claims.push({ kind: 'objective', content, supportIds: [prompt.id] });
   }
 
@@ -104,7 +140,7 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
   const memories = hydrateMemoryRows(database, rows).records;
   for (const memory of memories.values()) {
     const supportIds = memory.evidenceIds.filter((id) => evidenceById.has(id)).slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim);
-    const content = boundedContent(memory.content);
+    const content = memoryClaimContent(memory.title, memory.content, memory.kind === 'handoff');
     if (!content || supportIds.length === 0) continue;
     if (memory.kind === 'handoff' && memory.status === 'superseded') {
       // A closure is a completed claim only when the closure itself has in-session support.
@@ -117,7 +153,7 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
       `).get(memory.id, memory.topicKey, sessionId, watermark) as Record<string, unknown> | undefined;
       if (!closureRow) continue;
       const closure = hydrateMemoryRows(database, [closureRow]).records.values().next().value!;
-      const closureContent = boundedContent(closure.content);
+      const closureContent = memoryClaimContent(closure.title, closure.content);
       const closureSupports = closure.evidenceIds.filter((id) => evidenceById.has(id));
       if (closureContent && closureSupports.length > 0) claims.push({ kind: 'completed', content: closureContent, supportIds: [...new Set([...closureSupports, ...supportIds])].slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim) });
       continue;
@@ -133,10 +169,21 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
 export function buildDerivedSessionSummary(kind: SessionSummaryKind, watermark: number, candidates: SessionSummaryClaimInput[]): SessionSummaryInput | null {
   if (candidates.length === 0) return null;
   const priority: Record<SessionSummaryClaimKind, number> = { objective: 0, next_action: 1, blocker: 2, pending: 3, decision: 4, completed: 5, changed_surface: 6, verification: 7 };
-  const claims = candidates.slice().sort((left, right) => priority[left.kind] - priority[right.kind]).slice(0, SESSION_SUMMARY_LIMITS.maxClaims);
+  const unique = new Map<string, SessionSummaryClaimInput>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.kind, candidate.content]);
+    const existing = unique.get(key);
+    unique.set(key, {
+      ...candidate,
+      // A collapsed failure must not lose its failed outcome to an unlabeled claim.
+      ...(existing?.outcome === 'failed' ? { outcome: 'failed' as const } : {}),
+      supportIds: [...new Set([...(existing?.supportIds ?? []), ...candidate.supportIds])].sort().slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim),
+    });
+  }
+  const claims = [...unique.values()].sort((left, right) => priority[left.kind] - priority[right.kind]).slice(0, SESSION_SUMMARY_LIMITS.maxClaims);
   const input: SessionSummaryInput = {
     kind, coverage: { fromSequence: 1, toSequence: watermark },
-    generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v1' }, claims,
+    generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v2' }, claims,
   };
   // Measure the validator's real canonical envelope, including JSON escaping and UTF-16.
   const one = canonicalizeSessionSummary({ ...input, claims: [claims[0]!] });

@@ -542,10 +542,20 @@ The system MUST publish one fully written UUID marker atomically without replaci
 
 ### Requirement: Session Summaries MUST Be Derived Deterministically When Not Supplied
 
-When `checkpoint_pre_compact` or `finalize` carries no submitted summary, or the previous session needed by automatic recovery has no current summary covering its latest non-summary evidence, the service MUST derive a harness-generated summary without any model or network call from that session's own evidence: root prompts as objective; promoted decision, convention, architecture, and preference memories as decision; discovery and project-structure memories as completed; failure memories as completed with outcome failed; open handoffs as next action; closed handoffs as completed; and the newest parsed host compaction claims; every claim MUST cite in-session evidence inside its coverage and respect the existing claim and size limits, a session without citable evidence MUST receive no summary, and a lazily derived summary MUST be final only when the session has ended and checkpoint otherwise.
+When `checkpoint_pre_compact` or `finalize` carries no submitted summary, or the previous session needed by automatic recovery has no current summary covering its latest non-summary evidence, the service MUST derive a harness-generated summary with generator `thoth-mem.session-evidence.v2` without any model or network call from that session's own evidence: substantive root prompts (at least 40 code points after whitespace normalization; the first and the latest distinct one, or only the first prompt when none is substantive) as objective bounded to 300 code points; promoted decision, convention, architecture, and preference memories as decision; discovery and project-structure memories as completed; failure memories as completed with outcome failed; open handoffs as next action; closed handoffs as completed; and the newest parsed host compaction claims; each memory-derived claim MUST state the memory title with its primary labeled line (Result for direct memories, First pending action for open handoffs, the closing Result for closed handoffs, otherwise the first line) bounded to 300 code points, claims with identical kind and content MUST collapse into one claim citing their combined supports within the support limit, every claim MUST cite in-session evidence inside its coverage and respect the existing claim and size limits, a session without citable evidence MUST receive no summary, and a lazily derived summary MUST be final only when the session has ended and checkpoint otherwise.
 
 #### Scenario: Session Summaries MUST Be Derived Deterministically When Not Supplied
 
-- **GIVEN** an ended Codex session with two root prompts, one decision memory, and one open handoff and no submitted summary
+- **GIVEN** an ended Codex session whose root prompts are "Ya hice /reload" and a 120-code-point request, one decision memory with long Result and Rationale lines, one open handoff, and no submitted summary
 - **WHEN** finalize runs or a later session's recovery needs it
-- **THEN** exactly one harness final summary exists whose objective, decision, and next-action claims cite those evidence events within coverage
+- **THEN** exactly one v2 harness final summary exists whose only objective is the substantive request, whose decision claim is the memory title with its Result line within 300 code points, and whose next-action claim carries the handoff's first pending action, all citing in-session evidence within coverage
+
+### Requirement: Schema Migration MUST Remove Empty Host Sessions
+
+The schema migration that introduces lazy session creation MUST, after the standard pre-migration backup, delete every session of a non-import harness that no session event, evidence, summary, memory, observation, receipt citing evidence or summary, or other row references, together with that root session's lifecycle receipts that cite no evidence or summary, and MUST keep import-harness sessions and every referenced session unchanged.
+
+#### Scenario: Schema Migration MUST Remove Empty Host Sessions
+
+- **GIVEN** a database with an empty Pi session holding only enroll, recover, and finalize receipts, an empty import session, and a Codex session with one root prompt
+- **WHEN** the migration runs
+- **THEN** only the empty Pi session and its receipts are removed, a backup exists, and rerunning the migration changes nothing

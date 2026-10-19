@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { InitializeResultSchema, LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SaveMemoryResult } from '../../src/memory-core/contracts.js';
@@ -44,6 +45,24 @@ async function save(client: Client, extra: Record<string, unknown> = {}) {
 describe('generic MCP connection sessions', () => {
   beforeEach(() => vi.stubEnv('THOTH_MEM_NATIVE_HOST', ''));
   afterEach(() => vi.unstubAllEnvs());
+
+  it.each([false, true])('leaves no sessions or receipts when closing without saves (context requested=%s)', async (requestContext) => {
+    const connection = await connect();
+    const database = new Database(connection.databasePath, { readonly: true });
+    try {
+      if (requestContext) {
+        connection.service.save({ project: { key: project.project_key, name: project.project_name }, evidence: { kind: 'explicit_save', content: 'Existing project knowledge without a session.' } });
+        const result = await connection.client.callTool({ name: 'mem_context', arguments: { project_key: project.project_key } });
+        expect(result.isError).not.toBe(true);
+      }
+      await connection.client.close();
+      await connection.server.close();
+      connection.finalizeConnectionSessions();
+      for (const table of ['sessions', 'lifecycle_receipts', 'session_summaries']) {
+        expect(database.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+      }
+    } finally { database.close(); await connection.close(); }
+  });
 
   it.each(['opencode', 'codex', 'claude', 'pi'])('keeps sessionless %s-marker saves unattributed', async (harness) => {
     vi.stubEnv('THOTH_MEM_NATIVE_HOST', harness);

@@ -113,11 +113,14 @@ describe('progressive context funnel', () => {
     const current = { project, harness: 'pi' as const, rootSessionKey: 'current' };
     try {
       // Empty newer sessions, other projects, and late summary submissions are not activity.
-      if (ended) service.lifecycle({ ...previous, operation: 'finalize', eventKey: 'end-empty' });
+      if (ended) {
+        service.lifecycle({ ...previous, operation: 'checkpoint_pre_compact', eventKey: 'compact-empty' });
+        service.lifecycle({ ...previous, operation: 'finalize', eventKey: 'end-empty' });
+      }
       const first = service.save({ project, session: previous, eventKey: 'first', evidence: { kind: 'root_prompt', content: 'PREVIOUS-OBJECTIVE', capturedAt: '2026-01-02T00:00:00Z' } });
       service.save({ project, session: { rootSessionKey: 'older', harness: 'codex' }, eventKey: 'older', evidence: { kind: 'root_prompt', content: 'OLDER-SESSION', capturedAt: '2026-01-01T00:00:00Z' } });
       service.lifecycle({ project, harness: 'codex', rootSessionKey: 'older', operation: 'finalize', eventKey: 'older-final' });
-      service.lifecycle({ project, harness: 'opencode', rootSessionKey: 'empty', operation: 'enroll', eventKey: 'empty' });
+      service.lifecycle({ project, harness: 'opencode', rootSessionKey: 'empty', operation: 'checkpoint_pre_compact', eventKey: 'empty' });
       service.save({ project: { key: 'repo:other', name: 'other' }, session: { harness: 'pi', rootSessionKey: 'foreign' }, evidence: { kind: 'root_prompt', content: 'FOREIGN-PROJECT', capturedAt: '2026-01-09T00:00:00Z' } });
       service.save({ project, session: current, eventKey: 'own', evidence: { kind: 'root_prompt', content: 'OWN-SUMMARY', capturedAt: '2026-01-10T00:00:00Z' } });
       const own = service.lifecycle({ ...current, operation: 'checkpoint_pre_compact', eventKey: 'own-checkpoint' });
@@ -139,7 +142,7 @@ describe('progressive context funnel', () => {
       expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, kind: ended ? 'final' : 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
       expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([summaryId, service.get({ id: summaryId }).record.submissionEvidenceId]));
       expect(service.lifecycle(input)).toMatchObject({ duplicate: true, recovery: { selectedSummaryIds: [summaryId] } });
-      const later = service.save({ project, session: previous, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'PREVIOUS-UPDATED', capturedAt: '2026-01-04T00:00:00Z' } });
+      const later = service.save({ project, session: previous, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'PREVIOUS-UPDATED: verify lazy summary recovery with new activity.', capturedAt: '2026-01-04T00:00:00Z' } });
       const replay = service.lifecycle(input);
       const refreshedId = replay.recovery!.selectedSummaryIds[0]!;
       expect(replay.duplicate).toBe(true);

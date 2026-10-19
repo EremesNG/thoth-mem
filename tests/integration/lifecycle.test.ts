@@ -266,8 +266,9 @@ describe('host-neutral lifecycle', () => {
     const databasePath = join(root, 'memory.sqlite');
     const project = { key: 'path:C:/fixture/cross-host', name: 'cross-host' };
     const handoffContent = `Objective: continue the SQLite-first native plugin. Completed: automatic context delivery is verified. ${'Relevant cross-host detail. '.repeat(14)}First pending action: HIDDEN-CROSS-HOST-ACTION. Blockers: none. Key files/checks: continuation renderer and lifecycle smoke.`;
+    let service: MemoryService | undefined;
     try {
-      let service = new MemoryService({ databasePath });
+      service = new MemoryService({ databasePath });
       const seeded = service.save({
         project,
         session: { harness: 'codex', rootSessionKey: 'codex-root' },
@@ -299,11 +300,11 @@ describe('host-neutral lifecycle', () => {
       expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([seeded.memory!.id, seeded.evidence.id]));
       expect(recovered.capability.contextDelivered).toBe(true);
       const replay = service.lifecycle({ operation: 'recover', harness: 'opencode', project, rootSessionKey: 'opencode-root', eventKey: 'opencode:start' });
-      expect(replay).toMatchObject({ duplicate: true, recovery: { context: recovered.recovery?.context, selectedMemoryIds: recovered.recovery?.selectedMemoryIds } });
+      expect(replay).toMatchObject({ duplicate: false, sessionId: recovered.sessionId, recovery: { context: recovered.recovery?.context, selectedMemoryIds: recovered.recovery?.selectedMemoryIds } });
       expect(service.get({ id: seeded.evidence.id }).record).toMatchObject({ id: seeded.evidence.id, sourceRef: 'codex:handoff' });
       expect(service.get({ id: seeded.memory!.id }).record).toMatchObject({ id: seeded.memory!.id, evidenceIds: [seeded.evidence.id] });
-      service.close();
     } finally {
+      service?.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -50,7 +50,7 @@ import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { buildDerivedSessionSummary, deriveSessionSummary, parseHostCompactionClaims } from './session-summary-derivation.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
-import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
@@ -878,7 +878,7 @@ export class MemoryService {
     return { record: evidenceFromRow(evidenceRow), lineage: [] };
   }
 
-  projectSummaries(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; history?: boolean; budgetChars?: number }): { items: SessionSummaryRecord[]; requestedChars: number; returnedChars: number; truncated: boolean } {
+  projectSummaries(input: { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; history?: boolean; budgetChars?: number }): { items: Array<SessionSummaryRecord & { truncated?: true }>; requestedChars: number; returnedChars: number; truncated: boolean } {
     if ((input.rootSessionKey && !input.harness) || (!input.rootSessionKey && input.harness)) throw new Error(input.rootSessionKey ? 'root_session_key supplied without harness' : 'harness supplied without root_session_key');
     const requestedChars = Math.max(64, Math.min(input.budgetChars ?? 4_000, 20_000));
     const project = resolveProjectIdentityKey(this.database, input.projectKey);
@@ -889,14 +889,40 @@ export class MemoryService {
       if (!sessionId) return { items: [], requestedChars, returnedChars: 0, truncated: false };
     }
     const rows = this.database.prepare(`SELECT id FROM session_summaries WHERE project_id=? ${sessionId ? 'AND session_id=?' : ''} ${input.history ? '' : "AND status='current'"} ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id`).all(...(sessionId ? [project.id, sessionId] : [project.id])) as Array<{ id: string }>;
-    const items: SessionSummaryRecord[] = [];
+    const items: Array<SessionSummaryRecord & { truncated?: true }> = [];
     let returnedChars = 0;
     for (const row of rows) {
       const record = sessionSummaryFromId(this.database, row.id)!;
       const size = JSON.stringify(record).length;
-      if (returnedChars + size > requestedChars) break;
-      items.push(record);
-      returnedChars += size;
+      const remaining = requestedChars - returnedChars;
+      if (size <= remaining) {
+        items.push(record);
+        returnedChars += size;
+        continue;
+      }
+      const bounded: SessionSummaryRecord & { truncated: true } = { ...record, claims: [], truncated: true };
+      if (JSON.stringify(bounded).length > remaining) break;
+      for (const claim of record.claims) {
+        const lastClaim = { ...claim };
+        bounded.claims.push(lastClaim);
+        if (JSON.stringify(bounded).length <= remaining) continue;
+        // Search code-point prefixes against serialized size, including JSON escapes.
+        const points = Array.from(claim.content);
+        let low = 0;
+        let high = points.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          lastClaim.content = points.slice(0, middle).join('');
+          if (JSON.stringify(bounded).length <= remaining) low = middle;
+          else high = middle - 1;
+        }
+        if (low === 0) bounded.claims.pop();
+        else lastClaim.content = points.slice(0, low).join('');
+        break;
+      }
+      items.push(bounded);
+      returnedChars += JSON.stringify(bounded).length;
+      return { items, requestedChars, returnedChars, truncated: true };
     }
     return { items, requestedChars, returnedChars, truncated: items.length < rows.length };
   }
@@ -1046,7 +1072,9 @@ export class MemoryService {
     if (canonicalSummary && ((input.operation === 'checkpoint_pre_compact' && canonicalSummary.input.kind !== 'checkpoint') || (input.operation === 'finalize' && canonicalSummary.input.kind !== 'final'))) throw new Error(`summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "${canonicalSummary.input.kind}" for operation="${input.operation}"`);
     if (canonicalSummary && input.identityConfidence === 'degraded') throw new Error('A verified root identity is required to submit a summary');
     return this.database.transaction(() => {
-      const projectId = ensureProject(this.database, input.project); const sessionId = ensureSession(this.database, projectId, { rootSessionKey: input.rootSessionKey, harness: input.harness });
+      const projectId = ensureProject(this.database, input.project);
+      const session = resolveSession(this.database, projectId, input);
+      const sessionId = session.id;
       const storedProject = projectIdentityFromId(this.database, projectId);
       const lifecycleContent = sanitizePrivateContent(input.content ?? '');
       const payloadHash = canonicalSummary ? hashContent(JSON.stringify({ content: lifecycleContent, summary: canonicalSummary.canonicalJson })) : hashContent(lifecycleContent);
@@ -1088,6 +1116,10 @@ export class MemoryService {
           capability: { hookExecuted: true, memoryConfirmed: outcome === 'confirmed', contextDelivered: Boolean(delivered?.selectedRecordIds.length), modelConsumed: false },
         };
       };
+      const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
+      const activity = input.operation === 'checkpoint_pre_compact' || input.operation === 'guide_post_compact' || (input.operation === 'capture_root' && Boolean(lifecycleContent.trim()));
+      if (!session.exists && !activity) return result(outcome, false, null, null);
+      if (!session.exists) ensureSession(this.database, projectId, input);
       if (found) {
         if (found.payload_hash !== payloadHash) throw new Error(`event_key was reused with different content/summary for operation="${input.operation}"; retries with the same event_key must resend identical content/summary`);
         return result(found.outcome, true, found.evidence_id, found.summary_id);
@@ -1096,7 +1128,6 @@ export class MemoryService {
         const state = (this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string }).state;
         if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, payloadHash, 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null, null); }
       }
-      const outcome = input.identityConfidence === 'degraded' ? 'degraded' : 'confirmed';
       let evidenceId: string | null = null;
       let summaryId: string | null = null;
       let summaryToPersist = canonicalSummary?.input ?? null;
