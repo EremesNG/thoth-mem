@@ -11,7 +11,7 @@ This file is the canonical repository-wide agent guide for `C:\DEV\Proyectos\Web
 3. Check index readiness before indexed operations. If the index is unavailable, errors, lacks a capability, or returns incomplete results, use the least invasive fallback and resume indexed navigation when practical.
 4. Search named paths, symbols, imports, registrations, and nearby tests before broad reading.
 5. Read the smallest relevant runtime entrypoints, registrations/imports, and tests first. Expand only to answer a concrete unresolved question.
-6. Exclude `.claude/worktrees/`, vendored or local skills under `.agents/skills/` and `skills/`, dependency/build/generated output, and archived `openspec/changes/archive/` from routine exploration unless the task targets them.
+6. Exclude `.claude/worktrees/`, vendored or local skills under `.agents/skills/` and `skills/`, dependency/build/generated output, and archived `.thoth/changes/archive/` from routine exploration unless the task targets them.
 7. Ask subagents for conclusions, inspected paths/symbols, relevant checks, risks, and unresolved questions—not raw logs, full files, or unfiltered searches.
 
 The root `AGENTS.md` is the only confirmed repository-wide instruction entrypoint. Skill-owned `AGENTS.md` files under `.agents/skills/` are local skill assets, not nested project rules. No `CLAUDE.md`, Copilot instruction file, `.cursorrules`, or `.cursor/rules/` project bridge is currently maintained; do not add or duplicate client instructions without evidence that a client needs one.
