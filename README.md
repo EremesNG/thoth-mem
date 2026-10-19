@@ -174,11 +174,11 @@ Protocol sources: [LongMemEval repository](https://github.com/xiaowu0162/LongMem
 All harnesses resolve one data directory in this order: an explicit command value, `THOTH_MEM_DATA_DIR`, strict provider configuration, then `~/.thoth-mem`. The database is always `memory.sqlite` inside the selected directory.
 
 <details>
-<summary><strong>Provider configuration and revision-10 migration</strong></summary>
+<summary><strong>Provider configuration and revision-11 migration</strong></summary>
 
 The provider file lives below `XDG_CONFIG_HOME/thoth-mem/config.json` when XDG configuration is set, or below `~/.config/thoth-mem/config.json` otherwise. Malformed, unreadable, schema-invalid, or missing-runtime configuration fails closed.
 
-Opening a revision-9 database with the Pi-capable runtime performs the one-time revision-10 migration. It retains or creates `memory.sqlite.pre-v10.bak`, takes an immediate write-excluding lock, rechecks the live state against that backup, and rebuilds only the `sessions` harness constraint. Existing sessions, evidence, events, summaries, receipts, and FTS rows are preserved; a mismatched backup or source drift fails closed before mutation.
+Opening a revision-10 database (or an older supported schema) advances to revision 11. The cleanup creates or verifies `memory.sqlite.pre-v11.bak`, takes an immediate write-excluding lock, and rechecks the live state against that backup before removing only unreferenced non-import host sessions and their lifecycle receipts that cite neither evidence nor a summary. All other sessions, receipts, evidence, and memories are preserved; a mismatched backup or source drift fails closed before mutation. Revision-9 databases first apply the revision-10 Pi harness migration with its retained `memory.sqlite.pre-v10.bak`.
 
 </details>
 

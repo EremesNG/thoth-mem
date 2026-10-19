@@ -2,6 +2,8 @@
 
 `src/integration/adapters/index.ts` maps OpenCode, Codex, Claude Code, and Pi evidence to six host-neutral intents. Delegated or unverifiable identity fails closed. `MemoryService.lifecycle` owns event idempotency and state changes; adapters never access SQLite.
 
+Session creation is lazy across all hosts. For a missing session, `enroll`, `recover`, `finalize`, and `capture_root` without sanitized content write no session row, lifecycle receipt, or summary for that root. Results retain the deterministic session ID and null evidence/summary IDs: verified identity returns `confirmed`; degraded identity stays `degraded` with no recovery context. Verified `recover` still renders project recovery and may lazily derive the previous session's summary. Non-empty root capture, `checkpoint_pre_compact`, `guide_post_compact`, or a session-attributed `mem_save` creates the session on first use; existing-session effects and receipts are unchanged.
+
 Git repositories establish one local UUID in the shared Git common directory; every worktree uses `git:<uuid>` while exact normalized paths are aliases. Independent clones remain independent. Model-visible identity carries `root_session_id`, the exact `project_key`, and the database-persisted `project_name`; adapter basenames are creation hints only. A folder rename never changes the display name automatically; operators use `thoth-mem project rename`. OpenCode exposes these semantics through `thoth_mem_root_identity` v2.
 
 OpenCode loads `dist/opencode.js` through its native npm/file plugin loader and evaluates that thin adapter inside Bun. The adapter contributes one package-relative `dist/index.js` MCP command and never mutates `skills.paths`; each SQLite-backed lifecycle operation sends one bounded host-neutral event over JSON stdio to literal `node` plus the same package-relative entry. Only the Node process loads `MemoryService` and `better-sqlite3`. Child launch, timeout, exit, output-limit, or envelope failure is logged as degraded, injects no unverified memory, and never rejects the host callback. Setup synchronizes only `integrations/opencode/skills/thoth-mem` into the selected global OpenCode config directory; copied OpenCode manifests, bridges, MCP descriptors, runners, and retired copied-setup commands no longer exist.
@@ -59,14 +61,16 @@ Native bundles, setup-written MCP configs, and Pi's MCP child set
 `THOTH_MEM_NATIVE_HOST=opencode|codex|claude|pi` to the active host. This launch
 marker preserves native attribution; client info is only a fallback and neither
 supplies root authority. A non-native connection receives a server-assigned
-`mcp` session with a root key in `thoth-mem:mcp-connection:<uuid>` for sessionless
-saves. Sessionless `mem_context` and `mem_project action=briefing` use that pair
+`mcp` session identity with a root key in `thoth-mem:mcp-connection:<uuid>` for
+sessionless saves; the session is persisted only on a save. Sessionless
+`mem_context` and `mem_project action=briefing` use that pair
 as the current session for recovery selection. The reserved namespace never
 authorizes observation review, promotion, or `mem_session`. Native/project-only
 callers can still save without session attribution.
 
 Stdin EOF/close, transport close, SIGINT, and SIGTERM share an idempotent shutdown
-path that finalizes the connection session once before the service closes. A
+path that calls finalization once before the service closes. A connection
+closed without saves leaves no session row, lifecycle receipt, or summary. A
 crash has no finalization guarantee; a later recovery can derive its summary
 lazily. Connection lifetime is not a verified conversation boundary.
 
@@ -76,13 +80,21 @@ The Pi extension maps documented events as follows:
 
 | Pi event | Lifecycle behavior |
 | --- | --- |
-| `session_start` | Resolve `cwd` and session-manager ID, enroll idempotently, recover, and cache only a verified bounded block. |
+| `session_start` | Resolve `cwd` and session-manager ID, enroll and recover without creating an untouched session, and cache only a verified bounded block. |
 | `input` | Capture only `interactive` or `rpc` root input after privacy sanitation; hash the session, leaf, source, streaming mode, and sanitized text for idempotency. `extension` input is excluded. |
 | `before_agent_start` | Replay the session's recovery event key (after a successful compaction, a content-free `context` recover key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
 | `session_before_compact` | Record a checkpoint event from stable IDs/reason/retry metadata and derive a checkpoint summary from citable session evidence, without copying model, tool, or branch content. |
 | `session_compact` | Forward `compactionEntry.summary` as `guide_post_compact` content, keyed by the compaction entry ID, and refresh the same project recovery as ordinary recovery. |
 | `session_compact_failed` / `agent_settled` | Emit bounded degradation when needed; preserve safe recovery and never finalize. |
 | `session_shutdown` | Finalize for quit/session replacement, skip finalization on hot reload, and close the owned MCP child in every case. |
+
+Starting Pi and then resuming another session or quitting without activity leaves
+no session row, receipt, or summary for the untouched root. On Windows, closing
+an Orca terminal tab kills the host process tree without a signal, so neither
+Pi's `session_shutdown` nor finalization can run. Use `/quit`, double Ctrl+C, or
+Ctrl+D for an awaited clean close. A killed session stays active or compacted;
+when a later session's recovery needs it, lazy derivation produces a checkpoint
+summary rather than a final summary.
 
 Recovery validates the local project and root-session identity, owned delimiters,
 record IDs, source omission, taxonomy, and the 1,000-code-point bound. Invalid,
@@ -114,8 +126,9 @@ mutation. Only the `sessions` table is rebuilt with the widened allowlist; all
 rows, identifiers, relations, sequences, receipts, summaries, evidence, and FTS
 results remain equivalent. Source drift or a structurally valid but mismatched
 backup fails closed before mutation; an interruption rolls back to revision 9
-with the verified backup retained. Revision 10 reopening is idempotent, and no
-downgrade is provided.
+with the verified backup retained. The 9→10 step records revision 10 explicitly;
+current startup then applies revision 11's empty-session cleanup (see
+[persistence and retrieval](persistence-retrieval.md)). No downgrade is provided.
 
 ## Release and catalog handoff
 

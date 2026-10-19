@@ -222,10 +222,20 @@ The shared Skill MUST front-load recall, save, and handoff applicability in its 
 
 ### Requirement: Host Compaction Text MUST Become Cited Checkpoint Evidence
 
-When `guide_post_compact` carries host compaction text, the service MUST sanitize and store it as `checkpoint` session evidence and MUST derive a harness checkpoint summary only from recognized section headings (goal, request, or intent as objective; done or completed as completed; in progress or pending as pending; blocked as blocker; decisions as decision; next steps as next action; modified files as changed surface), each claim citing that evidence; text without recognized headings MUST remain evidence only, and the text MUST never become a memory or observation.
+When `guide_post_compact` carries host compaction text, the service MUST sanitize and store it as `checkpoint` session evidence and MUST derive a harness checkpoint summary only from recognized section headings (goal, request, or intent as objective; done or completed as completed; in progress or pending as pending; blocked as blocker; decisions as decision; next steps as next action; modified files as changed surface), each claim citing that evidence and bounded to 300 code points; only the first objective section MUST yield an objective, the file paths of every modified-files section or block MUST merge into one changed-surface claim in first-seen order without duplicates, text without recognized headings MUST remain evidence only, and the text MUST never become a memory or observation.
 
 #### Scenario: Host Compaction Text MUST Become Cited Checkpoint Evidence
 
-- **GIVEN** Pi compaction text with Goal, Done, In Progress, Blocked, Key Decisions, and Next Steps sections and another text with no recognized headings
+- **GIVEN** Pi split-turn compaction text with Goal, Done, In Progress, Key Decisions, and Next Steps sections, a later Original Request section, and two modified-files blocks with overlapping paths, plus another text with no recognized headings
 - **WHEN** each arrives on `guide_post_compact`
-- **THEN** the first yields a checkpoint summary with objective, completed, pending, blocker, decision, and next-action claims citing its evidence, and the second yields evidence only
+- **THEN** the first yields a checkpoint summary with one objective from Goal, completed, pending, decision, and next-action claims, and one changed-surface claim listing each path once, all citing its evidence, and the second yields evidence only
+
+### Requirement: Lifecycle Operations MUST Create Sessions Only on Session Activity
+
+For a root session that has no persisted session, `enroll`, `recover`, `finalize`, and `capture_root` without sanitized content MUST create no session, lifecycle receipt, or summary for that root session in any harness or generic MCP connection, while `recover` MUST still render the project recovery selection for a verified identity, report the deterministic session identity, and keep a degraded-identity outcome degraded with no selected or derived context; root prompt capture with content, `checkpoint_pre_compact`, `guide_post_compact`, and session-attributed saves MUST create the session on first use; lifecycle operations on an existing session MUST keep their receipts and effects; and a session whose host process is killed before finalize, such as by closing an Orca terminal tab on Windows, MUST remain covered by lazy previous-session summary derivation.
+
+#### Scenario: Lifecycle Operations MUST Create Sessions Only on Session Activity
+
+- **GIVEN** Pi starts a session, injects recovery, and the user then resumes another session or quits without typing
+- **WHEN** enroll, recover, and finalize run for the untouched session
+- **THEN** no session row, lifecycle receipt, or summary exists for it, the recovery block was still rendered, and only a session that receives a typed prompt is created

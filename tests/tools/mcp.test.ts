@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
+import type { SessionSummaryRecord } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { createServer, SERVER_INSTRUCTIONS } from '../../src/server.js';
 import { ALL_TOOLS, createToolHandlers, MEMORY_TOOL_CATALOG, TOOL_DESCRIPTIONS } from '../../src/tools/index.js';
@@ -466,8 +467,66 @@ describe('MCP boundary', () => {
       expect(JSON.stringify(expanded.structuredContent)).not.toContain('SUPPORT CONTENT MUST STAY DEFERRED');
 
       const summaries = await handlers.mem_project({ action: 'summaries', project_key: 'repo:summary', root_session_key: 'root-1', harness: 'codex', temporal: 'current', budget_chars: 2_000 });
-      expect(summaries.structuredContent).toMatchObject({ data: { action: 'summaries', items: [{ recordType: 'summary', id: summaryId }] } });
+      expect(summaries.structuredContent).toMatchObject({ data: { action: 'summaries', items: [{ recordType: 'summary', id: summaryId }] }, warnings: [] });
+      const items = (summaries.structuredContent.data as { items: SessionSummaryRecord[] }).items;
+      expect(items).toEqual([(expanded.structuredContent.data as { record: SessionSummaryRecord }).record]);
+      expect(items[0]).not.toHaveProperty('truncated');
+      expect(summaries.structuredContent.budget).toEqual({ requested_chars: 2_000, returned_chars: JSON.stringify(items[0]).length });
       expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('lists a 13k-character summary within budget with leading claims and payload_truncated while mem_get stays full', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:oversized-summary', name: 'oversized-summary' };
+    const session = { rootSessionKey: 'root-1', harness: 'codex' as const };
+    try {
+      const support = service.save({ project, session, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Supported summary fixture.' } });
+      const submitted = service.lifecycle({
+        project, ...session, operation: 'checkpoint_pre_compact', eventKey: 'summary',
+        summary: {
+          kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 },
+          generator: { kind: 'root_agent', name: 'codex', version: '1', configHash: 'a'.repeat(64) },
+          claims: Array.from({ length: 6 }, (_, index) => ({
+            kind: 'completed', content: index === 1 ? '😀"\\'.repeat(400) : `${index}: ${'x'.repeat(1_797)}`,
+            outcome: 'succeeded', supportIds: [support.evidence.id],
+          })),
+        },
+      });
+      const handlers = createToolHandlers(service);
+      const expanded = await handlers.mem_get({ id: submitted.summaryId });
+      const full = (expanded.structuredContent.data as { record: SessionSummaryRecord }).record;
+      expect(JSON.stringify(full).length).toBeGreaterThan(12_000);
+      expect(JSON.stringify(full).length).toBeLessThan(14_000);
+
+      const listed = await handlers.mem_project({ action: 'summaries', project_key: project.key, budget_chars: 4_000 });
+      expect(listed.isError).not.toBe(true);
+      const items = (listed.structuredContent.data as { items: Array<SessionSummaryRecord & { truncated?: true }> }).items;
+      expect(items).toHaveLength(1);
+      const bounded = items[0]!;
+      const { claims: fullClaims, ...metadata } = full;
+      const { claims, truncated, ...boundedMetadata } = bounded;
+      expect(boundedMetadata).toEqual(metadata);
+      expect(truncated).toBe(true);
+      expect(claims).toHaveLength(2);
+      expect(claims[0]).toEqual(fullClaims[0]);
+      const clipped = claims[1]!;
+      expect(clipped).toEqual({ ...fullClaims[1], content: clipped.content });
+      expect(clipped.content.length).toBeGreaterThan(0);
+      expect(clipped.content.length).toBeLessThan(fullClaims[1]!.content.length);
+      expect(fullClaims[1]!.content.startsWith(clipped.content)).toBe(true);
+      expect(Array.from(clipped.content).some((point) => /^[\uD800-\uDFFF]$/u.test(point))).toBe(false);
+      const nextPoint = Array.from(fullClaims[1]!.content)[Array.from(clipped.content).length]!;
+      expect(JSON.stringify({ ...bounded, claims: [claims[0], { ...clipped, content: clipped.content + nextPoint }] }).length).toBeGreaterThan(4_000);
+      const returnedChars = JSON.stringify(bounded).length;
+      expect(returnedChars).toBeLessThanOrEqual(4_000);
+      expect(listed.structuredContent).toMatchObject({
+        sources: expect.arrayContaining([full.id, full.submissionEvidenceId, support.evidence.id]),
+        budget: { requested_chars: 4_000, returned_chars: returnedChars }, warnings: ['payload_truncated'],
+      });
+      const expandedAgain = await handlers.mem_get({ id: submitted.summaryId });
+      expect((expandedAgain.structuredContent.data as { record: SessionSummaryRecord }).record).toEqual(full);
+      expect(full).not.toHaveProperty('truncated');
     } finally { service.close(); }
   });
 

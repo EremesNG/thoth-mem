@@ -277,3 +277,13 @@ When an MCP client that does not identify as a supported native host calls a too
 - **GIVEN** a generic MCP client that saves two memories without a session pair and then closes stdin
 - **WHEN** a later connection reads context
 - **THEN** both saves belong to one `mcp` connection session with a final derived summary shown as the previous-session summary, and an observation review attempted with that session's identity is rejected
+
+### Requirement: mem_project Summaries MUST Return Oversized Records in Bounded Form
+
+`mem_project action=summaries` MUST list summaries newest first within `budget_chars`; when a record does not fit the remaining budget, the response MUST include it in bounded form with its identifiers, kind, version, status, coverage, and generator plus as many leading claims as fit, clipping the last included claim when necessary and marking the item truncated, and MUST then stop with `payload_truncated`, so a budget able to hold one record's metadata never yields an empty list while summaries exist; the full record MUST remain available through `mem_get`.
+
+#### Scenario: mem_project Summaries MUST Return Oversized Records in Bounded Form
+
+- **GIVEN** a project whose only summary serializes to 13,000 characters
+- **WHEN** `mem_project action=summaries` runs with `budget_chars` 4000
+- **THEN** it returns that summary's ID and metadata with leading claims within 4,000 characters, marks it truncated, and warns `payload_truncated`

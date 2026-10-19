@@ -20,7 +20,7 @@ interface NameRow { name: string }
 interface VersionRow { version: number | null }
 interface KindRow { kind: string }
 
-export const SQLITE_SCHEMA_REVISION = 10;
+export const SQLITE_SCHEMA_REVISION = 11;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
 const ORDERED_SESSION_SCHEMA_REVISION = 3;
 const SESSION_PROJECTION_SCHEMA_REVISION = 4;
@@ -29,6 +29,8 @@ const OBSERVATION_SCHEMA_REVISION = 6;
 const PROJECT_ALIAS_SCHEMA_REVISION = 7;
 const LEGACY_IMPORT_AUDIT_SCHEMA_REVISION = 8;
 const LEGACY_IMPORT_COHORT_SCHEMA_REVISION = 9;
+const PI_HARNESS_SCHEMA_REVISION = 10;
+const LAZY_SESSION_SCHEMA_REVISION = 11;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -301,6 +303,7 @@ export interface MigrationHooks {
   afterRevisionEightBackupVerified?: () => void;
   afterRevisionNineBackupVerified?: () => void;
   afterRevisionNineTableRebuilt?: () => void;
+  afterRevisionTenBackupVerified?: () => void;
 }
 
 function migrateRevisionSeven(database: Database.Database, hooks: MigrationHooks): void {
@@ -440,13 +443,86 @@ function migrateRevisionNine(database: Database.Database, hooks: MigrationHooks)
       const integrity = database.pragma('integrity_check') as Array<{ integrity_check: string }>;
       if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite revision 10 migration failed integrity verification');
       if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 10 migration failed foreign-key verification');
-      database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(SQLITE_SCHEMA_REVISION, new Date().toISOString());
+      database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(PI_HARNESS_SCHEMA_REVISION, new Date().toISOString());
     }).immediate();
   } finally {
     database.pragma('legacy_alter_table = OFF');
     database.pragma('foreign_keys = ON');
   }
   if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 10 migration failed foreign-key verification');
+}
+
+export function preV11BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v11.bak`;
+}
+
+function verifyRevisionTenBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v11 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v11 backup failed foreign-key verification');
+    const version = backup.prepare('SELECT max(version) AS version FROM schema_migrations').get() as VersionRow;
+    if (version.version !== PI_HARNESS_SCHEMA_REVISION) throw new Error('SQLite pre-v11 backup has an unexpected schema revision');
+  } finally { backup.close(); }
+}
+
+function ensureRevisionTenBackup(database: Database.Database): string | null {
+  if (!database.name || database.name === ':memory:') return null;
+  const backupPath = preV11BackupPath(database.name);
+  if (existsSync(backupPath)) {
+    verifyRevisionTenBackup(backupPath);
+    return backupPath;
+  }
+  const temporaryPath = `${backupPath}.tmp`;
+  if (existsSync(temporaryPath)) rmSync(temporaryPath);
+  try {
+    database.prepare('VACUUM INTO ?').run(temporaryPath);
+    verifyRevisionTenBackup(temporaryPath);
+    renameSync(temporaryPath, backupPath);
+  } finally { if (existsSync(temporaryPath)) rmSync(temporaryPath); }
+  return backupPath;
+}
+
+function migrateRevisionTen(database: Database.Database, hooks: MigrationHooks): void {
+  const backupPath = ensureRevisionTenBackup(database);
+  database.transaction(() => {
+    if (backupPath) {
+      const backup = new Database(backupPath, { readonly: true, fileMustExist: true });
+      try {
+        backup.pragma('query_only = ON');
+        if (logicalState(database) !== logicalState(backup)) throw new Error('SQLite pre-v11 backup does not match the locked revision 10 source');
+      } finally { backup.close(); }
+    }
+    hooks.afterRevisionTenBackupVerified?.();
+    // All indirect memory/observation/save references retain their session through evidence.
+    // Lifecycle receipts instead identify their root by the full composite identity.
+    const emptySessions = database.prepare(`
+      SELECT s.id,s.harness,s.project_id,s.root_session_key FROM sessions s
+      WHERE s.harness<>'import'
+        AND NOT EXISTS (SELECT 1 FROM evidence WHERE session_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM session_events WHERE session_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM session_summaries WHERE session_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM observations WHERE session_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM observation_reviews WHERE reviewer_session_id=s.id)
+        AND NOT EXISTS (SELECT 1 FROM legacy_import_rows WHERE session_id=s.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM lifecycle_receipts r
+          WHERE r.harness=s.harness AND r.project_id=s.project_id AND r.root_session_key=s.root_session_key
+            AND (r.evidence_id IS NOT NULL OR r.summary_id IS NOT NULL)
+        )
+    `).all() as Array<{ id: string; harness: string; project_id: string; root_session_key: string }>;
+    const deleteReceipts = database.prepare('DELETE FROM lifecycle_receipts WHERE harness=? AND project_id=? AND root_session_key=? AND evidence_id IS NULL AND summary_id IS NULL');
+    const deleteSession = database.prepare('DELETE FROM sessions WHERE id=?');
+    for (const session of emptySessions) {
+      deleteReceipts.run(session.harness, session.project_id, session.root_session_key);
+      deleteSession.run(session.id);
+    }
+    const integrity = database.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite revision 11 migration failed integrity verification');
+    if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 11 migration failed foreign-key verification');
+    database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(LAZY_SESSION_SCHEMA_REVISION, new Date().toISOString());
+  }).immediate();
 }
 
 export function migrateCurrentSchema(database: Database.Database, hooks: MigrationHooks = {}): void {
@@ -473,6 +549,7 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === ORDERED_SESSION_SCHEMA_REVISION) {
@@ -483,6 +560,7 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === SESSION_PROJECTION_SCHEMA_REVISION) {
@@ -492,6 +570,7 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === PREFIX_FTS_SCHEMA_REVISION) {
@@ -500,6 +579,7 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === OBSERVATION_SCHEMA_REVISION) {
@@ -507,21 +587,29 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === PROJECT_ALIAS_SCHEMA_REVISION) {
     migrateRevisionSeven(database, hooks);
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === LEGACY_IMPORT_AUDIT_SCHEMA_REVISION) {
     migrateRevisionEight(database, hooks);
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
     return;
   }
   if (version.version === LEGACY_IMPORT_COHORT_SCHEMA_REVISION) {
     migrateRevisionNine(database, hooks);
+    migrateRevisionTen(database, hooks);
+    return;
+  }
+  if (version.version === PI_HARNESS_SCHEMA_REVISION) {
+    migrateRevisionTen(database, hooks);
     return;
   }
   throw new Error(`Unsupported memory SQLite schema revision: ${version.version}`);

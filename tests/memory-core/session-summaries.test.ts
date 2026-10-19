@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { SessionSummaryInput } from '../../src/memory-core/contracts.js';
+import type { SessionSummaryInput, SessionSummaryRecord } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import {
   canonicalizeSessionSummary,
@@ -93,6 +93,65 @@ describe('session summaries', () => {
       expect(rows).toEqual([{ id: expect.any(String), status: 'superseded', version: 1 }, { id: expect.any(String), status: 'current', version: 2 }]);
       expect(database.prepare('SELECT count(*) AS count FROM memories').get()).toEqual({ count: 0 });
     } finally { database.close(); }
+  });
+
+  it('keeps a small newest summary full, bounds the next oversized summary, and stops before older records', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:summary-order', name: 'summary-order' };
+    const session = { rootSessionKey: 'root-1', harness: 'codex' as const };
+    try {
+      const ids: string[] = [];
+      for (const [index, content] of ['Oldest summary.', 'Large claim. '.repeat(150), 'Newest summary.'].entries()) {
+        const support = service.save({ project, session, eventKey: `support-${index}`, evidence: { kind: 'explicit_save', content: `Support ${index}.` } });
+        const submitted = service.lifecycle({
+          project, ...session, operation: 'checkpoint_pre_compact', eventKey: `summary-${index}`,
+          summary: {
+            ...summary([support.evidence.id], support.event!.sequence),
+            claims: Array.from({ length: index === 1 ? 6 : 1 }, (_, ordinal) => ({ kind: 'completed', content: `${ordinal}: ${content}`, supportIds: [support.evidence.id] })),
+          },
+        });
+        ids.push(submitted.summaryId!);
+      }
+      const full = ids.map((id) => service.get({ id }).record as SessionSummaryRecord);
+      const result = service.projectSummaries({ projectKey: project.key, rootSessionKey: session.rootSessionKey, harness: session.harness, history: true, budgetChars: 4_000 });
+      expect(result.items.map((item) => item.id)).toEqual([full[2]!.id, full[1]!.id]);
+      expect(result.items[0]).toEqual(full[2]);
+      expect(result.items[0]).not.toHaveProperty('truncated');
+      const bounded = result.items[1]!;
+      expect(bounded).toEqual({ ...full[1], claims: bounded.claims, truncated: true });
+      expect(bounded.claims[0]).toEqual(full[1]!.claims[0]);
+      expect(bounded.claims.length).toBeLessThan(full[1]!.claims.length);
+      expect(result.truncated).toBe(true);
+      expect(result.returnedChars).toBe(result.items.reduce((total, item) => total + JSON.stringify(item).length, 0));
+      expect(result.returnedChars).toBeLessThanOrEqual(4_000);
+      expect(service.projectSummaries({ projectKey: project.key }).items).toEqual([full[2]]);
+      const complete = service.projectSummaries({ projectKey: project.key, history: true, budgetChars: 20_000 });
+      expect(complete.items).toEqual(full.slice().reverse());
+      expect(complete.truncated).toBe(false);
+    } finally { service.close(); }
+  });
+
+  it('returns metadata-only summaries at the metadata floor and omits them below it', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:summary-floor', name: 'summary-floor' };
+    const session = { rootSessionKey: 'root-1', harness: 'codex' as const };
+    try {
+      const support = service.save({ project, session, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Support.' } });
+      const submitted = service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: 'summary', summary: summary([support.evidence.id], 1) });
+      const full = service.get({ id: submitted.summaryId! }).record as SessionSummaryRecord;
+      const metadataOnly = { ...full, claims: [], truncated: true };
+      const metadataChars = JSON.stringify(metadataOnly).length;
+      expect(service.projectSummaries({ projectKey: project.key, budgetChars: metadataChars })).toEqual({
+        items: [metadataOnly], requestedChars: metadataChars, returnedChars: metadataChars, truncated: true,
+      });
+      expect(service.projectSummaries({ projectKey: project.key, budgetChars: metadataChars - 1 })).toEqual({
+        items: [], requestedChars: metadataChars - 1, returnedChars: 0, truncated: true,
+      });
+      const fullChars = JSON.stringify(full).length;
+      expect(service.projectSummaries({ projectKey: project.key, budgetChars: fullChars })).toEqual({
+        items: [full], requestedChars: fullChars, returnedChars: fullChars, truncated: false,
+      });
+    } finally { service.close(); }
   });
 
   it('identifies the offending claim and support for missing, foreign, unordered, or out-of-range evidence', () => {

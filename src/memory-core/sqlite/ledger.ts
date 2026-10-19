@@ -87,13 +87,16 @@ export function ensureProject(database: Database.Database, input: ProjectIdentit
   return id;
 }
 
-export function ensureSession(database: Database.Database, projectId: string, input: SessionIdentityInput): string {
+export function resolveSession(database: Database.Database, projectId: string, input: SessionIdentityInput): { id: string; exists: boolean } {
   if (!input.rootSessionKey.trim()) throw new Error('root_session_key is required; send the stable verified root session key with harness');
   const found = database.prepare('SELECT id FROM sessions WHERE project_id=? AND root_session_key=? AND harness=?').get(projectId, input.rootSessionKey, input.harness) as { id: string } | undefined;
-  if (found) return found.id;
-  const id = stableUuid(`session:${projectId}:${input.harness}:${input.rootSessionKey}`);
-  database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run(id, projectId, input.rootSessionKey, input.harness, 'active', now());
-  return id;
+  return { id: found?.id ?? stableUuid(`session:${projectId}:${input.harness}:${input.rootSessionKey}`), exists: Boolean(found) };
+}
+
+export function ensureSession(database: Database.Database, projectId: string, input: SessionIdentityInput): string {
+  const session = resolveSession(database, projectId, input);
+  if (!session.exists) database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run(session.id, projectId, input.rootSessionKey, input.harness, 'active', now());
+  return session.id;
 }
 
 export function sessionEventFromRow(row: Record<string, unknown>): SessionEventRecord {

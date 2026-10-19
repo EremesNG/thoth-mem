@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LifecycleInput, LifecycleResult } from '../../src/memory-core/contracts.js';
@@ -9,12 +10,48 @@ import { MemoryService } from '../../src/memory-core/service.js';
 import { createPiExtension } from '../../src/integration/pi/index.js';
 import type { PiMcpClient } from '../../src/integration/pi/mcp-client.js';
 import { SERVER_INSTRUCTIONS } from '../../src/server.js';
-import { MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
+import { createToolHandlers, MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('Pi native extension', () => {
+  it.each(['resume', 'quit'])('leaves untouched start/recover/%s sessions absent until a typed prompt', async (reason) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-lazy-')); roots.push(cwd);
+    const databasePath = join(cwd, 'memory.sqlite');
+    const service = new MemoryService({ databasePath });
+    const database = new Database(databasePath, { readonly: true });
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const tools = createToolHandlers(service);
+    const client: PiMcpClient = { callTool: (name, args) => tools[name](args), close: async () => undefined };
+    createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = (root: string) => ({ cwd, sessionManager: { getSessionId: () => root, getLeafId: () => 'leaf' } });
+    try {
+      const untouched = context('untouched');
+      await handlers.get('session_start')!({ reason: 'startup' }, untouched);
+      const sections: Record<string, string> = {};
+      await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, untouched);
+      expect(sections.thoth_mem_recovery).toContain('root_session_id=untouched;');
+      expect(sections.thoth_mem_recovery).not.toContain('Memory recovery was unavailable');
+      expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 0 });
+      expect(database.prepare('SELECT count(*) AS count FROM lifecycle_receipts').get()).toEqual({ count: 0 });
+      await handlers.get('session_shutdown')!({ reason }, untouched);
+      expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 0 });
+      expect(database.prepare('SELECT count(*) AS count FROM lifecycle_receipts').get()).toEqual({ count: 0 });
+      expect(database.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
+
+      const active = context('typed');
+      await handlers.get('session_start')!({ reason: 'resume' }, active);
+      expect(await handlers.get('input')!({ text: 'Implement the requested lifecycle change.', source: 'interactive' }, active)).toEqual({ action: 'continue' });
+      expect(database.prepare('SELECT root_session_key,harness FROM sessions').all()).toEqual([{ root_session_key: 'typed', harness: 'pi' }]);
+      expect(database.prepare('SELECT root_session_key,operation FROM lifecycle_receipts').all()).toEqual([{ root_session_key: 'typed', operation: 'capture_root' }]);
+      await handlers.get('session_shutdown')!({ reason: 'quit' }, active);
+      expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 1 });
+      expect(database.prepare('SELECT kind FROM session_summaries').all()).toEqual([{ kind: 'final' }]);
+      expect(database.prepare("SELECT count(*) AS count FROM lifecycle_receipts WHERE root_session_key='untouched'").get()).toEqual({ count: 0 });
+    } finally { database.close(); service.close(); }
+  });
+
   it('registers five model-facing tools without a dialect marker and forwards structured results', async () => {
     const tools: Array<Record<string, unknown>> = [];
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
@@ -149,7 +186,7 @@ describe('Pi native extension', () => {
       expect(compactions[0]!.event_key).not.toBe(compactions[1]!.event_key);
       expect(compactions[1]!.event_key).toBe(compactions[2]!.event_key);
       expect(results.at(-1)).toMatchObject({ duplicate: true });
-      service.lifecycle({ ...previous, operation: 'capture_root', eventKey: 'new', content: 'Updated predecessor.' });
+      service.lifecycle({ ...previous, operation: 'capture_root', eventKey: 'new', content: 'Updated predecessor. Continue verifying native recovery across hosts.' });
       const sections: Record<string, string> = {};
       await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context);
       expect(calls.at(-1)).toMatchObject({ operation: 'recover' });

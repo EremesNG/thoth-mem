@@ -55,7 +55,7 @@ describe('MCP stdio process shutdown', () => {
         const summaries = service.projectSummaries({ projectKey: 'repo:eof', history: true }).items;
         expect(summaries).toHaveLength(1);
         expect(summaries[0]).toMatchObject({ kind: 'final', version: 1, sessionId: saved.sessionId, generator: { kind: 'harness' }, claims: [
-          { kind: 'decision', content: 'Use SQLite for local storage.', supportIds: [saved.evidence.id] },
+          { kind: 'decision', content: 'Local storage: Use SQLite for local storage.', supportIds: [saved.evidence.id] },
         ] });
         const database = new Database(databasePath, { readonly: true });
         try {
