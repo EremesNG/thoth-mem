@@ -9,7 +9,7 @@
     "plugin/hooks/hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
     "plugin/runners/public-runner.mjs": "93d0d240c58563324cd07960c3195e4fb632b4701f0ac5d02621e6ee5c736532",
     "plugin/runtime.json": "10aa0d647c9f9273b9ef489efab738d5b7a415e249203a696acd4751e9fd50d4",
-    "plugin/skills/thoth-mem/SKILL.md": "ada22658bdde4313984275e96d429521049f4abcc89b6949e3287f94febaee4d",
+    "plugin/skills/thoth-mem/SKILL.md": "399925d3e2be12da2016d148962394d78a97fddd524a09977bd702c2b8bfe273",
     "plugin/skills/thoth-mem/references/claude-code.md": "6db493777b74c38be8cb7281f51f61801e7a7c043a176a60fc23b18db4693b0e",
     "plugin/skills/thoth-mem/references/codex.md": "ed56c8e74dfd38febdc49c329bc9bc33abca58a8464c125773fc49a25cdf5676",
     "plugin/skills/thoth-mem/references/observation-review.md": "a1be9d79acb5dd990015313f53e6e1ffafbe0e260fafebc802ffddb526a9a248"

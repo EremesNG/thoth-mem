@@ -94,6 +94,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
     };
 
     for (const tool of MEMORY_TOOL_CATALOG) {
+      if (tool.name === 'mem_session') continue;
       pi.registerTool({
         name: tool.name,
         label: tool.name,

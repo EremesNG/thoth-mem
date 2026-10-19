@@ -15,13 +15,18 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('Pi native extension', () => {
-  it('registers exactly the authoritative six tools and forwards structured results', async () => {
+  it('registers five model-facing tools without a dialect marker and forwards structured results', async () => {
     const tools: Array<Record<string, unknown>> = [];
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
     const client: PiMcpClient = { callTool: vi.fn(async (name) => ({ content: [{ type: 'text', text: name }], structuredContent: { schema: `test.${name}` } })), close: vi.fn(async () => undefined) };
     createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
-    expect(tools.map((tool) => tool.name)).toEqual(MEMORY_TOOL_CATALOG.map((tool) => tool.name));
-    expect(tools.map((tool) => tool.parameters)).toEqual(MEMORY_TOOL_CATALOG.map((tool) => tool.inputSchema));
+    expect(tools.map((tool) => tool.name)).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project']);
+    const catalog = MEMORY_TOOL_CATALOG.filter((tool) => tool.name !== 'mem_session');
+    expect(tools.map((tool) => tool.parameters)).toEqual(catalog.map(({ inputSchema }) => {
+      const { $schema: _dialect, ...parameters } = inputSchema;
+      return parameters;
+    }));
+    for (const tool of tools) expect(tool.parameters).not.toHaveProperty('$schema');
     const result = await (tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call-1', {});
     expect(result).toMatchObject({ details: { schema: 'test.mem_save' } });
     expect(handlers.size).toBe(8);
@@ -155,7 +160,7 @@ describe('Pi native extension', () => {
     } finally { service.close(); }
   });
 
-  it('dispatches successful compact guidance and finalizes only a true quit', async () => {
+  it('dispatches every root lifecycle operation through mem_session without model registration', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-compact-')); roots.push(cwd);
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
     const operations: string[] = [];
@@ -166,12 +171,14 @@ describe('Pi native extension', () => {
     createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
     const context = { cwd, sessionManager: { getSessionId: () => 'session-compact', getLeafId: () => 'leaf-compact' } };
     await handlers.get('session_start')!({ reason: 'startup' }, context);
+    await handlers.get('input')!({ text: 'root objective', source: 'interactive' }, context);
     await handlers.get('session_before_compact')!({ reason: 'manual', preparation: { firstKeptEntryId: 'entry-1' } }, context);
     await handlers.get('session_compact')!({ reason: 'manual', compactionEntry: { id: 'entry-2' } }, context);
     await handlers.get('session_compact_failed')!({ reason: 'manual' }, context);
     await handlers.get('agent_settled')!({}, context);
     await handlers.get('session_shutdown')!({ reason: 'quit', targetSessionFile: 'session.jsonl' }, context);
-    expect(operations).toEqual(['enroll', 'recover', 'checkpoint_pre_compact', 'guide_post_compact', 'finalize']);
+    expect(operations).toEqual(['enroll', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'finalize']);
+    expect(vi.mocked(client.callTool).mock.calls.map(([name]) => name)).toEqual(operations.map(() => 'mem_session'));
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 });

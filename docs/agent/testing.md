@@ -45,6 +45,13 @@ pnpm run build
 pnpm exec vitest run tests/setup/pi.test.ts tests/integration/pi-lifecycle.test.ts tests/integration/pi-mcp-client.test.ts tests/integration/pi-native-plugin.test.ts tests/integration/pi-tool-error.test.ts tests/integration/recovery.test.ts --config vitest.integration.config.ts
 ```
 
+Tool-contract size guards are `tests/tools/tool-budget.test.ts` for the six MCP
+definitions and `tests/integration/pi-tool-budget.test.ts` for Pi's five native
+definitions. They assert exact names and aggregate `JSON.stringify(...).length`
+character budgets with about 5% headroom; increasing a budget requires a deliberate
+definition change. Pi omits `$schema` and keeps `mem_session` hook-only, while MCP
+still enumerates all six tools.
+
 The host-shaped packed smoke is a separate terminating check:
 
 ```sh
@@ -106,8 +113,9 @@ There is no lint or browser lane. `integration:smoke` packs the real tarball,
 installs it in a disposable directory, verifies all four native inventories,
 cold-starts its CLI, loads the extension and Skill with the invoking environment's
 Pi, records that host version without an exact-version gate, enumerates the
-six tools, and executes every packaged lifecycle runner with host-shaped
-fixtures without touching real host homes. It does not prove host-model
+six MCP tools and five model-facing Pi native tools, and executes every packaged
+lifecycle runner with host-shaped fixtures without touching real host homes.
+It does not prove host-model
 consumption. External benchmark lanes may remain unavailable only when the
 report says so explicitly.
 

@@ -19,10 +19,13 @@ does not certify every runtime behavior on an untested release.
 `thoth-mem setup pi` uses Pi's global
 package manager and records a receipt for either the exact public source
 `npm:thoth-mem@<version>` or an explicitly supplied absolute local package
-root. The extension registers exactly the six catalog tools, each with self-framed
+root. The extension registers exactly five model-facing native tools:
+`mem_save`, `mem_recall`, `mem_context`, `mem_get`, and `mem_project`.
+`mem_session` remains hook-only in Pi; the shared MCP catalog still has six tools.
+Each native tool has self-framed
 `renderCall`/`renderResult` output in the Thoth Pi theme style (titled frame,
 tool-aware call summary, structured result lines, status footer) that imports
-no Pi TUI module at runtime, and shares one lazy,
+no Pi TUI module at runtime. The extension shares one lazy,
 time/size-bounded MCP SDK child running the package-relative
 `dist/index.js mcp --no-http` entry for both tool and lifecycle calls. The Pi
 process never loads `MemoryService` or `better-sqlite3`; a failed child is
@@ -141,4 +144,4 @@ notice that no memory was recovered, not proof that the project has none; local
 fallback adds a distinct unavailable-recovery notice. Both appear immediately
 after identity and direct the agent to `mem_recall` before relying on prior context. `modelConsumed` remains false until a real host observation proves consumption, regardless of hook execution, persistence, candidate availability, or delivery.
 
-`integration:smoke` installs the actual tarball in a disposable directory, imports and executes the OpenCode `main` with Bun, delegates its persistence/recovery fixture to the separate Node CLI, converges public and local OpenCode state twice, synchronizes the Skill, enumerates exactly six tools, and executes OpenCode, Codex, Claude Code, and Pi lifecycle fixtures from unrelated paths. Its host-shaped fixtures exercise checkpoint capture, structured summaries, recovery, and isolation; the Pi fixture loads `dist/pi.js`, exercises all six native tools and lifecycle events, and proves the real Pi home is unchanged. It also rejects an OpenCode bundle containing the Node-native persistence graph. It never reads or mutates real homes. It cannot prove that a real host model consumes returned guidance; host acceptance and paid Claude model use remain separate real-host evidence dimensions.
+`integration:smoke` installs the actual tarball in a disposable directory, imports and executes the OpenCode `main` with Bun, delegates its persistence/recovery fixture to the separate Node CLI, converges public and local OpenCode state twice, synchronizes the Skill, enumerates exactly six MCP tools, and executes OpenCode, Codex, Claude Code, and Pi lifecycle fixtures from unrelated paths. Its host-shaped fixtures exercise checkpoint capture, structured summaries, recovery, and isolation; the Pi fixture loads `dist/pi.js`, exercises all five model-facing native tools plus hook-driven lifecycle events via `mem_session`, and proves the real Pi home is unchanged. It also rejects an OpenCode bundle containing the Node-native persistence graph. It never reads or mutates real homes. It cannot prove that a real host model consumes returned guidance; host acceptance and paid Claude model use remain separate real-host evidence dimensions.

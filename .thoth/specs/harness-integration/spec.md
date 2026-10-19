@@ -4,25 +4,13 @@
 
 ### Requirement: Every Native Plugin MUST Bundle Hooks, MCP, and Skills
 
-Every supported host bundle, including Pi, MUST package its supported lifecycle hooks, one registration path for the shared exact six-tool memory surface, and the same canonical memory Skill without stale copied contracts. Pi MUST expose the tools through its native extension API while delegating execution to the existing MCP server rather than requiring a community MCP adapter or importing the SQLite runtime into the Pi process.
+Every supported host bundle, including Pi, MUST package its supported lifecycle hooks, one registration path for the shared memory tool surface, and the same canonical memory Skill without stale copied contracts; MCP hosts expose the exact six-tool surface, while Pi MUST expose `mem_save`, `mem_recall`, `mem_context`, `mem_get`, and `mem_project` through its native extension API with the shared definitions and MUST NOT expose `mem_session` to the model because its extension hooks perform every root lifecycle operation through the extension's own MCP client; Pi MUST delegate execution to the existing MCP server rather than requiring a community MCP adapter or importing the SQLite runtime into the Pi process.
 
-#### Scenario: US2 - Use the existing memory tools from Pi 1
+#### Scenario: Every Native Plugin MUST Bundle Hooks, MCP, and Skills
 
 - **GIVEN** the native Pi package is loaded
-- **WHEN** Pi enumerates extension tools
-- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
-
-#### Scenario: US2 - Use the existing memory tools from Pi 2
-
-- **GIVEN** a valid tool call
-- **WHEN** Pi executes it
-- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
-
-#### Scenario: US2 - Use the existing memory tools from Pi 3
-
-- **GIVEN** the packaged Pi Skill
-- **WHEN** an agent reads its memory guidance
-- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
+- **WHEN** Pi enumerates extension tools and later runs its session lifecycle hooks
+- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, and `mem_project` with the shared compact definitions, and the hooks still enroll, recover, capture, checkpoint, guide, and finalize through `mem_session`
 
 ### Requirement: Runtime Lifecycle MUST Preserve the Core Contract
 
@@ -172,43 +160,13 @@ Stable capture keys MUST identify distinct sanitized root-user submissions rathe
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
-Child launch, timeout, nonzero exit, protocol failure, oversized output, invalid envelope, tool bridge failure, or unverifiable identity in any native adapter, including Pi, MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt. The Pi extension MUST NOT open SQLite directly, and concurrent MCP/lifecycle cold start MUST preserve the database bootstrap safety contract.
+Child launch, timeout, nonzero exit, protocol failure, oversized output, invalid envelope, tool bridge failure, or unverifiable identity in any native adapter, including Pi, MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt; Pi tool calls MUST cross the package-relative Node boundary to the existing MCP server with the same storage, identity, privacy, validation, and error semantics as direct MCP use; the Pi extension MUST NOT open SQLite directly, and concurrent MCP/lifecycle cold start MUST preserve the database bootstrap safety contract.
 
-#### Scenario: US2 - Use the existing memory tools from Pi 1
-
-- **GIVEN** the native Pi package is loaded
-- **WHEN** Pi enumerates extension tools
-- **THEN** it sees exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session` with the shared schemas and bounded structured results
-
-#### Scenario: US2 - Use the existing memory tools from Pi 2
-
-- **GIVEN** a valid tool call
-- **WHEN** Pi executes it
-- **THEN** the request crosses the package-relative Node boundary to the existing MCP server and uses the same storage, identity, privacy, validation, and error semantics as direct MCP use
-
-#### Scenario: US2 - Use the existing memory tools from Pi 3
-
-- **GIVEN** the packaged Pi Skill
-- **WHEN** an agent reads its memory guidance
-- **THEN** it retains the canonical recall, timeline, explicit save, handoff, privacy, confirmation, and verified-identity practices
-
-#### Scenario: US4 - Fail safely without blocking Pi 1
+#### Scenario: Native Failures MUST Degrade Without Blocking the Host Prompt
 
 - **GIVEN** the thoth-mem child cannot start, times out, exits nonzero, or returns an invalid or oversized envelope
 - **WHEN** a Pi prompt or lifecycle hook continues
 - **THEN** no unverified memory is injected, the prompt is not rejected, and only a bounded diagnostic is emitted
-
-#### Scenario: US4 - Fail safely without blocking Pi 2
-
-- **GIVEN** the MCP child and lifecycle child reach a fresh shared data directory concurrently
-- **WHEN** both initialize
-- **THEN** schema bootstrap converges safely or one path degrades truthfully without corrupting the database or blocking Pi
-
-#### Scenario: US4 - Fail safely without blocking Pi 3
-
-- **GIVEN** a delegated, ambiguous, incomplete, or child-key-mismatched Pi identity
-- **WHEN** lifecycle attempts root-only capture or recovery
-- **THEN** it receives no root authority and injects no unverified context
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 

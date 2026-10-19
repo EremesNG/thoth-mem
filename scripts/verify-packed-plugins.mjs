@@ -312,7 +312,7 @@ import assert from 'node:assert/strict';
 const extension = (await import(${JSON.stringify(pathToFileURL(join(packageRoot, 'dist', 'pi.js')).href)})).default;
 const tools = []; const handlers = new Map();
 extension({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
-if (tools.map((tool) => tool.name).join(',') !== 'mem_save,mem_recall,mem_context,mem_get,mem_project,mem_session') throw new Error('wrong Pi tool catalog');
+if (tools.map((tool) => tool.name).join(',') !== 'mem_save,mem_recall,mem_context,mem_get,mem_project') throw new Error('wrong Pi tool catalog');
 const plainTheme = { fg: (_color, text) => text, bold: (text) => text };
 if (tools.some((tool) => tool.renderShell !== 'self' || !tool.renderCall(tool.name === 'mem_save' ? { memory: { kind: 'decision', title: 'Packed' } } : {}, plainTheme, { state: {} }).render(60)[0].includes(tool.name))) throw new Error('missing framed Pi tool rendering');
 const context = { cwd: ${JSON.stringify(nativeProject)}, sessionManager: { getSessionId: () => 'packed-pi-root', getLeafId: () => 'packed-pi-leaf' }, ui: { notify: () => undefined } };

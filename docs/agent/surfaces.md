@@ -1,6 +1,8 @@
 # MCP and CLI surfaces
 
-The model-visible registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
+The model-visible MCP registry is exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`. Pi exposes only the first five as native tools; its extension hooks call `mem_session` through the shared MCP client. `src/tools/index.ts` owns validation and structured envelopes; `src/server.ts` constructs one `MemoryService`; `src/index.ts` owns stdio lifetime; `src/cli.ts` exposes scoped setup, lifecycle, one-way import, and the bounded `project rename` display-name operation.
+
+Shared tool and field descriptions stay compact without changing input structure or runtime validation. Pi's registered schemas omit `$schema`; MCP keeps the SDK-generated marker. `tests/tools/tool-budget.test.ts` and `tests/integration/pi-tool-budget.test.ts` pin exact names and aggregate serialized definition sizes (`JSON.stringify(...).length`, not tokens), with about 5% headroom; budget increases require a deliberate definition change.
 
 `project_key` is the exact opaque verified identity on every project-scoped call. `project_name` is creation/display metadata only and never participates in identity equality. `mem_project action=list` exposes at most 256 exact aliases per project, `aliasCount`, `aliasesTruncated`, and shadowed historical path rows without mutating, merging, or limiting exact alias resolution.
 

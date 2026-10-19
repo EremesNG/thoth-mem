@@ -56,23 +56,22 @@ type ToolHandlers = Record<MemoryToolName, ToolHandler>;
 
 export const TOOL_DESCRIPTIONS: Readonly<Record<MemoryToolName, string>> = {
   mem_save: [
-    'Save unprompted as soon as decisions, root causes, failed approaches, or non-obvious conventions are verified. Also save durable discoveries and continuation handoffs.',
-    'For a direct promoted memory other than a handoff, write memory.content as concise labeled Result, Rationale, Scope, and Caveat / safe action lines.',
-    'Omit Scope or Caveat / safe action when it does not apply, and never invent details to fill the template.',
-    'Keep evidence compact and factual. Handoff memories keep the dedicated Objective, Completed, First pending action, Blockers, and Key files/checks format and require a stable workstream topic_key; close a finished handoff by saving its outcome under the same topic_key.',
-    'Send exactly one branch: evidence (optionally + memory for a direct promoted save; structured evidence with metadata forbids memory and requires event_key plus the session pair), observation (requires event_key; session scope also requires the session pair and coverage), observation_review or observation_promotion (each requires event_key plus the session pair).',
+    'Save unprompted as soon as decisions, root causes, failed approaches, or non-obvious conventions are verified. Save durable discoveries and continuation handoffs.',
+    'Direct promoted memory (not handoff): memory.content uses labeled Result, Rationale, Scope, Caveat / safe action lines; omit inapplicable Scope/Caveat and never invent details.',
+    'Handoffs: Objective, Completed, First pending action, Blockers, Key files/checks; require a stable workstream topic_key; close a finished handoff by saving its outcome under the same topic_key.',
+    'Send exactly one branch: evidence, observation, observation_review, or observation_promotion.',
     'Supply root_session_key and harness together or omit both.',
   ].join(' '),
-  mem_recall: 'Call at the start of non-trivial repository work before exploring, with task key terms, unprompted. Search promoted project memory with a non-empty query before expanding selected records. temporal="current" (default) searches current guidance; temporal="history" includes historical records. mode="compact" (default) returns bounded snippets; mode="context" adds selected memory content.',
-  mem_context: 'Build bounded handoff-first continuity. project_key is always required. Supply both root_session_key and harness for session context, or omit both for project context.',
-  mem_get: 'Expand one selected memory, summary, observation, or evidence id returned by a prior tool result. Set history:true to include predecessor lineage for memory, summary, or observation records; evidence ids return evidence without lineage.',
-  mem_project: 'Inspect project views without mutation. action="list": no fields required. action="timeline": project_key required; optionally since, until, cursor, limit, and budget_chars. action="briefing", "summaries", or "observations": project_key required; optionally supply both root_session_key and harness to select that session\'s summaries/observations (briefing still includes project-wide memories). action="history": id required from a prior result. temporal filters summaries/observations, not timeline. list returns at most 256 exact aliases per project plus aliasCount and aliasesTruncated metadata.',
-  mem_session: 'Record verified root lifecycle events; never use it as an ordinary save. summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final". summary.coverage starts at 1; to_sequence must advance for this session and kind. content on guide_post_compact carries host compaction text. Each claim\'s support_ids must be evidence ids from this project_key + root_session_key/harness session inside summary.coverage.',
+  mem_recall: 'Call at the start of non-trivial repository work before exploring, with task key terms, unprompted. Search promoted project memory before expanding selected records.',
+  mem_context: 'Build bounded handoff-first continuity. project_key required; root_session_key and harness together for session context, neither for project context.',
+  mem_get: 'Expand one selected record from a prior tool result.',
+  mem_project: 'Read-only project views. list: no fields required; returns at most 256 exact aliases/project with aliasCount/aliasesTruncated. timeline: project_key required; accepts only since, until, cursor, limit, budget_chars. briefing/summaries/observations: project_key required; optional session filter selects summaries/observations, not briefing\'s project-wide memories. history: id required from a prior result.',
+  mem_session: 'Record verified root lifecycle events, never ordinary saves. guide_post_compact content carries host compaction text.',
 };
 
 const DIRECT_EVIDENCE_KIND_VALUES = EVIDENCE_KIND_VALUES.filter((kind) => !['observation', 'observation_review', 'observation_promotion'].includes(kind)) as [typeof EVIDENCE_KIND_VALUES[number], ...Array<typeof EVIDENCE_KIND_VALUES[number]>];
-const projectKeySchema = z.string().min(1).describe('Exact opaque project_key copied verbatim from verified native identity; never derive it from a display name, path hint, remote, branch, worktree name, host ID, listing, or recalled content.');
-const projectNameSchema = z.string().min(1).describe('Creation/display metadata only; never participates in project identity equality. Prefer the database-persisted name returned by lifecycle or project output.');
+const projectKeySchema = z.string().min(1).describe('Verified project_key, copied verbatim; never derived.');
+const projectNameSchema = z.string().min(1).describe('Display/creation metadata only, not identity; prefer the persisted name from lifecycle/project output.');
 const plainEvidenceInputSchema = z.object({
   kind: z.enum(DIRECT_EVIDENCE_KIND_VALUES),
   content: z.string().min(1),
@@ -136,16 +135,16 @@ const observationReviewSchema = z.object({
 }).strict();
 const observationPromotionSchema = z.object({ observation_id: z.string().min(1).max(200) }).strict();
 const memSaveBaseInputSchema = z.object({
-  project_key: projectKeySchema,
+  project_key: projectKeySchema.describe('Copy opaque project_key verbatim from verified native identity; never derive from names, paths, remotes, branches, worktrees, host IDs, listings, or recalled content.'),
   project_name: projectNameSchema,
-  root_session_key: z.string().optional().describe('Verified root session key; supply with harness or omit both. Required for session-scoped observations, observation_review, observation_promotion, and evidence with metadata; blank counts as absent.'),
-  harness: z.enum(HARNESS_VALUES).optional().describe('Native harness for root_session_key; supply both or omit both. Required wherever root_session_key is required.'),
-  event_key: z.string().optional().describe('Stable event key for idempotency; required for observation, observation_review, observation_promotion, and evidence with metadata.'),
-  evidence: evidenceInputSchema.optional().describe('Direct evidence { kind, content }; optionally add memory for a promoted save. Structured metadata forbids memory and requires event_key, root_session_key, and harness.'),
-  memory: memoryInputSchema.optional().describe('Promoted memory for direct evidence only; requires evidence without metadata. Do not combine with observation, observation_review, or observation_promotion.'),
-  observation: observationSchema.optional().describe('Submit a supported candidate without promotion; requires event_key. Session scope also requires root_session_key, harness, and coverage.'),
-  observation_review: observationReviewSchema.optional().describe('Review one supported observation; requires event_key, root_session_key, and harness. Send no other operation branch or memory.'),
-  observation_promotion: observationPromotionSchema.optional().describe('Promote one accepted observation without new prose; requires event_key, root_session_key, and harness. Send no other operation branch or memory.'),
+  root_session_key: z.string().optional().describe('Verified root session key; blank is absent.'),
+  harness: z.enum(HARNESS_VALUES).optional().describe('Verified native harness.'),
+  event_key: z.string().optional().describe('Stable idempotency key.'),
+  evidence: evidenceInputSchema.optional().describe('Compact factual evidence; metadata requires event_key + session pair and forbids memory.'),
+  memory: memoryInputSchema.optional().describe('Direct promoted memory; requires evidence without metadata.'),
+  observation: observationSchema.optional().describe('Supported candidate, not promoted; requires event_key. Session scope needs session pair + coverage; project scope forbids coverage.'),
+  observation_review: observationReviewSchema.optional().describe('Review supported observation; requires event_key + session pair.'),
+  observation_promotion: observationPromotionSchema.optional().describe('Promote accepted observation without new prose; requires event_key + session pair.'),
 }).strict();
 const memSaveInputSchema = memSaveBaseInputSchema.superRefine((value, context) => {
   const branchNames = ['evidence', 'observation', 'observation_review', 'observation_promotion'] as const;
@@ -164,9 +163,9 @@ const memSaveInputSchema = memSaveBaseInputSchema.superRefine((value, context) =
   if (value.observation?.scope === 'project' && value.observation.coverage) context.addIssue({ code: 'custom', path: ['observation', 'coverage'], message: 'project scope forbids coverage' });
 });
 const summaryCoverageSchema = z.object({
-  from_sequence: z.number().int().positive().describe('Inclusive first session event sequence; must start at 1.'),
-  to_sequence: z.number().int().positive().describe('Inclusive last session event sequence; must be >= from_sequence and exceed the current summary ending sequence for this session and kind.'),
-}).strict().describe('Inclusive session evidence coverage; start at 1 and advance to_sequence for this session and summary kind.');
+  from_sequence: z.number().int().positive().describe('First event sequence: 1.'),
+  to_sequence: z.number().int().positive().describe('Last sequence: >= from_sequence; must advance the current summary for this session/kind.'),
+}).strict().describe('Inclusive session evidence range.');
 const summaryGeneratorSchema = z.object({
   kind: z.enum(SESSION_SUMMARY_GENERATOR_KIND_VALUES),
   name: z.string().min(1).max(200),
@@ -175,30 +174,30 @@ const summaryGeneratorSchema = z.object({
 }).strict();
 const summaryClaimSchema = z.object({
   kind: z.enum(SESSION_SUMMARY_CLAIM_KIND_VALUES),
-  content: z.string().min(1).describe(`Atomic claim content; at most ${SESSION_SUMMARY_LIMITS.maxClaimCodePoints} code points after privacy filtering.`),
+  content: z.string().min(1).describe(`Atomic claim; <=${SESSION_SUMMARY_LIMITS.maxClaimCodePoints} code points after privacy filtering.`),
   outcome: z.enum(MEMORY_OUTCOME_VALUES).optional(),
-  support_ids: z.array(z.string().min(1).max(200)).min(SESSION_SUMMARY_LIMITS.minSupportsPerClaim).max(SESSION_SUMMARY_LIMITS.maxSupportsPerClaim).describe(`${SESSION_SUMMARY_LIMITS.minSupportsPerClaim}-${SESSION_SUMMARY_LIMITS.maxSupportsPerClaim} distinct evidence ids from this project_key + root_session_key/harness session inside summary.coverage; never memory, summary, or observation ids.`),
+  support_ids: z.array(z.string().min(1).max(200)).min(SESSION_SUMMARY_LIMITS.minSupportsPerClaim).max(SESSION_SUMMARY_LIMITS.maxSupportsPerClaim).describe('Distinct evidence ids inside coverage from this project_key + root_session_key/harness session; never memory, summary, or observation ids.'),
 }).strict();
 const sessionSummarySchema = z.object({
-  kind: z.enum(SESSION_SUMMARY_KIND_VALUES).describe('Send checkpoint for operation="checkpoint_pre_compact" or final for operation="finalize".'),
+  kind: z.enum(SESSION_SUMMARY_KIND_VALUES).describe('Only checkpoint_pre_compact: checkpoint; finalize: final.'),
   coverage: summaryCoverageSchema,
   generator: summaryGeneratorSchema,
-  claims: z.array(summaryClaimSchema).min(SESSION_SUMMARY_LIMITS.minClaims).max(SESSION_SUMMARY_LIMITS.maxClaims).describe(`${SESSION_SUMMARY_LIMITS.minClaims}-${SESSION_SUMMARY_LIMITS.maxClaims} atomic supported claims; keep the canonical summary within ${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 units.`),
+  claims: z.array(summaryClaimSchema).min(SESSION_SUMMARY_LIMITS.minClaims).max(SESSION_SUMMARY_LIMITS.maxClaims).describe(`Supported claims; canonical summary <=${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 units.`),
 }).strict();
 const memSessionInputSchema = z.object({
-  operation: z.enum(LIFECYCLE_OPERATION_VALUES).describe('Lifecycle operation; summary is allowed only for checkpoint_pre_compact (checkpoint) or finalize (final).'),
-  harness: z.enum(HARNESS_VALUES).describe('Verified native harness for root_session_key in project_key.'),
+  operation: z.enum(LIFECYCLE_OPERATION_VALUES).describe('Root lifecycle operation.'),
+  harness: z.enum(HARNESS_VALUES).describe('Verified native harness.'),
   project_key: projectKeySchema,
   project_name: projectNameSchema,
-  root_session_key: z.string().min(1).describe('Stable verified root session key; required with harness for every operation.'),
-  event_key: z.string().min(1).describe('Stable lifecycle event key; retries for the same operation must resend identical content/summary.'),
+  root_session_key: z.string().min(1).describe('Stable verified root session key.'),
+  event_key: z.string().min(1).describe('Stable lifecycle key; retries must resend identical content/summary.'),
   content: z.string().optional(),
-  summary: sessionSummarySchema.optional().describe(`Optional only for operation="checkpoint_pre_compact" (kind="checkpoint") or operation="finalize" (kind="final"). coverage starts at 1 and to_sequence must advance the current summary for this session and kind. support_ids must be evidence ids from this project_key + root_session_key/harness session inside coverage. Canonical submission limit: ${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 units.`),
+  summary: sessionSummarySchema.optional().describe('Session summary.'),
 }).strict();
 const memContextInputSchema = z.object({
   project_key: projectKeySchema,
-  root_session_key: z.string().min(1).optional().describe('Optional verified root session key; supply with harness for session context, or omit both for project context.'),
-  harness: z.enum(HARNESS_VALUES).optional().describe('Native harness for root_session_key; supply both for session context, or omit both for project context.'),
+  root_session_key: z.string().min(1).optional().describe('Verified root session key.'),
+  harness: z.enum(HARNESS_VALUES).optional().describe('Verified native harness.'),
   budget_chars: z.number().optional(),
   correlation_id: z.string().optional(),
   finalize_answer: z.boolean().optional(),
@@ -206,18 +205,18 @@ const memContextInputSchema = z.object({
 const projectLimitMessage = 'limit must be an integer from 1 to 100 for action="timeline" or action="observations"';
 const projectCursorMessage = 'cursor must be an unchanged nextCursor from mem_project action="timeline"';
 const memProjectInputSchema = z.object({
-  action: z.enum(['list', 'timeline', 'briefing', 'history', 'summaries', 'observations']).describe(TOOL_DESCRIPTIONS.mem_project),
-  project_key: projectKeySchema.optional().describe(`${projectKeySchema.description} Required for action="timeline", "briefing", "summaries", or "observations"; not required for "list" or "history".`),
-  id: z.string().min(1).optional().describe('Required for action="history"; send a record id returned by a prior tool result.'),
-  root_session_key: z.string().min(1).optional().describe('Optional session filter for action="briefing", "summaries", or "observations"; supply with harness or omit both.'),
-  harness: z.enum(HARNESS_VALUES).optional().describe('Native harness for the optional root_session_key filter; supply both or omit both. Not accepted for action="timeline".'),
-  temporal: z.enum(['current', 'history']).optional().describe('Filter summaries/observations: current selects current summary versions or observation correction-chain leaves; history includes older summary versions or selects observation predecessors. Not accepted for action="timeline".'),
-  state: z.enum(OBSERVATION_STATE_VALUES).optional().describe('Optional state filter for action="observations".'),
-  limit: z.number().int(projectLimitMessage).positive(projectLimitMessage).max(100, projectLimitMessage).optional().describe('Maximum items (1-100) for action="timeline" or "observations".'),
-  budget_chars: z.number().optional().describe('Optional aggregate character budget for timeline, briefing, summaries, or observations; timeline clamps a positive integer to 1024-20000 characters.'),
-  since: z.string().min(1).optional().describe('Optional inclusive lower ISO-8601 instant for action="timeline" only; must be <= until.'),
-  until: z.string().min(1).optional().describe('Optional inclusive upper ISO-8601 instant for action="timeline" only; must be >= since.'),
-  cursor: z.string().min(1, projectCursorMessage).max(4_096, projectCursorMessage).optional().describe('Unchanged nextCursor from a prior mem_project action="timeline" result; keep project_key, since, and until unchanged.'),
+  action: z.enum(['list', 'timeline', 'briefing', 'history', 'summaries', 'observations']).describe('Project view.'),
+  project_key: projectKeySchema.optional(),
+  id: z.string().min(1).optional().describe('Prior-result record id.'),
+  root_session_key: z.string().min(1).optional().describe('Verified session filter; pair with harness or omit both.'),
+  harness: z.enum(HARNESS_VALUES).optional().describe('Native harness for session filter.'),
+  temporal: z.enum(['current', 'history']).optional().describe('Summaries/observations only: current=latest summaries/correction leaves; history=older summaries/observation predecessors.'),
+  state: z.enum(OBSERVATION_STATE_VALUES).optional().describe('Observations state filter.'),
+  limit: z.number().int(projectLimitMessage).positive(projectLimitMessage).max(100, projectLimitMessage).optional().describe('Maximum items for timeline/observations.'),
+  budget_chars: z.number().optional().describe('Aggregate character budget for timeline/briefing/summaries/observations; timeline clamps positive integers to 1024-20000.'),
+  since: z.string().min(1).optional().describe('Timeline inclusive lower ISO-8601 instant; <= until.'),
+  until: z.string().min(1).optional().describe('Timeline inclusive upper ISO-8601 instant.'),
+  cursor: z.string().min(1, projectCursorMessage).max(4_096, projectCursorMessage).optional().describe('Timeline nextCursor, unchanged; keep project_key, since, until unchanged.'),
 }).strict();
 
 function string(value: unknown, label: string, message = `${label} is required`): string { if (typeof value !== 'string' || !value.trim()) throw new Error(message); return value; }
@@ -367,9 +366,9 @@ export function getToolCount(): number { return ALL_TOOLS.length; }
 
 const TOOL_SCHEMA_SHAPES: Record<MemoryToolName, Record<string, z.ZodType>> = {
   mem_save: memSaveBaseInputSchema.shape,
-  mem_recall: { project_key: projectKeySchema, query: z.string().min(1, 'query must be a non-empty search string').describe('Non-empty search string for promoted project memory.'), mode: z.enum(['compact', 'context']).optional().describe('compact (default) returns bounded snippets; context adds selected memory content.'), temporal: z.enum(['current', 'history']).optional().describe('current (default) searches current guidance; history includes historical records.'), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
+  mem_recall: { project_key: projectKeySchema, query: z.string().min(1, 'query must be a non-empty search string').describe('Non-empty task search terms.'), mode: z.enum(['compact', 'context']).optional().describe('compact (default): bounded snippets; context: selected content.'), temporal: z.enum(['current', 'history']).optional().describe('current (default): current guidance; history: historical records.'), budget_chars: z.number().optional(), limit: z.number().optional(), correlation_id: z.string().optional(), finalize_answer: z.boolean().optional() },
   mem_context: memContextInputSchema.shape,
-  mem_get: { id: z.string().describe('Memory, summary, observation, or evidence id returned by a prior tool result.'), history: z.boolean().optional().describe('Set true to expand predecessor lineage for memory, summary, or observation records; evidence ids have no lineage.'), correlation_id: z.string().optional() },
+  mem_get: { id: z.string().describe('Memory, summary, observation, or evidence id.'), history: z.boolean().optional().describe('true: include predecessor lineage; evidence has no lineage.'), correlation_id: z.string().optional() },
   mem_project: memProjectInputSchema.shape,
   mem_session: memSessionInputSchema.shape,
 };
@@ -381,7 +380,7 @@ export interface MemoryToolCatalogItem {
 }
 
 function publicInputSchema(name: MemoryToolName): Record<string, unknown> {
-  const { additionalProperties: _additionalProperties, ...schema } = z.toJSONSchema(z.object(TOOL_SCHEMA_SHAPES[name]), { target: 'draft-7' }) as Record<string, unknown>;
+  const { $schema: _dialect, additionalProperties: _additionalProperties, ...schema } = z.toJSONSchema(z.object(TOOL_SCHEMA_SHAPES[name]), { target: 'draft-7' }) as Record<string, unknown>;
   return schema;
 }
 

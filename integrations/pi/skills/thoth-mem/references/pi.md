@@ -13,6 +13,7 @@ successful `session_compact` to post-compaction guidance, and `session_shutdown`
 to reload-safe close or idempotent finalization. Failed compaction and
 `agent_settled` never finalize the root session. Recovery is accepted only when
 the returned project and session identity match the local dispatch.
+The extension alone calls `mem_session`; it is not a model-visible Pi tool.
 
 Pi 1.0.x exposes no native delegated-agent identity contract. The integration
 must not infer root authority or community delegation semantics from extension

@@ -14,9 +14,8 @@ describe('MCP boundary', () => {
   it('keeps proactive memory triggers within the always-visible text budgets', () => {
     expect(SERVER_INSTRUCTIONS).toBe('Persistent project memory for coding agents. At the start of non-trivial repository work, recall with task key terms before exploring, unprompted. Expand only selected records. Skip memory for trivial or conversational turns. Save verified decisions, root causes, failed approaches, and non-obvious conventions immediately, unprompted. When a recovered handoff\'s pending action is done, save its outcome under the same topic_key. Save one handoff before meaningful work ends if continuation helps. Use verified identity for attribution, exclude private, transient, canonical, user-forbidden, and duplicate content, and reserve mem_session for actual root lifecycle events.');
     expect(SERVER_INSTRUCTIONS.length).toBeLessThanOrEqual(699);
-    // Measured pre-adoption baseline: all six descriptions, including joined spaces.
-    const descriptionBaseline = 2_790;
-    expect(Object.values(TOOL_DESCRIPTIONS).reduce((total, text) => total + text.length, 0)).toBeLessThanOrEqual(descriptionBaseline + 200);
+    // Compacted: 1,574 chars across six descriptions, with 5% headroom.
+    expect(Object.values(TOOL_DESCRIPTIONS).reduce((total, text) => total + text.length, 0)).toBeLessThanOrEqual(1_653);
     expect(SERVER_INSTRUCTIONS).toContain('At the start of non-trivial repository work, recall with task key terms before exploring, unprompted.');
     expect(SERVER_INSTRUCTIONS).toContain('Save verified decisions, root causes, failed approaches, and non-obvious conventions immediately, unprompted.');
     expect(SERVER_INSTRUCTIONS).toContain('When a recovered handoff\'s pending action is done, save its outcome under the same topic_key.');
@@ -36,72 +35,97 @@ describe('MCP boundary', () => {
       await built.server.connect(serverTransport);
       await client.connect(clientTransport);
       const listed = (await client.listTools()).tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
-      expect(listed).toEqual(MEMORY_TOOL_CATALOG);
+      expect(listed.map(({ inputSchema, ...tool }) => {
+        const { $schema, ...schema } = inputSchema;
+        expect($schema).toBe('http://json-schema.org/draft-07/schema#');
+        return { ...tool, inputSchema: schema };
+      })).toEqual(MEMORY_TOOL_CATALOG);
+      for (const tool of listed.filter((tool) => tool.name !== 'mem_get')) {
+        expect(tool.inputSchema).toMatchObject({ properties: {
+          project_key: { description: tool.name === 'mem_save'
+            ? 'Copy opaque project_key verbatim from verified native identity; never derive from names, paths, remotes, branches, worktrees, host IDs, listings, or recalled content.'
+            : 'Verified project_key, copied verbatim; never derived.' },
+        } });
+      }
+      for (const tool of listed.filter((tool) => tool.name === 'mem_save' || tool.name === 'mem_session')) {
+        expect(tool.inputSchema).toMatchObject({ properties: {
+          project_name: { description: 'Display/creation metadata only, not identity; prefer the persisted name from lifecycle/project output.' },
+        } });
+      }
       const saveTool = listed.find((tool) => tool.name === 'mem_save');
-      expect(saveTool?.description).toContain('Send exactly one branch: evidence (optionally + memory for a direct promoted save; structured evidence with metadata forbids memory and requires event_key plus the session pair), observation (requires event_key; session scope also requires the session pair and coverage), observation_review or observation_promotion (each requires event_key plus the session pair).');
+      expect(saveTool?.description).toContain('Send exactly one branch: evidence, observation, observation_review, or observation_promotion.');
+      expect(saveTool?.description).toContain('memory.content uses labeled Result, Rationale, Scope, Caveat / safe action lines; omit inapplicable Scope/Caveat and never invent details.');
+      expect(saveTool?.description).toContain('Handoffs: Objective, Completed, First pending action, Blockers, Key files/checks; require a stable workstream topic_key;');
       expect(saveTool?.description).toContain('Supply root_session_key and harness together or omit both.');
       expect(saveTool?.inputSchema).toMatchObject({
         properties: {
-          root_session_key: { description: 'Verified root session key; supply with harness or omit both. Required for session-scoped observations, observation_review, observation_promotion, and evidence with metadata; blank counts as absent.' },
-          harness: { description: 'Native harness for root_session_key; supply both or omit both. Required wherever root_session_key is required.' },
-          event_key: { description: 'Stable event key for idempotency; required for observation, observation_review, observation_promotion, and evidence with metadata.' },
-          evidence: { description: 'Direct evidence { kind, content }; optionally add memory for a promoted save. Structured metadata forbids memory and requires event_key, root_session_key, and harness.' },
-          memory: { description: 'Promoted memory for direct evidence only; requires evidence without metadata. Do not combine with observation, observation_review, or observation_promotion.' },
-          observation: { description: 'Submit a supported candidate without promotion; requires event_key. Session scope also requires root_session_key, harness, and coverage.' },
-          observation_review: { description: 'Review one supported observation; requires event_key, root_session_key, and harness. Send no other operation branch or memory.' },
-          observation_promotion: { description: 'Promote one accepted observation without new prose; requires event_key, root_session_key, and harness. Send no other operation branch or memory.' },
+          root_session_key: { description: 'Verified root session key; blank is absent.' },
+          harness: { description: 'Verified native harness.' },
+          event_key: { description: 'Stable idempotency key.' },
+          evidence: { description: 'Compact factual evidence; metadata requires event_key + session pair and forbids memory.' },
+          memory: { description: 'Direct promoted memory; requires evidence without metadata.' },
+          observation: { description: 'Supported candidate, not promoted; requires event_key. Session scope needs session pair + coverage; project scope forbids coverage.' },
+          observation_review: { description: 'Review supported observation; requires event_key + session pair.' },
+          observation_promotion: { description: 'Promote accepted observation without new prose; requires event_key + session pair.' },
         },
       });
       const contextTool = listed.find((tool) => tool.name === 'mem_context');
-      expect(contextTool?.description).toContain('project_key is always required. Supply both root_session_key and harness for session context, or omit both for project context.');
+      expect(contextTool?.description).toContain('project_key required; root_session_key and harness together for session context, neither for project context.');
       expect(contextTool?.inputSchema).toMatchObject({
         required: ['project_key'],
         properties: {
-          root_session_key: { description: 'Optional verified root session key; supply with harness for session context, or omit both for project context.' },
-          harness: { description: 'Native harness for root_session_key; supply both for session context, or omit both for project context.' },
+          root_session_key: { description: 'Verified root session key.' },
+          harness: { description: 'Verified native harness.' },
         },
       });
       const recallTool = listed.find((tool) => tool.name === 'mem_recall');
-      expect(recallTool?.description).toContain('temporal="current" (default) searches current guidance; temporal="history" includes historical records.');
+      expect(recallTool?.description).toContain('Search promoted project memory before expanding selected records.');
       expect(recallTool?.inputSchema).toMatchObject({ properties: {
-        query: { minLength: 1, description: 'Non-empty search string for promoted project memory.' },
-        mode: { description: 'compact (default) returns bounded snippets; context adds selected memory content.' },
-        temporal: { description: 'current (default) searches current guidance; history includes historical records.' },
+        query: { minLength: 1, description: 'Non-empty task search terms.' },
+        mode: { description: 'compact (default): bounded snippets; context: selected content.' },
+        temporal: { description: 'current (default): current guidance; history: historical records.' },
       } });
       const getTool = listed.find((tool) => tool.name === 'mem_get');
-      expect(getTool?.description).toContain('memory, summary, observation, or evidence id returned by a prior tool result.');
-      expect(getTool?.description).toContain('history:true');
+      expect(getTool?.description).toContain('Expand one selected record from a prior tool result.');
       expect(getTool?.inputSchema).toMatchObject({ properties: {
-        id: { description: 'Memory, summary, observation, or evidence id returned by a prior tool result.' },
-        history: { description: 'Set true to expand predecessor lineage for memory, summary, or observation records; evidence ids have no lineage.' },
+        id: { description: 'Memory, summary, observation, or evidence id.' },
+        history: { description: 'true: include predecessor lineage; evidence has no lineage.' },
       } });
       const projectTool = listed.find((tool) => tool.name === 'mem_project');
-      expect(projectTool?.description).toContain('action="list": no fields required.');
-      expect(projectTool?.description).toContain('action="timeline": project_key required; optionally since, until, cursor, limit, and budget_chars.');
-      expect(projectTool?.description).toContain('action="briefing", "summaries", or "observations": project_key required; optionally supply both root_session_key and harness to select that session\'s summaries/observations (briefing still includes project-wide memories).');
-      expect(projectTool?.description).toContain('action="history": id required from a prior result. temporal filters summaries/observations, not timeline.');
+      expect(projectTool?.description).toContain('list: no fields required; returns at most 256 exact aliases/project with aliasCount/aliasesTruncated.');
+      expect(projectTool?.description).toContain('timeline: project_key required; accepts only since, until, cursor, limit, budget_chars.');
+      expect(projectTool?.description).toContain('briefing/summaries/observations: project_key required; optional session filter selects summaries/observations, not briefing\'s project-wide memories.');
+      expect(projectTool?.description).toContain('history: id required from a prior result.');
       expect(projectTool?.inputSchema).toMatchObject({ properties: {
-        id: { description: 'Required for action="history"; send a record id returned by a prior tool result.' },
-        root_session_key: { description: 'Optional session filter for action="briefing", "summaries", or "observations"; supply with harness or omit both.' },
-        cursor: { description: 'Unchanged nextCursor from a prior mem_project action="timeline" result; keep project_key, since, and until unchanged.' },
+        action: { description: 'Project view.' },
+        id: { description: 'Prior-result record id.' },
+        root_session_key: { description: 'Verified session filter; pair with harness or omit both.' },
+        temporal: { description: 'Summaries/observations only: current=latest summaries/correction leaves; history=older summaries/observation predecessors.' },
+        cursor: { description: 'Timeline nextCursor, unchanged; keep project_key, since, until unchanged.' },
       } });
       const sessionTool = listed.find((tool) => tool.name === 'mem_session');
-      expect(sessionTool?.description).toContain('content on guide_post_compact carries host compaction text.');
-      expect(sessionTool?.description).toContain('summary is optional and only valid for operation="checkpoint_pre_compact" with kind="checkpoint" or operation="finalize" with kind="final".');
+      expect(sessionTool?.description).toContain('Record verified root lifecycle events, never ordinary saves.');
+      expect(sessionTool?.description).toContain('guide_post_compact content carries host compaction text.');
       expect(sessionTool?.inputSchema).toMatchObject({ properties: {
-        event_key: { description: 'Stable lifecycle event key; retries for the same operation must resend identical content/summary.' },
+        event_key: { description: 'Stable lifecycle key; retries must resend identical content/summary.' },
         summary: {
-          description: 'Optional only for operation="checkpoint_pre_compact" (kind="checkpoint") or operation="finalize" (kind="final"). coverage starts at 1 and to_sequence must advance the current summary for this session and kind. support_ids must be evidence ids from this project_key + root_session_key/harness session inside coverage. Canonical submission limit: 20000 UTF-16 units.',
+          description: 'Session summary.',
           properties: {
-            kind: { description: 'Send checkpoint for operation="checkpoint_pre_compact" or final for operation="finalize".' },
-            coverage: { properties: {
-              from_sequence: { description: 'Inclusive first session event sequence; must start at 1.' },
-              to_sequence: { description: 'Inclusive last session event sequence; must be >= from_sequence and exceed the current summary ending sequence for this session and kind.' },
-            } },
-            claims: { items: { properties: {
-              content: { description: 'Atomic claim content; at most 2000 code points after privacy filtering.' },
-              support_ids: { description: '1-16 distinct evidence ids from this project_key + root_session_key/harness session inside summary.coverage; never memory, summary, or observation ids.' },
-            } } },
+            kind: { description: 'Only checkpoint_pre_compact: checkpoint; finalize: final.' },
+            coverage: {
+              description: 'Inclusive session evidence range.',
+              properties: {
+                from_sequence: { description: 'First event sequence: 1.' },
+                to_sequence: { description: 'Last sequence: >= from_sequence; must advance the current summary for this session/kind.' },
+              },
+            },
+            claims: {
+              description: 'Supported claims; canonical summary <=20000 UTF-16 units.',
+              items: { properties: {
+                content: { description: 'Atomic claim; <=2000 code points after privacy filtering.' },
+                support_ids: { description: 'Distinct evidence ids inside coverage from this project_key + root_session_key/harness session; never memory, summary, or observation ids.' },
+              } },
+            },
           },
         },
       } });

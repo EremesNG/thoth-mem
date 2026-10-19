@@ -27,10 +27,10 @@ describe('process construction', () => {
       expect(new Set(Object.values(descriptions))).toHaveLength(6);
       expect(descriptions.mem_save).toMatch(/save[\s\S]*(?:decision|discover|failure|convention)[\s\S]*handoff/iu);
       expect(descriptions.mem_save).toMatch(/direct promoted memory[\s\S]*Result[\s\S]*Rationale[\s\S]*Scope[\s\S]*Caveat[\s\S]*safe action/iu);
-      expect(descriptions.mem_save).toMatch(/omit[\s\S]*Scope[\s\S]*Caveat[\s\S]*never invent/iu);
-      expect(descriptions.mem_save).toMatch(/evidence[\s\S]*compact[\s\S]*factual/iu);
+      expect(descriptions.mem_save).toMatch(/omit inapplicable Scope\/Caveat[\s\S]*never invent/iu);
+      expect(memSave.inputSchema.properties).toMatchObject({ evidence: { description: 'Compact factual evidence; metadata requires event_key + session pair and forbids memory.' } });
       expect(descriptions.mem_save).toMatch(/handoff[\s\S]*Objective[\s\S]*Completed[\s\S]*First pending action[\s\S]*Blockers[\s\S]*Key files\/checks/iu);
-      expect(descriptions.mem_recall).toMatch(/search[\s\S]*(?:compact|context)/iu);
+      expect(descriptions.mem_recall).toMatch(/search promoted project memory before expanding selected records/iu);
       expect(descriptions.mem_context).toMatch(/continuity[\s\S]*(?:project|session)/iu);
       expect(descriptions.mem_get).toMatch(/selected[\s\S]*(?:record|lineage)/iu);
       expect(descriptions.mem_project).toMatch(/project[\s\S]*(?:briefing|history|observation)/iu);

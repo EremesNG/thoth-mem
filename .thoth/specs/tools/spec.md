@@ -4,25 +4,13 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool without changing its schema or runtime semantics.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool; tool and field descriptions MUST state each operational constraint once in compact form without repeating a tool description inside a field description, the catalog schemas registered natively in Pi MUST omit the `$schema` marker, and the aggregate serialized size of the model-facing definitions on the MCP and Pi surfaces MUST be locked by budget tests so it grows only through a deliberate definition change, all without changing input schema structure or runtime semantics.
 
-#### Scenario: US1 - Discover the right memory operation 1
+#### Scenario: MCP Surface MUST Be Compact and Workflow-Level
 
-- **GIVEN** the MCP server is started
-- **WHEN** a client inspects server instructions
-- **THEN** it sees bounded progressive recall and deliberate durable save/handoff guidance rather than a recall-only funnel
-
-#### Scenario: US1 - Discover the right memory operation 2
-
-- **GIVEN** the exact six tools are listed
-- **WHEN** a client compares their descriptions
-- **THEN** each description names its distinct workflow purpose and `mem_save` explicitly covers durable decisions, discoveries, failures, conventions, and handoffs
-
-#### Scenario: US1 - Discover the right memory operation 3
-
-- **GIVEN** the discovery metadata changes
-- **WHEN** existing MCP contract tests run
-- **THEN** the tool names, input schemas, outputs, and persistence behavior remain unchanged
+- **GIVEN** the compacted catalog
+- **WHEN** an MCP client lists tools and a Pi session registers its tools
+- **THEN** each surface stays within its pinned aggregate budget, every property, type, enum, required field, branch, and limit of the previous schemas is retained, and runtime validation is unchanged
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 

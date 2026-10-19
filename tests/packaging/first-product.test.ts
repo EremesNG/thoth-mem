@@ -123,7 +123,7 @@ describe('first-product packed boundary', () => {
     expect(integrations).toEqual(expected.sort());
   });
 
-  it('pins the lifecycle-v3 summary envelope across the unchanged six-tool, four-host package', () => {
+  it('pins the lifecycle-v3 summary envelope across the unchanged six-tool MCP, four-host package', () => {
     const inventory = JSON.parse(readFileSync('integrations/inventory.json', 'utf8')) as { lifecycleProtocolVersion: number; harnesses: Record<string, string[]> };
     const publicRunner = readFileSync('plugin/runners/public-runner.mjs', 'utf8');
     expect(ALL_TOOLS).toEqual(['mem_save', 'mem_recall', 'mem_context', 'mem_get', 'mem_project', 'mem_session']);
@@ -145,6 +145,7 @@ describe('first-product packed boundary', () => {
     expect(reference).toContain('omit `root_session_key` and `harness`');
     expect(reference).toContain('report them as unattributed and never claim session continuity');
     expect(reference).toContain('Children never call `mem_session`');
+    expect(reference).toContain('The extension alone calls `mem_session`; it is not a model-visible Pi tool.');
   });
 
   it('routes canonical and Pi Skills to the Pi identity reference', () => {
@@ -158,7 +159,9 @@ describe('first-product packed boundary', () => {
     const skills = skillPaths.map((path) => readFileSync(path, 'utf8'));
     expect(new Set(skills)).toHaveLength(1);
     const canonical = skills[0]!;
-    expect(canonical).toContain('Use only the six memory tools — MCP tools on most hosts, native tools in Pi:');
+    expect(canonical).toContain('MCP hosts expose six memory tools:');
+    expect(canonical).toContain('Pi exposes five native tools (the first five above); `mem_session` is hook-only.');
+    expect(canonical).toMatch(/On MCP hosts, do not call `mem_session` for ordinary completion; reserve it for\s+an actual verified root lifecycle event\./u);
     for (const host of ['opencode', 'codex', 'claude-code', 'pi']) expect(canonical).toContain(`references/${host}.md`);
     for (const [index, skill] of skills.entries()) expect(skill, skillPaths[index]).toMatch(/For Pi, select\s+`references\/pi\.md`\s+for identity and lifecycle operations\./u);
   });
