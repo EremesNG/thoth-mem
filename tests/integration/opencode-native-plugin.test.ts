@@ -198,6 +198,8 @@ process.stdout.write(JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: {
         nonzero: `process.exitCode = 3;`,
         invalid: `process.stdout.write('not-json');`,
         excessive: `process.stdout.write('x'.repeat(1000));`,
+        excessiveStderr: `process.stderr.write('x'.repeat(1000));`,
+        combined: `process.stdout.write('x'.repeat(20)); process.stderr.write('y'.repeat(20));`,
         timeout: `setTimeout(() => {}, 1000);`,
       };
       const paths = Object.fromEntries(Object.entries(scripts).map(([name, source]) => {
@@ -209,6 +211,8 @@ process.stdout.write(JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: {
         { runtimeEntry: paths.nonzero!, diagnostic: 'node_lifecycle_nonzero_exit' },
         { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_invalid_json' },
         { runtimeEntry: paths.excessive!, diagnostic: 'node_lifecycle_output_limit', maxOutputBytes: 32 },
+        { runtimeEntry: paths.excessiveStderr!, diagnostic: 'node_lifecycle_output_limit', maxOutputBytes: 32 },
+        { runtimeEntry: paths.combined!, diagnostic: 'node_lifecycle_output_limit', maxOutputBytes: 32 },
         { runtimeEntry: paths.timeout!, diagnostic: 'node_lifecycle_timeout', timeoutMs: 20 },
         { runtimeEntry: paths.invalid!, diagnostic: 'node_lifecycle_launch_failed', nodeCommand: join(root, 'missing-node') },
       ];
@@ -228,6 +232,66 @@ process.stdout.write(JSON.stringify({ schema: 'thoth-mem.lifecycle', identity: {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('logs the conditional timeout hint only once per plugin session and keeps callbacks usable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-timeout-hint-'));
+    const project = join(root, 'project');
+    const runtimeEntry = join(root, 'slow-runtime.mjs');
+    try {
+      writeFileSync(runtimeEntry, 'process.stdin.resume(); setTimeout(() => {}, 60_000);');
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const input = pluginInput(project, new Map());
+      const log = vi.spyOn(input.client.app, 'log');
+      const hooks = await createThothMemPlugin({ runtimeEntry })(input);
+      const enroll = hooks.event?.(sessionEvent('session.created', project, 'root-session'));
+      await vi.advanceTimersByTimeAsync(5_001);
+      await expect(enroll).resolves.toBeUndefined();
+      const output = { system: ['stable-system-prefix'] };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const recover = hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, output);
+        await vi.advanceTimersByTimeAsync(5_001);
+        await expect(recover).resolves.toBeUndefined();
+      }
+      const messages = log.mock.calls.map(([call]) => call.body?.message ?? '');
+      expect(messages).toEqual(['OpenCode lifecycle degraded: node_lifecycle_timeout — memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate`']);
+      expect(messages[0]).not.toMatch(/pending|migration is/iu);
+      expect(output.system[0]).toBe('stable-system-prefix');
+      expect(output.system.at(-1)).toContain('Memory recovery was unavailable');
+      expect(output.system.at(-1)).not.toContain('(memory:');
+    } finally { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('logs the bounded stderr tail on nonzero lifecycle exit without injecting memory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-opencode-stderr-'));
+    const project = join(root, 'project');
+    const runtimeEntry = join(root, 'failed-runtime.mjs');
+    const failure = 'Lifecycle failed: SQLite migration revision 10→11 failed: database is locked by another process. Run `thoth-mem migrate` to complete migrations without host timeouts.';
+    try {
+      writeFileSync(runtimeEntry, `process.stdin.resume(); process.stdin.on('end', () => {
+  process.stderr.write('old noise'.repeat(200) + '\\n');
+  const tail = Buffer.from('🧠' + ${JSON.stringify(failure)});
+  process.stderr.write(tail.subarray(0, 1));
+  setImmediate(() => { process.stderr.write(tail.subarray(1)); process.exitCode = 1; });
+});`);
+      const input = pluginInput(project, new Map());
+      const log = vi.spyOn(input.client.app, 'log');
+      const hooks = await createThothMemPlugin({ runtimeEntry })(input);
+      await expect(hooks.event?.(sessionEvent('session.created', project, 'root-session'))).resolves.toBeUndefined();
+      const output = { system: ['stable-system-prefix'] };
+      await expect(hooks['experimental.chat.system.transform']?.({ sessionID: 'root-session', model: {} as never }, output)).resolves.toBeUndefined();
+      const messages = log.mock.calls.map(([call]) => call.body?.message ?? '');
+      expect(messages).toHaveLength(2);
+      for (const message of messages) {
+        expect(message).toMatch(/^OpenCode lifecycle degraded: node_lifecycle_nonzero_exit — /u);
+        expect(message).toContain(`🧠${failure}`);
+        expect(message).not.toContain('\uFFFD');
+        expect(Array.from(message).length).toBeLessThanOrEqual(560);
+        expect(message).not.toMatch(/[\r\n]/u);
+      }
+      expect(output.system.at(-1)).toContain('Memory recovery was unavailable');
+      expect(output.system.at(-1)).not.toContain('(memory:');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('exposes one read-only native tool that returns the verified root identity without adding an MCP tool', async () => {

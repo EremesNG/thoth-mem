@@ -1,11 +1,13 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { MemoryService } from '../../src/memory-core/service.js';
+import { CURRENT_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
 import { identityOnlyRecovery } from '../../src/integration/recovery.js';
 
 const runner = join(process.cwd(), 'plugin', 'runners', 'public-runner.mjs');
@@ -510,6 +512,34 @@ describe('public plugin runner', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it.each(['codex', 'claude'])('forwards an actionable migration failure through the %s public runner without injecting memory', (harness) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth public migration failure '));
+    try {
+      const project = projectFixture(root);
+      const dataDir = join(root, 'data');
+      mkdirSync(dataDir);
+      const databasePath = join(dataDir, 'memory.sqlite');
+      const database = new Database(databasePath);
+      database.exec(CURRENT_SCHEMA_SQL);
+      database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(10, '2026-10-19T00:00:00.000Z');
+      database.close();
+      copyFileSync(databasePath, `${databasePath}.pre-v11.bak`);
+      const backup = new Database(`${databasePath}.pre-v11.bak`);
+      backup.prepare('UPDATE schema_migrations SET version=11').run();
+      backup.close();
+      const result = spawnSync(process.execPath, [runner, '--harness', harness], {
+        cwd: tmpdir(),
+        input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'root', cwd: project.path, source: 'startup' }),
+        encoding: 'utf8', windowsHide: true, timeout: 15_000,
+        env: { ...process.env, XDG_CONFIG_HOME: join(root, 'config'), THOTH_MEM_DATA_DIR: dataDir, THOTH_MEM_PUBLIC_NPX_COMMAND: createPackedRuntimeShim(root) },
+      });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({});
+      expect(result.stderr).toContain('thoth-mem public plugin: Lifecycle failed: SQLite migration revision 10→11 failed: SQLite pre-v11 backup has an unexpected schema revision. Run `thoth-mem migrate` to complete migrations without host timeouts.');
+      expect(Array.from(result.stderr).length).toBeLessThanOrEqual(560);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('fails closed with neutral output and bounded diagnostics', () => {

@@ -13,7 +13,7 @@ Local, SQLite-first memory for OpenCode, Codex, Claude Code, and Pi. Six focused
 ![Node.js 22.12 or newer](https://img.shields.io/badge/Node.js-%E2%89%A522.12-339933?style=flat-square&logo=node.js&logoColor=white)
 [![MIT license](https://img.shields.io/badge/license-MIT-2F81F7?style=flat-square)](https://github.com/EremesNG/thoth-mem/blob/master/package.json)
 
-[Overview](#why-thoth-mem) • [Install](#install) • [How it works](#how-it-works) • [Use](#use-the-memory) • [Tools](#choose-tools-by-intent) • [Benchmarks](#longmemeval-s) • [Runtime](#runtime-data-and-migration) • [Development](#development)
+[Overview](#why-thoth-mem) • [Install](#install) • [How it works](#how-it-works) • [Use](#use-the-memory) • [Tools](#choose-tools-by-intent) • [Benchmarks](#longmemeval-s) • [Runtime](#runtime-data-and-migration) • [Troubleshooting](#troubleshooting) • [Development](#development)
 
 </div>
 
@@ -178,7 +178,7 @@ All harnesses resolve one data directory in this order: an explicit command valu
 
 The provider file lives below `XDG_CONFIG_HOME/thoth-mem/config.json` when XDG configuration is set, or below `~/.config/thoth-mem/config.json` otherwise. Malformed, unreadable, schema-invalid, or missing-runtime configuration fails closed.
 
-Opening a revision-10 database (or an older supported schema) advances to revision 11. The cleanup creates or verifies `memory.sqlite.pre-v11.bak`, takes an immediate write-excluding lock, and rechecks the live state against that backup before removing only unreferenced non-import host sessions and their lifecycle receipts that cite neither evidence nor a summary. All other sessions, receipts, evidence, and memories are preserved; a mismatched backup or source drift fails closed before mutation. Revision-9 databases first apply the revision-10 Pi harness migration with its retained `memory.sqlite.pre-v10.bak`.
+Hosts automatically migrate supported older schemas to revision 11 at startup; `thoth-mem migrate` also completes pending migrations manually without host timeouts and reports the changes. The revision-11 cleanup creates or verifies `memory.sqlite.pre-v11.bak`, takes an immediate write-excluding lock, and rechecks the revision and live state before removing only unreferenced non-import host sessions and their lifecycle receipts that cite neither evidence nor a summary. All other sessions, receipts, evidence, and memories are preserved; a mismatched backup or source drift fails closed before mutation. Revision-9 databases first apply the revision-10 Pi harness migration with its retained `memory.sqlite.pre-v10.bak`.
 
 </details>
 
@@ -201,6 +201,28 @@ thoth-mem import-legacy --json
 The importer fingerprints its inputs, creates a verified backup and isolated candidate when needed, and publishes only after integrity checks pass. Keep the legacy database, verified backup, and recovery bundle until the migrated runtime has been independently validated.
 
 </details>
+
+## Troubleshooting
+
+If memory stays unavailable after an upgrade, look for these host diagnostics:
+
+- **Pi:** `` thoth-mem degraded: pi_mcp_startup_timeout — the memory server did not start in time; if memory stays unavailable, run `thoth-mem migrate` `` (at most once per session). Other failures retain codes such as `pi_lifecycle_request_failed`.
+- **OpenCode logs:** `` OpenCode lifecycle degraded: node_lifecycle_timeout — memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate` `` (once per plugin session), or `OpenCode lifecycle degraded: node_lifecycle_nonzero_exit — <bounded stderr tail>`.
+- **Codex / Claude Code hook stderr:** `thoth-mem public plugin: Lifecycle failed: SQLite migration revision A→B failed: …`, including the observed failure and the `thoth-mem migrate` recommendation.
+
+A timeout alone does not prove a migration is pending. To complete any pending migrations outside host time limits, run:
+
+```sh
+npx --yes thoth-mem@latest migrate
+```
+
+With an installed command, use `thoth-mem migrate`; with a package checkout, use `node <package>/dist/index.js migrate`. Add `--data-dir <dir>` to select the directory containing your existing `memory.sqlite`; otherwise the runtime data selection above applies. A missing database is an error, not a new database.
+
+Output such as `Migration: 10 → 11` shows the revision change; `Backup created:` or `Backup verified:` names the retained backup. `Sessions removed:` and `Lifecycle receipts removed:` count only the empty-session cleanup, not evidence or memories; `Duration:` is elapsed milliseconds. Add `--json` for the `thoth-mem.migrate.v1` envelope with revisions, backups, removal counts, `durationMs`, and `alreadyCurrent`. It is safe to rerun: an already-current database reports a no-op (`alreadyCurrent: true`) without changing the source database or its sidecars.
+
+Keep `memory.sqlite.pre-vN.bak` backups until recovery is verified. To restore one, first stop all hosts and thoth-mem processes, move the current `memory.sqlite` and any `memory.sqlite-wal` / `memory.sqlite-shm` files aside, then copy the chosen backup to `memory.sqlite`. Restoring loses changes made after that backup; an older schema will migrate again on the next writable open. Prefer a clean host exit (in Pi, `/quit`) over killing its terminal.
+
+Killed processes may leave `memory.sqlite.pre-vN.bak.<pid>.<uuid>.tmp` files. They are unpublished backup candidates, not retained backups; delete them only when no thoth-mem process is running.
 
 ## Development
 

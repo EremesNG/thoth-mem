@@ -160,13 +160,13 @@ Stable capture keys MUST identify distinct sanitized root-user submissions rathe
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
-Child launch, timeout, nonzero exit, protocol failure, oversized output, invalid envelope, tool bridge failure, or unverifiable identity in any native adapter, including Pi, MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt; Pi tool calls MUST cross the package-relative Node boundary to the existing MCP server with the same storage, identity, privacy, validation, and error semantics as direct MCP use; the Pi extension MUST NOT open SQLite directly, and concurrent MCP/lifecycle cold start MUST preserve the database bootstrap safety contract.
+Child launch, timeout, nonzero exit, protocol failure, oversized output, invalid envelope, tool bridge failure, or unverifiable identity in any native adapter, including Pi, MUST produce bounded safe diagnostics, inject no unverified memory, and MUST NOT reject an otherwise valid host prompt; a schema migration failure or locked database MUST surface a bounded diagnostic naming the failing revision step and recommending `thoth-mem migrate` through the MCP server startup error, the lifecycle CLI stderr forwarded by the public runner, and the OpenCode lifecycle log; Pi and OpenCode MUST distinguish a memory-server startup or lifecycle timeout and show at most once per session a bounded hint that the user can run `thoth-mem migrate` if memory stays unavailable, without claiming that a migration is pending; Pi tool calls MUST cross the package-relative Node boundary to the existing MCP server with the same storage, identity, privacy, validation, and error semantics as direct MCP use; the Pi extension MUST NOT open SQLite directly, and concurrent MCP/lifecycle cold start MUST preserve the database bootstrap safety contract.
 
 #### Scenario: Native Failures MUST Degrade Without Blocking the Host Prompt
 
-- **GIVEN** the thoth-mem child cannot start, times out, exits nonzero, or returns an invalid or oversized envelope
-- **WHEN** a Pi prompt or lifecycle hook continues
-- **THEN** no unverified memory is injected, the prompt is not rejected, and only a bounded diagnostic is emitted
+- **GIVEN** Pi's memory server does not finish starting within its timeout and, separately, a lifecycle child whose migration fails
+- **WHEN** session start, the next prompt, and an OpenCode or Codex lifecycle hook run
+- **THEN** prompts continue without injected memory, Pi shows one bounded startup-timeout warning that suggests `thoth-mem migrate` if memory stays unavailable, and the hook diagnostics carry the bounded migration error with the same recommendation
 
 ### Requirement: Shared Skills MUST Preserve Semantic-Boundary Memory Practice
 

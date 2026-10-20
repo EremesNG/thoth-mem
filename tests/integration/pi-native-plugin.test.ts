@@ -8,10 +8,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LifecycleInput, LifecycleResult } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { createPiExtension } from '../../src/integration/pi/index.js';
-import type { PiMcpClient } from '../../src/integration/pi/mcp-client.js';
+import { PiMcpStartupTimeoutError, type PiMcpClient } from '../../src/integration/pi/mcp-client.js';
 import { SERVER_INSTRUCTIONS } from '../../src/server.js';
 import { createToolHandlers, MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
 
+type PiApi = Parameters<ReturnType<typeof createPiExtension>>[0];
+type PiToolDefinition = Parameters<PiApi['registerTool']>[0];
+
+const STARTUP_TIMEOUT_WARNING = 'thoth-mem degraded: pi_mcp_startup_timeout — the memory server did not start in time; if memory stays unavailable, run `thoth-mem migrate`';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -148,6 +152,82 @@ describe('Pi native extension', () => {
     await expect(handlers.get('input')!({ text: 'keep working', source: 'rpc' }, context)).resolves.toEqual({ action: 'continue' });
     await expect((tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call', {})).rejects.toThrow('child unavailable');
     await expect(handlers.get('session_shutdown')!({ reason: 'quit' }, context)).resolves.toBeUndefined();
+  });
+
+  it('warns once per session about startup timeouts without blocking prompts or injecting memory', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-startup-timeout-')); roots.push(cwd);
+    const tools: PiToolDefinition[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const notify = vi.fn();
+    createPiExtension({ connect: () => new Promise(() => undefined), timeoutMs: 10 })({
+      registerTool: (tool) => tools.push(tool),
+      on: (name, handler) => handlers.set(name, handler),
+    });
+    try {
+      for (const session of ['session-1', 'session-1', 'session-2']) {
+        const context = { cwd, sessionManager: { getSessionId: () => session, getLeafId: () => 'leaf-1' }, ui: { notify } };
+        await expect(handlers.get('session_start')!({ reason: 'startup' }, context)).resolves.toBeUndefined();
+        await expect(handlers.get('input')!({ text: 'keep working', source: 'interactive' }, context)).resolves.toEqual({ action: 'continue' });
+        const sections: Record<string, string> = { other: 'keep', thoth_mem_recovery: 'unverified old content' };
+        await expect(handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context)).resolves.toBeUndefined();
+        expect(sections.other).toBe('keep');
+        expect(sections.thoth_mem_recovery).not.toContain('unverified old content');
+        expect(sections.thoth_mem_recovery).toContain(`root_session_id=${session};`);
+        expect(sections.thoth_mem_recovery).toContain('Memory recovery was unavailable; only local identity is shown.');
+        await expect(tools[0]!.execute('call', {}, undefined, undefined, context)).rejects.toThrow('thoth-mem Pi bridge failed: memory server startup timed out');
+        expect(notify).toHaveBeenCalledTimes(session === 'session-1' ? 1 : 2);
+      }
+      expect(notify.mock.calls).toEqual([
+        [STARTUP_TIMEOUT_WARNING, 'warning'],
+        [STARTUP_TIMEOUT_WARNING, 'warning'],
+      ]);
+    } finally { await handlers.get('session_shutdown')!({ reason: 'reload' }, { cwd }); }
+  });
+
+  it('warns once for startup-timeout tool failures and still rejects with bounded error text', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-tool-startup-timeout-')); roots.push(cwd);
+    const tools: PiToolDefinition[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const notify = vi.fn();
+    const diagnostics: string[] = [];
+    const message = '🙂'.repeat(1_000);
+    const client: PiMcpClient = {
+      callTool: async (name) => {
+        if (name === 'mem_session') return { structuredContent: { data: { outcome: 'degraded' } } };
+        throw new PiMcpStartupTimeoutError(message);
+      },
+      close: async () => undefined,
+    };
+    createPiExtension({ client, onDiagnostic: (code) => diagnostics.push(code) })({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'session-1', getLeafId: () => 'leaf-1' }, ui: { notify } };
+    await handlers.get('session_start')!({}, context);
+    for (const tool of tools.slice(0, 2)) {
+      await expect(tool.execute('call', {}, undefined, undefined, context)).rejects.toMatchObject({ message: '🙂'.repeat(500) });
+    }
+    expect(notify.mock.calls).toEqual([[STARTUP_TIMEOUT_WARNING, 'warning']]);
+    expect(diagnostics).toEqual(['pi_mcp_startup_timeout', 'pi_mcp_startup_timeout']);
+    await handlers.get('session_shutdown')!({ reason: 'reload' }, context);
+  });
+
+  it('keeps repeated generic lifecycle warnings and tool failure diagnostics unchanged', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-generic-fault-')); roots.push(cwd);
+    const tools: PiToolDefinition[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const notify = vi.fn();
+    const diagnostics: string[] = [];
+    const client: PiMcpClient = {
+      callTool: async () => { throw new Error('request timed out'); },
+      close: async () => undefined,
+    };
+    createPiExtension({ client, onDiagnostic: (code) => diagnostics.push(code) })({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'session-1', getLeafId: () => 'leaf-1' }, ui: { notify } };
+    await handlers.get('session_start')!({}, context);
+    await expect(handlers.get('input')!({ text: 'keep working', source: 'rpc' }, context)).resolves.toEqual({ action: 'continue' });
+    await handlers.get('before_agent_start')!({ systemPromptOptions: { sections: {} } }, context);
+    await expect(tools[0]!.execute('call', {}, undefined, undefined, context)).rejects.toThrow('request timed out');
+    expect(notify.mock.calls).toEqual(Array.from({ length: 4 }, () => ['thoth-mem degraded: pi_lifecycle_request_failed', 'warning']));
+    expect(diagnostics).toEqual([...Array<string>(4).fill('pi_lifecycle_request_failed'), 'pi_tool_request_failed']);
+    await handlers.get('session_shutdown')!({ reason: 'reload' }, context);
   });
 
   it('forwards distinct compaction summaries once per identity and refreshes project and predecessor recovery', async () => {

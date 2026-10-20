@@ -1,7 +1,7 @@
 import type { LifecycleInput, LifecycleResult } from '../../memory-core/contracts.js';
 import { MEMORY_RECALL_INSTRUCTION_SENTENCES, MEMORY_SAVE_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
 import { verifiedRecovery } from '../recovery.js';
-import { createPiMcpClient, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
+import { createPiMcpClient, PiMcpStartupTimeoutError, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
 import { createToolRenderers } from './render.js';
 import {
   createPiLifecycleState,
@@ -32,7 +32,7 @@ interface PiExtensionApi {
     promptGuidelines?: string[];
     promptSnippet?: string;
     parameters: Record<string, unknown>;
-    execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<PiToolResult>;
+    execute(toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown, context?: PiExtensionContext): Promise<PiToolResult>;
   } & Partial<ReturnType<typeof createToolRenderers>>): void;
   on(event: string, handler: (event: Record<string, unknown>, context: PiExtensionContext) => Promise<unknown> | unknown): void;
 }
@@ -78,9 +78,16 @@ function lifecycleArguments(input: ReturnType<typeof piSessionStartInput>): Reco
 
 export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExtensionApi) => void {
   return (pi) => {
+    let startupTimeoutWarned = false;
     const report = (code: string, context?: PiExtensionContext): void => {
       try { options.onDiagnostic?.(code); } catch { /* diagnostics must not affect Pi */ }
-      try { context?.ui?.notify(`thoth-mem degraded: ${code}`, 'warning'); } catch { /* UI is optional */ }
+      const startupTimeout = code === 'pi_mcp_startup_timeout';
+      if (startupTimeout) {
+        if (!context?.ui || startupTimeoutWarned) return;
+        startupTimeoutWarned = true;
+      }
+      const message = `thoth-mem degraded: ${code}${startupTimeout ? ' — the memory server did not start in time; if memory stays unavailable, run `thoth-mem migrate`' : ''}`;
+      try { context?.ui?.notify(message, 'warning'); } catch { /* UI is optional */ }
     };
     const client = options.client ?? createPiMcpClient({ ...options, onDiagnostic: (code) => report(code) });
     let state: PiLifecycleState | undefined;
@@ -90,7 +97,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
 
     const dispatch = async (input: ReturnType<typeof piSessionStartInput>, context?: PiExtensionContext): Promise<LifecycleResult | undefined> => {
       try { return lifecycleResult(await client.callTool('mem_session', lifecycleArguments(input))); }
-      catch { report('pi_lifecycle_request_failed', context); return undefined; }
+      catch (error) { report(error instanceof PiMcpStartupTimeoutError ? 'pi_mcp_startup_timeout' : 'pi_lifecycle_request_failed', context); return undefined; }
     };
 
     for (const tool of MEMORY_TOOL_CATALOG) {
@@ -109,12 +116,13 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
           promptSnippet: 'Save verified project knowledge and continuation handoffs.',
         } : {}),
         ...createToolRenderers(tool.name),
-        async execute(_toolCallId, params, signal) {
+        async execute(_toolCallId, params, signal, _onUpdate, context) {
           try {
             const result = await client.callTool(tool.name as MemoryToolName, params, signal);
             return { content: textContent(result), details: result.structuredContent as Record<string, unknown> | undefined };
           } catch (error) {
-            report('pi_tool_request_failed');
+            if (error instanceof PiMcpStartupTimeoutError) report('pi_mcp_startup_timeout', context);
+            else report('pi_tool_request_failed');
             const message = error instanceof Error ? error.message : 'memory tool failed';
             // Pi derives tool-result error status from execute rejection.
             throw new Error(Array.from(message).slice(0, 500).join(''));
@@ -125,7 +133,9 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
 
     pi.on('session_start', async (event, context) => {
       try {
-        state = createPiLifecycleState(context);
+        const nextState = createPiLifecycleState(context);
+        if (nextState.rootSessionKey !== state?.rootSessionKey) startupTimeoutWarned = false;
+        state = nextState;
         const reason = typeof event.reason === 'string' ? event.reason : 'startup';
         await dispatch(piSessionStartInput(state, reason), context);
         refresh = piRecoveryInput(state, 'start');

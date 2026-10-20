@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 import type { RuntimeConfigOptions } from '../../config/runtime.js';
 import type { AdapterEvent, LifecycleIntent } from '../adapters/index.js';
@@ -19,6 +20,7 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 256_000;
+const MAX_STDERR_CODE_POINTS = 500;
 const INTENTS: Record<LifecycleInput['operation'], LifecycleIntent> = {
   enroll: 'session.enroll',
   recover: 'session.recover',
@@ -43,7 +45,7 @@ export interface NodeLifecycleClientOptions {
   nodeCommand?: string;
   timeoutMs?: number;
   maxOutputBytes?: number;
-  onDiagnostic?: (code: string) => void;
+  onDiagnostic?: (code: string, detail?: string) => void;
 }
 
 type EnvelopeDiagnostic = 'node_lifecycle_invalid_json' | 'node_lifecycle_identity_mismatch' | 'node_lifecycle_invalid_recovery_taxonomy' | 'node_lifecycle_invalid_envelope';
@@ -246,15 +248,20 @@ export async function dispatchOpenCodeLifecycleThroughNode(
   return new Promise((resolve) => {
     let settled = false;
     let stdout = '';
+    let stderr = '';
+    const stderrDecoder = new StringDecoder('utf8');
+    const retainStderrTail = (text: string): void => {
+      stderr = Array.from(stderr + text).slice(-MAX_STDERR_CODE_POINTS).join('');
+    };
     let outputBytes = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (result: LifecycleResult | undefined, diagnostic?: string): void => {
+    const finish = (result: LifecycleResult | undefined, diagnostic?: string, detail?: string): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (diagnostic) {
         try {
-          options.onDiagnostic?.(diagnostic);
+          options.onDiagnostic?.(diagnostic, detail);
         } catch {
           // Diagnostics must never make a host lifecycle callback fail.
         }
@@ -281,6 +288,7 @@ export async function dispatchOpenCodeLifecycleThroughNode(
         return;
       }
       if (capture) stdout += chunk.toString('utf8');
+      else retainStderrTail(stderrDecoder.write(chunk));
     };
     timer = setTimeout(() => {
       child.kill();
@@ -293,7 +301,9 @@ export async function dispatchOpenCodeLifecycleThroughNode(
     child.once('close', (code) => {
       if (settled) return;
       if (code !== 0) {
-        finish(undefined, 'node_lifecycle_nonzero_exit');
+        retainStderrTail(stderrDecoder.end());
+        const detail = stderr.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ').trim();
+        finish(undefined, 'node_lifecycle_nonzero_exit', detail || undefined);
         return;
       }
       const parsed = parseEnvelope(stdout.trim(), event);

@@ -1,12 +1,27 @@
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, linkSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { migrateCurrentSchema, preV10BackupPath, preV11BackupPath, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
+import { MemoryService } from '../../src/memory-core/service.js';
+import { migrateCurrentSchema, preV10BackupPath, preV11BackupPath, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, REVISION_ELEVEN_EMPTY_SESSIONS_SQL, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
 import { CURRENT_SCHEMA_SQL, LEGACY_IMPORT_AUDIT_SCHEMA_SQL, LEGACY_IMPORT_COHORT_SCHEMA_SQL, PROJECT_ALIAS_SCHEMA_SQL, REVISION_FIVE_SCHEMA_SQL, REVISION_FOUR_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
+
+// Only the filesystem boundary is intercepted; SQLite connections and backups remain real.
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return { ...fs, existsSync: vi.fn(fs.existsSync), linkSync: vi.fn(fs.linkSync) };
+});
+
+vi.mock('node:crypto', async (importOriginal) => {
+  const crypto = await importOriginal<typeof import('node:crypto')>();
+  return { ...crypto, randomUUID: vi.fn(crypto.randomUUID) };
+});
 
 const roots: string[] = [];
 
@@ -192,12 +207,391 @@ function createEmptySessionFixture(path: string, revision: 9 | 10): void {
   } finally { database.close(); }
 }
 
+function createScaleRevisionTenFixture(path: string): void {
+  const database = new Database(path);
+  const timestamp = '2026-10-19T00:00:00.000Z';
+  try {
+    database.pragma('foreign_keys = ON');
+    database.exec(CURRENT_SCHEMA_SQL);
+    database.transaction(() => {
+      database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(10, timestamp);
+      database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('scale-project', 'scale', 'Scale', null, timestamp, timestamp);
+      database.prepare('INSERT INTO legacy_imports VALUES(?,?,?,?,?,?,?,?,?,?)').run('scale-import', 'a'.repeat(64), '{}', 'target', 'b'.repeat(64), 'c'.repeat(64), 'd'.repeat(64), 'legacy-v1', 'committed', timestamp);
+      database.prepare('INSERT INTO legacy_import_cohorts VALUES(?,?)').run('scale-import', 1);
+      const session = database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)');
+      const receipt = database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?)');
+      for (let index = 0; index < 8_000; index++) {
+        const id = `scale-${index}`;
+        const harness = index >= 4_000 && index < 5_000 ? 'import' : index % 2 === 0 ? 'pi' : 'codex';
+        session.run(id, 'scale-project', id, harness, 'ended', timestamp, timestamp, 0);
+        for (const operation of ['enroll', 'recover', 'finalize']) receipt.run(harness, 'scale-project', id, operation, operation, 'payload', 'confirmed', timestamp, null, null, null);
+      }
+      const evidence = database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)');
+      for (let index = 0; index < 25_000; index++) {
+        evidence.run(`scale-evidence-${index}`, 'scale-project', index < 24_000 ? `scale-${5_000 + index % 2_000}` : null, 'explicit_save', 'Scale evidence.', 'hash', null, timestamp, '{}');
+      }
+      const legacy = database.prepare('INSERT INTO legacy_import_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (let index = 0; index < 30_000; index++) {
+        legacy.run('scale-import', 'session', `legacy-${index}`, 0, 'e'.repeat(64), null, 'imported', 'imported', 'scale-project', index < 29_000 ? `scale-${7_000 + index % 1_000}` : null, null, null, timestamp);
+      }
+    })();
+  } finally { database.close(); }
+}
+
+const revisionFixtures = {
+  2: createRevisionThreeFixture,
+  3: createRevisionThreeFixture,
+  4: createRevisionFourFixture,
+  5: createRevisionFiveFixture,
+  6: createRevisionSixFixture,
+  7: createRevisionSevenFixture,
+  8: createRevisionEightFixture,
+  9: createRevisionNineFixture,
+  10: (path: string) => createEmptySessionFixture(path, 10),
+};
+const revisionBackupPaths = {
+  3: preV4BackupPath, 5: preV6BackupPath, 6: preV7BackupPath, 7: preV8BackupPath,
+  8: preV9BackupPath, 9: preV10BackupPath, 10: preV11BackupPath,
+};
+
 afterEach(() => {
+  vi.mocked(randomUUID).mockReset();
+  vi.mocked(existsSync).mockReset();
+  vi.mocked(linkSync).mockReset();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 // File-backed backups and VACUUM INTO make these slower than the default timeout under full-suite load.
 describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
+  it('reports the failing revision with bounded observed detail and manual recovery guidance', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const database = new Database(path);
+    try {
+      let failure: unknown;
+      try { migrateCurrentSchema(database, { afterRevisionTenBackupVerified: () => { throw new Error(`injected failure\n${'🧠'.repeat(1_000)}`); } }); }
+      catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toMatch(/^SQLite migration revision 10→11 failed: injected failure /u);
+      expect(message).toContain('Run `thoth-mem migrate` to complete migrations without host timeouts.');
+      expect(message).not.toMatch(/[\r\n\u2028\u2029]/u);
+      expect(message.length).toBeLessThanOrEqual(500);
+      expect(message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    } finally { database.close(); }
+  });
+
+  it('names the failed step rather than the initial revision when an earlier step already committed', () => {
+    const path = fixturePath(); createRevisionThreeFixture(path);
+    const database = new Database(path);
+    try {
+      expect(() => migrateCurrentSchema(database, { afterRevisionSevenBackupVerified: () => { throw new Error('injected later-step failure'); } })).toThrow('SQLite migration revision 7→8 failed: injected later-step failure. Run `thoth-mem migrate` to complete migrations without host timeouts.');
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 7 });
+    } finally { database.close(); }
+  });
+
+  it('surfaces an actionable migration error from MemoryService construction', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    copyFileSync(path, preV11BackupPath(path));
+    const backup = new Database(preV11BackupPath(path));
+    try { backup.prepare("UPDATE projects SET display_name='Mismatched backup'").run(); }
+    finally { backup.close(); }
+    expect(() => new MemoryService({ databasePath: path })).toThrow('SQLite migration revision 10→11 failed: SQLite pre-v11 backup does not match the locked revision 10 source. Run `thoth-mem migrate` to complete migrations without host timeouts.');
+  });
+
+  it.each(['DELETE', 'WAL'])('reports an observed migration lock during %s startup without guessing its cause', (journalMode) => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    copyFileSync(path, preV11BackupPath(path));
+    const lockHolder = new Database(path);
+    try {
+      lockHolder.pragma(`journal_mode = ${journalMode}`);
+      lockHolder.exec('BEGIN IMMEDIATE');
+      expect(() => new MemoryService({ databasePath: path })).toThrow('SQLite migration revision 10→11 failed: database is locked by another process. Run `thoth-mem migrate` to complete migrations without host timeouts.');
+    } finally { lockHolder.exec('ROLLBACK'); lockHolder.close(); }
+  });
+
+  it('preserves foreign unique and legacy temporary files for every backup revision', () => {
+    const path = fixturePath(); createRevisionThreeFixture(path);
+    const backupPaths = Object.values(revisionBackupPaths).map((backupPath) => backupPath(path));
+    const foreignPaths = backupPaths.flatMap((backupPath) => [
+      `${backupPath}.tmp`, `${backupPath}.987654.12345678-1234-4234-8234-123456789abc.tmp`,
+    ]);
+    for (const foreignPath of foreignPaths) writeFileSync(foreignPath, 'another process owns this file');
+    const database = new Database(path);
+    try {
+      expect(migrateCurrentSchema(database).backups).toEqual(backupPaths.map((backupPath) => ({ path: backupPath, status: 'created' })));
+      for (const foreignPath of foreignPaths) expect(readFileSync(foreignPath, 'utf8')).toBe('another process owns this file');
+      expect(readdirSync(join(path, '..')).filter((name) => name.endsWith('.tmp')).sort()).toEqual(foreignPaths.map((foreignPath) => foreignPath.split(/[\\/]/u).at(-1)).sort());
+    } finally { database.close(); }
+  });
+
+  it('never removes a foreign temporary file even if its unique name collides', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const uuid = '12345678-1234-4234-8234-123456789abc';
+    const temporaryPath = `${preV11BackupPath(path)}.${process.pid}.${uuid}.tmp`;
+    writeFileSync(temporaryPath, 'foreign candidate');
+    vi.mocked(randomUUID).mockReturnValueOnce(uuid);
+    const database = new Database(path);
+    try {
+      const before = exactLogicalRows(database);
+      expect(() => migrateCurrentSchema(database)).toThrow();
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(readFileSync(temporaryPath, 'utf8')).toBe('foreign candidate');
+      expect(existsSync(preV11BackupPath(path))).toBe(false);
+    } finally { database.close(); }
+  });
+
+  it.each([false, true])('verifies a backup published at publication time and rejects mismatched state (%s)', async (mismatched) => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const winnerPath = fixturePath('winner.sqlite'); copyFileSync(path, winnerPath);
+    if (mismatched) {
+      const winner = new Database(winnerPath);
+      try { winner.prepare('DELETE FROM lifecycle_receipts WHERE root_session_key=?').run('no-session'); }
+      finally { winner.close(); }
+    }
+    const winnerBytes = readFileSync(winnerPath);
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    vi.mocked(linkSync).mockImplementationOnce((temporaryPath, backupPath) => {
+      expect(String(temporaryPath)).toMatch(new RegExp(`\\.${process.pid}\\.[0-9a-f-]{36}\\.tmp$`, 'u'));
+      fs.linkSync(winnerPath, backupPath);
+      fs.linkSync(temporaryPath, backupPath); // Real EEXIST: publication must never replace the winner.
+    });
+    const database = new Database(path);
+    try {
+      const before = exactLogicalRows(database);
+      if (mismatched) {
+        expect(() => migrateCurrentSchema(database)).toThrow(/locked revision 10 source/iu);
+        expect(exactLogicalRows(database)).toBe(before);
+      } else {
+        expect(migrateCurrentSchema(database)).toMatchObject({
+          backups: [{ path: preV11BackupPath(path), status: 'verified' }], removedSessions: 3, removedReceipts: 9,
+        });
+      }
+      expect(readFileSync(preV11BackupPath(path))).toEqual(winnerBytes);
+      expect(readdirSync(join(path, '..')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally { database.close(); }
+  });
+
+  it('fails closed without a copy fallback when hard-link publication is unsupported', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    vi.mocked(linkSync).mockImplementationOnce(() => { throw Object.assign(new Error('not supported'), { code: 'ENOTSUP' }); });
+    const database = new Database(path);
+    try {
+      const before = exactLogicalRows(database);
+      expect(() => migrateCurrentSchema(database)).toThrow('SQLite migration revision 10→11 failed: SQLite migration backup cannot be published atomically (hard link required). Run `thoth-mem migrate` to complete migrations without host timeouts.');
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(existsSync(preV11BackupPath(path))).toBe(false);
+      expect(readdirSync(join(path, '..')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally { database.close(); }
+  });
+
+  it('treats a winner advancing beyond one revision before the lock as complete with no removals', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 9);
+    const database = new Database(path);
+    const winner = new Database(path);
+    try {
+      let winnerApplied = false;
+      const report = migrateCurrentSchema(database, { afterRevisionNineBackupVerified: () => {
+        expect(migrateCurrentSchema(winner)).toMatchObject({ fromRevision: 9, toRevision: 11, removedSessions: 2, removedReceipts: 6 });
+        winnerApplied = true;
+      } });
+      expect(winnerApplied).toBe(true);
+      expect(report).toMatchObject({ fromRevision: 9, toRevision: 11, removedSessions: 0, removedReceipts: 0 });
+      expect(database.prepare('SELECT version FROM schema_migrations WHERE version>=9 ORDER BY version').all()).toEqual([{ version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+    } finally { winner.close(); database.close(); }
+  });
+
+  it.each([3, 5, 6, 7, 8, 9, 10] as const)('reuses the winner when revision %i advances after the absent-backup check but before VACUUM', async (revision) => {
+    const path = fixturePath();
+    revisionFixtures[revision](path);
+    const database = new Database(path);
+    const winner = new Database(path);
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const backupPath = revisionBackupPaths[revision](path);
+    let winnerApplied = false;
+    vi.mocked(existsSync).mockImplementation((candidate) => {
+      const exists = fs.existsSync(candidate);
+      if (candidate === backupPath && !winnerApplied) {
+        expect(exists).toBe(false);
+        winnerApplied = true;
+        migrateCurrentSchema(winner);
+      }
+      return exists;
+    });
+    try {
+      expect(migrateCurrentSchema(database)).toEqual({
+        fromRevision: revision, toRevision: 11, backups: [{ path: backupPath, status: 'verified' }], removedSessions: 0, removedReceipts: 0,
+      });
+      expect(winnerApplied).toBe(true);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      const backup = new Database(backupPath, { readonly: true, fileMustExist: true });
+      try {
+        expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: revision });
+        expect(backup.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+        expect(backup.pragma('foreign_key_check')).toEqual([]);
+      } finally { backup.close(); }
+      expect(readdirSync(join(path, '..')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally { winner.close(); database.close(); }
+  });
+
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10] as const)('rechecks revision %i under the immediate lock and continues after a winner applies the next revision', (revision) => {
+    const path = fixturePath();
+    revisionFixtures[revision](path);
+    const winner = new Database(path);
+    if (revision === 2) winner.prepare('UPDATE schema_migrations SET version=2 WHERE version=3').run();
+    const previousRevisions = winner.prepare('SELECT version FROM schema_migrations ORDER BY version').all();
+    if (revision < 10) winner.exec(`CREATE TRIGGER pause_winner BEFORE INSERT ON schema_migrations WHEN new.version=${revision + 2} BEGIN SELECT RAISE(ABORT, 'pause winner'); END;`);
+    let winnerApplied = false;
+    const database = new Database(path, { verbose: (sql) => {
+      if (sql !== 'BEGIN IMMEDIATE' || winnerApplied) return;
+      winnerApplied = true;
+      if (revision < 10) {
+        expect(() => migrateCurrentSchema(winner)).toThrow(/pause winner/u);
+        winner.exec('DROP TRIGGER pause_winner');
+      } else {
+        expect(migrateCurrentSchema(winner)).toMatchObject({ removedSessions: 3, removedReceipts: 9 });
+      }
+      expect(winner.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: revision + 1 });
+    } });
+    try {
+      const report = migrateCurrentSchema(database);
+      expect(winnerApplied).toBe(true);
+      expect(report).toMatchObject({ fromRevision: revision, toRevision: 11, ...(revision === 10 ? { removedSessions: 0, removedReceipts: 0 } : {}) });
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([...previousRevisions, ...Array.from({ length: 11 - revision }, (_, index) => ({ version: revision + index + 1 }))]);
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+    } finally { winner.close(); database.close(); }
+  });
+
+  it('applies revision 11 exactly once across two concurrent child processes with an intact backup', async () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'src/memory-core/sqlite/migrations.ts')).href;
+    const script = `
+      import Database from 'better-sqlite3';
+      import { migrateCurrentSchema } from ${JSON.stringify(moduleUrl)};
+      const database = new Database(${JSON.stringify(path)}, { timeout: 1000 });
+      process.once('message', () => {
+        try { process.stdout.write(JSON.stringify({ report: migrateCurrentSchema(database) })); }
+        catch (error) { process.stdout.write(JSON.stringify({ error: { code: error.code, message: error.message } })); }
+        finally { database.close(); process.disconnect(); }
+      });
+      process.send('ready');
+    `;
+    const launch = () => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+        cwd: process.cwd(), windowsHide: true, timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      let stdout = ''; let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const ready = new Promise<void>((resolve, reject) => {
+        child.once('message', () => resolve());
+        child.once('error', reject);
+        child.once('exit', () => reject(new Error(`Migration child exited before ready: ${stderr}`)));
+      });
+      const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code) => resolve({ code, stdout, stderr }));
+      });
+      return { child, ready, done };
+    };
+    const children = [launch(), launch()];
+    try {
+      await Promise.all(children.map(({ ready }) => ready));
+      for (const { child } of children) child.send('migrate');
+      const results = await Promise.all(children.map(({ done }) => done));
+      const outcomes = results.map(({ code, stdout, stderr }) => {
+        expect(code, stderr).toBe(0);
+        expect(stderr).toBe('');
+        return JSON.parse(stdout) as { report?: { toRevision: number; removedSessions: number; removedReceipts: number }; error?: { code: string; message: string } };
+      });
+      expect(outcomes.filter(({ report }) => report?.removedSessions === 3)).toHaveLength(1);
+      expect(outcomes.reduce((total, { report }) => total + (report?.removedReceipts ?? 0), 0)).toBe(9);
+      for (const outcome of outcomes) {
+        if (outcome.error) {
+          expect(outcome.error.code).toMatch(/^SQLITE_BUSY/u);
+          expect(outcome.error.message).toMatch(/busy|locked/iu);
+          expect(outcome.error.message.length).toBeLessThan(300);
+        } else expect(outcome.report?.toRevision).toBe(11);
+      }
+      const database = new Database(path);
+      const backup = new Database(preV11BackupPath(path), { readonly: true, fileMustExist: true });
+      try {
+        expect(database.prepare('SELECT count(*) AS count FROM schema_migrations WHERE version=11').get()).toEqual({ count: 1 });
+        expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 12 });
+        expect(backup.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 15 });
+        expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 10 });
+        for (const connection of [database, backup]) {
+          expect(connection.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+          expect(connection.pragma('foreign_key_check')).toEqual([]);
+        }
+        expect(readdirSync(join(path, '..')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+      } finally { backup.close(); database.close(); }
+    } finally {
+      for (const { child } of children) if (child.exitCode === null) child.kill();
+      await Promise.allSettled(children.map(({ done }) => done));
+    }
+  });
+
+  it.each([9, 10] as const)('reports revision %i upgrades, backup creation, and exact cleanup counts', (revision) => {
+    const path = fixturePath(); createEmptySessionFixture(path, revision);
+    const database = new Database(path);
+    try {
+      expect(migrateCurrentSchema(database)).toEqual({
+        fromRevision: revision,
+        toRevision: 11,
+        backups: [
+          ...(revision === 9 ? [{ path: preV10BackupPath(path), status: 'created' }] : []),
+          { path: preV11BackupPath(path), status: 'created' },
+        ],
+        removedSessions: revision === 9 ? 2 : 3,
+        removedReceipts: revision === 9 ? 6 : 9,
+      });
+      expect(migrateCurrentSchema(database)).toEqual({ fromRevision: 11, toRevision: 11, backups: [], removedSessions: 0, removedReceipts: 0 });
+    } finally { database.close(); }
+  });
+
+  it('keeps the startup migration report on MemoryService and reports fresh/current opens as no-ops', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    copyFileSync(path, preV11BackupPath(path));
+    const migrated = new MemoryService({ databasePath: path });
+    try {
+      expect(migrated.migrationReport).toEqual({
+        fromRevision: 10, toRevision: 11,
+        backups: [{ path: preV11BackupPath(path), status: 'verified' }],
+        removedSessions: 3, removedReceipts: 9,
+      });
+    } finally { migrated.close(); }
+    const noOp = { fromRevision: 11, toRevision: 11, backups: [], removedSessions: 0, removedReceipts: 0 };
+    for (const databasePath of [path, fixturePath(), ':memory:']) {
+      const service = new MemoryService({ databasePath });
+      try { expect(service.migrationReport).toEqual(noOp); }
+      finally { service.close(); }
+    }
+    const readonly = new MemoryService({ databasePath: path, readonly: true });
+    try { expect(readonly.migrationReport).toBeNull(); }
+    finally { readonly.close(); }
+  });
+
+  it('selects empty sessions without correlated scans of unindexed referencing tables', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const database = new Database(path);
+    try {
+      const plan = database.prepare(`EXPLAIN QUERY PLAN ${REVISION_ELEVEN_EMPTY_SESSIONS_SQL}`).all() as Array<{ id: number; parent: number; detail: string }>;
+      const byId = new Map(plan.map((row) => [row.id, row]));
+      const isCorrelated = (row: typeof plan[number]): boolean => {
+        if (/CORRELATED/iu.test(row.detail)) return true;
+        const parent = byId.get(row.parent);
+        return parent ? isCorrelated(parent) : false;
+      };
+      const expensiveScans = plan.filter((row) => /SCAN (?:evidence|legacy_import_rows|observation_reviews)\b/iu.test(row.detail));
+      expect(expensiveScans.length).toBeGreaterThan(0);
+      expect(expensiveScans.filter(isCorrelated)).toEqual([]);
+      expect(plan.filter((row) => /CORRELATED/iu.test(row.detail))).toHaveLength(1);
+      expect(plan.some((row) => /SEARCH r USING INDEX .*\(harness=\? AND project_id=\? AND root_session_key=\?\)/iu.test(row.detail))).toBe(true);
+    } finally { database.close(); }
+  });
+
   it.each([9, 10] as const)('removes only unreferenced non-import sessions from revision %i with an exact backup and idempotent reopen', (revision) => {
     const path = fixturePath(); createEmptySessionFixture(path, revision);
     const database = new Database(path);
@@ -229,6 +623,46 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     } finally { backup.close(); }
   });
 
+  it('migrates 8000 sessions with 25000 evidence and 30000 legacy rows within a generous bound', () => {
+    const path = fixturePath(); createScaleRevisionTenFixture(path);
+    const database = new Database(path);
+    try {
+      const before = database.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>;
+      const started = performance.now();
+      migrateCurrentSchema(database);
+      const elapsedMs = performance.now() - started;
+      console.info(`Revision 10->11 synthetic migration: ${elapsedMs.toFixed(1)} ms`);
+      // Includes backup + verification + locked state comparison, but not fixture construction.
+      // 15 seconds is deliberately generous for shared Windows/CI runners; plan coverage is deterministic.
+      expect(elapsedMs).toBeLessThan(15_000);
+      const remaining = database.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>;
+      const remainingIds = new Set(remaining.map((row) => row.id));
+      expect(before.filter((row) => !remainingIds.has(row.id)).map((row) => row.id).sort()).toEqual(Array.from({ length: 4_000 }, (_, index) => `scale-${index}`).sort());
+      expect(remaining).toHaveLength(4_000);
+      const receiptRoots = database.prepare('SELECT DISTINCT root_session_key FROM lifecycle_receipts ORDER BY root_session_key').all();
+      expect(receiptRoots).toEqual(Array.from({ length: 4_000 }, (_, index) => `scale-${4_000 + index}`).sort().map((id) => ({ root_session_key: id })));
+      expect(database.prepare('SELECT count(*) AS count FROM lifecycle_receipts').get()).toEqual({ count: 12_000 });
+      expect(database.prepare('SELECT count(*) AS count FROM evidence').get()).toEqual({ count: 25_000 });
+      expect(database.prepare('SELECT count(*) AS count FROM legacy_import_rows').get()).toEqual({ count: 30_000 });
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      expect(existsSync(preV11BackupPath(path))).toBe(true);
+    } finally { database.close(); }
+  });
+
+  it('disables foreign-key enforcement only around the verified revision-11 cleanup transaction', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const database = new Database(path);
+    try {
+      migrateCurrentSchema(database, { afterRevisionTenBackupVerified: () => {
+        expect(database.inTransaction).toBe(true);
+        expect(database.pragma('foreign_keys', { simple: true })).toBe(0);
+      } });
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+    } finally { database.close(); }
+  });
+
   it('holds a write reservation from pre-v11 backup verification through cleanup commit', () => {
     const path = fixturePath(); createEmptySessionFixture(path, 10);
     const database = new Database(path);
@@ -253,10 +687,29 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
       const before = exactLogicalRows(database);
       expect(() => migrateCurrentSchema(database)).toThrow(/blocked revision eleven/iu);
       expect(exactLogicalRows(database)).toBe(before);
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(existsSync(preV11BackupPath(path))).toBe(true);
       database.exec('DROP TRIGGER reject_revision_eleven');
       migrateCurrentSchema(database);
       expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+    } finally { database.close(); }
+  });
+
+  it('rejects foreign-key failures before recording revision 11 and restores enforcement after rollback', () => {
+    const path = fixturePath(); createEmptySessionFixture(path, 10);
+    const database = new Database(path);
+    try {
+      const before = exactLogicalRows(database);
+      // A record-trigger failure would mask a late FK check: the verification must win first.
+      database.exec("CREATE TRIGGER reject_revision_eleven BEFORE INSERT ON schema_migrations WHEN new.version=11 BEGIN SELECT RAISE(ABORT, 'revision recorded before verification'); END;");
+      expect(() => migrateCurrentSchema(database, { afterRevisionTenBackupVerified: () => {
+        database.exec('DROP TRIGGER evidence_immutable_update');
+        database.prepare('UPDATE evidence SET session_id=? WHERE id=?').run('missing-session', 'evidence-1');
+      } })).toThrow(/revision 11 migration failed foreign-key verification/iu);
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(database.prepare("SELECT name FROM sqlite_temp_master WHERE name='revision_eleven_empty_sessions'").all()).toEqual([]);
     } finally { database.close(); }
   });
 

@@ -91,6 +91,46 @@ lines.on('line', (line) => {
     await client.close();
   });
 
+  it.each(['never resolves', 'resolves late'])('classifies a startup timeout when connect %s', async (outcome) => {
+    let resolveConnect!: (connection: PiMcpConnection) => void;
+    const diagnostics: string[] = [];
+    const close = vi.fn(async () => undefined);
+    const client = createPiMcpClient({
+      connect: () => new Promise<PiMcpConnection>((resolve) => { resolveConnect = resolve; }),
+      timeoutMs: 10,
+      onDiagnostic: (code) => diagnostics.push(code),
+    });
+    try {
+      await expect(client.callTool('mem_get', {})).rejects.toMatchObject({
+        code: 'startup_timeout',
+        message: 'thoth-mem Pi bridge failed: memory server startup timed out',
+      });
+      expect(diagnostics).toEqual(['pi_mcp_startup_timeout']);
+      if (outcome === 'resolves late') {
+        resolveConnect({ callTool: async () => ({ content: [] }), close });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(close).toHaveBeenCalledTimes(1);
+      }
+    } finally { await client.close(); }
+  });
+
+  it('keeps request timeouts on an established connection generic', async () => {
+    const diagnostics: string[] = [];
+    const close = vi.fn(async () => undefined);
+    const client = createPiMcpClient({
+      connect: async () => ({ callTool: async () => new Promise(() => undefined), close }),
+      timeoutMs: 10,
+      onDiagnostic: (code) => diagnostics.push(code),
+    });
+    try {
+      const request = client.callTool('mem_get', {});
+      await expect(request).rejects.toThrow('thoth-mem Pi bridge failed: request timed out');
+      await expect(request).rejects.not.toHaveProperty('code');
+      expect(diagnostics).toEqual(['pi_mcp_request_failed']);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally { await client.close(); }
+  });
+
   it('closes a connection that arrives after connect timeout and never reuses it', async () => {
     let resolveLate!: (connection: PiMcpConnection) => void;
     const lateClose = vi.fn(async () => undefined);

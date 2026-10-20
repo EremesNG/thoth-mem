@@ -68,8 +68,14 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
   return async ({ client, directory }) => {
     const sessions = new Map<string, SessionState>();
     const runtimeEntry = options.runtimeEntry ?? defaultRuntimeEntry();
-    const reportDiagnostic = (code: string): void => {
-      const message = `OpenCode lifecycle degraded: ${code}`;
+    let timeoutReported = false;
+    const reportDiagnostic = (code: string, detail?: string): void => {
+      if (code === 'node_lifecycle_timeout') {
+        if (timeoutReported) return;
+        timeoutReported = true;
+        detail = 'memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate`';
+      }
+      const message = Array.from(`OpenCode lifecycle degraded: ${code}${detail ? ` — ${detail}` : ''}`).slice(0, 560).join('');
       try {
         void client.app.log({ body: { service: 'thoth-mem', level: 'warn', message } })
           .catch(() => console.error(`[thoth-mem] WARN: ${message}`));
