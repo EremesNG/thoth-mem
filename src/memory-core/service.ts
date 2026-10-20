@@ -50,7 +50,7 @@ import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { buildDerivedSessionSummary, deriveSessionSummary, parseHostCompactionClaims } from './session-summary-derivation.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
-import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, reopenSessionOnActivity, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema, MigrationError, SQLITE_SCHEMA_REVISION, type MigrationReport } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
@@ -460,6 +460,8 @@ export class MemoryService {
       const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
       const eventDefaults = sessionEventDefaults(input);
       const event = sessionId && eventDefaults ? appendSessionEvent(this.database, sessionId, evidenceId, eventDefaults) : null;
+      // Import and legacy evidence remain unordered, but still count as session activity.
+      if (sessionId && !event) reopenSessionOnActivity(this.database, sessionId, evidenceId);
       if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, event, projectId, sessionId, duplicate: false }; }
       if (!filteredMemory.title.trim() || !filteredMemory.content.trim()) throw new Error('Promoted memory title and content are required');
       // A stable workstream topic lets a later handoff or closure memory supersede this one.
@@ -523,7 +525,7 @@ export class MemoryService {
     return listObservationRecords(this.database, input);
   }
 
-  timeline(input: TimelineInput): TimelineResult {
+  timeline(input: TimelineInput, envelopeChars?: (page: TimelineResult) => number): TimelineResult {
     const limit = normalizeTimelineLimit(input.limit);
     const requestedChars = normalizeTimelineBudget(input.budgetChars);
     const since = input.since === undefined ? null : normalizeInstant(input.since, 'since');
@@ -548,16 +550,26 @@ export class MemoryService {
     const rows = this.database.prepare(`SELECT * FROM memories WHERE ${clauses.join(' AND ')} ORDER BY julianday(valid_from) DESC,id ASC LIMIT ?`).all(...parameters) as Array<Record<string, unknown>>;
     const items: TimelineItem[] = [];
     let returnedChars = 0;
+    const page = (): TimelineResult => {
+      const hasMore = items.length < rows.length;
+      const last = items.at(-1);
+      const nextCursor = hasMore && last ? encodeTimelineCursor({ v: 1, projectId: project.id, since, until, lastValidFrom: last.validFrom, lastId: last.id }) : null;
+      return { items, nextCursor, hasMore, requestedChars, returnedChars };
+    };
     for (const row of rows.slice(0, limit)) {
       const compact = timelineItemFromRow(row, requestedChars);
       if (returnedChars + compact.chars > requestedChars) break;
       items.push(compact.item);
       returnedChars += compact.chars;
+      // Measure the candidate with its actual continuation and all MCP framing.
+      // Only accepted items contribute to the final cursor position.
+      if (envelopeChars && envelopeChars(page()) > TIMELINE_MAX_BUDGET_CHARS) {
+        items.pop();
+        returnedChars -= compact.chars;
+        break;
+      }
     }
-    const hasMore = items.length < rows.length;
-    const last = items.at(-1);
-    const nextCursor = hasMore && last ? encodeTimelineCursor({ v: 1, projectId: project.id, since, until, lastValidFrom: last.validFrom, lastId: last.id }) : null;
-    return { items, nextCursor, hasMore, requestedChars, returnedChars };
+    return page();
   }
 
   reviewObservation(input: ReviewObservationInput): ReviewObservationResult {

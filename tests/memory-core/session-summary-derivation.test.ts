@@ -127,7 +127,153 @@ src/index.ts`)).toEqual([
   });
 });
 
+const hostCompaction = `## Goal
+Finish the original implementation.
+## Next Steps
+Run the old live tests.
+## Pending
+- [ ] Complete the old checklist.
+## Blockers
+Wait for the old review.
+## Decisions
+Keep SQLite authoritative.
+## Completed
+Added the compaction parser.
+## Modified Files
+src/memory-core/session-summary-derivation.ts`;
+
 describe('deterministic session summary derivation', () => {
+  it('drops stale compaction current-state claims in the ended Pi live-example session', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:stale-compaction', name: 'stale-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    try {
+      const first = service.lifecycle({ ...session, project, operation: 'capture_root', eventKey: 'first', content: 'Implement deterministic summaries and verify native recovery.' });
+      service.lifecycle({ ...session, project, operation: 'checkpoint_pre_compact', eventKey: 'pre' });
+      const checkpoint = service.lifecycle({ ...session, project, operation: 'guide_post_compact', eventKey: 'host', content: hostCompaction });
+      const latest = service.lifecycle({ ...session, project, operation: 'capture_root', eventKey: 'latest', content: 'Fix resumed Pi sessions and remove stale compaction actions.' });
+      const handoff = service.save({ project, session, evidence: { kind: 'handoff', content: 'The focused checks are ready.' }, memory: {
+        kind: 'handoff', title: 'Resume verification', topicKey: 'work/verification',
+        content: 'Objective: Verify the resumed session.\nFirst pending action: Run the new integration checks.\nBlockers: None.',
+      } });
+      const finalized = service.lifecycle({ ...session, project, operation: 'finalize', eventKey: 'final' });
+      const summary = service.deriveAndPersistSessionSummary(first.sessionId, 'final')!;
+      expect(summary.id).toBe(finalized.summaryId);
+      expect(summary.kind).toBe('final');
+      expect(summary.coverage.toSequence).toBe(handoff.event!.sequence);
+      expect(summary.claims.map(({ kind, content, supportIds }) => ({ kind, content, supportIds }))).toEqual([
+        { kind: 'objective', content: 'Implement deterministic summaries and verify native recovery.', supportIds: [first.evidenceId] },
+        { kind: 'objective', content: 'Fix resumed Pi sessions and remove stale compaction actions.', supportIds: [latest.evidenceId] },
+        { kind: 'next_action', content: 'Resume verification: Run the new integration checks.', supportIds: [handoff.evidence.id] },
+        { kind: 'decision', content: 'Keep SQLite authoritative.', supportIds: [checkpoint.evidenceId] },
+        { kind: 'completed', content: 'Added the compaction parser.', supportIds: [checkpoint.evidenceId] },
+        { kind: 'changed_surface', content: 'src/memory-core/session-summary-derivation.ts', supportIds: [checkpoint.evidenceId] },
+      ]);
+    } finally { service.close(); }
+  });
+
+  it.each(['before', 'after'] as const)('uses memory support sequence %s compaction, not its timestamp, to decide staleness', (position) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: `repo:memory-${position}-compaction`, name: 'memory-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    const saveMemory = () => service.save({ project, session, evidence: {
+      kind: 'explicit_save', content: 'The ledger is authoritative.',
+      capturedAt: position === 'after' ? '2000-01-01T00:00:00Z' : '2030-01-01T00:00:00Z',
+    }, memory: { kind: 'decision', title: 'Ledger', content: 'Result: Use ordered evidence.' } });
+    try {
+      const earlierMemory = position === 'before' ? saveMemory() : null;
+      const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' }, capturedAt: '2020-01-01T00:00:00Z' } });
+      const memory = earlierMemory ?? saveMemory();
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      expect(summary.claims.filter((claim) => claim.supportIds.includes(checkpoint.evidence.id)).map(({ kind, content }) => ({ kind, content }))).toEqual([
+        ...(position === 'before' ? [
+          { kind: 'objective', content: 'Finish the original implementation.' },
+          { kind: 'next_action', content: 'Run the old live tests.' },
+          { kind: 'blocker', content: 'Wait for the old review.' },
+          { kind: 'pending', content: '- [ ] Complete the old checklist.' },
+        ] : []),
+        { kind: 'decision', content: 'Keep SQLite authoritative.' },
+        { kind: 'completed', content: 'Added the compaction parser.' },
+        { kind: 'changed_surface', content: 'src/memory-core/session-summary-derivation.ts' },
+      ]);
+      expect(summary.claims).toContainEqual(expect.objectContaining({ kind: 'decision', content: 'Ledger: Use ordered evidence.', supportIds: [memory.evidence.id] }));
+    } finally { service.close(); }
+  });
+
+  it.each([
+    ['brief', 'Continue.'],
+    ['39 astral code points', '😀'.repeat(39)],
+    ['collapsed whitespace', `small${' \n\t'.repeat(40)}prompt`],
+  ])('keeps all compaction claims after only a short normalized prompt (%s)', (_label, content) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:short-after-compaction', name: 'short-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    try {
+      service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Implement deterministic summaries and verify native recovery.' } });
+      const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
+      service.save({ project, session, evidence: { kind: 'root_prompt', content } });
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      expect(summary.claims.filter((claim) => claim.supportIds.includes(checkpoint.evidence.id)).map(({ kind, content }) => ({ kind, content }))).toEqual([
+        { kind: 'objective', content: 'Finish the original implementation.' },
+        { kind: 'next_action', content: 'Run the old live tests.' },
+        { kind: 'blocker', content: 'Wait for the old review.' },
+        { kind: 'pending', content: '- [ ] Complete the old checklist.' },
+        { kind: 'decision', content: 'Keep SQLite authoritative.' },
+        { kind: 'completed', content: 'Added the compaction parser.' },
+        { kind: 'changed_surface', content: 'src/memory-core/session-summary-derivation.ts' },
+      ]);
+    } finally { service.close(); }
+  });
+
+  it.each([
+    ['40 astral code points', '😀'.repeat(40)],
+    ['40 decomposed code points', 'e\u0301'.repeat(20)],
+  ])('treats a repeated substantive prompt as new activity, counting source code points (%s)', (_label, content) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:substantive-after-compaction', name: 'substantive-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    try {
+      const first = service.save({ project, session, eventKey: 'first', evidence: { kind: 'root_prompt', content } });
+      const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
+      service.save({ project, session, eventKey: 'repeat', evidence: { kind: 'root_prompt', content: ` \n${content}\t ` } });
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'decision', 'completed', 'changed_surface']);
+      expect(summary.claims[0]).toMatchObject({ content: content.normalize('NFC'), supportIds: [first.evidence.id] });
+      expect(summary.claims.slice(1).every((claim) => claim.supportIds.includes(checkpoint.evidence.id))).toBe(true);
+    } finally { service.close(); }
+  });
+
+  it('does not stale compaction for a later memory whose handoff replacement yields no in-session claim', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:uncitable-after-compaction', name: 'uncitable-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    try {
+      const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
+      service.save({ project, session, evidence: { kind: 'handoff', content: 'Old plan.' }, memory: { kind: 'handoff', title: 'Old plan', content: 'Run the old checks.', topicKey: 'work/replaced' } });
+      service.save({ project, session: { ...session, rootSessionKey: 'other' }, evidence: { kind: 'handoff', content: 'Replacement plan.' }, memory: { kind: 'handoff', title: 'Replacement', content: 'Run other checks.', topicKey: 'work/replaced' } });
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'next_action', 'blocker', 'pending', 'decision', 'completed', 'changed_surface']);
+      expect(summary.claims.every((claim) => claim.supportIds.length === 1 && claim.supportIds[0] === checkpoint.evidence.id)).toBe(true);
+    } finally { service.close(); }
+  });
+
+  it('decides staleness before capping even when the later memory claim cannot fit', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:capped-after-compaction', name: 'capped-compaction' };
+    const session = { harness: 'pi' as const, rootSessionKey: 'root' };
+    try {
+      for (let index = 0; index < 32; index++) service.save({ project, session, eventKey: `decision-${index}`, evidence: { kind: 'explicit_save', content: `Decision evidence ${index}.` }, memory: { kind: 'decision', title: `Decision ${index}`, content: 'Result: Preserve the existing contract.' } });
+      const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
+      const later = service.save({ project, session, evidence: { kind: 'explicit_save', content: 'A later discovery.' }, memory: { kind: 'discovery', title: 'Later discovery', content: 'Result: The new parser passed checks.' } });
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      expect(summary.claims).toHaveLength(32);
+      expect(summary.claims.every((claim) => claim.kind === 'decision')).toBe(true);
+      expect(summary.claims).toContainEqual(expect.objectContaining({ content: 'Keep SQLite authoritative.', supportIds: [checkpoint.evidence.id] }));
+      expect(summary.claims.some((claim) => claim.supportIds.includes(later.evidence.id))).toBe(false);
+      expect(service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')).toEqual(summary);
+    } finally { service.close(); }
+  });
+
   it('returns none for sessions without citable claims, including unordered legacy and foreign evidence', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:empty', name: 'empty' };
@@ -227,7 +373,7 @@ describe('deterministic session summary derivation', () => {
     } finally { service.close(); }
   });
 
-  it('reuses a persisted v1 summary at the same watermark and emits v2 only after new activity', () => {
+  it.each(['v1', 'v2'])('reuses a persisted %s summary unchanged at the same watermark and emits v3 only after new activity', (generation) => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:summary-upgrade', name: 'upgrade' };
     const session = { harness: 'pi' as const, rootSessionKey: 'root' };
@@ -235,12 +381,12 @@ describe('deterministic session summary derivation', () => {
       const prompt = service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Implement the summary pipeline with immutable citations.' } });
       const persisted = service.lifecycle({ ...session, project, operation: 'checkpoint_pre_compact', eventKey: 'old-summary', summary: {
         kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 },
-        generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v1' },
+        generator: { kind: 'harness', name: `thoth-mem.session-evidence.${generation}` },
         claims: [{ kind: 'objective', content: 'Original persisted summary.', supportIds: [prompt.evidence.id] }],
       } });
       expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toEqual(service.get({ id: persisted.summaryId! }).record);
-      service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Verify that new activity derives a compact v2 summary.' } });
-      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toMatchObject({ version: 2, supersedesId: persisted.summaryId, generator: { name: 'thoth-mem.session-evidence.v2' } });
+      service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Verify that new activity derives a compact v3 summary.' } });
+      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toMatchObject({ version: 2, supersedesId: persisted.summaryId, generator: { name: 'thoth-mem.session-evidence.v3' } });
     } finally { service.close(); }
   });
 
@@ -260,7 +406,7 @@ describe('deterministic session summary derivation', () => {
       const closed = save('handoff', 'Old migration plan', 'First pending action: Apply the migration.', 'work/closed');
       const closure = save('decision', 'Migration verified', 'Rationale: Backups protect existing data.\nResult: Revision 11 retained every referenced session.\nChecks: Passed.', 'work/closed');
       const summary = service.deriveAndPersistSessionSummary(direct.sessionId!, 'final')!;
-      expect(summary.generator).toEqual({ kind: 'harness', name: 'thoth-mem.session-evidence.v2' });
+      expect(summary.generator).toEqual({ kind: 'harness', name: 'thoth-mem.session-evidence.v3' });
       expect(summary.claims).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'decision', content: 'SQLite ledger: SQLite remains authoritative.', supportIds: [direct.evidence.id] }),
         expect.objectContaining({ kind: 'completed', content: 'Parser fallback: First useful line.', supportIds: [fallback.evidence.id] }),
@@ -354,7 +500,7 @@ describe('deterministic session summary derivation', () => {
       service.save({ project, session: { ...session, rootSessionKey: 'other' }, eventKey: 'other', evidence: { kind: 'root_prompt', content: 'Foreign request.' } });
 
       const summary = service.deriveAndPersistSessionSummary(first.sessionId!, 'final')!;
-      expect(summary).toMatchObject({ kind: 'final', coverage: { fromSequence: 1, toSequence: 14 }, generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v2' } });
+      expect(summary).toMatchObject({ kind: 'final', coverage: { fromSequence: 1, toSequence: 14 }, generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v3' } });
       expect(summary.claims.filter((claim) => claim.kind === 'objective').map((claim) => [claim.content, claim.supportIds])).toEqual([
         ['Implement the first requested feature with cited evidence.', [first.evidence.id]], ['Implement the latest requested feature with cited evidence.', [latest.evidence.id]],
       ]);

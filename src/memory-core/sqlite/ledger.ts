@@ -138,7 +138,18 @@ export function sessionEvidence(database: Database.Database, sessionId: string, 
   return rows.map((row) => ({ ...evidenceFromRow(row), event: sessionEventFromRow(row) }));
 }
 
+/** Called only for newly appended evidence, inside the caller's write transaction. */
+export function reopenSessionOnActivity(database: Database.Database, sessionId: string, evidenceId: string): void {
+  database.prepare(`
+    UPDATE sessions SET state='active',ended_at=NULL
+    WHERE id=? AND state='ended' AND EXISTS (
+      SELECT 1 FROM evidence WHERE id=? AND session_id=sessions.id AND kind<>'session_summary'
+    )
+  `).run(sessionId, evidenceId);
+}
+
 export function appendSessionEvent(database: Database.Database, sessionId: string, evidenceId: string, input: SessionEventInput): SessionEventRecord {
+  reopenSessionOnActivity(database, sessionId, evidenceId);
   const allocated = database.prepare('UPDATE sessions SET next_event_sequence=next_event_sequence+1 WHERE id=? RETURNING next_event_sequence').get(sessionId) as { next_event_sequence: number } | undefined;
   if (!allocated) throw new Error('root_session_key and harness must identify an existing session in project_key before recording an event; send the verified session pair');
   database.prepare('INSERT INTO session_events(evidence_id,session_id,sequence,actor,authority,retention_class,privacy_class) VALUES(?,?,?,?,?,?,?)').run(

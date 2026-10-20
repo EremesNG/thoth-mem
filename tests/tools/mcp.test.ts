@@ -215,6 +215,57 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('traverses every timeline ID once through MCP at the maximum budget without generic shrinking', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-timeline-cap-'));
+    const built = createServer({ dataDir: root });
+    const client = new Client({ name: 'timeline-cap-test', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      const records = Array.from({ length: 120 }, (_, index) => built.service.save({
+        project: { key: 'repo:timeline-cap', name: 'timeline-cap' }, eventKey: `item-${index}`,
+        evidence: { kind: 'explicit_save', content: `Evidence ${index}`, capturedAt: `2026-01-${String(index % 20 + 1).padStart(2, '0')}T00:00:00.000Z` },
+        memory: { kind: 'decision', title: '😀'.repeat(64), content: '😀'.repeat(160), topicKey: `item-${index}` },
+      }).memory!);
+      built.service.save({ project: { key: 'repo:other-timeline-cap', name: 'other' }, evidence: { kind: 'explicit_save', content: 'Foreign' }, memory: { kind: 'decision', title: 'Foreign', content: 'Foreign' } });
+      const expected = records.sort((left, right) => right.validFrom.localeCompare(left.validFrom) || left.id.localeCompare(right.id)).map((record) => record.id);
+      await built.server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const result = await client.callTool({ name: 'mem_project', arguments: { action: 'timeline', project_key: 'repo:timeline-cap', since: '2026-01-01T00:00:00Z', until: '2026-01-20T00:00:00Z', budget_chars: 20_000, limit: 100, ...(cursor ? { cursor } : {}) } });
+        expect(result.isError).not.toBe(true);
+        const content = result.content as Array<{ type: string; text: string }>;
+        const text = content[0]!.text;
+        expect(text.length).toBeLessThanOrEqual(20_000);
+        expect(JSON.parse(text)).toEqual(result.structuredContent);
+        const envelope = result.structuredContent as { data: { items: Array<{ id: string; title: string; snippet: string }>; nextCursor: string | null; hasMore: boolean }; sources: string[] };
+        const page = envelope.data;
+        expect(page.items.length).toBeGreaterThan(0);
+        expect(envelope.sources).toEqual(page.items.map((item) => item.id));
+        for (const item of page.items) {
+          expect(item.title).toBe('😀'.repeat(64));
+          expect(item.snippet).toBe('😀'.repeat(160));
+          seen.push(item.id);
+        }
+        cursor = page.nextCursor ?? undefined;
+        expect(page.hasMore).toBe(Boolean(cursor));
+        if (cursor) expect(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))).toMatchObject({ lastId: page.items.at(-1)!.id });
+        pages += 1;
+        expect(pages).toBeLessThan(20);
+      } while (cursor);
+      expect(pages).toBeGreaterThan(1);
+      expect(seen).toEqual(expected);
+      expect(new Set(seen).size).toBe(120);
+    } finally {
+      await client.close();
+      await built.server.close();
+      built.service.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsafe timeline requests without writes and returns an empty unknown-project page', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -276,8 +327,36 @@ describe('MCP boundary', () => {
         structuredContent: { error: { message: 'id: no memory, summary, observation, or evidence record exists for "missing-selected-id"; send an id returned by a prior tool result' } },
       });
       const saved = service.save({ project: { key: 'repo:evidence-get', name: 'evidence-get' }, evidence: { kind: 'explicit_save', content: 'Evidence record.' } });
-      const expanded = await handlers.mem_get({ id: saved.evidence.id, history: true });
-      expect(expanded).toMatchObject({ structuredContent: { data: { record: { id: saved.evidence.id, content: 'Evidence record.' }, lineage: [] } } });
+      for (const history of [undefined, false, true]) {
+        const expanded = await handlers.mem_get({ id: saved.evidence.id, history });
+        expect(expanded).toMatchObject({ structuredContent: { data: { record: { id: saved.evidence.id, content: 'Evidence record.' }, lineage: [] } } });
+      }
+    } finally { service.close(); }
+  });
+
+  it.each(['memory', 'summary', 'observation'] as const)('returns the selected %s once and only includes predecessors when requested', async (kind) => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: `repo:lineage-${kind}`, name: 'lineage' };
+    const session = { rootSessionKey: 'root', harness: 'codex' as const };
+    try {
+      const ids: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const support = service.save({ project, session, eventKey: `support-${index}`, evidence: { kind: 'explicit_save', content: `Support ${index}` }, ...(kind === 'memory' ? { memory: { kind: 'decision' as const, title: `Choice ${index}`, content: `Choice ${index}`, topicKey: 'choice' } } : {}) });
+        if (kind === 'memory') ids.push(support.memory!.id);
+        else if (kind === 'summary') ids.push(service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: `summary-${index}`, summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: support.event!.sequence }, generator: { kind: 'root_agent', name: 'test' }, claims: [{ kind: 'objective', content: `Objective ${index}`, supportIds: [support.evidence.id] }] } }).summaryId!);
+        else ids.push(service.submitObservation({ project, eventKey: `observation-${index}`, observation: { kind: 'fact', scope: 'project', title: `Fact ${index}`, claim: `Fact ${index}`, proposedMemory: { kind: 'discovery', title: `Fact ${index}`, content: `Fact ${index}` }, supportIds: [support.evidence.id], generator: { kind: 'root_agent', name: 'test' }, ...(ids.at(-1) ? { predecessorId: ids.at(-1)! } : {}) } }).observation.id);
+      }
+      const handlers = createToolHandlers(service);
+      for (const history of [undefined, false, true]) {
+        const result = await handlers.mem_get({ id: ids[2], history });
+        expect(result.isError).not.toBe(true);
+        const data = result.structuredContent.data as { record: { id: string }; lineage: Array<{ id: string }> };
+        expect(data.record.id).toBe(ids[2]);
+        expect(data.lineage.map((item) => item.id)).toEqual(history ? [ids[1], ids[0]] : []);
+        if (!history) expect(result.structuredContent.sources).not.toContain(ids[0]);
+      }
+      const history = await handlers.mem_project({ action: 'history', id: ids[2] });
+      expect((history.structuredContent.data as { lineage: Array<{ id: string }> }).lineage.map((item) => item.id)).toEqual([...ids].reverse());
     } finally { service.close(); }
   });
 
@@ -408,6 +487,22 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
+  it('bounds oversized project history without changing its selected-first order', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const ids = Array.from({ length: 12 }, (_, index) => service.save({ project: { key: 'repo:large-history', name: 'large-history' }, eventKey: `version-${index}`, evidence: { kind: 'explicit_save', content: `Source ${index}` }, memory: { kind: 'decision', title: `Version ${index}`, content: `${index}: ${'x'.repeat(6_000)}`, topicKey: 'history' } }).memory!.id);
+      const result = await createToolHandlers(service).mem_project({ action: 'history', id: ids.at(-1) });
+      expect(result.isError).not.toBe(true);
+      expect(result.content[0]!.text.length).toBeLessThanOrEqual(20_000);
+      expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
+      const data = result.structuredContent.data as { action: string; lineage: Array<{ id: string; content: string }> };
+      expect(data.action).toBe('history');
+      expect(data.lineage.map((item) => item.id)).toEqual([...ids].reverse());
+      expect(data.lineage.some((item) => item.content.endsWith('…'))).toBe(true);
+      expect(result.structuredContent.warnings).toEqual(['payload_truncated']);
+    } finally { service.close(); }
+  });
+
   it('finalizes and reconciles one correlated bounded-to-full answer path', async () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
@@ -473,6 +568,36 @@ describe('MCP boundary', () => {
       expect(items[0]).not.toHaveProperty('truncated');
       expect(summaries.structuredContent.budget).toEqual({ requested_chars: 2_000, returned_chars: JSON.stringify(items[0]).length });
       expect(ALL_TOOLS).toHaveLength(6);
+    } finally { service.close(); }
+  });
+
+  it('bounds an expanded near-limit valid summary as matching JSON text and structured content', async () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    try {
+      const handlers = createToolHandlers(service);
+      const identity = { project_key: 'repo:near-limit-summary', project_name: 'near-limit-summary', root_session_key: 'root', harness: 'codex' };
+      const saved = await handlers.mem_save({ ...identity, event_key: 'support', evidence: { kind: 'explicit_save', content: 'Supported claims.' } });
+      const supportId = (saved.structuredContent.data as { evidence: { id: string } }).evidence.id;
+      const submitted = await handlers.mem_session({
+        ...identity, operation: 'checkpoint_pre_compact', event_key: 'summary',
+        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: Array.from({ length: 32 }, (_, index) => ({ kind: 'completed', content: `${index}: ${'x'.repeat(497)}`, support_ids: [supportId] })) },
+      });
+      expect(submitted.isError).not.toBe(true);
+      const summaryId = (submitted.structuredContent.data as { summaryId: string }).summaryId;
+      const unbounded = service.get({ id: summaryId }).record;
+      expect(JSON.stringify(unbounded).length).toBeGreaterThan(20_000);
+      const expanded = await handlers.mem_get({ id: summaryId });
+      expect(expanded.isError).not.toBe(true);
+      const text = expanded.content[0]!.text;
+      expect(text.length).toBeLessThanOrEqual(20_000);
+      expect(JSON.parse(text)).toEqual(expanded.structuredContent);
+      const record = (expanded.structuredContent.data as { record: SessionSummaryRecord; lineage: unknown[] }).record;
+      expect(record).toMatchObject({ id: summaryId, kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
+      expect(record.claims[0]!.ordinal).toBe(0);
+      expect(record.claims).toHaveLength(32);
+      expect(record.claims[0]!.content.startsWith('0: ')).toBe(true);
+      expect(record.claims.some((claim) => claim.content.endsWith('…'))).toBe(true);
+      expect(expanded.structuredContent.warnings).toEqual(['payload_truncated']);
     } finally { service.close(); }
   });
 

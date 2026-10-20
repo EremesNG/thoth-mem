@@ -2,7 +2,11 @@
 
 `src/integration/adapters/index.ts` maps OpenCode, Codex, Claude Code, and Pi evidence to six host-neutral intents. Delegated or unverifiable identity fails closed. `MemoryService.lifecycle` owns event idempotency and state changes; adapters never access SQLite.
 
-Session creation is lazy across all hosts. For a missing session, `enroll`, `recover`, `finalize`, and `capture_root` without sanitized content write no session row, lifecycle receipt, or summary for that root. Results retain the deterministic session ID and null evidence/summary IDs: verified identity returns `confirmed`; degraded identity stays `degraded` with no recovery context. Verified `recover` still renders project recovery and may lazily derive the previous session's summary. Non-empty root capture, `checkpoint_pre_compact`, `guide_post_compact`, or a session-attributed `mem_save` creates the session on first use; existing-session effects and receipts are unchanged.
+Session creation is lazy across all hosts. For a missing session, `enroll`, `recover`, `finalize`, and `capture_root` without sanitized content write no session row, lifecycle receipt, or summary for that root. Results retain the deterministic session ID and null evidence/summary IDs: verified identity returns `confirmed`; degraded identity stays `degraded` with no recovery context. Verified `recover` still renders project recovery and may lazily derive the previous session's summary. Non-empty root capture, `checkpoint_pre_compact`, `guide_post_compact`, or a session-attributed `mem_save` creates the session on first use.
+
+Across all hosts, appending new non-summary session evidence reopens an `ended` session atomically: it becomes `active` and `ended_at` is cleared. Root prompts, checkpoints, and session-attributed direct saves count; summary submissions and lifecycle no-ops do not. Lazy summaries are checkpoints while reopened; a later `finalize` ends the session and supersedes its earlier final summary. `compacted` and `guide_post_compact` behavior is unchanged.
+
+Known limitation: Codex and Claude Code lifecycle keys repeat across resumes of the same root session. A resumed session's second `finalize` may therefore replay the stored receipt instead of finalizing new activity. The next start's lazy derivation compensates when that session is selected as the previous session for recovery; core reopening does not fix these host keys.
 
 Git repositories establish one local UUID in the shared Git common directory; every worktree uses `git:<uuid>` while exact normalized paths are aliases. Independent clones remain independent. Model-visible identity carries `root_session_id`, the exact `project_key`, and the database-persisted `project_name`; adapter basenames are creation hints only. A folder rename never changes the display name automatically; operators use `thoth-mem project rename`. OpenCode exposes these semantics through `thoth_mem_root_identity` v2.
 
@@ -27,7 +31,12 @@ root. The extension registers exactly five model-facing native tools:
 Each native tool has self-framed
 `renderCall`/`renderResult` output in the Thoth Pi theme style (titled frame,
 tool-aware call summary, structured result lines, status footer) that imports
-no Pi TUI module at runtime. The extension shares one lazy,
+no Pi TUI module at runtime. `mem_get` renders the selected record first, then
+any predecessor lineage. Tool text within 20,000 characters passes through
+unchanged; Pi never slices it. Unexpected over-cap text becomes a valid JSON
+notice under 1,000 characters with schema `thoth-mem.pi.output_truncated`,
+`tool`, `original_chars`, `cap_chars`, and `guidance` to use a smaller
+`budget_chars` or a selective `mem_get`. The extension shares one lazy,
 time/size-bounded MCP SDK child running the package-relative
 `dist/index.js mcp --no-http` entry for both tool and lifecycle calls. The Pi
 process never loads `MemoryService` or `better-sqlite3`; a failed child is
@@ -82,19 +91,26 @@ The Pi extension maps documented events as follows:
 | --- | --- |
 | `session_start` | Resolve `cwd` and session-manager ID, enroll and recover without creating an untouched session, and cache only a verified bounded block. |
 | `input` | Capture only `interactive` or `rpc` root input after privacy sanitation; hash the session, leaf, source, streaming mode, and sanitized text for idempotency. `extension` input is excluded. |
-| `before_agent_start` | Replay the session's recovery event key (after a successful compaction, a content-free `context` recover key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
+| `before_agent_start` | Replay the current run's recovery event key (after a successful compaction, a content-free `context` recover key) to re-render current memory, validate it, and set or delete only the `thoth_mem_recovery` system-prompt section. A failed refresh keeps the last verified block. No `context` hook is registered, so tool-loop LLM calls never receive the block as a trailing message, and Pi's section diffing adds a transcript delta only when the block changes. |
 | `session_before_compact` | Record a checkpoint event from stable IDs/reason/retry metadata and derive a checkpoint summary from citable session evidence, without copying model, tool, or branch content. |
 | `session_compact` | Forward `compactionEntry.summary` as `guide_post_compact` content, keyed by the compaction entry ID, and refresh the same project recovery as ordinary recovery. |
 | `session_compact_failed` / `agent_settled` | Emit bounded degradation when needed; preserve safe recovery and never finalize. |
 | `session_shutdown` | Finalize for quit/session replacement, skip finalization on hot reload, and close the owned MCP child in every case. |
 
-Starting Pi and then resuming another session or quitting without activity leaves
-no session row, receipt, or summary for the untouched root. On Windows, closing
-an Orca terminal tab kills the host process tree without a signal, so neither
-Pi's `session_shutdown` nor finalization can run. Use `/quit`, double Ctrl+C, or
-Ctrl+D for an awaited clean close. A killed session stays active or compacted;
-when a later session's recovery needs it, lazy derivation produces a checkpoint
-summary rather than a final summary.
+Each `session_start` creates a random UUID nonce in the per-run lifecycle state.
+Enroll, recover (including post-compaction refresh), and finalize keys include
+it: they are stable within one run but distinct across runs of the same root.
+Quitting after resume therefore records a new finalize receipt and a final
+summary covering new activity. Capture and compaction keys retain their stable
+leaf/entry-based inputs.
+
+Starting Pi on a new root and then switching sessions or quitting without
+activity leaves no session row, receipt, or summary for that untouched root.
+On Windows, closing an Orca terminal tab kills the host process tree without a
+signal, so neither Pi's `session_shutdown` nor finalization can run. Use `/quit`,
+double Ctrl+C, or Ctrl+D for an awaited clean close. Killing a session does not
+change its state; if active or compacted, a later session's lazy recovery derives
+a checkpoint summary rather than a final summary.
 
 Recovery validates the local project and root-session identity, owned delimiters,
 record IDs, source omission, taxonomy, and the 1,000-code-point bound. Invalid,
@@ -160,7 +176,7 @@ Hook execution, memory confirmation, context delivery, and model consumption are
 
 Lifecycle persistence separates authoritative capture from derived continuity. A verified root prompt appends filtered immutable evidence and one ordered session event. Non-empty pre- and post-compaction content becomes checkpoint evidence, never an automatic handoff. On verified checkpoint or finalization, the core validates and versions a submitted structured summary or deterministically derives a harness summary from citable session evidence, with no model or network call. Invalid, unsupported, cross-scope, delegated, or degraded summary submissions commit nothing. Derivation, coverage, and claim mapping are detailed in [persistence and retrieval](persistence-retrieval.md).
 
-Explicit promoted memories remain root-owned. Assistant reasoning, arbitrary tool traffic, delegated output, filesystem sweeps, full transcripts, secrets, and private blocks are never automatic capture sources. Shared sanitation removes private blocks and recognizable credentials before adapters derive content-dependent keys; the core reapplies it before persistence or hashing. Stable event keys bind the original session identity and make allowed retries idempotent across restart.
+Explicit promoted memories remain root-owned. Assistant reasoning, arbitrary tool traffic, delegated output, filesystem sweeps, full transcripts, secrets, and private blocks are never automatic capture sources. Shared sanitation removes private blocks and recognizable credentials before adapters derive content-dependent keys; the core reapplies it before persistence or hashing. Event keys bind the original session identity and make exact retries idempotent within their host-specific scope; Pi's enroll, recover, and finalize keys are scoped to one run.
 
 Recovery first obtains deterministic candidates, then `src/memory-core/continuation.ts` renders the only model-visible representation. Ordinary recovery, per-prompt refresh, and `guide_post_compact` use the same selection: newest open handoff, then the previous session's newest current summary, then other project memories. Previous means the most recent other root session in this project by non-summary activity, from any harness; its summary is lazily derived when missing or stale. Automatic recovery never selects the current session's own summary. Explicit `mem_context` or briefing with a verified session pair can still select that session's summary first. Degraded identity and premature post-compaction events still fail closed.
 

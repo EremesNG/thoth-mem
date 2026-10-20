@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { LifecycleInput, ProjectIdentityInput } from '../../memory-core/contracts.js';
 import { sanitizePrivateContent } from '../../memory-core/privacy.js';
@@ -19,6 +19,7 @@ export interface PiLifecycleContext {
 export interface PiLifecycleState {
   directory: string;
   rootSessionKey: string;
+  runNonce: string;
   project: ProjectIdentityInput;
 }
 
@@ -42,19 +43,19 @@ function kindFor(operation: LifecycleInput['operation']): string {
   return values[operation];
 }
 
-export function createPiLifecycleState(context: PiLifecycleContext): PiLifecycleState {
+export function createPiLifecycleState(context: PiLifecycleContext, createRunNonce: () => string = randomUUID): PiLifecycleState {
   const directory = identifier(context.cwd, 'working directory');
   const rootSessionKey = identifier(context.sessionManager.getSessionId(), 'root session');
-  return { directory, rootSessionKey, project: resolveLocalProjectIdentity(directory) };
+  return { directory, rootSessionKey, runNonce: createRunNonce(), project: resolveLocalProjectIdentity(directory) };
 }
 
 export function piSessionStartInput(state: PiLifecycleState, reason: string): LifecycleInput {
   const stableReason = identifier(reason, 'session start reason');
-  return base(state, 'enroll', eventKey('start', [state.rootSessionKey, stableReason]));
+  return base(state, 'enroll', eventKey('start', [state.rootSessionKey, state.runNonce, stableReason]));
 }
 
 export function piRecoveryInput(state: PiLifecycleState, phase: 'start' | 'context' | 'post_compact'): LifecycleInput {
-  return base(state, phase === 'post_compact' ? 'guide_post_compact' : 'recover', eventKey('recovery', [state.rootSessionKey, phase]));
+  return base(state, phase === 'post_compact' ? 'guide_post_compact' : 'recover', eventKey('recovery', [state.rootSessionKey, state.runNonce, phase]));
 }
 
 export function piInputCapture(state: PiLifecycleState, context: PiLifecycleContext, event: { text: string; source: string; streamingBehavior?: string }): LifecycleInput | undefined {
@@ -77,6 +78,6 @@ export function piPostCompactInput(state: PiLifecycleState, event: { compactionE
 
 export function piShutdownInput(state: PiLifecycleState, event: { reason: string; sessionFile?: string }): LifecycleInput | undefined {
   if (event.reason === 'reload') return undefined;
-  return base(state, 'finalize', eventKey('shutdown', [state.rootSessionKey, event.reason, event.sessionFile ?? '']));
+  return base(state, 'finalize', eventKey('shutdown', [state.rootSessionKey, state.runNonce, event.reason, event.sessionFile ?? '']));
 }
 

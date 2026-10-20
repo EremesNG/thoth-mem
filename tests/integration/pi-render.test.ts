@@ -22,6 +22,12 @@ describe('Pi tool rendering', () => {
     expect(summarizeResult(undefined, 'raw\ntext').lines).toEqual(['raw', 'text']);
   });
 
+  it('renders the selected record before its optional predecessor lineage', () => {
+    const record = { id: 'selected-record', kind: 'decision', title: 'Current choice', content: 'Selected content.' };
+    expect(summarizeResult({ data: { record, lineage: [] } }, '')).toEqual({ lines: ['decision · Current choice  selected', 'Selected content.'] });
+    expect(summarizeResult({ data: { record, lineage: [{ id: 'previous-record', kind: 'decision', title: 'Previous choice', status: 'superseded' }] } }, '').lines).toEqual(['decision · Current choice  selected', 'Selected content.', 'decision · Previous choice [superseded]  previous']);
+  });
+
   it('measures and truncates cells like the Pi TUI without importing it at runtime', () => {
     for (const sample of ['plain', '\u001b[31mred\u001b[0m', '漢字かな', 'e\u0301', '👍🏽 ok', '◆ mem_save']) expect(cellWidth(sample)).toBe(visibleWidth(sample));
     const cut = truncateToWidth('\u001b[32m漢字かなabc\u001b[0m', 6);

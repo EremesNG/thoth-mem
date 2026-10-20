@@ -239,3 +239,13 @@ For a root session that has no persisted session, `enroll`, `recover`, `finalize
 - **GIVEN** Pi starts a session, injects recovery, and the user then resumes another session or quits without typing
 - **WHEN** enroll, recover, and finalize run for the untouched session
 - **THEN** no session row, lifecycle receipt, or summary exists for it, the recovery block was still rendered, and only a session that receives a typed prompt is created
+
+### Requirement: Pi Lifecycle Keys MUST Be Unique per Extension Run
+
+The Pi extension MUST derive enroll, recovery, post-compaction refresh, and finalize event keys from a nonce created at each `session_start`, so that keys stay stable within one run and differ across runs of the same root session; quitting a resumed session MUST therefore record a new finalize receipt and derive a final summary covering its new activity, while an untouched start still writes nothing.
+
+#### Scenario: Pi Lifecycle Keys MUST Be Unique per Extension Run
+
+- **GIVEN** a Pi session that is quit, resumed, given a new prompt, and quit again
+- **WHEN** its lifecycle hooks run
+- **THEN** two finalize receipts exist, the session ends again, and its current final summary covers the new prompt
