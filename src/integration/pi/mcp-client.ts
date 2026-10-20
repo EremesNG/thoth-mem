@@ -9,6 +9,15 @@ import type { MemoryToolName } from '../../tools/index.js';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 256_000;
 
+export class PiMcpStartupTimeoutError extends Error {
+  readonly code = 'startup_timeout';
+
+  constructor(message = 'memory server startup timed out') {
+    super(message);
+    this.name = 'PiMcpStartupTimeoutError';
+  }
+}
+
 export interface PiMcpConnection {
   callTool(name: MemoryToolName, arguments_: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   close(): Promise<void>;
@@ -38,7 +47,8 @@ function defaultRuntimeEntry(): string {
 
 function boundedError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`thoth-mem Pi bridge failed: ${Array.from(message).slice(0, 300).join('')}`);
+  const bounded = `thoth-mem Pi bridge failed: ${Array.from(message).slice(0, 300).join('')}`;
+  return error instanceof PiMcpStartupTimeoutError ? new PiMcpStartupTimeoutError(bounded) : new Error(bounded);
 }
 
 async function productionConnection(options: PiMcpClientOptions): Promise<PiMcpConnection> {
@@ -98,13 +108,13 @@ export function createPiMcpClient(options: PiMcpClientOptions = {}): PiMcpClient
     connection = undefined;
     if (stale) await closeConnection(stale);
   };
-  const timed = async <T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  const timed = async <T>(operation: Promise<T>, signal?: AbortSignal, timeoutError: Error = new Error('request timed out')): Promise<T> => {
     let timer: NodeJS.Timeout | undefined;
     let abort: (() => void) | undefined;
     try {
       return await Promise.race([
         operation,
-        new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('request timed out')), timeoutMs); }),
+        new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(timeoutError), timeoutMs); }),
         ...(signal ? [new Promise<T>((_resolve, reject) => {
           abort = () => reject(new Error('request aborted'));
           if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
@@ -120,7 +130,7 @@ export function createPiMcpClient(options: PiMcpClientOptions = {}): PiMcpClient
     async callTool(name, arguments_, signal) {
       let active: PiMcpConnection | undefined;
       try {
-        active = await timed(connect(), signal);
+        active = await timed(connect(), signal, new PiMcpStartupTimeoutError());
         const value = await timed(active.callTool(name, arguments_, signal), signal);
         const serialized = JSON.stringify(value);
         if (Buffer.byteLength(serialized, 'utf8') > maxOutputBytes) throw new Error('response exceeded output limit');
@@ -135,7 +145,7 @@ export function createPiMcpClient(options: PiMcpClientOptions = {}): PiMcpClient
         return record;
       } catch (error) {
         await invalidate(active);
-        report('pi_mcp_request_failed');
+        report(error instanceof PiMcpStartupTimeoutError ? 'pi_mcp_startup_timeout' : 'pi_mcp_request_failed');
         throw boundedError(error);
       }
     },

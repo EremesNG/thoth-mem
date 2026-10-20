@@ -203,3 +203,13 @@ The CLI MUST expose a bounded `project rename` administration command in additio
 - **GIVEN** an operator explicitly selects `plan` or `apply`
 - **WHEN** that subcommand runs
 - **THEN** the existing explicit paths, fingerprint binding, create-only artifacts, and stale-plan rejection remain authoritative
+
+### Requirement: Migrate Command MUST Complete Pending Schema Migrations Without Host Timeouts
+
+`thoth-mem migrate [--data-dir <dir>] [--json]` MUST resolve the data directory like the other commands, open the existing `memory.sqlite`, apply every pending schema migration with the standard backups and without any host timeout, and report the starting and resulting revisions, the backups created or verified, and the sessions and lifecycle receipts removed; on an already-current database it MUST report a no-op without writes; it MUST NOT create a missing database, MUST reject unknown, duplicate, or malformed options before opening storage, and MUST exit 0 on success, 1 on operational failure, and 2 on argument errors.
+
+#### Scenario: Migrate Command MUST Complete Pending Schema Migrations Without Host Timeouts
+
+- **GIVEN** a revision-10 database with empty host sessions and a missing data directory
+- **WHEN** `thoth-mem migrate --json` runs twice on the first and once on the second
+- **THEN** the first run reports revision 10 to 11 with its backup and removal counts, the second reports an already-current no-op without writes, and the missing database exits 1 without creating a file

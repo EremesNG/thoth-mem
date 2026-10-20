@@ -51,7 +51,7 @@ import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSumm
 import { buildDerivedSessionSummary, deriveSessionSummary, parseHostCompactionClaims } from './session-summary-derivation.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
 import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
-import { migrateCurrentSchema } from './sqlite/migrations.js';
+import { migrateCurrentSchema, MigrationError, SQLITE_SCHEMA_REVISION, type MigrationReport } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
 import { createStableLexicalRanker } from './retrieval/stable-lexical-rank.js';
@@ -91,7 +91,7 @@ export interface RecallDiagnostic {
     budget: BudgetMeasurement;
   };
 }
-interface ServiceOptions { databasePath: string; readonly?: boolean; recallObserver?: (observation: RecallDiagnostic) => void }
+interface ServiceOptions { databasePath: string; readonly?: boolean; requireExisting?: boolean; recallObserver?: (observation: RecallDiagnostic) => void }
 interface RecallInput { projectKey: string; query: string; mode?: 'compact' | 'context'; history?: boolean; budgetChars?: number; limit?: number; correlationId?: string; lexicalStrategy?: LexicalQueryStrategyId }
 interface ContextInput { projectKey: string; rootSessionKey?: string; harness?: LifecycleInput['harness']; budgetChars?: number; correlationId?: string }
 type ContextSelection = 'explicit' | 'recovery';
@@ -307,6 +307,8 @@ function isSummaryContextItem(item: ContextResult['items'][number]): item is Sum
 
 export class MemoryService {
   readonly projections: ProjectionRegistry;
+  /** Startup migration work, or null when opened read-only (no migration attempted). */
+  readonly migrationReport: MigrationReport | null = null;
   private readonly database: Database.Database;
   private readonly recallObserver?: (observation: RecallDiagnostic) => void;
   private readonly correlationStates = new Map<string, { finalized: boolean; fullFetches: 0 | 1 }>();
@@ -314,10 +316,20 @@ export class MemoryService {
 
   constructor(options: ServiceOptions) {
     this.recallObserver = options.recallObserver;
-    this.database = new Database(options.databasePath, options.readonly ? { readonly: true, fileMustExist: true } : undefined);
+    this.database = new Database(options.databasePath, { readonly: options.readonly ?? false, fileMustExist: options.readonly || options.requireExisting || false });
     try {
-      if (!options.readonly) { this.database.pragma('journal_mode = WAL'); migrateCurrentSchema(this.database); }
+      if (!options.readonly) {
+        this.database.pragma('journal_mode = WAL');
+        this.migrationReport = migrateCurrentSchema(this.database);
+      }
     } catch (error) {
+      // Switching a pending DELETE-mode database to WAL can fail before a step starts.
+      if (error instanceof Database.SqliteError && /^SQLITE_(?:BUSY|LOCKED)(?:_|$)/u.test(error.code)) {
+        try {
+          const revision = (this.database.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number | null }).version;
+          if (revision !== null && Number.isInteger(revision) && revision >= 2 && revision < SQLITE_SCHEMA_REVISION) error = new MigrationError(revision, revision + 1, error);
+        } catch { /* Preserve the original error if the revision cannot be observed. */ }
+      }
       this.database.close();
       throw error;
     }

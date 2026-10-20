@@ -1,19 +1,62 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+
+import Database from 'better-sqlite3';
 
 import { loadRuntimeConfig } from './config/runtime.js';
 import { normalizeAdapterEvent, normalizeNativePayload, type AdapterEvent } from './integration/adapters/index.js';
 import { LegacyImportFailure, applyLegacyImport, findCommittedLegacyImport, parseImportPlan, parseMappingManifest, planLegacyImport } from './memory-core/import/legacy-v1.js';
 import { MemoryService, projectSelectorExists, validateProjectRenameInput } from './memory-core/service.js';
+import { SQLITE_SCHEMA_REVISION, type MigrationReport } from './memory-core/sqlite/migrations.js';
 import { setupNativeManager } from './setup/native-manager.js';
 import { setupOpenCode } from './setup/opencode.js';
 import { setupPi } from './setup/pi.js';
 
-const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>]\n    --force-version: Codex version override; Pi uses capability checks without a version allowlist.\n  adoption --project <exact-key-or-alias> [--json] [--data-dir <dir>]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
+const HELP = 'thoth-mem\n\nCommands:\n  setup <opencode|codex|claude|pi> [--plan] [--json] [--data-dir <dir>] [--local-package-root <dir>]\n    --force-version: Codex version override; Pi uses capability checks without a version allowlist.\n  migrate [--data-dir <dir>] [--json]\n  adoption --project <exact-key-or-alias> [--json] [--data-dir <dir>]\n  project rename --project <exact-key-or-alias> --name <display-name> [--data-dir <dir>]\n  import-legacy [--source <legacy.sqlite>] [--map <mapping.json>] [--data-dir <dir>] [--json]\n  import-legacy plan --source <legacy.sqlite> --target <memory.sqlite> --plan <plan.json> [--map <mapping.json>]\n  import-legacy apply --plan <plan.json> --report <report.json>\n  lifecycle --harness <opencode|codex|claude> [--data-dir <dir>]\n  mcp [--data-dir <dir>]\n';
 
 function value(args: string[], name: string): string | undefined { const index = args.indexOf(name); if (index >= 0) return args[index + 1]; return args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1); }
+
+function migrateArguments(args: string[], commandIndex: number): { dataDir?: string; json: boolean } | null {
+  if (commandIndex !== 0) return null;
+  const parsed: { dataDir?: string; json: boolean } = { json: false };
+  for (let index = commandIndex + 1; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === '--json') {
+      if (parsed.json) return null;
+      parsed.json = true;
+      continue;
+    }
+    const equals = token.indexOf('=');
+    if ((equals >= 0 ? token.slice(0, equals) : token) !== '--data-dir' || parsed.dataDir !== undefined) return null;
+    const optionValue = equals >= 0 ? token.slice(equals + 1) : args[++index];
+    if (!optionValue?.trim() || optionValue.startsWith('--') || optionValue.includes('\0')) return null;
+    parsed.dataDir = optionValue;
+  }
+  return parsed;
+}
+
+function migrationRevision(databasePath: string): number {
+  // A read-only connection can change WAL sidecars; connect only to a disposable copy.
+  const snapshotRoot = mkdtempSync(join(tmpdir(), 'thoth-migrate-preflight-'));
+  const snapshotPath = join(snapshotRoot, 'memory.sqlite');
+  try {
+    copyFileSync(databasePath, snapshotPath);
+    if (existsSync(`${databasePath}-wal`)) copyFileSync(`${databasePath}-wal`, `${snapshotPath}-wal`);
+    const database = new Database(snapshotPath, { readonly: true, fileMustExist: true });
+    try {
+      const objects = database.prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").all();
+      if (objects.length === 0) return 0;
+      if (!objects.some((row) => row.name === 'schema_migrations')) throw new Error('Database is not a clean current database; use the one-way legacy importer');
+      const version = database.prepare<[], { version: number | null }>('SELECT max(version) AS version FROM schema_migrations').get()!.version;
+      if (version === null || !Number.isInteger(version) || version < 2 || version > SQLITE_SCHEMA_REVISION) {
+        throw new Error(`Unsupported memory SQLite schema revision: ${version}`);
+      }
+      return version;
+    } finally { database.close(); }
+  } finally { rmSync(snapshotRoot, { recursive: true, force: true }); }
+}
 
 function adoptionArguments(args: string[], commandIndex: number): { project: string; dataDir?: string; json: boolean } | null {
   const parsed: { project?: string; dataDir?: string; json: boolean } = { json: false };
@@ -177,6 +220,34 @@ function createOrVerifyImportPlanBinding(path: string, binding: ImportPlanBindin
 export async function runCli(args: string[]): Promise<number> {
   const command = args.find((arg) => !arg.startsWith('-'));
   if (!command || command === 'help' || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return 0; }
+  if (command === 'migrate') {
+    const parsed = migrateArguments(args, args.indexOf(command));
+    if (!parsed) { process.stderr.write('migrate accepts only --data-dir and --json with no duplicate or malformed options\n'); return 2; }
+    try {
+      const startedAt = performance.now();
+      const databasePath = join(loadRuntimeConfig({ explicitDataDir: parsed.dataDir }).dataDir, 'memory.sqlite');
+      if (!existsSync(databasePath)) throw new Error('Migration database does not exist; run against an existing memory.sqlite');
+      const revision = migrationRevision(databasePath);
+      const alreadyCurrent = revision === SQLITE_SCHEMA_REVISION;
+      let report: MigrationReport;
+      if (alreadyCurrent) {
+        report = { fromRevision: revision, toRevision: revision, backups: [], removedSessions: 0, removedReceipts: 0 };
+      } else {
+        const service = new MemoryService({ databasePath, requireExisting: true });
+        try { report = service.migrationReport!; }
+        finally { service.close(); }
+      }
+      const data = { ...report, alreadyCurrent, durationMs: Math.round((performance.now() - startedAt) * 100) / 100 };
+      if (parsed.json) process.stdout.write(`${JSON.stringify({ schema: 'thoth-mem.migrate.v1', data })}\n`);
+      else {
+        process.stdout.write(`Migration: ${report.fromRevision} → ${report.toRevision}${alreadyCurrent ? ' (already current; no-op)' : ''}\n`);
+        for (const backup of report.backups) process.stdout.write(`Backup ${backup.status}: ${backup.path}\n`);
+        if (report.backups.length === 0) process.stdout.write('Backups: none\n');
+        process.stdout.write(`Sessions removed: ${report.removedSessions}\nLifecycle receipts removed: ${report.removedReceipts}\nDuration: ${data.durationMs} ms\n`);
+      }
+      return 0;
+    } catch (error) { process.stderr.write(`Migration failed: ${(error instanceof Error ? error.message : String(error)).replace(/[\r\n\t]+/gu, ' ').slice(0, 500)}\n`); return 1; }
+  }
   if (command === 'adoption') {
     const parsed = adoptionArguments(args, args.indexOf(command));
     if (!parsed) { process.stderr.write('adoption requires exact --project and accepts only --json and --data-dir with no duplicate options\n'); return 2; }

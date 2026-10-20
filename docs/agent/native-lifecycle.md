@@ -102,6 +102,16 @@ degraded, mismatched, or oversized results fall back to the locally rendered
 identity-only block with an unavailable-recovery notice. A native failure never
 rejects a valid Pi prompt and never injects unverified memory.
 
+## Migration diagnostics
+
+Hosts still migrate supported schemas at startup. `thoth-mem migrate [--data-dir <dir>] [--json]` completes pending migrations manually without host timeouts; see [CLI surfaces](surfaces.md) and the [README troubleshooting guide](../../README.md#troubleshooting). A timeout does not prove that a migration is pending.
+
+`MigrationError` bounds the observed failure and names the step: ``SQLite migration revision A→B failed: <observed failure>. Run `thoth-mem migrate` to complete migrations without host timeouts.`` SQLite busy/locked failures say `database is locked by another process`. The error reaches MCP startup; the CLI prefixes it with `Lifecycle failed: ` or `Migration failed: `. Codex/Claude hook execution through `plugin/runners/public-runner.mjs` forwards bounded child stderr with `thoth-mem public plugin: `, preserving the migration detail and recommendation.
+
+Pi classifies a connect/startup timeout as `PiMcpStartupTimeoutError` and reports `pi_mcp_startup_timeout`, distinct from a request failure after connection. With UI available, at most once per root session it warns: `` thoth-mem degraded: pi_mcp_startup_timeout — the memory server did not start in time; if memory stays unavailable, run `thoth-mem migrate` ``. Other failure codes, including `pi_lifecycle_request_failed`, and child invalidation/reconnect behavior are unchanged. Prompts continue without unverified memory, and the extension still never opens SQLite.
+
+OpenCode retains the last 500 code points of child stderr on nonzero exit, normalizes control characters, and logs `OpenCode lifecycle degraded: node_lifecycle_nonzero_exit — <bounded stderr tail>`. Its complete log message is capped at 560 code points. A lifecycle timeout logs, at most once per plugin instance: `` OpenCode lifecycle degraded: node_lifecycle_timeout — memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate` ``. Both paths degrade without rejecting the host callback or injecting unverified memory.
+
 ## Host compaction forwarding
 
 Claude's public and managed bundles register `PostCompact` and forward
@@ -118,12 +128,16 @@ observation.
 ## Revision-10 migration
 
 The Pi harness requires the existing SQLite `sessions.harness` constraint to
-accept `pi`. Opening an exact revision-9 database creates or reuses the retained
-`memory.sqlite.pre-v10.bak` and verifies integrity, foreign keys, revision, and
+accept `pi`. Writable startup or `thoth-mem migrate` on a revision-9 database
+creates or reuses the retained `memory.sqlite.pre-v10.bak` and verifies integrity,
+foreign keys, revision, and
 the complete logical snapshot. It then acquires one immediate write-excluding
-migration lock and rechecks the live source against that backup before the first
-mutation. Only the `sessions` table is rebuilt with the widened allowlist; all
-rows, identifiers, relations, sequences, receipts, summaries, evidence, and FTS
+migration lock, re-reads the revision, and skips a step another process has
+already applied. Otherwise it rechecks the live source against that backup before
+the first mutation. Backup publication follows the shared concurrency rules in
+[persistence and retrieval](persistence-retrieval.md#schema-migrations). Only the
+`sessions` table is rebuilt with the widened allowlist; all rows, identifiers,
+relations, sequences, receipts, summaries, evidence, and FTS
 results remain equivalent. Source drift or a structurally valid but mismatched
 backup fails closed before mutation; an interruption rolls back to revision 9
 with the verified backup retained. The 9→10 step records revision 10 explicitly;
