@@ -51,7 +51,7 @@ function createRevision2Fixture(options: { memoryKind?: string; evidenceKinds?: 
 function authoritativeSnapshot(database: Database.Database): Record<string, unknown> {
   return {
     projects: database.prepare('SELECT * FROM projects ORDER BY id').all(),
-    sessions: database.prepare('SELECT id,project_id,root_session_key,harness,state,started_at,ended_at FROM sessions ORDER BY id').all(),
+    sessions: database.prepare('SELECT id,project_id,root_session_key,harness,started_at FROM sessions ORDER BY id').all(),
     evidence: database.prepare('SELECT id,project_id,session_id,content,content_hash,source_ref,captured_at,metadata_json FROM evidence ORDER BY id').all(),
     memories: database.prepare('SELECT id,project_id,topic_key,title,content,outcome,status,valid_from,invalid_at,supersedes_id,created_at FROM memories ORDER BY id').all(),
     links: database.prepare('SELECT * FROM memory_evidence ORDER BY memory_id,evidence_id').all(),
@@ -93,7 +93,7 @@ describe('SQLite taxonomy migration', () => {
       expect(results.map((result) => result.outcome)).toEqual(['confirmed', 'confirmed', 'confirmed', 'confirmed', 'confirmed', 'confirmed']);
       expect(results.at(-1)).toMatchObject({ projectKey: 'repo:pi-lifecycle' });
       const database = new Database(path, { readonly: true });
-      try { expect(database.prepare('SELECT harness,state FROM sessions').get()).toEqual({ harness: 'pi', state: 'ended' }); }
+      try { expect(database.prepare('SELECT harness FROM sessions').get()).toEqual({ harness: 'pi' }); }
       finally { database.close(); }
     } finally { service.close(); }
   });

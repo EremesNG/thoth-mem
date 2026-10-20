@@ -37,7 +37,6 @@ import {
   type SessionEventInput,
   type SessionIdentityInput,
   type SessionSummaryInput,
-  type SessionSummaryKind,
   type SessionSummaryRecord,
   type SummaryContextItem,
   type TimelineInput,
@@ -50,7 +49,7 @@ import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary, insertSessionSummaryProjection, sessionSummaryFromId } from './session-summaries.js';
 import { buildDerivedSessionSummary, deriveSessionSummary, parseHostCompactionClaims } from './session-summary-derivation.js';
 import { DEFAULT_LEXICAL_QUERY_STRATEGY, STABLE_LEXICAL_QUERY_STRATEGY, buildFtsQueryPlan, surgicalSnippet, surgicalSnippetWithMetrics, type LexicalQueryStrategyId } from './sqlite/fts.js';
-import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, reopenSessionOnActivity, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
+import { appendSessionEvent, ensureProject, ensureSession, eventForEvidence, evidenceFromRow, hashContent, hydrateMemoryRows, memoryFromRow, now, previousSessionByActivity, projectIdentityFromId, resolveProjectIdentityKey, resolveSession, sessionActivityWatermark, stableUuid } from './sqlite/ledger.js';
 import { migrateCurrentSchema, MigrationError, SQLITE_SCHEMA_REVISION, type MigrationReport } from './sqlite/migrations.js';
 import { fuseLexicalRanks } from './retrieval/rank-fusion.js';
 import { ProjectionRegistry } from './retrieval/projections.js';
@@ -460,8 +459,6 @@ export class MemoryService {
       const evidence = evidenceFromRow(this.database.prepare('SELECT * FROM evidence WHERE id=?').get(evidenceId) as Record<string, unknown>);
       const eventDefaults = sessionEventDefaults(input);
       const event = sessionId && eventDefaults ? appendSessionEvent(this.database, sessionId, evidenceId, eventDefaults) : null;
-      // Import and legacy evidence remain unordered, but still count as session activity.
-      if (sessionId && !event) reopenSessionOnActivity(this.database, sessionId, evidenceId);
       if (!filteredMemory) { if (input.eventKey) this.database.prepare('INSERT INTO save_receipts VALUES(?,?,?,?,NULL)').run(projectId, input.eventKey, payloadHash, evidenceId); return { evidence, memory: null, event, projectId, sessionId, duplicate: false }; }
       if (!filteredMemory.title.trim() || !filteredMemory.content.trim()) throw new Error('Promoted memory title and content are required');
       // A stable workstream topic lets a later handoff or closure memory supersede this one.
@@ -614,8 +611,8 @@ export class MemoryService {
     return this.database.transaction((): PromoteObservationResult => {
       const projectId = ensureProject(this.database, input.project);
       const sessionId = ensureSession(this.database, projectId, input.session);
-      const session = this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string } | undefined;
-      if (!session || session.state === 'degraded') throw new Error('Observation promotion requires verified root identity');
+      const session = this.database.prepare('SELECT id FROM sessions WHERE id=?').get(sessionId) as { id: string } | undefined;
+      if (!session) throw new Error('Observation promotion requires verified root identity');
       const payloadHash = hashContent(JSON.stringify({ observationId: input.observationId }));
       const receipt = this.database.prepare("SELECT payload_hash,operation_evidence_id,observation_id,memory_id FROM observation_receipts WHERE project_id=? AND operation='promotion' AND event_key=?").get(projectId, input.eventKey) as { payload_hash: string; operation_evidence_id: string; observation_id: string; memory_id: string } | undefined;
       if (receipt) {
@@ -912,7 +909,7 @@ export class MemoryService {
       sessionId = (this.database.prepare('SELECT id FROM sessions WHERE project_id=? AND root_session_key=? AND harness=?').get(project.id, input.rootSessionKey, input.harness) as { id: string } | undefined)?.id ?? null;
       if (!sessionId) return { items: [], requestedChars, returnedChars: 0, truncated: false };
     }
-    const rows = this.database.prepare(`SELECT id FROM session_summaries WHERE project_id=? ${sessionId ? 'AND session_id=?' : ''} ${input.history ? '' : "AND status='current'"} ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id`).all(...(sessionId ? [project.id, sessionId] : [project.id])) as Array<{ id: string }>;
+    const rows = this.database.prepare(`SELECT id FROM session_summaries WHERE project_id=? ${sessionId ? 'AND session_id=?' : ''} ${input.history ? '' : "AND status='current'"} ORDER BY source_sequence_to DESC,created_at DESC,id`).all(...(sessionId ? [project.id, sessionId] : [project.id])) as Array<{ id: string }>;
     const items: Array<SessionSummaryRecord & { truncated?: true }> = [];
     let returnedChars = 0;
     for (const row of rows) {
@@ -971,10 +968,10 @@ export class MemoryService {
     const explicitSession = selection === 'explicit' && Boolean(input.rootSessionKey);
     const previous = explicitSession ? undefined : previousSessionByActivity(this.database, project.id, sessionId);
     const summarySessionId = explicitSession ? sessionId : previous?.id;
-    const selected = summarySessionId ? this.database.prepare("SELECT id FROM session_summaries WHERE session_id=? AND status='current' ORDER BY source_sequence_to DESC,CASE kind WHEN 'final' THEN 0 ELSE 1 END,created_at DESC,id LIMIT 1").get(summarySessionId) as { id: string } | undefined : undefined;
+    const selected = summarySessionId ? this.database.prepare("SELECT id FROM session_summaries WHERE session_id=? AND status='current' ORDER BY source_sequence_to DESC,created_at DESC,id LIMIT 1").get(summarySessionId) as { id: string } | undefined : undefined;
     let summary = selected ? sessionSummaryFromId(this.database, selected.id)! : null;
     if (previous && (!summary || summary.coverage.toSequence < previous.watermark)) {
-      summary = this.deriveAndPersistSessionSummary(previous.id, previous.state === 'ended' ? 'final' : 'checkpoint') ?? summary;
+      summary = this.deriveAndPersistSessionSummary(previous.id) ?? summary;
     }
     const appendSummary = (): void => {
       const record = summary;
@@ -999,7 +996,7 @@ export class MemoryService {
       evidenceChars += Number((this.database.prepare('SELECT length(content) AS value FROM evidence WHERE id=?').get(record.submissionEvidenceId) as { value: number }).value);
       const snippet = selectedClaims.map((claim) => `${claim.kind.replace('_', ' ')}: ${claim.content}`).join(' ');
       if (snippet && snippet.length <= remaining) {
-        items.push({ recordType: 'summary', id: record.id, kind: record.kind, version: record.version, coverage: record.coverage, snippet, status: 'current', score: 200, submissionEvidenceId: record.submissionEvidenceId, claims: selectedClaims });
+        items.push({ recordType: 'summary', id: record.id, version: record.version, coverage: record.coverage, snippet, status: 'current', score: 200, submissionEvidenceId: record.submissionEvidenceId, claims: selectedClaims });
         remaining -= snippet.length;
       }
     };
@@ -1065,17 +1062,17 @@ export class MemoryService {
   }
 
   /** Internal lifecycle/recovery seam; accepts an existing session, never root authority. */
-  deriveAndPersistSessionSummary(sessionId: string, kind: SessionSummaryKind): SessionSummaryRecord | null {
+  deriveAndPersistSessionSummary(sessionId: string): SessionSummaryRecord | null {
     return this.database.transaction(() => {
       const session = this.database.prepare('SELECT project_id,root_session_key,harness FROM sessions WHERE id=?').get(sessionId) as { project_id: string; root_session_key: string; harness: LifecycleInput['harness'] } | undefined;
       if (!session) return null;
       const watermark = sessionActivityWatermark(this.database, sessionId);
-      const current = this.database.prepare("SELECT id,source_sequence_to FROM session_summaries WHERE session_id=? AND kind=? AND status='current'").get(sessionId, kind) as { id: string; source_sequence_to: number } | undefined;
+      const current = this.database.prepare("SELECT id,source_sequence_to FROM session_summaries WHERE session_id=? AND status='current'").get(sessionId) as { id: string; source_sequence_to: number } | undefined;
       if (current && current.source_sequence_to >= watermark) return sessionSummaryFromId(this.database, current.id);
-      const summary = deriveSessionSummary(this.database, sessionId, kind, watermark);
+      const summary = deriveSessionSummary(this.database, sessionId, watermark);
       if (!summary) return null;
       const project = projectIdentityFromId(this.database, session.project_id);
-      return this.persistSessionSummary(project, { rootSessionKey: session.root_session_key, harness: session.harness }, `derived-summary:${sessionId}:${kind}:${watermark}`, summary);
+      return this.persistSessionSummary(project, { rootSessionKey: session.root_session_key, harness: session.harness }, `derived-summary:${sessionId}:${watermark}`, summary);
     })();
   }
 
@@ -1093,7 +1090,6 @@ export class MemoryService {
     requireCanonicalValue('harness', HARNESS_VALUES, input.harness);
     const canonicalSummary = input.summary ? canonicalizeSessionSummary(input.summary) : null;
     if (canonicalSummary && input.operation !== 'checkpoint_pre_compact' && input.operation !== 'finalize') throw new Error(`summary is only valid for operation="checkpoint_pre_compact" or operation="finalize"; received operation="${input.operation}"`);
-    if (canonicalSummary && ((input.operation === 'checkpoint_pre_compact' && canonicalSummary.input.kind !== 'checkpoint') || (input.operation === 'finalize' && canonicalSummary.input.kind !== 'final'))) throw new Error(`summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "${canonicalSummary.input.kind}" for operation="${input.operation}"`);
     if (canonicalSummary && input.identityConfidence === 'degraded') throw new Error('A verified root identity is required to submit a summary');
     return this.database.transaction(() => {
       const projectId = ensureProject(this.database, input.project);
@@ -1148,10 +1144,6 @@ export class MemoryService {
         if (found.payload_hash !== payloadHash) throw new Error(`event_key was reused with different content/summary for operation="${input.operation}"; retries with the same event_key must resend identical content/summary`);
         return result(found.outcome, true, found.evidence_id, found.summary_id);
       }
-      if (input.operation === 'guide_post_compact') {
-        const state = (this.database.prepare('SELECT state FROM sessions WHERE id=?').get(sessionId) as { state: string }).state;
-        if (state !== 'compacted') { this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, payloadHash, 'degraded', null, 'precompact_unconfirmed', null); return result('degraded', false, null, null); }
-      }
       let evidenceId: string | null = null;
       let summaryId: string | null = null;
       let summaryToPersist = canonicalSummary?.input ?? null;
@@ -1161,7 +1153,7 @@ export class MemoryService {
         const saved = this.save({ project: input.project, session: { rootSessionKey: input.rootSessionKey, harness: input.harness }, eventKey: `lifecycle:${input.harness}:${input.rootSessionKey}:${input.eventKey}`, evidence: { kind: checkpoint ? 'checkpoint' : 'root_prompt', content: lifecycleContent, ...(hostCompaction ? { metadata: { source: 'host_compaction' } } : {}) } });
         evidenceId = saved.evidence.id;
         if (hostCompaction && saved.event) {
-          const parsed = buildDerivedSessionSummary('checkpoint', saved.event.sequence, parseHostCompactionClaims(saved.evidence.content).map((claim) => ({ ...claim, supportIds: [saved.evidence.id] })));
+          const parsed = buildDerivedSessionSummary(saved.event.sequence, parseHostCompactionClaims(saved.evidence.content).map((claim) => ({ ...claim, supportIds: [saved.evidence.id] })));
           summaryToPersist = parsed;
         }
       }
@@ -1170,12 +1162,10 @@ export class MemoryService {
         summaryId = record.id;
         evidenceId ??= record.submissionEvidenceId;
       } else if (outcome === 'confirmed' && (input.operation === 'checkpoint_pre_compact' || input.operation === 'finalize')) {
-        const derived = this.deriveAndPersistSessionSummary(sessionId, input.operation === 'finalize' ? 'final' : 'checkpoint');
+        const derived = this.deriveAndPersistSessionSummary(sessionId);
         summaryId = derived?.id ?? null;
         evidenceId ??= derived?.submissionEvidenceId ?? null;
       }
-      if (input.operation === 'finalize') this.database.prepare("UPDATE sessions SET state='ended',ended_at=? WHERE id=?").run(now(), sessionId);
-      if (input.operation === 'checkpoint_pre_compact') this.database.prepare("UPDATE sessions SET state='compacted' WHERE id=?").run(sessionId);
       this.database.prepare('INSERT INTO lifecycle_receipts(harness,project_id,root_session_key,event_key,operation,payload_hash,outcome,confirmed_at,diagnostic_code,evidence_id,summary_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(input.harness, projectId, input.rootSessionKey, input.eventKey, input.operation, payloadHash, outcome, outcome === 'confirmed' ? now() : null, outcome === 'degraded' ? 'identity_unconfirmed' : null, evidenceId, summaryId);
       return result(outcome, false, evidenceId, summaryId);
     })();

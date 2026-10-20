@@ -120,7 +120,7 @@ describe('generic MCP connection sessions', () => {
         expect(await connection.client.callTool({ name: 'mem_session', arguments: { ...project, ...pair, operation, event_key: operation } })).toMatchObject(denied);
       }
       expect(await connection.client.callTool({ name: 'mem_session', arguments: { ...project, ...pair, operation: 'finalize', event_key: 'submit', summary: {
-        kind: 'final', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'spoofed' },
+        coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'spoofed' },
         claims: [{ kind: 'decision', content: 'Use SQLite.', support_ids: [saved.evidence.id] }],
       } } })).toMatchObject(denied);
       expect(await connection.client.callTool({ name: 'mem_session', arguments: { ...project, root_session_key: 'verified', harness: 'codex', operation: 'enroll', event_key: 'native' } })).not.toHaveProperty('isError', true);
@@ -161,7 +161,7 @@ describe('generic MCP connection sessions', () => {
         operation: 'finalize', project: { key: project.project_key, name: project.project_name }, harness: 'pi', rootSessionKey: 'previous', eventKey: 'previous-final',
       });
       const saved = await save(connection.client);
-      const own = connection.service.deriveAndPersistSessionSummary(saved.sessionId!, 'checkpoint')!;
+      const own = connection.service.deriveAndPersistSessionSummary(saved.sessionId!)!;
       const assigned = connection.service.adoption(project.project_key).sessions.perSession.find((session) => session.sessionId === saved.sessionId)!;
       const context = await connection.client.callTool({ name: 'mem_context', arguments: { project_key: project.project_key } });
       expect(context).toMatchObject({ structuredContent: { data: { selectedSummaryIds: [previous.summaryId] } } });
@@ -185,7 +185,7 @@ describe('generic MCP connection sessions', () => {
       connection.finalizeConnectionSessions();
       for (const [key, id] of [[project.project_key, first.sessionId], ['repo:second-project', other.sessionId]]) {
         const summaries = connection.service.projectSummaries({ projectKey: key!, history: true });
-        expect(summaries.items).toMatchObject([{ sessionId: id, kind: 'final', version: 1, generator: { kind: 'harness' } }]);
+        expect(summaries.items).toMatchObject([{ sessionId: id, version: 1, generator: { kind: 'harness' } }]);
         expect(summaries.items).toHaveLength(1);
       }
       expect(connection.service.projectSummaries({ projectKey: project.project_key, rootSessionKey: 'native-root', harness: 'pi' }).items).toEqual([]);

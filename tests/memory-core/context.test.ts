@@ -111,8 +111,8 @@ describe('progressive context funnel', () => {
     } finally { service.close(); }
   });
 
-  it.each([false, true])('lazily recovers the active predecessor across harnesses (ended=%s) and refreshes duplicate recovery receipts', (ended) => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-reopened-context-'));
+  it.each([false, true])('lazily recovers the predecessor across harnesses (finalized before activity=%s) and refreshes duplicate recovery receipts', (finalized) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-predecessor-context-'));
     const databasePath = join(root, 'memory.sqlite');
     const service = new MemoryService({ databasePath });
     const database = new Database(databasePath, { readonly: true });
@@ -121,12 +121,11 @@ describe('progressive context funnel', () => {
     const current = { project, harness: 'pi' as const, rootSessionKey: 'current' };
     try {
       // Empty newer sessions, other projects, and late summary submissions are not activity.
-      if (ended) {
+      if (finalized) {
         service.lifecycle({ ...previous, operation: 'checkpoint_pre_compact', eventKey: 'compact-empty' });
         service.lifecycle({ ...previous, operation: 'finalize', eventKey: 'end-empty' });
       }
       const first = service.save({ project, session: previous, eventKey: 'first', evidence: { kind: 'root_prompt', content: 'PREVIOUS-OBJECTIVE', capturedAt: '2026-01-02T00:00:00Z' } });
-      if (ended) expect(database.prepare('SELECT state FROM sessions WHERE id=?').get(first.sessionId)).toEqual({ state: 'active' });
       service.save({ project, session: { rootSessionKey: 'older', harness: 'codex' }, eventKey: 'older', evidence: { kind: 'root_prompt', content: 'OLDER-SESSION', capturedAt: '2026-01-01T00:00:00Z' } });
       service.lifecycle({ project, harness: 'codex', rootSessionKey: 'older', operation: 'finalize', eventKey: 'older-final' });
       service.lifecycle({ project, harness: 'opencode', rootSessionKey: 'empty', operation: 'checkpoint_pre_compact', eventKey: 'empty' });
@@ -148,7 +147,7 @@ describe('progressive context funnel', () => {
       expect(recovered.recovery?.selectedRecordIds).not.toContain(own.summaryId);
       expect(recovered.recovery?.context).toContain('PREVIOUS-OBJECTIVE');
       expect(recovered.recovery?.context).not.toMatch(/OWN-SUMMARY|OLDER-SESSION|FOREIGN-PROJECT/u);
-      expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
+      expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, coverage: { fromSequence: 1, toSequence: 1 } });
       expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([summaryId, service.get({ id: summaryId }).record.submissionEvidenceId]));
       expect(service.lifecycle(input)).toMatchObject({ duplicate: true, recovery: { selectedSummaryIds: [summaryId] } });
       const later = service.save({ project, session: previous, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'PREVIOUS-UPDATED: verify lazy summary recovery with new activity.', capturedAt: '2026-01-04T00:00:00Z' } });
@@ -157,7 +156,7 @@ describe('progressive context funnel', () => {
       expect(replay.duplicate).toBe(true);
       expect(refreshedId).not.toBe(summaryId);
       expect(replay.recovery?.context).toContain('PREVIOUS-UPDATED');
-      expect(service.get({ id: refreshedId }).record).toMatchObject({ sessionId: first.sessionId, kind: 'checkpoint', version: 2, coverage: { toSequence: later.event!.sequence } });
+      expect(service.get({ id: refreshedId }).record).toMatchObject({ sessionId: first.sessionId, version: 2, coverage: { toSequence: later.event!.sequence } });
       expect(service.lifecycle(input).recovery?.selectedSummaryIds).toEqual([refreshedId]);
       expect(service.projectSummaries({ projectKey: project.key, rootSessionKey: previous.rootSessionKey, harness: previous.harness, history: true }).items).toHaveLength(2);
       expect(replay.recovery!.rendering.totalCodePoints).toBeLessThanOrEqual(1_000);
@@ -184,20 +183,20 @@ describe('progressive context funnel', () => {
     } finally { service.close(); }
   });
 
-  it('selects only the verified session newest summary, preferring final on a coverage tie', () => {
+  it('selects only the verified session newest submission on a coverage tie', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:summary-context', name: 'summary-context' };
     try {
       service.save({ project, evidence: { kind: 'handoff', content: 'Fallback evidence.' }, memory: { kind: 'handoff', topicKey: 'handoff/test-line-73', title: 'Fallback', content: 'LEGACY-HANDOFF-FALLBACK' } });
       const support = service.save({ project, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Session one support.', capturedAt: '2026-01-01T00:00:00.000Z' } });
       const baseSummary = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent' as const, name: 'codex' }, claims: [{ kind: 'objective' as const, content: 'SESSION-ONE-SUMMARY', supportIds: [support.evidence.id] }] };
-      const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'checkpoint', summary: { ...baseSummary, kind: 'checkpoint' } });
-      const final = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'final', summary: { ...baseSummary, kind: 'final' } });
+      const checkpoint = service.lifecycle({ operation: 'checkpoint_pre_compact', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'checkpoint', summary: { ...baseSummary } });
+      const final = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-1', eventKey: 'final', summary: { ...baseSummary } });
       const foreignSupport = service.save({ project, session: { rootSessionKey: 'root-2', harness: 'codex' }, eventKey: 'foreign-support', evidence: { kind: 'explicit_save', content: 'Session two support.', capturedAt: '2026-01-02T00:00:00.000Z' } });
-      const previousFinal = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-2', eventKey: 'foreign-final', summary: { kind: 'final', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignSupport.evidence.id] }] } });
+      const previousFinal = service.lifecycle({ operation: 'finalize', harness: 'codex', project, rootSessionKey: 'root-2', eventKey: 'foreign-final', summary: { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'FOREIGN-SESSION-SUMMARY', supportIds: [foreignSupport.evidence.id] }] } });
 
       const scoped = service.context({ projectKey: project.key, rootSessionKey: 'root-1', harness: 'codex', budgetChars: 2_000 });
-      expect(scoped.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId, kind: 'final' });
+      expect(scoped.items[0]).toMatchObject({ recordType: 'summary', id: final.summaryId });
       expect(scoped.items.map((item) => item.id)).not.toContain(checkpoint.summaryId);
       expect(JSON.stringify(scoped.items)).not.toContain('FOREIGN-SESSION-SUMMARY');
       expect(scoped.selectedSummaryIds).toEqual([final.summaryId]);

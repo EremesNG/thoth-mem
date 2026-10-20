@@ -542,12 +542,12 @@ The system MUST publish one fully written UUID marker atomically without replaci
 
 ### Requirement: Session Summaries MUST Be Derived Deterministically When Not Supplied
 
-When `checkpoint_pre_compact` or `finalize` carries no submitted summary, or the previous session needed by automatic recovery has no current summary covering its latest non-summary evidence, the service MUST derive a harness-generated summary under the current harness generator identity, distinct from the identity used before these derivation rules, without any model or network call from that session's own evidence: substantive root prompts (at least 40 code points after whitespace normalization; the first and the latest distinct one, or only the first prompt when none is substantive) as objective bounded to 300 code points; promoted decision, convention, architecture, and preference memories as decision; discovery and project-structure memories as completed; failure memories as completed with outcome failed; open handoffs as next action; closed handoffs as completed; and the newest parsed host compaction claims, omitting its objective, next-action, pending, and blocker claims when a later evidence event of the session is a substantive root prompt or supports a memory-derived claim; each memory-derived claim MUST state the memory title with its primary labeled line (Result for direct memories, First pending action for open handoffs, the closing Result for closed handoffs, otherwise the first line) bounded to 300 code points, claims with identical kind and content MUST collapse into one claim citing their combined supports within the support limit, every claim MUST cite in-session evidence inside its coverage and respect the existing claim and size limits, a session without citable evidence MUST receive no summary, and a lazily derived summary MUST be final only when the session has ended and checkpoint otherwise.
+When `checkpoint_pre_compact` or `finalize` carries no submitted summary, or the previous session needed by automatic recovery has no current summary covering its latest non-summary evidence, the service MUST derive a harness-generated summary under the current harness generator identity, distinct from the identity used before these derivation rules, without any model or network call from that session's own evidence: substantive root prompts (at least 40 code points after whitespace normalization; the first and the latest distinct one, or only the first prompt when none is substantive) as objective bounded to 300 code points; promoted decision, convention, architecture, and preference memories as decision; discovery and project-structure memories as completed; failure memories as completed with outcome failed; open handoffs as next action; closed handoffs as completed; and the newest parsed host compaction claims, omitting its objective, next-action, pending, and blocker claims when a later evidence event of the session is a substantive root prompt or supports a memory-derived claim; each memory-derived claim MUST state the memory title with its primary labeled line (Result for direct memories, First pending action for open handoffs, the closing Result for closed handoffs, otherwise the first line) bounded to 300 code points, claims with identical kind and content MUST collapse into one claim citing their combined supports within the support limit, every claim MUST cite in-session evidence inside its coverage and respect the existing claim and size limits, a session without citable evidence MUST receive no summary, and every derived summary MUST join the session's single summary lineage.
 
 #### Scenario: Session Summaries MUST Be Derived Deterministically When Not Supplied
 
-- **GIVEN** an ended Pi session whose compaction listed a goal, a next step, a pending checklist, decisions, and modified files, followed by a substantive root prompt and a newly saved open handoff
-- **WHEN** its final summary is derived
+- **GIVEN** a Pi session whose compaction listed a goal, a next step, a pending checklist, decisions, and modified files, followed by a substantive root prompt and a newly saved open handoff
+- **WHEN** its summary is derived at finalize
 - **THEN** it keeps the compaction's decision, completed, and changed-surface claims, takes its objectives only from root prompts and its next action only from the open handoff, and contains no compaction pending claim
 
 ### Requirement: Schema Migration MUST Remove Empty Host Sessions
@@ -570,12 +570,32 @@ When several processes open the same database while a migration is pending, each
 - **WHEN** both run startup migrations
 - **THEN** exactly one applies revision 11, the published backup is intact and verified, neither deletes the other's temporary file, and the other either opens the revision-11 database or fails with a bounded busy error without partial changes
 
-### Requirement: Session Activity MUST Reopen an Ended Session
+### Requirement: Sessions MUST Carry No Lifecycle State
 
-Appending any non-summary session evidence to a session in state `ended` MUST, in the same transaction, set its state to `active` and clear its end time; summary-submission evidence and lifecycle operations that write no evidence MUST NOT reopen a session; a reopened session MUST receive checkpoint lazy summaries until it is finalized again, and a later finalize MUST end it and supersede its earlier final summary.
+A session MUST record only its project, root session key, harness, start time, and event sequence; no operation MUST mark a session active, compacted, ended, or degraded or record an end time, every session MUST accept new activity at any time, and no lifecycle operation MUST depend on a prior lifecycle operation for admission.
 
-#### Scenario: Session Activity MUST Reopen an Ended Session
+#### Scenario: Sessions MUST Carry No Lifecycle State
 
-- **GIVEN** an ended Codex session with a final summary
-- **WHEN** a new root prompt is captured and the session is later finalized again
-- **THEN** the session is active between the two events, any lazy summary in between is a checkpoint, and the second finalize ends it with a new current final summary
+- **GIVEN** a Codex session that was finalized
+- **WHEN** a new root prompt is captured and finalize runs again
+- **THEN** the prompt is appended without any session transition and the second finalize derives a new summary version covering it
+
+### Requirement: Session Summaries MUST Form One Version Lineage per Session
+
+Every session MUST have at most one current summary and one linear version history regardless of whether a summary was submitted, derived, or parsed from host compaction text, and summary records, submissions, and listings MUST carry no checkpoint or final distinction; a new summary MUST supersede the current one when its coverage end is at least the current coverage end and MUST be rejected as late otherwise; deriving a summary MUST reuse the current summary when it already covers the session's latest non-summary evidence; and rebuilding summary projections from immutable submission evidence MUST order submissions by coverage end and then event sequence, ignoring any distinction recorded by earlier submissions.
+
+#### Scenario: Session Summaries MUST Form One Version Lineage per Session
+
+- **GIVEN** a session with a pre-compaction summary and no later activity
+- **WHEN** finalize runs and an agent then submits a summary with the same coverage
+- **THEN** finalize reuses the current summary without a new version and the submission becomes the next current version superseding it
+
+### Requirement: Schema Migration MUST Drop Session State and Unify Summary Lineage
+
+The schema migration that removes session state MUST, after the standard pre-migration backup and under the existing cross-process migration safety, drop the session state and end-time columns and rebuild session summaries without the checkpoint or final distinction, renumbering each session's summaries into one lineage ordered by coverage end, then submission event sequence, then identifier, with exactly one current summary per session and each predecessor linked, while preserving every summary, claim, support, receipt link, and identifier; it MUST verify integrity and foreign-key validity before recording the revision, and rerunning it MUST change nothing.
+
+#### Scenario: Schema Migration MUST Drop Session State and Unify Summary Lineage
+
+- **GIVEN** a database at the preceding revision with about 8,000 sessions in every state and one session whose checkpoint and final summaries interleave in coverage, two of them with equal coverage
+- **WHEN** the migration runs
+- **THEN** no session records a state or end time, that session has one lineage whose versions follow coverage then event order with the later equal-coverage summary current, every summary, claim, and receipt link keeps its identifier, a backup exists, and rerunning it changes nothing

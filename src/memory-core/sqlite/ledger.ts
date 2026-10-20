@@ -95,7 +95,7 @@ export function resolveSession(database: Database.Database, projectId: string, i
 
 export function ensureSession(database: Database.Database, projectId: string, input: SessionIdentityInput): string {
   const session = resolveSession(database, projectId, input);
-  if (!session.exists) database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run(session.id, projectId, input.rootSessionKey, input.harness, 'active', now());
+  if (!session.exists) database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,started_at) VALUES(?,?,?,?,?)').run(session.id, projectId, input.rootSessionKey, input.harness, now());
   return session.id;
 }
 
@@ -121,16 +121,16 @@ export function sessionActivityWatermark(database: Database.Database, sessionId:
 }
 
 /** One project-scoped aggregate over indexed session events; summary writes never count as activity. */
-export function previousSessionByActivity(database: Database.Database, projectId: string, currentSessionId: string | null): { id: string; state: string; watermark: number } | undefined {
+export function previousSessionByActivity(database: Database.Database, projectId: string, currentSessionId: string | null): { id: string; watermark: number } | undefined {
   return database.prepare(`
-    SELECT s.id,s.state,max(se.sequence) AS watermark
+    SELECT s.id,max(se.sequence) AS watermark
     FROM sessions s JOIN session_events se ON se.session_id=s.id
     JOIN evidence e ON e.id=se.evidence_id
     WHERE s.project_id=? AND s.id<>? AND e.kind<>'session_summary'
     GROUP BY s.id
     ORDER BY max(julianday(e.captured_at)) DESC,s.id ASC
     LIMIT 1
-  `).get(projectId, currentSessionId ?? '') as { id: string; state: string; watermark: number } | undefined;
+  `).get(projectId, currentSessionId ?? '') as { id: string; watermark: number } | undefined;
 }
 
 export function sessionEvidence(database: Database.Database, sessionId: string, watermark: number): Array<EvidenceRecord & { event: SessionEventRecord }> {
@@ -138,18 +138,7 @@ export function sessionEvidence(database: Database.Database, sessionId: string, 
   return rows.map((row) => ({ ...evidenceFromRow(row), event: sessionEventFromRow(row) }));
 }
 
-/** Called only for newly appended evidence, inside the caller's write transaction. */
-export function reopenSessionOnActivity(database: Database.Database, sessionId: string, evidenceId: string): void {
-  database.prepare(`
-    UPDATE sessions SET state='active',ended_at=NULL
-    WHERE id=? AND state='ended' AND EXISTS (
-      SELECT 1 FROM evidence WHERE id=? AND session_id=sessions.id AND kind<>'session_summary'
-    )
-  `).run(sessionId, evidenceId);
-}
-
 export function appendSessionEvent(database: Database.Database, sessionId: string, evidenceId: string, input: SessionEventInput): SessionEventRecord {
-  reopenSessionOnActivity(database, sessionId, evidenceId);
   const allocated = database.prepare('UPDATE sessions SET next_event_sequence=next_event_sequence+1 WHERE id=? RETURNING next_event_sequence').get(sessionId) as { next_event_sequence: number } | undefined;
   if (!allocated) throw new Error('root_session_key and harness must identify an existing session in project_key before recording an event; send the verified session pair');
   database.prepare('INSERT INTO session_events(evidence_id,session_id,sequence,actor,authority,retention_class,privacy_class) VALUES(?,?,?,?,?,?,?)').run(

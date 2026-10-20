@@ -1,4 +1,4 @@
-import { MEMORY_KIND_VALUES, SESSION_SUMMARY_KIND_VALUES, type ContextItem, type RecallItem, type SummaryContextItem } from './contracts.js';
+import { MEMORY_KIND_VALUES, type ContextItem, type RecallItem, type SummaryContextItem } from './contracts.js';
 import { sanitizePrivateContent } from './privacy.js';
 
 export const RECOVERY_TAG_START = '<!-- thoth-mem:recovery:start -->';
@@ -112,14 +112,14 @@ function summaryClaimText(item: SummaryContextItem, maxCodePoints: number): { co
 
 function candidateFrom(item: ContextItem, maxCodePoints: number): Candidate | undefined {
   if (isSummaryItem(item)) {
-    if (!SESSION_SUMMARY_KIND_VALUES.includes(item.kind) || !/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(item.id)) return undefined;
+    if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(item.id)) return undefined;
     const claims = summaryClaimText(item, maxCodePoints);
     if (!claims) return undefined;
     const content = codePoints(claims.content || 'Supported session summary.');
     const protectedNextAction = claims.nextAction ? ` next action: ${claims.nextAction}` : '';
     return {
       item,
-      prefix: `- [summary:${item.kind} v${item.version}] `,
+      prefix: `- [summary v${item.version}] `,
       suffix: `${protectedNextAction} (summary:${item.id})`,
       content,
       minimumContentCodePoints: content.length,

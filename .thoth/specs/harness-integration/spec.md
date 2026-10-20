@@ -20,7 +20,7 @@ OpenCode, Codex, Claude Code, and Pi lifecycle adapters MUST normalize only fiel
 
 - **GIVEN** Pi reports a successful compaction whose entry carries the default structured summary text
 - **WHEN** the lifecycle hooks execute
-- **THEN** thoth-mem checkpoints before compaction, forwards the text with guide-post-compact so it is stored as checkpoint evidence with a harness checkpoint summary citing it, creates no memory or observation, and refreshes the next bounded recovery block
+- **THEN** thoth-mem checkpoints before compaction, forwards the text with guide-post-compact so it is stored as checkpoint evidence with a harness-derived session summary citing it, creates no memory or observation, and refreshes the next bounded recovery block
 
 ### Requirement: Root Session Identity MUST Be Verified and Host-Specific Only at the Adapter
 
@@ -150,13 +150,13 @@ Model-visible verified identity MUST carry the exact canonical `project_key` plu
 
 ### Requirement: Lifecycle Events MUST Be Idempotent and Truthful
 
-Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn; a native immutable message ID MUST be used when available, otherwise, including for Pi root input, a deterministic key MUST bind documented stable session or turn fields with the sanitized prompt fingerprint so different prompts remain distinct and exact retries remain idempotent; harness-derived and host-harvested session summaries MUST be idempotent per session, kind, and latest non-summary evidence sequence, so a replayed lifecycle event or lazy derivation returns the identical canonical summary or none, and persisting a summary MUST NOT itself trigger another derivation.
+Stable capture keys MUST identify distinct sanitized root-user submissions rather than only their enclosing turn; a native immutable message ID MUST be used when available, otherwise, including for Pi root input, a deterministic key MUST bind documented stable session or turn fields with the sanitized prompt fingerprint so different prompts remain distinct and exact retries remain idempotent; harness-derived and host-harvested session summaries MUST be idempotent per session and latest non-summary evidence sequence, so a replayed lifecycle event or lazy derivation returns the identical canonical summary or none, and persisting a summary MUST NOT itself trigger another derivation.
 
 #### Scenario: Lifecycle Events MUST Be Idempotent and Truthful
 
 - **GIVEN** two different interactive or RPC root inputs, an exact retry of one, and then a replayed finalize
 - **WHEN** the events are processed
-- **THEN** the prompts receive distinct capture keys, the retry is a duplicate, and the replayed finalize returns the original derived final summary without creating a new version
+- **THEN** the prompts receive distinct capture keys, the retry is a duplicate, and the replayed finalize returns the original derived summary without creating a new version
 
 ### Requirement: Native Failures MUST Degrade Without Blocking the Host Prompt
 
@@ -222,13 +222,13 @@ The shared Skill MUST front-load recall, save, and handoff applicability in its 
 
 ### Requirement: Host Compaction Text MUST Become Cited Checkpoint Evidence
 
-When `guide_post_compact` carries host compaction text, the service MUST sanitize and store it as `checkpoint` session evidence and MUST derive a harness checkpoint summary only from recognized section headings (goal, request, or intent as objective; done or completed as completed; in progress or pending as pending; blocked as blocker; decisions as decision; next steps as next action; modified files as changed surface), each claim citing that evidence and bounded to 300 code points; only the first objective section MUST yield an objective, the file paths of every modified-files section or block MUST merge into one changed-surface claim in first-seen order without duplicates, text without recognized headings MUST remain evidence only, and the text MUST never become a memory or observation.
+When `guide_post_compact` carries host compaction text from a confirmed identity, whether or not a pre-compaction event preceded it, the service MUST sanitize and store it as `checkpoint` session evidence and MUST derive a harness session summary only from recognized section headings (goal, request, or intent as objective; done or completed as completed; in progress or pending as pending; blocked as blocker; decisions as decision; next steps as next action; modified files as changed surface), each claim citing that evidence and bounded to 300 code points; only the first objective section MUST yield an objective, the file paths of every modified-files section or block MUST merge into one changed-surface claim in first-seen order without duplicates, text without recognized headings MUST remain evidence only, and the text MUST never become a memory or observation.
 
 #### Scenario: Host Compaction Text MUST Become Cited Checkpoint Evidence
 
-- **GIVEN** Pi split-turn compaction text with Goal, Done, In Progress, Key Decisions, and Next Steps sections, a later Original Request section, and two modified-files blocks with overlapping paths, plus another text with no recognized headings
+- **GIVEN** Pi split-turn compaction text with Goal, Done, In Progress, Key Decisions, and Next Steps sections, a later Original Request section, and two modified-files blocks with overlapping paths, plus another text with no recognized headings, both arriving without a preceding pre-compaction event
 - **WHEN** each arrives on `guide_post_compact`
-- **THEN** the first yields a checkpoint summary with one objective from Goal, completed, pending, decision, and next-action claims, and one changed-surface claim listing each path once, all citing its evidence, and the second yields evidence only
+- **THEN** the first yields a session summary with one objective from Goal, completed, pending, decision, and next-action claims, and one changed-surface claim listing each path once, all citing its evidence, and the second yields evidence only
 
 ### Requirement: Lifecycle Operations MUST Create Sessions Only on Session Activity
 
@@ -242,10 +242,10 @@ For a root session that has no persisted session, `enroll`, `recover`, `finalize
 
 ### Requirement: Pi Lifecycle Keys MUST Be Unique per Extension Run
 
-The Pi extension MUST derive enroll, recovery, post-compaction refresh, and finalize event keys from a nonce created at each `session_start`, so that keys stay stable within one run and differ across runs of the same root session; quitting a resumed session MUST therefore record a new finalize receipt and derive a final summary covering its new activity, while an untouched start still writes nothing.
+The Pi extension MUST derive enroll, recovery, post-compaction refresh, and finalize event keys from a nonce created at each `session_start`, so that keys stay stable within one run and differ across runs of the same root session; quitting a resumed session MUST therefore record a new finalize receipt and derive a summary covering its new activity, while an untouched start still writes nothing.
 
 #### Scenario: Pi Lifecycle Keys MUST Be Unique per Extension Run
 
 - **GIVEN** a Pi session that is quit, resumed, given a new prompt, and quit again
 - **WHEN** its lifecycle hooks run
-- **THEN** two finalize receipts exist, the session ends again, and its current final summary covers the new prompt
+- **THEN** two finalize receipts exist and the session's current summary covers the new prompt

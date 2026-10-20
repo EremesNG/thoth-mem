@@ -213,3 +213,13 @@ The CLI MUST expose a bounded `project rename` administration command in additio
 - **GIVEN** a revision-10 database with empty host sessions and a missing data directory
 - **WHEN** `thoth-mem migrate --json` runs twice on the first and once on the second
 - **THEN** the first run reports revision 10 to 11 with its backup and removal counts, the second reports an already-current no-op without writes, and the missing database exits 1 without creating a file
+
+### Requirement: Adoption Baseline MUST Report Exact-Project Metrics Without Writes
+
+`thoth-mem adoption --project <exact-key-or-alias> [--json] [--data-dir <dir>]` MUST report exact-project open, replaced, and closed handoff counts, open-handoff ages, and save totals and zero-save counts across persisted sessions, including per-session counts of distinct session-attributed agent evidence of kind `explicit_save` or `handoff`; automatic captures and unattributed evidence MUST NOT count; replacement MUST mean supersession by another handoff and closure MUST mean supersession by a non-handoff under the same topic key; human and JSON output MUST state that recall usage is not measured; and the command MUST NOT create, migrate, or mutate storage.
+
+#### Scenario: Adoption Baseline MUST Report Exact-Project Metrics Without Writes
+
+- **GIVEN** an existing database containing the selected project's handoffs and persisted sessions alongside another project's records
+- **WHEN** the adoption command runs in human or JSON mode
+- **THEN** it reports only the selected project's lifecycle, age, and attributed-save metrics, explicitly leaves recall usage unmeasured, and performs no storage writes

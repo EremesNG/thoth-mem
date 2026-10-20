@@ -111,7 +111,7 @@ function populateCurrentBaseline(path: string): void {
     const confirmation = service.save({ project, session, eventKey: 'baseline-confirmation', evidence: { kind: 'root_prompt', content: 'Confirm baseline decision.' } });
     service.lifecycle({
       harness: session.harness, project, rootSessionKey: session.rootSessionKey, operation: 'checkpoint_pre_compact', eventKey: 'baseline-summary',
-      summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 2 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Preserve the populated baseline.', supportIds: [source.evidence.id, confirmation.evidence.id] }] },
+      summary: { coverage: { fromSequence: 1, toSequence: 2 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Preserve the populated baseline.', supportIds: [source.evidence.id, confirmation.evidence.id] }] },
     });
     const candidate = service.submitObservation({
       project, session, eventKey: 'baseline-observation', observation: {
@@ -310,7 +310,7 @@ describe('legacy candidate writer', () => {
 
       const database = new Database(candidate, { readonly: true });
       try {
-        expect(database.prepare("SELECT started_at,ended_at,state,next_event_sequence FROM sessions WHERE id=(SELECT session_id FROM legacy_import_rows WHERE source_entity='session' AND source_key='s-alpha')").get()).toEqual({ started_at: '2025-01-01T00:00:00.000Z', ended_at: null, state: 'active', next_event_sequence: 0 });
+        expect(database.prepare("SELECT started_at,next_event_sequence FROM sessions WHERE id=(SELECT session_id FROM legacy_import_rows WHERE source_entity='session' AND source_key='s-alpha')").get()).toEqual({ started_at: '2025-01-01T00:00:00.000Z', next_event_sequence: 0 });
         expect(database.prepare("SELECT count(*) AS count FROM session_events se JOIN evidence e ON e.id=se.evidence_id WHERE e.kind LIKE 'legacy_%'").get()).toEqual({ count: 0 });
         expect(database.prepare("SELECT count(*) AS count FROM evidence WHERE kind='legacy_prompt' AND captured_at='2025-01-01T00:00:00.000Z'").get()).toEqual({ count: 1 });
         expect(database.prepare("SELECT disposition,reason,memory_id FROM legacy_import_rows WHERE source_entity='observation' AND source_key='3'").get()).toEqual({ disposition: 'linked', reason: 'exact_existing', memory_id: exactExisting.id });
@@ -721,24 +721,38 @@ describe('legacy import apply and publication', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('replays the exact committed plan with stable IDs and zero row delta', async () => {
+  it('replays the exact committed plan with unchanged legacy session hashes, stable IDs and zero row delta', async () => {
     const root = mkdtempSync(join(tmpdir(), 'thoth-import-replay-'));
     const source = join(root, 'legacy.sqlite');
     const target = join(root, 'memory.sqlite');
     createLegacy(source);
     createTarget(target);
+    const legacy = new Database(source);
+    legacy.prepare("UPDATE sessions SET ended_at='2025-01-02T00:00:00.000Z' WHERE id='s-alpha'").run();
+    legacy.close();
+    const baselineDatabase = new Database(target, { readonly: true });
+    const baseline = currentBaselineManifest(baselineDatabase);
+    const baseCounts = databaseCounts(baselineDatabase);
+    baselineDatabase.close();
     const plan = planLegacyImport({ sourcePath: source, targetPath: target });
     try {
       const first = await applyLegacyImport({ plan, startedAt: '2026-09-02T12:00:00.000Z' });
       const before = new Database(target, { readonly: true });
       const countsBefore = before.prepare('SELECT (SELECT count(*) FROM projects) projects,(SELECT count(*) FROM sessions) sessions,(SELECT count(*) FROM evidence) evidence,(SELECT count(*) FROM memories) memories,(SELECT count(*) FROM memory_fts) fts').get();
+      const receipt = before.prepare("SELECT project_id,session_id,transformed_hash FROM legacy_import_rows WHERE source_entity='session' AND source_key='s-alpha'").get() as { project_id: string; session_id: string; transformed_hash: string };
+      // Frozen pre-removal canonical bytes: the legacy end remains hash input, not target state.
+      const legacyBytes = `{"endedAt":"2025-01-02T00:00:00.000Z","projectId":"${receipt.project_id}","sessionId":"${receipt.session_id}","startedAt":"2025-01-01T00:00:00.000Z"}`;
+      expect(receipt.transformed_hash).toBe(createHash('sha256').update(legacyBytes).digest('hex'));
+      expect(before.prepare("SELECT name FROM pragma_table_info('sessions') WHERE name IN ('state','ended_at')").all()).toEqual([]);
       before.close();
+      expect(() => verifyImportedDatabase({ path: target, plan, importId: first.importId, baseline, baseCounts })).not.toThrow();
 
       const replay = await applyLegacyImport({ plan, startedAt: '2026-09-02T13:00:00.000Z' });
 
       expect(replay).toMatchObject({ committed: true, duplicate: true, importId: first.importId, rowDelta: { projects: 0, sessions: 0, evidence: 0, memories: 0, memoryEvidence: 0, fts: 0, receipts: 0 } });
       const after = new Database(target, { readonly: true });
       expect(after.prepare('SELECT (SELECT count(*) FROM projects) projects,(SELECT count(*) FROM sessions) sessions,(SELECT count(*) FROM evidence) evidence,(SELECT count(*) FROM memories) memories,(SELECT count(*) FROM memory_fts) fts').get()).toEqual(countsBefore);
+      expect(after.prepare("SELECT transformed_hash FROM legacy_import_rows WHERE source_entity='session' AND source_key='s-alpha'").get()).toEqual({ transformed_hash: receipt.transformed_hash });
       after.close();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });

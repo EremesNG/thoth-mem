@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-import { SESSION_SUMMARY_LIMITS, type SessionSummaryClaimInput, type SessionSummaryClaimKind, type SessionSummaryInput, type SessionSummaryKind } from './contracts.js';
+import { SESSION_SUMMARY_LIMITS, type SessionSummaryClaimInput, type SessionSummaryClaimKind, type SessionSummaryInput } from './contracts.js';
 import { sanitizePrivateContent } from './privacy.js';
 import { canonicalizeSessionSummary } from './session-summaries.js';
 import { hydrateMemoryRows, sessionEvidence } from './sqlite/ledger.js';
@@ -108,7 +108,7 @@ export function parseHostCompactionClaims(value: string): ParsedClaim[] {
   return claims;
 }
 
-export function deriveSessionSummary(database: Database.Database, sessionId: string, kind: SessionSummaryKind, watermark: number): SessionSummaryInput | null {
+export function deriveSessionSummary(database: Database.Database, sessionId: string, watermark: number): SessionSummaryInput | null {
   const evidence = sessionEvidence(database, sessionId, watermark);
   const evidenceById = new Map(evidence.map((item) => [item.id, item]));
   const claims: SessionSummaryClaimInput[] = [];
@@ -171,11 +171,11 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
     break;
   }
   claims.push(...memoryClaims.map((claim) => ({ ...claim, supportIds: claim.supportIds.slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim) })));
-  return buildDerivedSessionSummary(kind, watermark, claims);
+  return buildDerivedSessionSummary(watermark, claims);
 }
 
 /** Retain objectives and actionable continuity before decisions and completed detail. */
-export function buildDerivedSessionSummary(kind: SessionSummaryKind, watermark: number, candidates: SessionSummaryClaimInput[]): SessionSummaryInput | null {
+export function buildDerivedSessionSummary(watermark: number, candidates: SessionSummaryClaimInput[]): SessionSummaryInput | null {
   if (candidates.length === 0) return null;
   const priority: Record<SessionSummaryClaimKind, number> = { objective: 0, next_action: 1, blocker: 2, pending: 3, decision: 4, completed: 5, changed_surface: 6, verification: 7 };
   const unique = new Map<string, SessionSummaryClaimInput>();
@@ -191,7 +191,7 @@ export function buildDerivedSessionSummary(kind: SessionSummaryKind, watermark: 
   }
   const claims = [...unique.values()].sort((left, right) => priority[left.kind] - priority[right.kind]).slice(0, SESSION_SUMMARY_LIMITS.maxClaims);
   const input: SessionSummaryInput = {
-    kind, coverage: { fromSequence: 1, toSequence: watermark },
+    coverage: { fromSequence: 1, toSequence: watermark },
     generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v3' }, claims,
   };
   // Measure the validator's real canonical envelope, including JSON escaping and UTF-16.

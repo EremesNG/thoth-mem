@@ -111,13 +111,13 @@ describe('MCP boundary', () => {
         event_key: { description: 'Stable lifecycle key; retries must resend identical content/summary.' },
         summary: {
           description: 'Session summary.',
+          required: ['coverage', 'generator', 'claims'],
           properties: {
-            kind: { description: 'Only checkpoint_pre_compact: checkpoint; finalize: final.' },
             coverage: {
               description: 'Inclusive session evidence range.',
               properties: {
                 from_sequence: { description: 'First event sequence: 1.' },
-                to_sequence: { description: 'Last sequence: >= from_sequence; must advance the current summary for this session/kind.' },
+                to_sequence: { description: "Last sequence: >= from_sequence and >= the current summary's ending sequence for this session." },
               },
             },
             claims: {
@@ -130,6 +130,8 @@ describe('MCP boundary', () => {
           },
         },
       } });
+      const summarySchema = (sessionTool?.inputSchema.properties as Record<string, { properties: Record<string, unknown> }>).summary!;
+      expect(Object.keys(summarySchema.properties)).toEqual(['coverage', 'generator', 'claims']);
     } finally {
       await client.close();
       await built.server.close();
@@ -343,7 +345,7 @@ describe('MCP boundary', () => {
       for (let index = 0; index < 3; index += 1) {
         const support = service.save({ project, session, eventKey: `support-${index}`, evidence: { kind: 'explicit_save', content: `Support ${index}` }, ...(kind === 'memory' ? { memory: { kind: 'decision' as const, title: `Choice ${index}`, content: `Choice ${index}`, topicKey: 'choice' } } : {}) });
         if (kind === 'memory') ids.push(support.memory!.id);
-        else if (kind === 'summary') ids.push(service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: `summary-${index}`, summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: support.event!.sequence }, generator: { kind: 'root_agent', name: 'test' }, claims: [{ kind: 'objective', content: `Objective ${index}`, supportIds: [support.evidence.id] }] } }).summaryId!);
+        else if (kind === 'summary') ids.push(service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: `summary-${index}`, summary: { coverage: { fromSequence: 1, toSequence: support.event!.sequence }, generator: { kind: 'root_agent', name: 'test' }, claims: [{ kind: 'objective', content: `Objective ${index}`, supportIds: [support.evidence.id] }] } }).summaryId!);
         else ids.push(service.submitObservation({ project, eventKey: `observation-${index}`, observation: { kind: 'fact', scope: 'project', title: `Fact ${index}`, claim: `Fact ${index}`, proposedMemory: { kind: 'discovery', title: `Fact ${index}`, content: `Fact ${index}` }, supportIds: [support.evidence.id], generator: { kind: 'root_agent', name: 'test' }, ...(ids.at(-1) ? { predecessorId: ids.at(-1)! } : {}) } }).observation.id);
       }
       const handlers = createToolHandlers(service);
@@ -551,7 +553,7 @@ describe('MCP boundary', () => {
       const supportId = (support.structuredContent.data as { evidence: { id: string } }).evidence.id;
       const submitted = await handlers.mem_session({
         operation: 'checkpoint_pre_compact', harness: 'codex', project_key: 'repo:summary', project_name: 'summary', root_session_key: 'root-1', event_key: 'summary-1',
-        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [supportId] }] },
+        summary: { coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [supportId] }] },
       });
       expect(submitted.isError).not.toBe(true);
       const summaryId = (submitted.structuredContent.data as { summaryId: string }).summaryId;
@@ -566,6 +568,13 @@ describe('MCP boundary', () => {
       const items = (summaries.structuredContent.data as { items: SessionSummaryRecord[] }).items;
       expect(items).toEqual([(expanded.structuredContent.data as { record: SessionSummaryRecord }).record]);
       expect(items[0]).not.toHaveProperty('truncated');
+      expect(items[0]).not.toHaveProperty('kind');
+      for (const view of [await handlers.mem_context({ project_key: 'repo:summary', root_session_key: 'root-1', harness: 'codex' }), await handlers.mem_project({ action: 'briefing', project_key: 'repo:summary', root_session_key: 'root-1', harness: 'codex' })]) {
+        const summaryItem = (view.structuredContent.data as { items: Array<Record<string, unknown>> }).items.find((item) => item.recordType === 'summary');
+        expect(summaryItem).toMatchObject({ id: summaryId, version: 1 });
+        expect(summaryItem).not.toHaveProperty('kind');
+      }
+      expect((expanded.structuredContent.data as { record: SessionSummaryRecord }).record).not.toHaveProperty('kind');
       expect(summaries.structuredContent.budget).toEqual({ requested_chars: 2_000, returned_chars: JSON.stringify(items[0]).length });
       expect(ALL_TOOLS).toHaveLength(6);
     } finally { service.close(); }
@@ -580,7 +589,7 @@ describe('MCP boundary', () => {
       const supportId = (saved.structuredContent.data as { evidence: { id: string } }).evidence.id;
       const submitted = await handlers.mem_session({
         ...identity, operation: 'checkpoint_pre_compact', event_key: 'summary',
-        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: Array.from({ length: 32 }, (_, index) => ({ kind: 'completed', content: `${index}: ${'x'.repeat(497)}`, support_ids: [supportId] })) },
+        summary: { coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: Array.from({ length: 32 }, (_, index) => ({ kind: 'completed', content: `${index}: ${'x'.repeat(497)}`, support_ids: [supportId] })) },
       });
       expect(submitted.isError).not.toBe(true);
       const summaryId = (submitted.structuredContent.data as { summaryId: string }).summaryId;
@@ -592,7 +601,7 @@ describe('MCP boundary', () => {
       expect(text.length).toBeLessThanOrEqual(20_000);
       expect(JSON.parse(text)).toEqual(expanded.structuredContent);
       const record = (expanded.structuredContent.data as { record: SessionSummaryRecord; lineage: unknown[] }).record;
-      expect(record).toMatchObject({ id: summaryId, kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
+      expect(record).toMatchObject({ id: summaryId, coverage: { fromSequence: 1, toSequence: 1 } });
       expect(record.claims[0]!.ordinal).toBe(0);
       expect(record.claims).toHaveLength(32);
       expect(record.claims[0]!.content.startsWith('0: ')).toBe(true);
@@ -610,7 +619,7 @@ describe('MCP boundary', () => {
       const submitted = service.lifecycle({
         project, ...session, operation: 'checkpoint_pre_compact', eventKey: 'summary',
         summary: {
-          kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 },
+          coverage: { fromSequence: 1, toSequence: 1 },
           generator: { kind: 'root_agent', name: 'codex', version: '1', configHash: 'a'.repeat(64) },
           claims: Array.from({ length: 6 }, (_, index) => ({
             kind: 'completed', content: index === 1 ? '😀"\\'.repeat(400) : `${index}: ${'x'.repeat(1_797)}`,
@@ -655,18 +664,14 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
-  it.each([
-    { operation: 'capture_root', kind: 'checkpoint', message: 'summary is only valid for operation="checkpoint_pre_compact" or operation="finalize"; received operation="capture_root"' },
-    { operation: 'checkpoint_pre_compact', kind: 'final', message: 'summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "final" for operation="checkpoint_pre_compact"' },
-    { operation: 'finalize', kind: 'checkpoint', message: 'summary.kind: send "checkpoint" for operation="checkpoint_pre_compact" or "final" for operation="finalize"; received "checkpoint" for operation="finalize"' },
-  ])('explains the allowed summary for operation=$operation and kind=$kind', async ({ operation, kind, message }) => {
+  it.each(['enroll', 'recover', 'capture_root', 'guide_post_compact'])('rejects structured summaries on operation=%s', async (operation) => {
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
       const result = await createToolHandlers(service).mem_session({
         operation, harness: 'codex', project_key: 'repo:invalid-operation', project_name: 'invalid', root_session_key: 'root-1', event_key: 'invalid',
-        summary: { kind, coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: ['missing'] }] },
+        summary: { coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: ['missing'] }] },
       });
-      expect(result).toMatchObject({ isError: true, structuredContent: { error: { message } } });
+      expect(result).toMatchObject({ isError: true, structuredContent: { error: { message: `summary is only valid for operation="checkpoint_pre_compact" or operation="finalize"; received operation="${operation}"` } } });
       expect(service.listProjects()).toEqual([]);
     } finally { service.close(); }
   });
@@ -680,7 +685,7 @@ describe('MCP boundary', () => {
       const handlers = createToolHandlers(service);
       const input = {
         operation: 'checkpoint_pre_compact', harness: session.harness, project_key: project.key, project_name: project.name, root_session_key: session.rootSessionKey, event_key: 'checkpoint', content: 'Checkpoint content.',
-        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [support.evidence.id] }] },
+        summary: { coverage: { from_sequence: 1, to_sequence: 1 }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Ship safely.', support_ids: [support.evidence.id] }] },
       };
       expect((await handlers.mem_session(input)).isError).not.toBe(true);
       for (const retry of [
@@ -700,7 +705,7 @@ describe('MCP boundary', () => {
       const handlers = createToolHandlers(service);
       const malformed = await handlers.mem_session({
         operation: 'checkpoint_pre_compact', harness: 'codex', project_key: 'repo:invalid-summary', project_name: 'invalid', root_session_key: 'root-1', event_key: 'invalid',
-        summary: { kind: 'checkpoint', coverage: { from_sequence: 1, to_sequence: 1, unexpected: true }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Invalid.', support_ids: ['missing'] }] },
+        summary: { coverage: { from_sequence: 1, to_sequence: 1, unexpected: true }, generator: { kind: 'root_agent', name: 'codex' }, claims: [{ kind: 'objective', content: 'Invalid.', support_ids: ['missing'] }] },
       });
       expect(malformed).toMatchObject({ isError: true, structuredContent: { error: { retryable: false } } });
       expect(service.listProjects()).toEqual([]);
@@ -895,7 +900,7 @@ describe('MCP boundary', () => {
       const handlers = createToolHandlers(service);
       const result = await handlers.mem_session({
         operation: 'finalize', harness: 'codex', project_key: '', project_name: '', root_session_key: '', event_key: '',
-        summary: { kind: 'final', coverage: { from_sequence: 0, to_sequence: 0 }, generator: { kind: 'root_agent', name: '' }, claims: [{ kind: 'completed', content: '', support_ids: [] }] },
+        summary: { coverage: { from_sequence: 0, to_sequence: 0 }, generator: { kind: 'root_agent', name: '' }, claims: [{ kind: 'completed', content: '', support_ids: [] }] },
       });
       expect(result).toMatchObject({ isError: true, structuredContent: { error: { message: [
         'project_key: Too small: expected string to have >=1 characters',

@@ -15,7 +15,6 @@ import {
   OBSERVATION_STATE_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
   SESSION_SUMMARY_GENERATOR_KIND_VALUES,
-  SESSION_SUMMARY_KIND_VALUES,
   SESSION_SUMMARY_LIMITS,
   type ContextItem,
   type Harness,
@@ -166,7 +165,7 @@ const memSaveInputSchema = memSaveBaseInputSchema.superRefine((value, context) =
 });
 const summaryCoverageSchema = z.object({
   from_sequence: z.number().int().positive().describe('First event sequence: 1.'),
-  to_sequence: z.number().int().positive().describe('Last sequence: >= from_sequence; must advance the current summary for this session/kind.'),
+  to_sequence: z.number().int().positive().describe("Last sequence: >= from_sequence and >= the current summary's ending sequence for this session."),
 }).strict().describe('Inclusive session evidence range.');
 const summaryGeneratorSchema = z.object({
   kind: z.enum(SESSION_SUMMARY_GENERATOR_KIND_VALUES),
@@ -181,7 +180,6 @@ const summaryClaimSchema = z.object({
   support_ids: z.array(z.string().min(1).max(200)).min(SESSION_SUMMARY_LIMITS.minSupportsPerClaim).max(SESSION_SUMMARY_LIMITS.maxSupportsPerClaim).describe('Distinct evidence ids inside coverage from this project_key + root_session_key/harness session; never memory, summary, or observation ids.'),
 }).strict();
 const sessionSummarySchema = z.object({
-  kind: z.enum(SESSION_SUMMARY_KIND_VALUES).describe('Only checkpoint_pre_compact: checkpoint; finalize: final.'),
   coverage: summaryCoverageSchema,
   generator: summaryGeneratorSchema,
   claims: z.array(summaryClaimSchema).min(SESSION_SUMMARY_LIMITS.minClaims).max(SESSION_SUMMARY_LIMITS.maxClaims).describe(`Supported claims; canonical summary <=${SESSION_SUMMARY_LIMITS.maxCanonicalUtf16Units} UTF-16 units.`),
@@ -247,7 +245,7 @@ function publicRecallItem(item: RecallItem): Omit<RecallItem, 'evidenceIds'> { c
 function isSummaryContextItem(item: ContextItem): item is SummaryContextItem { return 'recordType' in item && item.recordType === 'summary'; }
 function publicContextItem(item: ContextItem): unknown {
   if (!isSummaryContextItem(item)) return { recordType: 'memory', ...publicRecallItem(item) };
-  return { recordType: 'summary', id: item.id, kind: item.kind, version: item.version, coverage: item.coverage, snippet: item.snippet, status: item.status, score: item.score };
+  return { recordType: 'summary', id: item.id, version: item.version, coverage: item.coverage, snippet: item.snippet, status: item.status, score: item.score };
 }
 function sessionPairError(rootSessionKey: string | undefined, harness: Harness | undefined): string | undefined {
   if (rootSessionKey && !harness) return 'root_session_key supplied without harness';
@@ -261,7 +259,6 @@ function sessionIdentity(rootSessionKey: string | undefined, harness: Harness | 
 }
 function internalSummary(summary: z.infer<typeof sessionSummarySchema>): SessionSummaryInput {
   return {
-    kind: summary.kind,
     coverage: { fromSequence: summary.coverage.from_sequence, toSequence: summary.coverage.to_sequence },
     generator: { kind: summary.generator.kind, name: summary.generator.name, ...(summary.generator.version ? { version: summary.generator.version } : {}), ...(summary.generator.config_hash ? { configHash: summary.generator.config_hash } : {}) },
     claims: summary.claims.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}), supportIds: claim.support_ids })),

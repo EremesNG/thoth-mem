@@ -14,6 +14,8 @@ import {
   REVISION_THREE_TAXONOMY_GUARD_SQL,
   REVISION_FIVE_FTS_SCHEMA_SQL,
   SESSION_PROJECTION_SCHEMA_SQL,
+  SESSION_SUMMARY_SCHEMA_SQL,
+  SESSION_SUMMARY_TRIGGER_SQL,
   TAXONOMY_GUARD_SQL,
 } from './schema.js';
 
@@ -46,7 +48,7 @@ interface SessionCleanupResult {
   removedReceipts: number;
 }
 
-export const SQLITE_SCHEMA_REVISION = 11;
+export const SQLITE_SCHEMA_REVISION = 12;
 const PRE_CONSTRAINT_SCHEMA_REVISION = 2;
 const ORDERED_SESSION_SCHEMA_REVISION = 3;
 const SESSION_PROJECTION_SCHEMA_REVISION = 4;
@@ -57,6 +59,7 @@ const LEGACY_IMPORT_AUDIT_SCHEMA_REVISION = 8;
 const LEGACY_IMPORT_COHORT_SCHEMA_REVISION = 9;
 const PI_HARNESS_SCHEMA_REVISION = 10;
 const LAZY_SESSION_SCHEMA_REVISION = 11;
+const STATELESS_SESSION_SCHEMA_REVISION = 12;
 const REVISION_TWO_AUXILIARY_SQL = `
 CREATE TABLE IF NOT EXISTS projection_source_mapping(projection_id TEXT NOT NULL, source_id TEXT NOT NULL REFERENCES memories(id), config_hash TEXT NOT NULL, source_hash TEXT NOT NULL, projected_id TEXT NOT NULL, PRIMARY KEY(projection_id,source_id));
 CREATE TABLE IF NOT EXISTS projection_jobs(job_key TEXT PRIMARY KEY, projection_id TEXT NOT NULL, config_hash TEXT NOT NULL, source_watermark INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','running','ready','failed')), attempts INTEGER NOT NULL, checkpoint_source_id TEXT, error_code TEXT);
@@ -338,6 +341,7 @@ export interface MigrationHooks {
   afterRevisionNineBackupVerified?: () => void;
   afterRevisionNineTableRebuilt?: () => void;
   afterRevisionTenBackupVerified?: () => void;
+  afterRevisionElevenBackupVerified?: () => void;
 }
 
 function migrateRevisionSeven(database: Database.Database, hooks: MigrationHooks): MigrationBackup | null {
@@ -543,6 +547,74 @@ function migrateRevisionTen(database: Database.Database, hooks: MigrationHooks):
   return { backup, removedSessions, removedReceipts };
 }
 
+export function preV12BackupPath(databasePath: string): string {
+  return `${databasePath}.pre-v12.bak`;
+}
+
+function verifyRevisionElevenBackup(path: string): void {
+  const backup = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const integrity = backup.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite pre-v12 backup failed integrity verification');
+    if ((backup.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite pre-v12 backup failed foreign-key verification');
+    if (currentRevision(backup) !== LAZY_SESSION_SCHEMA_REVISION) throw new Error('SQLite pre-v12 backup has an unexpected schema revision');
+  } finally { backup.close(); }
+}
+
+function migrateRevisionEleven(database: Database.Database, hooks: MigrationHooks): MigrationBackup | null {
+  const backup = ensureBackup(database, preV12BackupPath(database.name), verifyRevisionElevenBackup);
+  // Session columns and summary lineage share this lock,
+  // backup and commit boundary, with FK enforcement restored even on rollback.
+  database.pragma('foreign_keys = OFF');
+  database.pragma('legacy_alter_table = ON');
+  try {
+    database.transaction(() => {
+      if (currentRevision(database) >= STATELESS_SESSION_SCHEMA_REVISION) return;
+      if (backup) {
+        const snapshot = new Database(backup.path, { readonly: true, fileMustExist: true });
+        try {
+          snapshot.pragma('query_only = ON');
+          if (logicalState(database) !== logicalState(snapshot)) throw new Error('SQLite pre-v12 backup does not match the locked revision 11 source');
+        } finally { snapshot.close(); }
+      }
+      hooks.afterRevisionElevenBackupVerified?.();
+      database.exec('ALTER TABLE sessions DROP COLUMN state; ALTER TABLE sessions DROP COLUMN ended_at;');
+      // Only the replaced table's triggers are removed. Claims/supports and receipt
+      // references keep their IDs and target name under legacy_alter_table.
+      database.exec(`
+        DROP TRIGGER session_summary_scope_guard;
+        DROP TRIGGER session_summary_immutable_update;
+        DROP TRIGGER session_summary_immutable_delete;
+        DROP INDEX session_summaries_selection;
+        DROP INDEX IF EXISTS session_summaries_current_kind;
+        DROP INDEX IF EXISTS session_summaries_current;
+        ALTER TABLE session_summaries RENAME TO session_summaries_v11;
+        ${SESSION_SUMMARY_SCHEMA_SQL}
+        INSERT INTO session_summaries(id,project_id,session_id,submission_evidence_id,version,status,source_sequence_from,source_sequence_to,generator_kind,generator_name,generator_version,generator_config_hash,supersedes_id,created_at)
+        SELECT id,project_id,session_id,submission_evidence_id,
+          row_number() OVER lineage,
+          CASE WHEN lead(id) OVER lineage IS NULL THEN 'current' ELSE 'superseded' END,
+          source_sequence_from,source_sequence_to,generator_kind,generator_name,generator_version,generator_config_hash,
+          lag(id) OVER lineage,created_at
+        FROM session_summaries_v11 s
+        WINDOW lineage AS (PARTITION BY session_id ORDER BY source_sequence_to,
+          (SELECT sequence FROM session_events WHERE evidence_id=s.submission_evidence_id),id);
+        DROP TABLE session_summaries_v11;
+        ${SESSION_SUMMARY_TRIGGER_SQL}
+      `);
+      const integrity = database.pragma('integrity_check') as Array<{ integrity_check: string }>;
+      if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('SQLite revision 12 migration failed integrity verification');
+      if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 12 migration failed foreign-key verification');
+      database.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)').run(STATELESS_SESSION_SCHEMA_REVISION, new Date().toISOString());
+    }).immediate();
+  } finally {
+    database.pragma('legacy_alter_table = OFF');
+    database.pragma('foreign_keys = ON');
+  }
+  if ((database.pragma('foreign_key_check') as unknown[]).length > 0) throw new Error('SQLite revision 12 migration failed foreign-key verification');
+  return backup;
+}
+
 export function migrateCurrentSchema(database: Database.Database, hooks: MigrationHooks = {}): MigrationReport {
   database.pragma('foreign_keys = ON');
   const report: MigrationReport = { fromRevision: SQLITE_SCHEMA_REVISION, toRevision: SQLITE_SCHEMA_REVISION, backups: [], removedSessions: 0, removedReceipts: 0 };
@@ -578,10 +650,15 @@ export function migrateCurrentSchema(database: Database.Database, hooks: Migrati
     const backup = migrationStep(targetRevision, migrate);
     if (backup) report.backups.push(backup);
   }
-  if (currentRevision(database) >= LAZY_SESSION_SCHEMA_REVISION) return report;
-  const cleanup = migrationStep(LAZY_SESSION_SCHEMA_REVISION, () => migrateRevisionTen(database, hooks));
-  if (cleanup.backup) report.backups.push(cleanup.backup);
-  report.removedSessions = cleanup.removedSessions;
-  report.removedReceipts = cleanup.removedReceipts;
+  if (currentRevision(database) < LAZY_SESSION_SCHEMA_REVISION) {
+    const cleanup = migrationStep(LAZY_SESSION_SCHEMA_REVISION, () => migrateRevisionTen(database, hooks));
+    if (cleanup.backup) report.backups.push(cleanup.backup);
+    report.removedSessions = cleanup.removedSessions;
+    report.removedReceipts = cleanup.removedReceipts;
+  }
+  if (currentRevision(database) < STATELESS_SESSION_SCHEMA_REVISION) {
+    const backup = migrationStep(STATELESS_SESSION_SCHEMA_REVISION, () => migrateRevisionEleven(database, hooks));
+    if (backup) report.backups.push(backup);
+  }
   return report;
 }

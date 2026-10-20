@@ -17,7 +17,6 @@ import {
   RETENTION_CLASS_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
   SESSION_SUMMARY_GENERATOR_KIND_VALUES,
-  SESSION_SUMMARY_KIND_VALUES,
   SESSION_SUMMARY_LIMITS,
   SESSION_SUMMARY_STATUS_VALUES,
   SESSION_SUMMARY_SUPPORT_RELATION_VALUES,
@@ -42,7 +41,6 @@ describe('memory protocol contracts', () => {
   });
 
   it('publishes exact summary taxonomies and bounded submission limits', () => {
-    expect(SESSION_SUMMARY_KIND_VALUES).toEqual(['checkpoint', 'final']);
     expect(SESSION_SUMMARY_STATUS_VALUES).toEqual(['current', 'superseded']);
     expect(SESSION_SUMMARY_GENERATOR_KIND_VALUES).toEqual(['root_agent', 'harness', 'model']);
     expect(SESSION_SUMMARY_CLAIM_KIND_VALUES).toEqual([
@@ -105,14 +103,15 @@ describe('memory protocol contracts', () => {
     };
     const summary: SessionSummaryRecord = {
       recordType: 'summary', id: 'summary-1', projectId: 'project-1', sessionId: 'session-1',
-      submissionEvidenceId: 'evidence-2', kind: 'checkpoint', version: 1, status: 'current',
+      submissionEvidenceId: 'evidence-2', version: 1, status: 'current',
       coverage: { fromSequence: 1, toSequence: 1 },
       generator: { kind: 'root_agent', name: 'codex' }, supersedesId: null,
       createdAt: '2026-08-27T00:00:00.000Z',
       claims: [{ id: 'claim-1', ordinal: 0, kind: 'objective', content: 'Ship it', outcome: null, supportIds: ['evidence-1'] }],
     };
     const item: ContextItem = {
-      recordType: 'summary', id: summary.id, kind: summary.kind, version: summary.version,
+      recordType: 'summary', id: summary.id, version: summary.version,
+      submissionEvidenceId: summary.submissionEvidenceId, claims: summary.claims,
       coverage: summary.coverage, snippet: summary.claims[0]!.content, status: 'current', score: 1,
     };
     expect(event.sequence).toBe(1);
@@ -125,11 +124,11 @@ describe('memory protocol contracts', () => {
       operation: 'checkpoint_pre_compact', harness: 'codex',
       project: { key: 'thoth-mem', name: 'thoth-mem' }, rootSessionKey: 'root-1', eventKey: 'event-1',
       summary: {
-        kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 2 },
+        coverage: { fromSequence: 1, toSequence: 2 },
         generator: { kind: 'root_agent', name: 'codex' },
         claims: [{ kind: 'next_action', content: 'Continue', supportIds: ['evidence-1'] }],
       },
     };
-    expect(input.summary?.kind).toBe('checkpoint');
+    expect(input.summary).not.toHaveProperty('kind');
   });
 });

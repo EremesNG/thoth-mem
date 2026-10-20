@@ -139,7 +139,7 @@ describe('native adapters', () => {
   });
 
   it('normalizes one identical root-owned structured summary across all three native hosts', () => {
-    const structured = { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'Resume safely.', supportIds: ['evidence-1'] }] };
+    const structured = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'Resume safely.', supportIds: ['evidence-1'] }] };
     const normalized = [
       normalizeNativePayload('opencode', { event: 'experimental.session.compacting', eventId: 'open:summary', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'root' }, thothMemSummary: structured } }),
       normalizeNativePayload('codex', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', turn_id: 'turn-1', thoth_mem_summary: structured }),

@@ -23,7 +23,6 @@ function databasePath(): string {
 
 function summary(supportIds: string[], toSequence = supportIds.length): SessionSummaryInput {
   return {
-    kind: 'checkpoint',
     coverage: { fromSequence: 1, toSequence },
     generator: { kind: 'root_agent', name: ' codex ', version: ' 1 ', configHash: 'a'.repeat(64) },
     claims: [
@@ -53,6 +52,8 @@ describe('session summaries', () => {
     expect(first.input.generator).toMatchObject({ name: 'codex', version: '1' });
     expect(first.input.claims[0]).toMatchObject({ content: 'Ship  safely.', supportIds: ['evidence-a', 'evidence-b'] });
     expect(first.canonicalJson).not.toContain('secret');
+    expect(JSON.parse(first.canonicalJson)).toMatchObject({ schema: 'thoth-mem.session-summary.v2' });
+    expect(first.input).not.toHaveProperty('kind');
     expect(() => canonicalizeSessionSummary({ ...input, claims: [] })).toThrow(new Error('summary.claims must contain 1-32 items; send bounded atomic claims'));
     expect(() => canonicalizeSessionSummary({ ...input, claims: [{ ...input.claims[0]!, content: 'x'.repeat(2_001) }] })).toThrow(new Error('summary.claims[0].content exceeds 2000 code points; send a shorter value'));
     expect(() => canonicalizeSessionSummary({ ...input, generator: { ...input.generator, configHash: 'NOT-A-HASH' } })).toThrow(new Error('summary.generator.config_hash must be a lowercase SHA-256 hash; send 64 lowercase hexadecimal characters'));
@@ -61,6 +62,38 @@ describe('session summaries', () => {
     expect(() => canonicalizeSessionSummary({ ...input, coverage: { fromSequence: 2, toSequence: 2 } })).toThrow(new Error('summary.coverage.from_sequence must start at 1; received 2'));
     expect(() => canonicalizeSessionSummary({ ...input, coverage: { fromSequence: 1, toSequence: 0 } })).toThrow(new Error('summary.coverage.to_sequence must be a positive integer >= summary.coverage.from_sequence (1)'));
     expect(() => canonicalizeSessionSummary({ ...input, claims: Array.from({ length: 10 }, () => ({ ...input.claims[0]!, content: 'x'.repeat(2_000) })) })).toThrow(new Error('summary exceeds the 20000 UTF-16 unit canonical submission limit; send fewer or shorter summary.claims'));
+  });
+
+  it('supersedes equal coverage across lifecycle moments, replays receipts and rejects lower coverage', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:equal', name: 'equal' };
+    const session = { harness: 'codex' as const, rootSessionKey: 'root-1' };
+    try {
+      const support = service.save({ project, session, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Support.' } });
+      const first = service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: 'first', summary: summary([support.evidence.id], 2) });
+      const input = { project, ...session, operation: 'finalize' as const, eventKey: 'equal', summary: summary([support.evidence.id], 2) };
+      const second = service.lifecycle(input);
+      expect(service.get({ id: second.summaryId!, history: true }).lineage).toMatchObject([
+        { id: second.summaryId, version: 2, status: 'current', supersedesId: first.summaryId },
+        { id: first.summaryId, version: 1, status: 'superseded', supersedesId: null },
+      ]);
+      expect(service.lifecycle(input)).toMatchObject({ duplicate: true, summaryId: second.summaryId });
+      expect(service.projectSummaries({ projectKey: project.key, history: true }).items).toHaveLength(2);
+      expect(() => service.lifecycle({ ...input, eventKey: 'late', summary: summary([support.evidence.id], 1) })).toThrow(/must be at least.*2.*received 1/u);
+    } finally { service.close(); }
+  });
+
+  it('reuses any current generator at the same activity watermark on finalize after pre-compaction', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:watermark', name: 'watermark' };
+    const session = { harness: 'codex' as const, rootSessionKey: 'root-1' };
+    try {
+      const support = service.save({ project, session, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Support.' } });
+      const checkpoint = service.lifecycle({ project, ...session, operation: 'checkpoint_pre_compact', eventKey: 'checkpoint', summary: summary([support.evidence.id], 1) });
+      const final = service.lifecycle({ project, ...session, operation: 'finalize', eventKey: 'finalize' });
+      expect(final.summaryId).toBe(checkpoint.summaryId);
+      expect(service.projectSummaries({ projectKey: project.key, history: true }).items).toHaveLength(1);
+    } finally { service.close(); }
   });
 
   it('persists supported versions atomically, rejects late or foreign support, and never promotes a checkpoint', () => {
@@ -81,7 +114,7 @@ describe('session summaries', () => {
       expect(next.summaryId).not.toBe(submitted.summaryId);
 
       const beforeInvalid = projectionCounts(path);
-      expect(() => service.lifecycle({ ...lifecycle, operation: 'checkpoint_pre_compact', eventKey: 'late', summary: summary([firstSupport.evidence.id], 2) })).toThrow(new Error('summary.coverage.to_sequence must exceed the current summary\'s ending sequence 4 for this session and kind="checkpoint"; received 2'));
+      expect(() => service.lifecycle({ ...lifecycle, operation: 'checkpoint_pre_compact', eventKey: 'late', summary: summary([firstSupport.evidence.id], 2) })).toThrow(new Error('summary.coverage.to_sequence must be at least the current summary\'s ending sequence 4 for this session; received 2'));
       const foreign = service.save({ project: { key: 'repo:foreign', name: 'foreign' }, session: { rootSessionKey: 'foreign', harness: 'codex' }, eventKey: 'foreign', evidence: { kind: 'explicit_save', content: 'Foreign.' } });
       expect(() => service.lifecycle({ ...lifecycle, operation: 'checkpoint_pre_compact', eventKey: 'foreign-summary', summary: summary([foreign.evidence.id], 99) })).toThrow(new Error(`summary.claims[0].support_ids: support id "${foreign.evidence.id}" must reference evidence from this project_key + root_session_key/harness session within summary.coverage (1-99)`));
       expect(projectionCounts(path)).toEqual({ ...beforeInvalid, evidence: beforeInvalid.evidence + 1, session_events: beforeInvalid.session_events + 1 });
@@ -182,7 +215,7 @@ describe('session summaries', () => {
     let summaryId = '';
     try {
       const support = service.save({ project: { key: 'repo:test', name: 'test' }, session: { rootSessionKey: 'root-1', harness: 'codex' }, eventKey: 'support', evidence: { kind: 'explicit_save', content: 'Support.' } });
-      summaryId = service.lifecycle({ harness: 'codex', project: { key: 'repo:test', name: 'test' }, rootSessionKey: 'root-1', operation: 'finalize', eventKey: 'final', summary: { ...summary([support.evidence.id], 1), kind: 'final' } }).summaryId!;
+      summaryId = service.lifecycle({ harness: 'codex', project: { key: 'repo:test', name: 'test' }, rootSessionKey: 'root-1', operation: 'finalize', eventKey: 'final', summary: { ...summary([support.evidence.id], 1) } }).summaryId!;
     } finally { service.close(); }
 
     const database = new Database(path);

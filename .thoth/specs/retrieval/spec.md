@@ -192,13 +192,13 @@ Default current retrieval MUST prefer valid guidance over comparable superseded,
 
 ### Requirement: Project Briefing MUST Be Deterministic and Bounded
 
-Automatic recovery for a verified root session (enroll/recover, per-prompt refresh, and `guide_post_compact`) MUST render one deterministic bounded selection that never includes that session's own summaries, and `guide_post_compact` MUST render the same project recovery as ordinary recovery instead of abstaining; the selection MUST order the newest open handoff first, then the newest current summary of the previous session (the most recent other root session of the same project by last non-summary activity, from any harness), then the remaining project memories in the existing kind order, within the existing aggregate and host rendering caps, and summaries of every other session MUST stay absent; explicit `mem_context` with a verified session pair MAY still return that session's own newest summary; degraded or premature post-compaction events MUST keep failing closed without injecting memory.
+Automatic recovery for a verified root session (enroll/recover, per-prompt refresh, and `guide_post_compact`) MUST render one deterministic bounded selection that never includes that session's own summaries, and `guide_post_compact` MUST render the same project recovery as ordinary recovery instead of abstaining, whether or not a pre-compaction event preceded it; the selection MUST order the newest open handoff first, then the newest current summary of the previous session (the most recent other root session of the same project by last non-summary activity, from any harness), then the remaining project memories in the existing kind order, within the existing aggregate and host rendering caps, and summaries of every other session MUST stay absent; explicit `mem_context` with a verified session pair MAY still return that session's own newest summary; degraded-identity post-compaction events MUST keep failing closed without injecting memory.
 
 #### Scenario: Project Briefing MUST Be Deterministic and Bounded
 
-- **GIVEN** a compacted root session with its own checkpoint summary, an open project handoff, and a previous root session with a final summary
+- **GIVEN** a root session with its own summary, an open project handoff, and a previous root session with a summary
 - **WHEN** `guide_post_compact` runs
-- **THEN** recovery renders the open handoff, then the previous session's summary, then remaining memories within the caps and omits the compacted session's own summary
+- **THEN** recovery renders the open handoff, then the previous session's summary, then remaining memories within the caps and omits the current session's own summary
 
 ### Requirement: Core Retrieval MUST Remain Available When Optional Projections Degrade
 
@@ -241,3 +241,13 @@ On the pinned 470-question LongMemEval-S corpus, an optimized stable lane and th
 - **GIVEN** long candidate content and repeated strict/relaxed matches
 - **WHEN** stable scoring runs
 - **THEN** each candidate receives the same finite score without redundant query compilation or semantically duplicate normalization work
+
+### Requirement: Recovered Handoffs MUST Be Closable Within the Recovery Budget
+
+Recovery MUST append at most one closure hint, immediately after the first rendered handoff's unchanged memory marker, containing its exact `topic_key`; the hint MUST add at most 97 code points and MUST use only post-render slack within the effective recovery limit of at most 1000 code points, without changing selection, allocation, or other rendered bytes; recovery MUST omit the hint when the key is absent, exceeds 60 code points, changes under display normalization or privacy sanitation, contains any selected memory's evidence ID or selected summary's submission evidence ID, or does not fit.
+
+#### Scenario: Recovered Handoffs MUST Be Closable Within the Recovery Budget
+
+- **GIVEN** a selected handoff with an eligible exact topic key
+- **WHEN** recovery renders within its effective limit
+- **THEN** at most one closure hint follows that handoff's unchanged marker if sufficient slack remains, otherwise the output remains unchanged

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 
-import { MEMORY_KIND_VALUES, SESSION_SUMMARY_KIND_VALUES, type ContextItem, type Harness, type LifecycleResult, type SummaryContextItem } from '../memory-core/contracts.js';
+import { MEMORY_KIND_VALUES, type ContextItem, type Harness, type LifecycleResult, type SummaryContextItem } from '../memory-core/contracts.js';
 import { EMPTY_RECOVERY_NOTICE, MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START, UNAVAILABLE_RECOVERY_NOTICE, renderContinuation } from '../memory-core/continuation.js';
 import { resolveLocalProjectIdentity } from './project-identity.js';
 
@@ -63,9 +63,7 @@ export function verifiedRecovery(result: LifecycleResult | undefined, rootSessio
     || JSON.stringify(selectedSummaryIds) !== JSON.stringify(recovery.selectedSummaryIds)
     || JSON.stringify(selectedMemoryIds) !== JSON.stringify(recovery.selectedMemoryIds)
     || result.capability.contextDelivered !== (selectedIds.length > 0)
-    || recovery.items.some((item) => isSummaryItem(item)
-      ? !(SESSION_SUMMARY_KIND_VALUES as readonly string[]).includes(item.kind)
-      : !(MEMORY_KIND_VALUES as readonly string[]).includes(item.kind))
+    || recovery.items.some((item) => !isSummaryItem(item) && !(MEMORY_KIND_VALUES as readonly string[]).includes(item.kind))
     || recovery.items.some((item) => !context.includes(`(${isSummaryItem(item) ? 'summary' : 'memory'}:${item.id})`))
     || recovery.items.some((item) => isSummaryItem(item) ? context.includes(item.submissionEvidenceId) : item.evidenceIds.some((id) => context.includes(id)))) return fallback;
   return context;

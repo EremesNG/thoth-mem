@@ -14,7 +14,6 @@ export const EVENT_ACTOR_VALUES = ['user', 'system', 'agent', 'tool'] as const;
 export const EVENT_AUTHORITY_VALUES = ['root_user', 'harness', 'agent', 'tool', 'untrusted_external'] as const;
 export const RETENTION_CLASS_VALUES = ['project', 'session', 'ephemeral', 'external_reference'] as const;
 export const PRIVACY_CLASS_VALUES = ['standard', 'sensitive', 'restricted'] as const;
-export const SESSION_SUMMARY_KIND_VALUES = ['checkpoint', 'final'] as const;
 export const SESSION_SUMMARY_STATUS_VALUES = ['current', 'superseded'] as const;
 export const SESSION_SUMMARY_GENERATOR_KIND_VALUES = ['root_agent', 'harness', 'model'] as const;
 export const SESSION_SUMMARY_CLAIM_KIND_VALUES = ['objective', 'completed', 'decision', 'changed_surface', 'verification', 'pending', 'blocker', 'next_action'] as const;
@@ -53,7 +52,6 @@ export type EventActor = CanonicalValue<typeof EVENT_ACTOR_VALUES>;
 export type EventAuthority = CanonicalValue<typeof EVENT_AUTHORITY_VALUES>;
 export type RetentionClass = CanonicalValue<typeof RETENTION_CLASS_VALUES>;
 export type PrivacyClass = CanonicalValue<typeof PRIVACY_CLASS_VALUES>;
-export type SessionSummaryKind = CanonicalValue<typeof SESSION_SUMMARY_KIND_VALUES>;
 export type SessionSummaryStatus = CanonicalValue<typeof SESSION_SUMMARY_STATUS_VALUES>;
 export type SessionSummaryGeneratorKind = CanonicalValue<typeof SESSION_SUMMARY_GENERATOR_KIND_VALUES>;
 export type SessionSummaryClaimKind = CanonicalValue<typeof SESSION_SUMMARY_CLAIM_KIND_VALUES>;
@@ -344,7 +342,6 @@ export interface SessionSummaryClaimInput {
 }
 
 export interface SessionSummaryInput {
-  kind: SessionSummaryKind;
   coverage: SessionSummaryCoverage;
   generator: SessionSummaryGenerator;
   claims: SessionSummaryClaimInput[];
@@ -365,7 +362,6 @@ export interface SessionSummaryRecord {
   projectId: string;
   sessionId: string;
   submissionEvidenceId: string;
-  kind: SessionSummaryKind;
   version: number;
   status: SessionSummaryStatus;
   coverage: SessionSummaryCoverage;
@@ -382,7 +378,6 @@ export type MemoryContextItem = RecallItem & { recordType: 'memory' };
 export interface SummaryContextItem {
   recordType: 'summary';
   id: string;
-  kind: SessionSummaryKind;
   version: number;
   coverage: SessionSummaryCoverage;
   snippet: string;

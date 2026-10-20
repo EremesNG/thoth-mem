@@ -137,9 +137,10 @@ Tool text is valid JSON capped at 20,000 characters and matches `structuredConte
 
 - Use `mem_project` with `action=timeline` when you need to understand how promoted knowledge changed, rather than which memories best match a query.
 - `mem_get` returns the selected record once; lineage is empty unless `history: true`, then contains only predecessors, newest first. Evidence has no lineage; `mem_project action=history` still starts with the selected record.
-- At `checkpoint_pre_compact` or `finalize`, the core validates a submitted summary or deterministically derives one from the session's evidence, without model or network calls. Pi, Claude Code, and OpenCode also forward available host compaction text as checkpoint evidence; recognized headings yield a cited harness summary, never promoted memory.
+- At `checkpoint_pre_compact` or `finalize`, the core validates a submitted summary or deterministically derives or reuses one from the session's evidence, without model or network calls. Pi, Claude Code, and OpenCode also forward available host compaction text as checkpoint evidence without requiring prior pre-compaction; recognized headings yield a cited harness summary, never promoted memory.
 - Derived summaries omit a compaction's objective, next-action, pending, and blocker claims after a later substantive root prompt (at least 40 code points after whitespace collapse) or support for a memory-derived claim. Decisions, completed work, and changed surfaces remain eligible; persisted summaries at their activity watermark are not regenerated.
-- New non-summary evidence reopens an ended session across hosts; lazy summaries are checkpoints until finalization. Pi uses per-run lifecycle keys so quitting after resume finalizes new activity again. Codex and Claude Code may replay an earlier finalize receipt on resume; later lazy recovery can compensate. See [native lifecycle](docs/agent/native-lifecycle.md) for this known limitation.
+- Sessions have no lifecycle state and always accept new activity. All summaries share one versioned lineage per session: a new summary supersedes the current one when its coverage end is at least the current one's; a lower end is rejected as late. Derivation reuses a current summary that already covers the latest activity.
+- Pi uses per-run lifecycle keys so quitting after resume derives a summary covering new activity at exit. Codex and Claude Code may replay an earlier finalize receipt on resume; lazy derivation at the next recovery covers new activity when that session is selected as the previous session. See [native lifecycle](docs/agent/native-lifecycle.md) for this known limitation.
 - Automatic recovery, including after compaction, shows the newest open handoff, then the previous session's summary, then other project memories within the existing caps. It never shows the current session's own summary; explicit session reads still can.
 - Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory.
 
@@ -179,11 +180,13 @@ Protocol sources: [LongMemEval repository](https://github.com/xiaowu0162/LongMem
 All harnesses resolve one data directory in this order: an explicit command value, `THOTH_MEM_DATA_DIR`, strict provider configuration, then `~/.thoth-mem`. The database is always `memory.sqlite` inside the selected directory.
 
 <details>
-<summary><strong>Provider configuration and revision-11 migration</strong></summary>
+<summary><strong>Provider configuration and revision-12 migration</strong></summary>
 
 The provider file lives below `XDG_CONFIG_HOME/thoth-mem/config.json` when XDG configuration is set, or below `~/.config/thoth-mem/config.json` otherwise. Malformed, unreadable, schema-invalid, or missing-runtime configuration fails closed.
 
-Hosts automatically migrate supported older schemas to revision 11 at startup; `thoth-mem migrate` also completes pending migrations manually without host timeouts and reports the changes. The revision-11 cleanup creates or verifies `memory.sqlite.pre-v11.bak`, takes an immediate write-excluding lock, and rechecks the revision and live state before removing only unreferenced non-import host sessions and their lifecycle receipts that cite neither evidence nor a summary. All other sessions, receipts, evidence, and memories are preserved; a mismatched backup or source drift fails closed before mutation. Revision-9 databases first apply the revision-10 Pi harness migration with its retained `memory.sqlite.pre-v10.bak`.
+Hosts automatically migrate supported older schemas to revision 12 at startup; `thoth-mem migrate` completes pending migrations manually and reports the changes. On large databases, backups and migration can exceed host timeouts; use that manual path instead. Revision 12 creates or verifies `memory.sqlite.pre-v12.bak`, rechecks the revision and live source under an immediate write-excluding lock, removes session state and end-time columns, and merges existing summaries into one version lineage per session while keeping IDs. Integrity and foreign-key checks must pass; a mismatched backup or source drift fails closed before mutation.
+
+Older databases first apply the revision-10 Pi harness migration (`memory.sqlite.pre-v10.bak`) and revision-11 empty-session cleanup (`memory.sqlite.pre-v11.bak`) as needed. That cleanup removes only unreferenced non-import host sessions and their lifecycle receipts that cite neither evidence nor a summary; all other sessions, receipts, evidence, and memories are preserved.
 
 </details>
 
@@ -223,7 +226,7 @@ npx --yes thoth-mem@latest migrate
 
 With an installed command, use `thoth-mem migrate`; with a package checkout, use `node <package>/dist/index.js migrate`. Add `--data-dir <dir>` to select the directory containing your existing `memory.sqlite`; otherwise the runtime data selection above applies. A missing database is an error, not a new database.
 
-Output such as `Migration: 10 → 11` shows the revision change; `Backup created:` or `Backup verified:` names the retained backup. `Sessions removed:` and `Lifecycle receipts removed:` count only the empty-session cleanup, not evidence or memories; `Duration:` is elapsed milliseconds. Add `--json` for the `thoth-mem.migrate.v1` envelope with revisions, backups, removal counts, `durationMs`, and `alreadyCurrent`. It is safe to rerun: an already-current database reports a no-op (`alreadyCurrent: true`) without changing the source database or its sidecars.
+Output such as `Migration: 11 → 12` shows the revision change; `Backup created:` or `Backup verified:` names the retained backup. `Sessions removed:` and `Lifecycle receipts removed:` count only the empty-session cleanup, not evidence or memories; `Duration:` is elapsed milliseconds. Add `--json` for the `thoth-mem.migrate.v1` envelope with revisions, backups, removal counts, `durationMs`, and `alreadyCurrent`. It is safe to rerun: an already-current database reports a no-op (`alreadyCurrent: true`) without changing the source database or its sidecars.
 
 Keep `memory.sqlite.pre-vN.bak` backups until recovery is verified. To restore one, first stop all hosts and thoth-mem processes, move the current `memory.sqlite` and any `memory.sqlite-wal` / `memory.sqlite-shm` files aside, then copy the chosen backup to `memory.sqlite`. Restoring loses changes made after that backup; an older schema will migrate again on the next writable open. Prefer a clean host exit (in Pi, `/quit`) over killing its terminal.
 

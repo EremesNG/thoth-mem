@@ -202,7 +202,6 @@ try {
     });
     knownSummarySupports.add(firstSupport.evidence.id);
     const firstSummaryInput = {
-      kind: 'checkpoint',
       coverage: { fromSequence: 1, toSequence: 1 },
       generator: { kind: 'harness', name: `fixture-${harness}` },
       claims: [
@@ -256,7 +255,7 @@ try {
   try {
     service.lifecycle({
       operation: 'checkpoint_pre_compact', harness: 'codex', project: { key: 'benchmark:candidate:codex', name: 'fixture' }, rootSessionKey: 'benchmark-summary-codex', eventKey: 'summary:cross-scope',
-      summary: { kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 999 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'This must fail.', supportIds: [foreignSupport.evidence.id] }] },
+      summary: { coverage: { fromSequence: 1, toSequence: 999 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'This must fail.', supportIds: [foreignSupport.evidence.id] }] },
     });
   } catch { crossScopeRejection = 1; }
   const summaryRecords = candidateSummaryIds.map((id) => service.get({ id }).record);
