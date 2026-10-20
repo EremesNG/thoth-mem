@@ -141,19 +141,27 @@ export function summarizeResult(details: unknown, fallback: string): { lines: st
   if (error) return { lines: [text(error.message) ?? 'memory tool failed'] };
   const data = asRecord(payload?.data);
   if (!data) return { lines: fallback.trim() ? fallback.split('\n') : [] };
+  const selected = asRecord(data.record);
   const lists = [data.items, data.projects, data.lineage, data.summaries, data.observations].find(Array.isArray) as unknown[] | undefined;
-  if (lists) {
+  if (lists && !selected) {
     const lines = lists.flatMap((entry) => { const line = asRecord(entry) && itemLine(asRecord(entry)!); return line ? [line] : []; });
     return { lines, count: `${lists.length} ${lists.length === 1 ? 'item' : 'items'}${data.hasMore === true ? '+' : ''}` };
   }
   const memory = asRecord(data.memory);
   const observation = asRecord(data.observation);
-  const record = asRecord(data.record) ?? memory ?? observation ?? asRecord(data.summary);
+  const record = selected ?? memory ?? observation ?? asRecord(data.summary);
   if (record) {
     const lines = [itemLine(record) ?? ''];
     if (text(record.supersedesId)) lines.push(`supersedes ${shortId(record.supersedesId)}`);
     const content = text(record.content);
     if (content && !memory && !observation) lines.push(...content.split('\n'));
+    if (selected && Array.isArray(data.lineage)) {
+      for (const entry of data.lineage) {
+        const predecessor = asRecord(entry);
+        const line = predecessor && itemLine(predecessor);
+        if (line) lines.push(line);
+      }
+    }
     return { lines: lines.filter(Boolean) };
   }
   if (text(data.outcome)) {

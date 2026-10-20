@@ -1,3 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { MemoryService } from '../../src/memory-core/service.js';
@@ -107,7 +112,10 @@ describe('progressive context funnel', () => {
   });
 
   it.each([false, true])('lazily recovers the active predecessor across harnesses (ended=%s) and refreshes duplicate recovery receipts', (ended) => {
-    const service = new MemoryService({ databasePath: ':memory:' });
+    const root = mkdtempSync(join(tmpdir(), 'thoth-reopened-context-'));
+    const databasePath = join(root, 'memory.sqlite');
+    const service = new MemoryService({ databasePath });
+    const database = new Database(databasePath, { readonly: true });
     const project = { key: 'repo:previous', name: 'previous' };
     const previous = { project, harness: 'claude' as const, rootSessionKey: 'previous' };
     const current = { project, harness: 'pi' as const, rootSessionKey: 'current' };
@@ -118,6 +126,7 @@ describe('progressive context funnel', () => {
         service.lifecycle({ ...previous, operation: 'finalize', eventKey: 'end-empty' });
       }
       const first = service.save({ project, session: previous, eventKey: 'first', evidence: { kind: 'root_prompt', content: 'PREVIOUS-OBJECTIVE', capturedAt: '2026-01-02T00:00:00Z' } });
+      if (ended) expect(database.prepare('SELECT state FROM sessions WHERE id=?').get(first.sessionId)).toEqual({ state: 'active' });
       service.save({ project, session: { rootSessionKey: 'older', harness: 'codex' }, eventKey: 'older', evidence: { kind: 'root_prompt', content: 'OLDER-SESSION', capturedAt: '2026-01-01T00:00:00Z' } });
       service.lifecycle({ project, harness: 'codex', rootSessionKey: 'older', operation: 'finalize', eventKey: 'older-final' });
       service.lifecycle({ project, harness: 'opencode', rootSessionKey: 'empty', operation: 'checkpoint_pre_compact', eventKey: 'empty' });
@@ -139,7 +148,7 @@ describe('progressive context funnel', () => {
       expect(recovered.recovery?.selectedRecordIds).not.toContain(own.summaryId);
       expect(recovered.recovery?.context).toContain('PREVIOUS-OBJECTIVE');
       expect(recovered.recovery?.context).not.toMatch(/OWN-SUMMARY|OLDER-SESSION|FOREIGN-PROJECT/u);
-      expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, kind: ended ? 'final' : 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
+      expect(service.get({ id: summaryId }).record).toMatchObject({ sessionId: first.sessionId, kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 } });
       expect(recovered.recovery?.sources).toEqual(expect.arrayContaining([summaryId, service.get({ id: summaryId }).record.submissionEvidenceId]));
       expect(service.lifecycle(input)).toMatchObject({ duplicate: true, recovery: { selectedSummaryIds: [summaryId] } });
       const later = service.save({ project, session: previous, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'PREVIOUS-UPDATED: verify lazy summary recovery with new activity.', capturedAt: '2026-01-04T00:00:00Z' } });
@@ -148,13 +157,13 @@ describe('progressive context funnel', () => {
       expect(replay.duplicate).toBe(true);
       expect(refreshedId).not.toBe(summaryId);
       expect(replay.recovery?.context).toContain('PREVIOUS-UPDATED');
-      expect(service.get({ id: refreshedId }).record).toMatchObject({ sessionId: first.sessionId, kind: ended ? 'final' : 'checkpoint', version: 2, coverage: { toSequence: later.event!.sequence } });
+      expect(service.get({ id: refreshedId }).record).toMatchObject({ sessionId: first.sessionId, kind: 'checkpoint', version: 2, coverage: { toSequence: later.event!.sequence } });
       expect(service.lifecycle(input).recovery?.selectedSummaryIds).toEqual([refreshedId]);
       expect(service.projectSummaries({ projectKey: project.key, rootSessionKey: previous.rootSessionKey, harness: previous.harness, history: true }).items).toHaveLength(2);
       expect(replay.recovery!.rendering.totalCodePoints).toBeLessThanOrEqual(1_000);
       const guided = service.lifecycle({ ...current, operation: 'guide_post_compact', eventKey: 'post' });
       expect(guided.recovery).toEqual(replay.recovery);
-    } finally { service.close(); }
+    } finally { database.close(); service.close(); rmSync(root, { recursive: true, force: true }); }
   });
 
   it('uses activity instants with a deterministic session-ID tie and never falls through a summaryless predecessor', () => {

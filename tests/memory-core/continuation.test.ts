@@ -365,7 +365,7 @@ describe('continuation renderer', () => {
     expect(result.measurements.totalCodePoints).toBeLessThanOrEqual(MAX_HOST_OUTPUT_CODE_POINTS);
   });
 
-  it('renders a non-next-action claim from a realistic v2 previous-session summary within unchanged recovery caps', () => {
+  it('renders a non-next-action claim from a realistic v3 previous-session summary within unchanged recovery caps', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: 'repo:v2-recovery', name: 'summary-recovery' };
     const session = { harness: 'pi' as const, rootSessionKey: 'previous-root' };
@@ -384,7 +384,7 @@ describe('continuation renderer', () => {
         content: `Objective: Verify all supported native hosts.\nCompleted: ${'The deterministic derivation and citations passed focused tests. '.repeat(20)}\nFirst pending action: Run the integration suite after building.\nBlockers: None.`,
       } });
       const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!, 'final')!;
-      expect(summary.generator.name).toBe('thoth-mem.session-evidence.v2');
+      expect(summary.generator.name).toBe('thoth-mem.session-evidence.v3');
       expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'next_action', 'decision', 'completed']);
       expect(summary.claims.every((claim) => codePoints(claim.content) <= 300)).toBe(true);
       service.lifecycle({ ...session, project, operation: 'finalize', eventKey: 'final' });

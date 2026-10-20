@@ -9,6 +9,7 @@ type ParsedClaim = Omit<SessionSummaryClaimInput, 'supportIds'>;
 
 const MAX_DERIVED_CLAIM_CODE_POINTS = 300;
 const MIN_SUBSTANTIVE_PROMPT_CODE_POINTS = 40;
+const COMPACTION_CURRENT_STATE_KINDS = new Set<SessionSummaryClaimKind>(['objective', 'next_action', 'pending', 'blocker']);
 
 const HEADING_KINDS: ReadonlyArray<readonly [RegExp, SessionSummaryClaimKind]> = [
   [/\bnext steps?\b/iu, 'next_action'],
@@ -122,14 +123,7 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
     if (content) claims.push({ kind: 'objective', content, supportIds: [prompt.id] });
   }
 
-  for (const checkpoint of evidence.slice().reverse()) {
-    if (checkpoint.kind !== 'checkpoint' || checkpoint.metadata.source !== 'host_compaction') continue;
-    const parsed = parseHostCompactionClaims(checkpoint.content);
-    if (parsed.length === 0) continue;
-    claims.push(...parsed.map((claim) => ({ ...claim, supportIds: [checkpoint.id] })));
-    break;
-  }
-
+  const memoryClaims: SessionSummaryClaimInput[] = [];
   const rows = database.prepare(`
     SELECT DISTINCT m.* FROM memories m JOIN memory_evidence me ON me.memory_id=m.id
     JOIN session_events se ON se.evidence_id=me.evidence_id
@@ -139,7 +133,7 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
   `).all(sessionId, watermark) as Array<Record<string, unknown>>;
   const memories = hydrateMemoryRows(database, rows).records;
   for (const memory of memories.values()) {
-    const supportIds = memory.evidenceIds.filter((id) => evidenceById.has(id)).slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim);
+    const supportIds = memory.evidenceIds.filter((id) => evidenceById.has(id));
     const content = memoryClaimContent(memory.title, memory.content, memory.kind === 'handoff');
     if (!content || supportIds.length === 0) continue;
     if (memory.kind === 'handoff' && memory.status === 'superseded') {
@@ -155,13 +149,28 @@ export function deriveSessionSummary(database: Database.Database, sessionId: str
       const closure = hydrateMemoryRows(database, [closureRow]).records.values().next().value!;
       const closureContent = memoryClaimContent(closure.title, closure.content);
       const closureSupports = closure.evidenceIds.filter((id) => evidenceById.has(id));
-      if (closureContent && closureSupports.length > 0) claims.push({ kind: 'completed', content: closureContent, supportIds: [...new Set([...closureSupports, ...supportIds])].slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim) });
+      if (closureContent && closureSupports.length > 0) memoryClaims.push({ kind: 'completed', content: closureContent, supportIds: [...new Set([...closureSupports, ...supportIds])] });
       continue;
     }
     const claimKind = ['discovery', 'project_structure', 'failure'].includes(memory.kind)
       ? 'completed' : memory.kind === 'handoff' ? 'next_action' : 'decision';
-    claims.push({ kind: claimKind, content, ...(memory.kind === 'failure' ? { outcome: 'failed' as const } : {}), supportIds });
+    memoryClaims.push({ kind: claimKind, content, ...(memory.kind === 'failure' ? { outcome: 'failed' as const } : {}), supportIds });
   }
+
+  for (const checkpoint of evidence.slice().reverse()) {
+    if (checkpoint.kind !== 'checkpoint' || checkpoint.metadata.source !== 'host_compaction') continue;
+    const parsed = parseHostCompactionClaims(checkpoint.content);
+    if (parsed.length === 0) continue;
+    // Inspect all qualifying supports before support/claim caps and canonical size fitting.
+    const staleCurrentState = substantive.some((prompt) => prompt.event.sequence > checkpoint.event.sequence)
+      || memoryClaims.some((claim) => claim.supportIds.some((id) => evidenceById.get(id)!.event.sequence > checkpoint.event.sequence));
+    for (const claim of parsed) {
+      if (staleCurrentState && COMPACTION_CURRENT_STATE_KINDS.has(claim.kind)) continue;
+      claims.push({ ...claim, supportIds: [checkpoint.id] });
+    }
+    break;
+  }
+  claims.push(...memoryClaims.map((claim) => ({ ...claim, supportIds: claim.supportIds.slice(0, SESSION_SUMMARY_LIMITS.maxSupportsPerClaim) })));
   return buildDerivedSessionSummary(kind, watermark, claims);
 }
 
@@ -183,7 +192,7 @@ export function buildDerivedSessionSummary(kind: SessionSummaryKind, watermark: 
   const claims = [...unique.values()].sort((left, right) => priority[left.kind] - priority[right.kind]).slice(0, SESSION_SUMMARY_LIMITS.maxClaims);
   const input: SessionSummaryInput = {
     kind, coverage: { fromSequence: 1, toSequence: watermark },
-    generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v2' }, claims,
+    generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v3' }, claims,
   };
   // Measure the validator's real canonical envelope, including JSON escaping and UTF-16.
   const one = canonicalizeSessionSummary({ ...input, claims: [claims[0]!] });

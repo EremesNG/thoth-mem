@@ -24,8 +24,10 @@ import {
   type SessionIdentityInput,
   type SessionSummaryInput,
   type SummaryContextItem,
+  type TimelineResult,
 } from '../memory-core/contracts.js';
 import type { MemoryService } from '../memory-core/service.js';
+import { boundedJson } from './bounded-json.js';
 
 export const MEMORY_RECALL_INSTRUCTION_SENTENCES = [
   'At the start of non-trivial repository work, recall with task key terms before exploring, unprompted.',
@@ -235,7 +237,10 @@ function parseToolInput<T>(schema: z.ZodType<T>, input: unknown): T {
   });
   throw new Error(messages.join('; '));
 }
-function success(tool: MemoryToolName, data: unknown, extras: Record<string, unknown> = {}): ToolResult { const structuredContent = { schema: `thoth-mem.mcp.${tool}`, data, ...extras }; const text = JSON.stringify(structuredContent); return { content: [{ type: 'text', text: text.length > 20_000 ? `${text.slice(0, 19_900)}…` : text }], structuredContent }; }
+function success(tool: MemoryToolName, data: unknown, extras: Record<string, unknown> = {}): ToolResult {
+  const { text, structuredContent, isError } = boundedJson({ schema: `thoth-mem.mcp.${tool}`, data, ...extras });
+  return { content: [{ type: 'text', text }], structuredContent, ...(isError ? { isError } : {}) };
+}
 function failure(message: string, code = 'invalid_request'): ToolResult { const structuredContent = { schema: 'thoth-mem.mcp.error', error: { code, message: message.slice(0, 1000), retryable: false } }; return { isError: true, content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent }; }
 function guarded(handler: ToolHandler): ToolHandler { return async (input) => { try { return await handler(input); } catch (error) { return failure(error instanceof Error ? error.message : String(error)); } }; }
 function publicRecallItem(item: RecallItem): Omit<RecallItem, 'evidenceIds'> { const { evidenceIds, ...publicItem } = item; void evidenceIds; return publicItem; }
@@ -260,6 +265,14 @@ function internalSummary(summary: z.infer<typeof sessionSummarySchema>): Session
     coverage: { fromSequence: summary.coverage.from_sequence, toSequence: summary.coverage.to_sequence },
     generator: { kind: summary.generator.kind, name: summary.generator.name, ...(summary.generator.version ? { version: summary.generator.version } : {}), ...(summary.generator.config_hash ? { configHash: summary.generator.config_hash } : {}) },
     claims: summary.claims.map((claim) => ({ kind: claim.kind, content: claim.content, ...(claim.outcome ? { outcome: claim.outcome } : {}), supportIds: claim.support_ids })),
+  };
+}
+function timelinePayload(result: TimelineResult) {
+  return {
+    data: { action: 'timeline', items: result.items, nextCursor: result.nextCursor, hasMore: result.hasMore },
+    sources: result.items.map((item) => item.id),
+    budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars },
+    warnings: result.hasMore ? ['payload_truncated'] : [],
   };
 }
 function recordSourceIds(record: Record<string, unknown>): string[] {
@@ -335,14 +348,23 @@ export function createToolHandlers(service: MemoryService, sessions?: ToolSessio
       return success('mem_recall', { mode, items: result.items.map(publicRecallItem) }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, mode, input.finalize_answer === true) });
     }),
     mem_context: guarded(async (input) => { const attributed = attribute(input); const parsed = parseToolInput(memContextInputSchema, attributed); const result = service.context({ projectKey: parsed.project_key, rootSessionKey: parsed.root_session_key, harness: parsed.harness, budgetChars: number(parsed.budget_chars, 4000), correlationId: optionalString(parsed.correlation_id) }, attributed === input ? 'explicit' : 'recovery'); return success('mem_context', { items: result.items.map(publicContextItem), selectedSummaryIds: result.selectedSummaryIds, selectedMemoryIds: result.selectedMemoryIds, selectedRecordIds: result.selectedRecordIds }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.budget.requestedChars, returned_chars: result.budget.returnedChars, truncated_chars: result.budget.truncatedChars, source_chars: result.budget.sourceChars, evidence_chars: result.budget.evidenceChars, full_chars: result.budget.fullChars, compression_ratio: result.budget.compressionRatio, token_basis: result.budget.tokenBasis }, lanes: result.lanes, warnings: result.warnings, correlation_id: result.correlationId, telemetry: service.retrievalTelemetry(result.correlationId, 'context', parsed.finalize_answer === true) }); }),
-    mem_get: guarded(async (input) => { const result = service.get({ id: string(input.id, 'id'), history: input.history === true }); const correlationId = optionalString(input.correlation_id); return success('mem_get', result, { sources: [...new Set([recordSourceIds(result.record as unknown as Record<string, unknown>), ...result.lineage.map((item) => recordSourceIds(item as unknown as Record<string, unknown>))].flat())], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } }); }),
+    mem_get: guarded(async (input) => {
+      const selected = service.get({ id: string(input.id, 'id'), history: input.history === true });
+      const result = { record: selected.record, lineage: input.history === true ? selected.lineage.slice(1) : [] };
+      const correlationId = optionalString(input.correlation_id);
+      return success('mem_get', result, { sources: [...new Set([recordSourceIds(result.record as unknown as Record<string, unknown>), ...result.lineage.map((item) => recordSourceIds(item as unknown as Record<string, unknown>))].flat())], lanes: { structured: 'ready' }, warnings: [], ...(correlationId ? { correlation_id: correlationId } : {}), telemetry: correlationId ? service.retrievalTelemetry(correlationId, 'full_fetch') : { stage: 'full_fetch', finalized: true, escalated: true, avoided: false, full_fetches: 1, avoided_full_fetches: 0 } });
+    }),
     mem_project: guarded(async (input) => {
       const parsed = parseToolInput(memProjectInputSchema, input); const action = parsed.action;
       if (action === 'timeline') {
         const forbiddenFields = (['id', 'root_session_key', 'harness', 'temporal', 'state'] as const).filter((field) => parsed[field] !== undefined);
         if (forbiddenFields.length > 0) throw new Error(`action="timeline" does not accept ${forbiddenFields.join(', ')}; send only project_key, since, until, cursor, limit, and budget_chars`);
-        const result = service.timeline({ projectKey: string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`), since: parsed.since, until: parsed.until, cursor: parsed.cursor, limit: parsed.limit, budgetChars: parsed.budget_chars });
-        return success('mem_project', { action, items: result.items, nextCursor: result.nextCursor, hasMore: result.hasMore }, { sources: result.items.map((item) => item.id), budget: { requested_chars: result.requestedChars, returned_chars: result.returnedChars }, warnings: result.hasMore ? ['payload_truncated'] : [] });
+        const result = service.timeline(
+          { projectKey: string(parsed.project_key, 'project_key', `project_key is required for action="${action}"`), since: parsed.since, until: parsed.until, cursor: parsed.cursor, limit: parsed.limit, budgetChars: parsed.budget_chars },
+          (page) => JSON.stringify({ schema: 'thoth-mem.mcp.mem_project', ...timelinePayload(page) }).length,
+        );
+        const { data, ...extras } = timelinePayload(result);
+        return success('mem_project', data, extras);
       }
       const timelineFields = (['since', 'until', 'cursor'] as const).filter((field) => parsed[field] !== undefined);
       if (timelineFields.length > 0) throw new Error(`received ${timelineFields.join(', ')} for action="${action}"; omit these timeline-only fields or use action="timeline"`);

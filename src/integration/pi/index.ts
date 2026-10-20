@@ -1,4 +1,5 @@
 import type { LifecycleInput, LifecycleResult } from '../../memory-core/contracts.js';
+import { TOOL_OUTPUT_MAX_CHARS } from '../../tools/bounded-json.js';
 import { MEMORY_RECALL_INSTRUCTION_SENTENCES, MEMORY_SAVE_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
 import { verifiedRecovery } from '../recovery.js';
 import { createPiMcpClient, PiMcpStartupTimeoutError, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
@@ -43,6 +44,7 @@ interface PiExtensionContext extends PiLifecycleContext {
 
 export interface PiExtensionOptions extends PiMcpClientOptions {
   client?: PiMcpClient;
+  createRunNonce?: () => string;
   onDiagnostic?: (code: string) => void;
 }
 
@@ -50,12 +52,19 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function textContent(value: Record<string, unknown>): Array<{ type: 'text'; text: string }> {
-  if (!Array.isArray(value.content)) return [{ type: 'text', text: JSON.stringify(value.structuredContent ?? {}) }];
-  return value.content.flatMap((item) => {
+function textContent(value: Record<string, unknown>, tool: MemoryToolName): Array<{ type: 'text'; text: string }> {
+  const content = Array.isArray(value.content) ? value.content : [{ type: 'text', text: JSON.stringify(value.structuredContent ?? {}) }];
+  return content.flatMap((item) => {
     const record = asRecord(item);
-    if (!record) return [];
-    return record.type === 'text' && typeof record.text === 'string' ? [{ type: 'text' as const, text: record.text.slice(0, 20_000) }] : [];
+    if (!record || record.type !== 'text' || typeof record.text !== 'string') return [];
+    const text = record.text.length <= TOOL_OUTPUT_MAX_CHARS ? record.text : JSON.stringify({
+      schema: 'thoth-mem.pi.output_truncated',
+      tool,
+      original_chars: record.text.length,
+      cap_chars: TOOL_OUTPUT_MAX_CHARS,
+      guidance: 'Narrow the request with a smaller budget_chars or a selective mem_get.',
+    });
+    return [{ type: 'text' as const, text }];
   });
 }
 
@@ -119,7 +128,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
         async execute(_toolCallId, params, signal, _onUpdate, context) {
           try {
             const result = await client.callTool(tool.name as MemoryToolName, params, signal);
-            return { content: textContent(result), details: result.structuredContent as Record<string, unknown> | undefined };
+            return { content: textContent(result, tool.name), details: result.structuredContent as Record<string, unknown> | undefined };
           } catch (error) {
             if (error instanceof PiMcpStartupTimeoutError) report('pi_mcp_startup_timeout', context);
             else report('pi_tool_request_failed');
@@ -133,7 +142,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
 
     pi.on('session_start', async (event, context) => {
       try {
-        const nextState = createPiLifecycleState(context);
+        const nextState = createPiLifecycleState(context, options.createRunNonce);
         if (nextState.rootSessionKey !== state?.rootSessionKey) startupTimeoutWarned = false;
         state = nextState;
         const reason = typeof event.reason === 'string' ? event.reason : 'startup';

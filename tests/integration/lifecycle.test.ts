@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { normalizeNativePayload } from '../../src/integration/adapters/index.js';
@@ -10,6 +11,39 @@ import { MAX_HOST_OUTPUT_CODE_POINTS, RECOVERY_TAG_END, RECOVERY_TAG_START } fro
 import { MemoryService } from '../../src/memory-core/service.js';
 
 describe('host-neutral lifecycle', () => {
+  it.each(['codex', 'pi'] as const)('reopens a resumed %s session, lazily checkpoints it, and finalizes a new summary version', (harness) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-resumed-lifecycle-'));
+    const databasePath = join(root, 'memory.sqlite');
+    const base = { harness, project: { key: 'repo:resumed-lifecycle', name: 'resumed' }, rootSessionKey: 'root' };
+    let service = new MemoryService({ databasePath });
+    const database = new Database(databasePath, { readonly: true });
+    try {
+      let runtime = new LifecycleRuntime(service);
+      runtime.handle({ ...base, operation: 'capture_root', eventKey: 'first', content: 'Implement the shared session lifecycle and verify its durable state.' });
+      const finalInput = { ...base, operation: 'finalize' as const, eventKey: 'final-first' };
+      const firstFinal = runtime.handle(finalInput);
+      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ kind: 'final', version: 1, status: 'current', coverage: { toSequence: 1 } });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'ended', ended_at: expect.any(String) });
+      service.close();
+      service = new MemoryService({ databasePath });
+      runtime = new LifecycleRuntime(service);
+      const resumed = runtime.handle({ ...base, operation: 'capture_root', eventKey: 'resumed', content: 'Continue the shared session lifecycle with a new durable activity event.' });
+      expect(resumed).toMatchObject({ duplicate: false, sessionId: firstFinal.sessionId, event: { sequence: 3 } });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'active', ended_at: null });
+      expect(runtime.handle(finalInput)).toMatchObject({ duplicate: true, summaryId: firstFinal.summaryId });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'active', ended_at: null });
+      const recovered = runtime.handle({ ...base, rootSessionKey: 'next-root', operation: 'recover', eventKey: 'recover' });
+      expect(recovered.recovery?.selectedSummaryIds).toHaveLength(1);
+      expect(service.get({ id: recovered.recovery!.selectedSummaryIds[0]! }).record).toMatchObject({ sessionId: firstFinal.sessionId, kind: 'checkpoint', version: 1, coverage: { toSequence: resumed.event!.sequence } });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'active', ended_at: null });
+      const secondFinal = runtime.handle({ ...base, operation: 'finalize', eventKey: 'final-resumed' });
+      expect(secondFinal.summaryId).not.toBe(firstFinal.summaryId);
+      expect(service.get({ id: secondFinal.summaryId! }).record).toMatchObject({ kind: 'final', version: 2, status: 'current', supersedesId: firstFinal.summaryId, coverage: { toSequence: resumed.event!.sequence }, claims: expect.arrayContaining([expect.objectContaining({ kind: 'objective', supportIds: [resumed.evidenceId] })]) });
+      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ status: 'superseded' });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'ended', ended_at: expect.any(String) });
+    } finally { database.close(); service.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('stores sanitized host compaction evidence and cited claims, reusing only the newest parsed host sections', () => {
     const service = new MemoryService({ databasePath: ':memory:' });
     const base = { harness: 'pi' as const, project: { key: 'repo:host-compaction', name: 'host' }, rootSessionKey: 'root' };

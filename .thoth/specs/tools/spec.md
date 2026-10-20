@@ -287,3 +287,23 @@ When an MCP client that does not identify as a supported native host calls a too
 - **GIVEN** a project whose only summary serializes to 13,000 characters
 - **WHEN** `mem_project action=summaries` runs with `budget_chars` 4000
 - **THEN** it returns that summary's ID and metadata with leading claims within 4,000 characters, marks it truncated, and warns `payload_truncated`
+
+### Requirement: Tool Results MUST Be Valid Bounded JSON
+
+Every MCP tool result MUST carry text content that is valid JSON of at most 20,000 characters and equal to the serialization of its `structuredContent`; when the full envelope would exceed that cap, the server MUST shrink it deterministically by first clipping the longest string values (never object keys) and then dropping trailing elements of the largest arrays, preserving the schema, the envelope structure, and every string of at most 64 code points, and MUST add `payload_truncated` to the envelope warnings; every clip MUST strictly shorten its string so shrinking terminates; results that carry a continuation cursor MUST be sized against the complete envelope so that bounding never alters them; results that fit MUST remain unchanged; and no host bridge, including Pi, MUST cut tool text, replacing an over-limit text with a valid bounded notice instead.
+
+#### Scenario: Tool Results MUST Be Valid Bounded JSON
+
+- **GIVEN** a valid submitted session summary close to the submission limit whose expanded envelope exceeds 20,000 characters, and a Pi tool call
+- **WHEN** `mem_get` expands it through MCP and through the Pi extension
+- **THEN** both receive valid JSON within 20,000 characters with the summary ID, kind, coverage, and leading claims, clipped claim text, and the `payload_truncated` warning
+
+### Requirement: mem_get MUST Return the Selected Record Once
+
+`mem_get` MUST return the selected record only in its record field; its lineage MUST be empty unless history is requested and then MUST list only the selected record's predecessors, newest first, while evidence lineage remains empty and `mem_project` history keeps listing the selected record followed by its predecessors.
+
+#### Scenario: mem_get MUST Return the Selected Record Once
+
+- **GIVEN** a memory corrected twice under one topic key
+- **WHEN** `mem_get` expands the current version without and with history
+- **THEN** the first response has an empty lineage and the second lists the two predecessors newest first, neither repeating the selected record

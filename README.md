@@ -37,7 +37,7 @@ thoth-mem gives every supported harness one durable local memory without turning
 | **SQLite is the source of truth** | One local, inspectable ledger with rebuildable FTS5 retrieval. |
 | **Evidence before memory** | Immutable supporting records remain separate from promoted conclusions. |
 | **Temporal history** | Corrections and supersession preserve how project knowledge changed. |
-| **Progressive retrieval** | Start compact, expand context only when useful, fetch full records last. |
+| **Progressive retrieval** | Start compact, add context only when useful, expand selected records last. |
 | **Scoped identity** | Projects and root sessions are explicit; memory does not guess ownership. |
 | **A deliberately small API** | Six workflow-level MCP tools instead of a sprawling CRUD surface. |
 
@@ -124,17 +124,22 @@ mem_get only for selected stable IDs
 | Save evidence or durable knowledge | `mem_save` |
 | Find current or historical project memory | `mem_recall` |
 | Recover a bounded project or session briefing | `mem_context` |
-| Expand one selected record and its lineage | `mem_get` |
+| Expand one selected record with optional predecessor history | `mem_get` |
 | Inspect timelines, summaries, observations, or project state | `mem_project` |
 | Record verified root lifecycle events and supported summaries | `mem_session` |
 
 The MCP server exposes exactly these six tools. OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool; it is session metadata, not a memory operation. Generic MCP connections attribute sessionless saves to a server-assigned connection session, not a verified native root session.
 
+Tool text is valid JSON capped at 20,000 characters and matches `structuredContent`. Oversized results clip long strings, then drop trailing array items if needed, with `payload_truncated` first in `warnings`; irreducible results return `output_too_large`. Narrow requests when needed. Pi never slices tool text: unexpected over-cap text becomes a `thoth-mem.pi.output_truncated` JSON notice with narrowing guidance.
+
 <details>
 <summary><strong>Temporal history, summaries, and observation review</strong></summary>
 
 - Use `mem_project` with `action=timeline` when you need to understand how promoted knowledge changed, rather than which memories best match a query.
+- `mem_get` returns the selected record once; lineage is empty unless `history: true`, then contains only predecessors, newest first. Evidence has no lineage; `mem_project action=history` still starts with the selected record.
 - At `checkpoint_pre_compact` or `finalize`, the core validates a submitted summary or deterministically derives one from the session's evidence, without model or network calls. Pi, Claude Code, and OpenCode also forward available host compaction text as checkpoint evidence; recognized headings yield a cited harness summary, never promoted memory.
+- Derived summaries omit a compaction's objective, next-action, pending, and blocker claims after a later substantive root prompt (at least 40 code points after whitespace collapse) or support for a memory-derived claim. Decisions, completed work, and changed surfaces remain eligible; persisted summaries at their activity watermark are not regenerated.
+- New non-summary evidence reopens an ended session across hosts; lazy summaries are checkpoints until finalization. Pi uses per-run lifecycle keys so quitting after resume finalizes new activity again. Codex and Claude Code may replay an earlier finalize receipt on resume; later lazy recovery can compensate. See [native lifecycle](docs/agent/native-lifecycle.md) for this known limitation.
 - Automatic recovery, including after compaction, shows the newest open handoff, then the previous session's summary, then other project memories within the existing caps. It never shows the current session's own summary; explicit session reads still can.
 - Observation candidates remain outside memory and FTS until a verified root review accepts them and a separate explicit promotion materializes their exact proposed memory.
 

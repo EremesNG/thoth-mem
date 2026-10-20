@@ -56,6 +56,115 @@ describe('Pi native extension', () => {
     } finally { database.close(); service.close(); }
   });
 
+  it('finalizes a resumed root again with a new final summary covering its new prompt in a temporary database', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-resume-')); roots.push(cwd);
+    const databasePath = join(cwd, 'memory.sqlite');
+    const service = new MemoryService({ databasePath });
+    const database = new Database(databasePath, { readonly: true });
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const tools = createToolHandlers(service);
+    const calls: Array<{ args: Record<string, unknown>; result: LifecycleResult }> = [];
+    const client: PiMcpClient = {
+      callTool: async (name, args) => {
+        const response = await tools[name](args);
+        expect(response.isError).not.toBe(true);
+        calls.push({ args, result: response.structuredContent.data as LifecycleResult });
+        return response;
+      },
+      close: async () => undefined,
+    };
+    const createRunNonce = vi.fn().mockReturnValueOnce('run-1').mockReturnValueOnce('run-2');
+    createPiExtension({ client, createRunNonce })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    let leaf = 'leaf-1';
+    const context = { cwd, sessionManager: { getSessionId: () => 'resumed-root', getLeafId: () => leaf } };
+    const shutdown = { reason: 'quit', targetSessionFile: 'session.jsonl' };
+    try {
+      await handlers.get('session_start')!({ reason: 'startup' }, context);
+      await handlers.get('input')!({ text: 'Implement the shared lifecycle and verify the first clean session shutdown.', source: 'interactive' }, context);
+      await handlers.get('session_shutdown')!(shutdown, context);
+      const firstFinal = calls.at(-1)!.result;
+      expect(firstFinal).toMatchObject({ duplicate: false, summaryId: expect.any(String) });
+      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ kind: 'final', version: 1, coverage: { toSequence: 1 } });
+      const replayedFinal = await tools.mem_session(calls.at(-1)!.args);
+      expect(replayedFinal.structuredContent.data).toMatchObject({ duplicate: true, summaryId: firstFinal.summaryId });
+
+      await handlers.get('session_start')!({ reason: 'resume' }, context);
+      expect(database.prepare('SELECT state FROM sessions WHERE root_session_key=?').get('resumed-root')).toEqual({ state: 'ended' });
+      leaf = 'leaf-2';
+      const prompt = { text: 'Continue the resumed lifecycle with new activity and verify a second final summary.', source: 'interactive' };
+      await handlers.get('input')!(prompt, context);
+      const captured = calls.at(-1)!.result;
+      expect(captured).toMatchObject({ duplicate: false, sessionId: firstFinal.sessionId, event: { sequence: 3 } });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'active', ended_at: null });
+      await handlers.get('input')!(prompt, context);
+      expect(calls.at(-1)!.result).toMatchObject({ duplicate: true, evidenceId: captured.evidenceId, event: captured.event });
+      for (let index = 0; index < 2; index += 1) {
+        await handlers.get('before_agent_start')!({ systemPromptOptions: { sections: {} } }, context);
+      }
+      expect(calls.at(-1)!.result.duplicate).toBe(true);
+      await handlers.get('session_shutdown')!(shutdown, context);
+      const secondFinal = calls.at(-1)!.result;
+      expect(secondFinal).toMatchObject({ duplicate: false, sessionId: firstFinal.sessionId });
+      expect(secondFinal.summaryId).not.toBe(firstFinal.summaryId);
+      expect(service.get({ id: secondFinal.summaryId! }).record).toMatchObject({
+        kind: 'final', version: 2, status: 'current', supersedesId: firstFinal.summaryId,
+        coverage: { fromSequence: 1, toSequence: captured.event!.sequence }, generator: { kind: 'harness' },
+        claims: expect.arrayContaining([expect.objectContaining({ kind: 'objective', content: prompt.text, supportIds: [captured.evidenceId] })]),
+      });
+      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ status: 'superseded' });
+      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'ended', ended_at: expect.any(String) });
+      expect(database.prepare("SELECT count(*) AS count FROM lifecycle_receipts WHERE root_session_key=? AND operation='finalize'").get('resumed-root')).toEqual({ count: 2 });
+      expect(calls.every(({ args }) => !('summary' in args))).toBe(true);
+      expect(createRunNonce).toHaveBeenCalledTimes(2);
+    } finally { database.close(); service.close(); }
+  });
+
+  it('retains one nonce through repeated start and post-compaction recovery refreshes, replacing it at each session_start', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-run-keys-')); roots.push(cwd);
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const calls: Record<string, unknown>[] = [];
+    const client: PiMcpClient = {
+      callTool: async (_name, args) => { calls.push(args); return { structuredContent: { data: { outcome: 'degraded' } } }; },
+      close: async () => undefined,
+    };
+    const createRunNonce = vi.fn().mockReturnValueOnce('run-1').mockReturnValueOnce('run-2');
+    createPiExtension({ client, createRunNonce })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'same-root', getLeafId: () => 'same-leaf' } };
+    const run = async () => {
+      const offset = calls.length;
+      await handlers.get('session_start')!({ reason: 'resume' }, context);
+      for (let index = 0; index < 2; index += 1) {
+        await handlers.get('before_agent_start')!({ systemPromptOptions: { sections: {} } }, context);
+      }
+      await handlers.get('input')!({ text: 'root prompt', source: 'interactive' }, context);
+      await handlers.get('session_before_compact')!({ reason: 'manual', preparation: { firstKeptEntryId: 'entry-1' } }, context);
+      await handlers.get('session_compact')!({ reason: 'manual', compactionEntry: { id: 'compact-1', summary: '## Goal\nVerify recovery.' } }, context);
+      for (let index = 0; index < 2; index += 1) {
+        await handlers.get('before_agent_start')!({ systemPromptOptions: { sections: {} } }, context);
+      }
+      await handlers.get('session_shutdown')!({ reason: 'quit', targetSessionFile: 'same-session.jsonl' }, context);
+      const runCalls = calls.slice(offset);
+      expect(runCalls.map(({ operation }) => operation)).toEqual(['enroll', 'recover', 'recover', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'recover', 'recover', 'finalize']);
+      expect(runCalls[2]!.event_key).toBe(runCalls[1]!.event_key);
+      expect(runCalls[3]!.event_key).toBe(runCalls[1]!.event_key);
+      expect(runCalls[7]!.event_key).not.toBe(runCalls[1]!.event_key);
+      expect(runCalls[8]!.event_key).toBe(runCalls[7]!.event_key);
+      expect(runCalls[7]).not.toHaveProperty('content');
+      return runCalls;
+    };
+    const first = await run();
+    const resumed = await run();
+    expect(createRunNonce).toHaveBeenCalledTimes(2);
+    for (const [index, call] of first.entries()) {
+      const resumedKey = resumed[index]!.event_key;
+      if (call.operation === 'enroll' || call.operation === 'recover' || call.operation === 'finalize') {
+        expect(resumedKey).not.toBe(call.event_key);
+      } else {
+        expect(resumedKey).toBe(call.event_key);
+      }
+    }
+  });
+
   it('registers five model-facing tools without a dialect marker and forwards structured results', async () => {
     const tools: Array<Record<string, unknown>> = [];
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
@@ -71,6 +180,67 @@ describe('Pi native extension', () => {
     const result = await (tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call-1', {});
     expect(result).toMatchObject({ details: { schema: 'test.mem_save' } });
     expect(handlers.size).toBe(8);
+  });
+
+  it.each([
+    { tool: 'mem_get', length: 25_000 },
+    { tool: 'mem_recall', length: 20_001 },
+  ])('replaces $length-character $tool text with a small JSON notice without changing structured details', async ({ tool, length }) => {
+    const tools: PiToolDefinition[] = [];
+    const structuredContent = { schema: 'test.mem_get', data: { keep: 'original details' } };
+    const client: PiMcpClient = {
+      callTool: async () => ({ content: [{ type: 'text', text: 'x'.repeat(length) }], structuredContent }),
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: () => undefined });
+
+    const result = await tools.find((definition) => definition.name === tool)!.execute('call', {});
+    expect(result.content).toHaveLength(1);
+    const text = result.content[0]!.text;
+    const notice: unknown = JSON.parse(text);
+    expect(text.length).toBeLessThan(1_000);
+    expect(notice).toEqual({
+      schema: 'thoth-mem.pi.output_truncated',
+      tool,
+      original_chars: length,
+      cap_chars: 20_000,
+      guidance: expect.stringMatching(/narrow.*smaller budget_chars.*selective mem_get/iu),
+    });
+    expect(result.details).toBe(structuredContent);
+  });
+
+  it.each([0, 19_000, 20_000])('passes %i-character tool text through unchanged', async (length) => {
+    const tools: PiToolDefinition[] = [];
+    const text = length === 0 ? '' : ' \n🙂é"\\'.padEnd(length - 1, 'x') + '\n';
+    const client: PiMcpClient = {
+      callTool: async () => ({ content: [{ type: 'text', text }] }),
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: () => undefined });
+
+    const result = await tools[0]!.execute('call', {});
+    expect(result.content).toEqual([{ type: 'text', text }]);
+  });
+
+  it('bounds serialized structured-only text without changing its details', async () => {
+    const tools: PiToolDefinition[] = [];
+    const structuredContent = { data: 'x'.repeat(24_989) };
+    const client: PiMcpClient = {
+      callTool: async () => ({ structuredContent }),
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: () => undefined });
+
+    const result = await tools[0]!.execute('call', {});
+    const text = result.content[0]!.text;
+    expect(text.length).toBeLessThan(1_000);
+    expect(JSON.parse(text)).toMatchObject({
+      schema: 'thoth-mem.pi.output_truncated',
+      tool: 'mem_save',
+      original_chars: 25_000,
+      cap_chars: 20_000,
+    });
+    expect(result.details).toBe(structuredContent);
   });
 
   it('partitions shared proactive guidelines between recall and save within the MCP instruction budget', () => {
