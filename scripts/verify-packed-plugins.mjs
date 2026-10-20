@@ -427,7 +427,6 @@ process.stdout.write('native-pi-ok');
           hook_event_name: 'PreCompact', session_id: 'claude-root', event_id: 'packed-claude-pre-compact', cwd: join(scratch, 'project with spaces'),
           content: 'Non-empty packed Claude checkpoint content.',
           thoth_mem_summary: {
-            kind: 'checkpoint',
             coverage: { fromSequence: 1, toSequence: 1 },
             generator: { kind: 'harness', name: 'packed-smoke' },
             claims: [
