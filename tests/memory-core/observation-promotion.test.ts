@@ -51,9 +51,33 @@ describe('observation review and promotion', () => {
       expect(() => service.promoteObservation({
         project, session: { rootSessionKey: 'root-2', harness: 'codex' }, eventKey: 'promotion', observationId: candidate.observation.id,
       })).toThrow(/session identity/i);
-      (service as unknown as { database: Database.Database }).database.prepare("UPDATE sessions SET state='degraded' WHERE id=?").run(promoted.sessionId);
-      expect(() => service.promoteObservation({ project, session, eventKey: 'promotion', observationId: candidate.observation.id })).toThrow(/verified root identity/i);
       expect(service.recall({ projectKey: project.key, query: 'SQLite-only' }).items[0]?.id).toBe(promoted.memory.id);
+    } finally { service.close(); }
+  });
+
+  it('keeps missing, foreign-project, import and root-authority review/promotion guards', () => {
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const project = { key: 'repo:guarded', name: 'guarded' };
+    const foreign = { key: 'repo:foreign', name: 'foreign' };
+    const session = { rootSessionKey: 'root', harness: 'codex' as const };
+    try {
+      const source = service.save({ project, session, evidence: { kind: 'explicit_save', content: 'Agent-authored proposal, not user confirmation.' } });
+      const candidate = service.submitObservation({ project, session, eventKey: 'candidate', observation: {
+        kind: 'fact', scope: 'project', title: 'Guarded fact', claim: 'Keep the review guards.',
+        proposedMemory: { kind: 'discovery', title: 'Guarded fact', content: 'Keep the review guards.' },
+        supportIds: [source.evidence.id], generator: { kind: 'root_agent', name: 'codex' },
+      } }).observation;
+      const review = { observationId: candidate.id, verdict: 'accepted' as const, basis: 'root_user_confirmed' as const, policy: { id: 'root', version: '1' }, reason: 'Attempt review.', supportIds: [source.evidence.id] };
+      for (const [target, observationId] of [[project, 'missing'], [foreign, candidate.id]] as const) {
+        expect(() => service.reviewObservation({ project: target, session, eventKey: 'review', review: { ...review, observationId } })).toThrow(/existing candidate in the same project/iu);
+        expect(() => service.promoteObservation({ project: target, session, eventKey: 'promote', observationId })).toThrow(/existing same-project candidate/iu);
+      }
+      const imported = { rootSessionKey: 'imported', harness: 'import' as const };
+      expect(() => service.reviewObservation({ project, session: imported, eventKey: 'review', review })).toThrow(/Import sessions cannot review/iu);
+      expect(() => service.promoteObservation({ project, session: imported, eventKey: 'promote', observationId: candidate.id })).toThrow(/Import sessions cannot promote/iu);
+      expect(() => service.reviewObservation({ project, session, eventKey: 'review', review })).toThrow(/same-session root prompt/iu);
+      expect(service.get({ id: candidate.id }).record).toMatchObject({ state: 'pending', review: null });
+      expect(service.recall({ projectKey: project.key, query: 'Guarded fact' }).items).toEqual([]);
     } finally { service.close(); }
   });
 

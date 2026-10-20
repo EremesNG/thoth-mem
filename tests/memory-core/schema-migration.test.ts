@@ -8,9 +8,24 @@ import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { rebuildSessionSummaryProjection } from '../../src/memory-core/session-summaries.js';
+import { stableUuid } from '../../src/memory-core/sqlite/ledger.js';
 import { MemoryService } from '../../src/memory-core/service.js';
-import { migrateCurrentSchema, preV10BackupPath, preV11BackupPath, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, REVISION_ELEVEN_EMPTY_SESSIONS_SQL, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
+import { migrateCurrentSchema, preV10BackupPath, preV11BackupPath, preV12BackupPath, preV4BackupPath, preV6BackupPath, preV7BackupPath, preV8BackupPath, preV9BackupPath, REVISION_ELEVEN_EMPTY_SESSIONS_SQL, SQLITE_SCHEMA_REVISION } from '../../src/memory-core/sqlite/migrations.js';
 import { CURRENT_SCHEMA_SQL, LEGACY_IMPORT_AUDIT_SCHEMA_SQL, LEGACY_IMPORT_COHORT_SCHEMA_SQL, PROJECT_ALIAS_SCHEMA_SQL, REVISION_FIVE_SCHEMA_SQL, REVISION_FOUR_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL, REVISION_THREE_SCHEMA_SQL } from '../../src/memory-core/sqlite/schema.js';
+
+// Freeze historical summary DDL independently of the current projection.
+function previousSummarySchema(sql: string): string {
+  return sql
+    .replace(/CREATE TABLE session_summaries\([^;]+;/u,
+    "CREATE TABLE session_summaries(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL REFERENCES sessions(id), submission_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id), kind TEXT NOT NULL CHECK(kind IN ('checkpoint','final')), version INTEGER NOT NULL CHECK(version > 0), status TEXT NOT NULL CHECK(status IN ('current','superseded')), source_sequence_from INTEGER NOT NULL CHECK(source_sequence_from > 0), source_sequence_to INTEGER NOT NULL CHECK(source_sequence_to >= source_sequence_from), generator_kind TEXT NOT NULL CHECK(generator_kind IN ('root_agent','harness','model')), generator_name TEXT NOT NULL CHECK(length(generator_name) BETWEEN 1 AND 200), generator_version TEXT CHECK(generator_version IS NULL OR length(generator_version) BETWEEN 1 AND 200), generator_config_hash TEXT CHECK(generator_config_hash IS NULL OR generator_config_hash GLOB '[0-9a-f]*' AND length(generator_config_hash)=64), supersedes_id TEXT REFERENCES session_summaries(id), created_at TEXT NOT NULL, UNIQUE(session_id,kind,version));")
+    .replace(/CREATE UNIQUE INDEX session_summaries_current[^;]+;/u, "CREATE UNIQUE INDEX session_summaries_current_kind ON session_summaries(session_id,kind) WHERE status='current';")
+    .replace(/CREATE INDEX session_summaries_selection[^;]+;/u, 'CREATE INDEX session_summaries_selection ON session_summaries(session_id,status,source_sequence_to DESC,kind,created_at DESC,id);')
+    .replace('OR new.version IS NOT old.version', 'OR new.kind IS NOT old.kind OR new.version IS NOT old.version');
+}
+
+const REVISION_ELEVEN_SCHEMA_SQL = previousSummarySchema(CURRENT_SCHEMA_SQL.replace(/CREATE TABLE sessions\([^;]+;/u,
+  "CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN ('opencode','codex','claude','pi','mcp','cli','import')), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));"));
 
 // Only the filesystem boundary is intercepted; SQLite connections and backups remain real.
 vi.mock('node:fs', async (importOriginal) => {
@@ -35,7 +50,12 @@ function exactLogicalRows(database: Database.Database, excluded: readonly string
   const excludedNames = new Set(excluded);
   const tables = (database.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type IN ('table','virtual') AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name").all() as Array<{ name: string }>)
     .map((row) => row.name).filter((name) => !excludedNames.has(name));
-  return JSON.stringify(tables.map((table) => [table, (database.prepare(`SELECT * FROM "${table.replaceAll('"', '""')}"`).all() as Array<Record<string, unknown>>).map((row) => JSON.stringify(row)).sort()]));
+  return JSON.stringify(tables.map((table) => [table, (database.prepare(`SELECT * FROM "${table.replaceAll('"', '""')}"`).all() as Array<Record<string, unknown>>).map((row) => {
+    // Compare retained summary fields across the intentional kind-column removal.
+    const retained = { ...row };
+    if (table === 'session_summaries') delete retained.kind;
+    return JSON.stringify(retained);
+  }).sort()]));
 }
 
 function createRevisionThreeFixture(path: string): void {
@@ -60,7 +80,7 @@ function createRevisionFourFixture(path: string): void {
   const timestamp = '2026-08-27T00:00:00.000Z';
   try {
     database.pragma('foreign_keys = ON');
-    database.exec(REVISION_FOUR_SCHEMA_SQL);
+    database.exec(previousSummarySchema(REVISION_FOUR_SCHEMA_SQL));
     database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(4, timestamp);
     database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
     database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', null, 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
@@ -74,7 +94,7 @@ function createRevisionFiveFixture(path: string): void {
   const timestamp = '2026-08-28T00:00:00.000Z';
   try {
     database.pragma('foreign_keys = ON');
-    database.exec(REVISION_FIVE_SCHEMA_SQL);
+    database.exec(previousSummarySchema(REVISION_FIVE_SCHEMA_SQL));
     database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(5, timestamp);
     database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
     database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', null, 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
@@ -88,7 +108,7 @@ function createRevisionSixFixture(path: string): void {
   const timestamp = '2026-08-31T00:00:00.000Z';
   try {
     database.pragma('foreign_keys = ON');
-    database.exec(REVISION_SIX_SCHEMA_SQL);
+    database.exec(previousSummarySchema(REVISION_SIX_SCHEMA_SQL));
     database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(6, timestamp);
     database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'path:C:/repo', 'Fixture', null, timestamp, timestamp);
     database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', null, 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
@@ -102,7 +122,7 @@ function createRevisionSevenFixture(path: string): void {
   const timestamp = '2026-09-01T00:00:00.000Z';
   try {
     database.pragma('foreign_keys = ON');
-    database.exec(`${REVISION_SIX_SCHEMA_SQL}\n${PROJECT_ALIAS_SCHEMA_SQL}`);
+    database.exec(`${previousSummarySchema(REVISION_SIX_SCHEMA_SQL)}\n${PROJECT_ALIAS_SCHEMA_SQL}`);
     database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(7, timestamp);
     database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'path:C:/repo', 'Fixture', null, timestamp, timestamp);
     database.prepare('INSERT INTO project_aliases VALUES(?,?,?,?,?)').run('path:C:/repo-alias', 'project-1', 'path', timestamp, timestamp);
@@ -157,7 +177,7 @@ function createEmptySessionFixture(path: string, revision: 9 | 10): void {
   try {
     database.pragma('foreign_keys = ON');
     if (revision === 10) {
-      database.exec(CURRENT_SCHEMA_SQL);
+      database.exec(REVISION_ELEVEN_SCHEMA_SQL);
       database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(10, timestamp);
       database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
       database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run('evidence-1', 'project-1', null, 'explicit_save', 'source evidence', 'hash-1', null, timestamp, '{}');
@@ -207,14 +227,14 @@ function createEmptySessionFixture(path: string, revision: 9 | 10): void {
   } finally { database.close(); }
 }
 
-function createScaleRevisionTenFixture(path: string): void {
+function createScaleSessionFixture(path: string, revision: 10 | 11 = 10): void {
   const database = new Database(path);
   const timestamp = '2026-10-19T00:00:00.000Z';
   try {
     database.pragma('foreign_keys = ON');
-    database.exec(CURRENT_SCHEMA_SQL);
+    database.exec(REVISION_ELEVEN_SCHEMA_SQL);
     database.transaction(() => {
-      database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(10, timestamp);
+      database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(revision, timestamp);
       database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('scale-project', 'scale', 'Scale', null, timestamp, timestamp);
       database.prepare('INSERT INTO legacy_imports VALUES(?,?,?,?,?,?,?,?,?,?)').run('scale-import', 'a'.repeat(64), '{}', 'target', 'b'.repeat(64), 'c'.repeat(64), 'd'.repeat(64), 'legacy-v1', 'committed', timestamp);
       database.prepare('INSERT INTO legacy_import_cohorts VALUES(?,?)').run('scale-import', 1);
@@ -223,18 +243,78 @@ function createScaleRevisionTenFixture(path: string): void {
       for (let index = 0; index < 8_000; index++) {
         const id = `scale-${index}`;
         const harness = index >= 4_000 && index < 5_000 ? 'import' : index % 2 === 0 ? 'pi' : 'codex';
-        session.run(id, 'scale-project', id, harness, 'ended', timestamp, timestamp, 0);
+        session.run(id, 'scale-project', id, harness, ['active', 'compacted', 'ended', 'degraded'][index % 4], timestamp, index % 4 === 2 ? timestamp : null, 0);
         for (const operation of ['enroll', 'recover', 'finalize']) receipt.run(harness, 'scale-project', id, operation, operation, 'payload', 'confirmed', timestamp, null, null, null);
       }
       const evidence = database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)');
       for (let index = 0; index < 25_000; index++) {
         evidence.run(`scale-evidence-${index}`, 'scale-project', index < 24_000 ? `scale-${5_000 + index % 2_000}` : null, 'explicit_save', 'Scale evidence.', 'hash', null, timestamp, '{}');
       }
+      const summary = database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      const event = database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)');
+      for (let index = 0; index < 100; index++) {
+        const sessionId = `scale-${5_000 + index}`;
+        const supportId = `scale-evidence-${index}`;
+        const submissionId = `scale-submission-${index}`;
+        const summaryId = `scale-summary-${index}`;
+        evidence.run(submissionId, 'scale-project', sessionId, 'session_summary', 'Scale submission.', 'hash', null, timestamp, '{}');
+        event.run(supportId, sessionId, 1, 'user', 'root_user', 'session', 'standard');
+        event.run(submissionId, sessionId, 2, 'system', 'harness', 'session', 'standard');
+        database.prepare('UPDATE sessions SET next_event_sequence=2 WHERE id=?').run(sessionId);
+        summary.run(summaryId, 'scale-project', sessionId, submissionId, index % 2 ? 'final' : 'checkpoint', 1, 'current', 1, 1, 'harness', 'scale-fixture', null, null, null, timestamp);
+        database.prepare('INSERT INTO session_summary_claims VALUES(?,?,?,?,?,?)').run(`scale-claim-${index}`, summaryId, 0, 'completed', 'Scale claim.', null);
+        database.prepare('INSERT INTO session_summary_claim_supports VALUES(?,?,?)').run(`scale-claim-${index}`, supportId, 'supports');
+        database.prepare("UPDATE lifecycle_receipts SET summary_id=? WHERE root_session_key=? AND operation='finalize'").run(summaryId, sessionId);
+      }
       const legacy = database.prepare('INSERT INTO legacy_import_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
       for (let index = 0; index < 30_000; index++) {
         legacy.run('scale-import', 'session', `legacy-${index}`, 0, 'e'.repeat(64), null, 'imported', 'imported', 'scale-project', index < 29_000 ? `scale-${7_000 + index % 1_000}` : null, null, null, timestamp);
       }
     })();
+  } finally { database.close(); }
+}
+
+function createRevisionElevenFixture(path: string): void {
+  createEmptySessionFixture(path, 10);
+  const database = new Database(path);
+  try { database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(11, '2026-10-20T00:00:00.000Z'); }
+  finally { database.close(); }
+}
+
+function createInterleavedSummaryFixture(path: string): string[] {
+  const database = new Database(path);
+  const timestamp = '2026-10-20T00:00:00.000Z';
+  const ids: string[] = [];
+  try {
+    database.pragma('foreign_keys = ON');
+    database.exec(REVISION_ELEVEN_SCHEMA_SQL);
+    database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(11, timestamp);
+    database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
+    database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)').run('session-1', 'project-1', 'root-1', 'codex', 'ended', timestamp, timestamp, 8);
+    const evidence = database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)');
+    const event = database.prepare('INSERT INTO session_events VALUES(?,?,?,?,?,?,?)');
+    for (let sequence = 1; sequence <= 4; sequence++) {
+      evidence.run(`support-${sequence}`, 'project-1', 'session-1', 'root_prompt', `Support ${sequence}.`, 'hash', null, timestamp, '{}');
+      event.run(`support-${sequence}`, 'session-1', sequence, 'user', 'root_user', 'session', 'standard');
+    }
+    const previous = new Map<string, string>();
+    for (const [index, [kind, coverage]] of ([['checkpoint', 3], ['final', 2], ['checkpoint', 4], ['final', 4]] as const).entries()) {
+      const evidenceId = `submission-${index}`;
+      const id = stableUuid(`session-summary:${evidenceId}`);
+      ids.push(id);
+      const claimId = stableUuid(`session-summary-claim:${id}:0`);
+      const summary = { kind, coverage: { fromSequence: 1, toSequence: coverage }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'completed', content: `Claim ${index}.`, supportIds: ['support-1'] }] };
+      evidence.run(evidenceId, 'project-1', 'session-1', 'session_summary', JSON.stringify({ schema: 'thoth-mem.session-summary.v1', summary }), 'hash', null, timestamp, '{}');
+      event.run(evidenceId, 'session-1', index + 5, 'system', 'harness', 'session', 'standard');
+      const predecessor = previous.get(kind);
+      if (predecessor) database.prepare("UPDATE session_summaries SET status='superseded' WHERE id=?").run(predecessor);
+      database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, 'project-1', 'session-1', evidenceId, kind, index < 2 ? 1 : 2, 'current', 1, coverage, 'harness', 'fixture', null, null, predecessor ?? null, timestamp);
+      database.prepare('INSERT INTO session_summary_claims VALUES(?,?,?,?,?,?)').run(claimId, id, 0, 'completed', `Claim ${index}.`, null);
+      database.prepare('INSERT INTO session_summary_claim_supports VALUES(?,?,?)').run(claimId, 'support-1', 'supports');
+      database.prepare('INSERT INTO lifecycle_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('codex', 'project-1', 'root-1', `summary-${index}`, 'finalize', 'payload', 'confirmed', timestamp, null, evidenceId, id);
+      previous.set(kind, id);
+    }
+    return ids;
   } finally { database.close(); }
 }
 
@@ -248,10 +328,11 @@ const revisionFixtures = {
   8: createRevisionEightFixture,
   9: createRevisionNineFixture,
   10: (path: string) => createEmptySessionFixture(path, 10),
+  11: createRevisionElevenFixture,
 };
 const revisionBackupPaths = {
   3: preV4BackupPath, 5: preV6BackupPath, 6: preV7BackupPath, 7: preV8BackupPath,
-  8: preV9BackupPath, 9: preV10BackupPath, 10: preV11BackupPath,
+  8: preV9BackupPath, 9: preV10BackupPath, 10: preV11BackupPath, 11: preV12BackupPath,
 };
 
 afterEach(() => {
@@ -263,6 +344,119 @@ afterEach(() => {
 
 // File-backed backups and VACUUM INTO make these slower than the default timeout under full-suite load.
 describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
+  it('unifies interleaved and equal-coverage summaries, preserves linked IDs and matches fresh DDL', () => {
+    const path = fixturePath();
+    const ids = createInterleavedSummaryFixture(path);
+    const database = new Database(path);
+    const fresh = new Database(':memory:');
+    try {
+      const linkedRows = exactLogicalRows(database, ['sessions', 'session_summaries', 'schema_migrations']);
+      migrateCurrentSchema(database);
+      expect(database.prepare('SELECT id,version,status,supersedes_id FROM session_summaries ORDER BY version').all()).toEqual([
+        { id: ids[1], version: 1, status: 'superseded', supersedes_id: null },
+        { id: ids[0], version: 2, status: 'superseded', supersedes_id: ids[1] },
+        { id: ids[2], version: 3, status: 'superseded', supersedes_id: ids[0] },
+        { id: ids[3], version: 4, status: 'current', supersedes_id: ids[2] },
+      ]);
+      expect(exactLogicalRows(database, ['sessions', 'session_summaries', 'schema_migrations'])).toBe(linkedRows);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+      migrateCurrentSchema(fresh);
+      const ddl = (db: Database.Database) => db.prepare("SELECT type,name,sql FROM sqlite_master WHERE tbl_name='session_summaries' ORDER BY type,name").all();
+      expect(ddl(database)).toEqual(ddl(fresh));
+      expect(database.prepare("SELECT name FROM pragma_table_info('session_summaries') WHERE name='kind'").all()).toEqual([]);
+      const after = exactLogicalRows(database);
+      expect(migrateCurrentSchema(database)).toMatchObject({ fromRevision: 12, toRevision: 12, backups: [] });
+      expect(exactLogicalRows(database)).toBe(after);
+      expect(() => database.prepare('UPDATE session_summaries SET version=99 WHERE id=?').run(ids[3])).toThrow(/immutable/u);
+      expect(() => database.prepare('DELETE FROM session_summaries WHERE id=?').run(ids[3])).toThrow(/immutable/u);
+    } finally { fresh.close(); database.close(); }
+  });
+
+  it('rebuilds the migrated interleaved projection identically, ignoring previous submission kinds', () => {
+    const path = fixturePath();
+    createInterleavedSummaryFixture(path);
+    const database = new Database(path);
+    try {
+      migrateCurrentSchema(database);
+      const before = exactLogicalRows(database);
+      expect(rebuildSessionSummaryProjection(database)).toEqual({ summaries: 4, claims: 4, supports: 4 });
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+    } finally { database.close(); }
+  });
+
+  it('migrates revision 11 without session state, preserves other data and matches fresh DDL', () => {
+    const path = fixturePath(); createRevisionElevenFixture(path);
+    const database = new Database(path);
+    const fresh = new Database(':memory:');
+    try {
+      const others = exactLogicalRows(database, ['sessions', 'schema_migrations']);
+      const sessions = database.prepare('SELECT id,project_id,root_session_key,harness,started_at,next_event_sequence FROM sessions ORDER BY id').all();
+      expect(migrateCurrentSchema(database)).toEqual({ fromRevision: 11, toRevision: 12, backups: [{ path: preV12BackupPath(path), status: 'created' }], removedSessions: 0, removedReceipts: 0 });
+      expect(database.prepare("SELECT name FROM pragma_table_info('sessions')").all()).toEqual(['id', 'project_id', 'root_session_key', 'harness', 'started_at', 'next_event_sequence'].map((name) => ({ name })));
+      expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(sessions);
+      expect(exactLogicalRows(database, ['sessions', 'schema_migrations'])).toBe(others);
+      migrateCurrentSchema(fresh);
+      const ddl = (db: Database.Database) => (db.prepare("SELECT sql FROM sqlite_master WHERE name='sessions'").get() as { sql: string }).sql;
+      expect(ddl(database)).toBe(ddl(fresh));
+      const after = exactLogicalRows(database);
+      expect(migrateCurrentSchema(database)).toEqual({ fromRevision: 12, toRevision: 12, backups: [], removedSessions: 0, removedReceipts: 0 });
+      expect(exactLogicalRows(database)).toBe(after);
+      const backup = new Database(preV12BackupPath(path), { readonly: true });
+      try {
+        expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+        expect(exactLogicalRows(backup, ['sessions', 'schema_migrations'])).toBe(others);
+      } finally { backup.close(); }
+    } finally { fresh.close(); database.close(); }
+  });
+
+  it('holds the revision-12 write reservation and rolls back if recording fails', () => {
+    const path = fixturePath(); createRevisionElevenFixture(path);
+    const database = new Database(path);
+    const contender = new Database(path, { timeout: 0 });
+    try {
+      database.exec("CREATE TRIGGER reject_revision_twelve BEFORE INSERT ON schema_migrations WHEN new.version=12 BEGIN SELECT RAISE(ABORT, 'blocked revision twelve'); END;");
+      const before = exactLogicalRows(database);
+      expect(() => migrateCurrentSchema(database, { afterRevisionElevenBackupVerified: () => {
+        expect(database.inTransaction).toBe(true);
+        expect(() => contender.prepare("UPDATE projects SET display_name='contender'").run()).toThrow(/busy|locked/iu);
+      } })).toThrow(/blocked revision twelve/iu);
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(existsSync(preV12BackupPath(path))).toBe(true);
+      database.exec('DROP TRIGGER reject_revision_twelve');
+      expect(migrateCurrentSchema(database)).toMatchObject({ fromRevision: 11, toRevision: 12, backups: [{ path: preV12BackupPath(path), status: 'verified' }] });
+    } finally { contender.close(); database.close(); }
+  });
+
+  it('checks revision-12 foreign keys before recording and rolls back invalid data', () => {
+    const path = fixturePath(); createRevisionElevenFixture(path);
+    const database = new Database(path);
+    try {
+      const before = exactLogicalRows(database);
+      database.exec("CREATE TRIGGER reject_revision_twelve BEFORE INSERT ON schema_migrations WHEN new.version=12 BEGIN SELECT RAISE(ABORT, 'revision recorded before verification'); END;");
+      expect(() => migrateCurrentSchema(database, { afterRevisionElevenBackupVerified: () => {
+        database.exec('DROP TRIGGER evidence_immutable_update');
+        database.prepare('UPDATE evidence SET session_id=? WHERE id=?').run('missing-session', 'evidence-1');
+      } })).toThrow(/revision 12 migration failed foreign-key verification/iu);
+      expect(exactLogicalRows(database)).toBe(before);
+      expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
+    } finally { database.close(); }
+  });
+
+  it('rejects a stale pre-v12 backup before dropping columns', () => {
+    const path = fixturePath(); createRevisionElevenFixture(path);
+    copyFileSync(path, preV12BackupPath(path));
+    const database = new Database(path);
+    try {
+      database.prepare("UPDATE projects SET display_name='changed after backup'").run();
+      const before = exactLogicalRows(database);
+      expect(() => migrateCurrentSchema(database)).toThrow(/pre-v12 backup does not match the locked revision 11 source/iu);
+      expect(exactLogicalRows(database)).toBe(before);
+    } finally { database.close(); }
+  });
+
   it('reports the failing revision with bounded observed detail and manual recovery guidance', () => {
     const path = fixturePath(); createEmptySessionFixture(path, 10);
     const database = new Database(path);
@@ -363,7 +557,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
         expect(exactLogicalRows(database)).toBe(before);
       } else {
         expect(migrateCurrentSchema(database)).toMatchObject({
-          backups: [{ path: preV11BackupPath(path), status: 'verified' }], removedSessions: 3, removedReceipts: 9,
+          backups: [{ path: preV11BackupPath(path), status: 'verified' }, { path: preV12BackupPath(path), status: 'created' }], removedSessions: 3, removedReceipts: 9,
         });
       }
       expect(readFileSync(preV11BackupPath(path))).toEqual(winnerBytes);
@@ -391,17 +585,17 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     try {
       let winnerApplied = false;
       const report = migrateCurrentSchema(database, { afterRevisionNineBackupVerified: () => {
-        expect(migrateCurrentSchema(winner)).toMatchObject({ fromRevision: 9, toRevision: 11, removedSessions: 2, removedReceipts: 6 });
+        expect(migrateCurrentSchema(winner)).toMatchObject({ fromRevision: 9, toRevision: 12, removedSessions: 2, removedReceipts: 6 });
         winnerApplied = true;
       } });
       expect(winnerApplied).toBe(true);
-      expect(report).toMatchObject({ fromRevision: 9, toRevision: 11, removedSessions: 0, removedReceipts: 0 });
-      expect(database.prepare('SELECT version FROM schema_migrations WHERE version>=9 ORDER BY version').all()).toEqual([{ version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(report).toMatchObject({ fromRevision: 9, toRevision: 12, removedSessions: 0, removedReceipts: 0 });
+      expect(database.prepare('SELECT version FROM schema_migrations WHERE version>=9 ORDER BY version').all()).toEqual([{ version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.pragma('foreign_key_check')).toEqual([]);
     } finally { winner.close(); database.close(); }
   });
 
-  it.each([3, 5, 6, 7, 8, 9, 10] as const)('reuses the winner when revision %i advances after the absent-backup check but before VACUUM', async (revision) => {
+  it.each([3, 5, 6, 7, 8, 9, 10, 11] as const)('reuses the winner when revision %i advances after the absent-backup check but before VACUUM', async (revision) => {
     const path = fixturePath();
     revisionFixtures[revision](path);
     const database = new Database(path);
@@ -420,10 +614,10 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     });
     try {
       expect(migrateCurrentSchema(database)).toEqual({
-        fromRevision: revision, toRevision: 11, backups: [{ path: backupPath, status: 'verified' }], removedSessions: 0, removedReceipts: 0,
+        fromRevision: revision, toRevision: 12, backups: [{ path: backupPath, status: 'verified' }], removedSessions: 0, removedReceipts: 0,
       });
       expect(winnerApplied).toBe(true);
-      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
       const backup = new Database(backupPath, { readonly: true, fileMustExist: true });
       try {
         expect(backup.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: revision });
@@ -434,30 +628,30 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     } finally { winner.close(); database.close(); }
   });
 
-  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10] as const)('rechecks revision %i under the immediate lock and continues after a winner applies the next revision', (revision) => {
+  it.each([2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const)('rechecks revision %i under the immediate lock and continues after a winner applies the next revision', (revision) => {
     const path = fixturePath();
     revisionFixtures[revision](path);
     const winner = new Database(path);
     if (revision === 2) winner.prepare('UPDATE schema_migrations SET version=2 WHERE version=3').run();
     const previousRevisions = winner.prepare('SELECT version FROM schema_migrations ORDER BY version').all();
-    if (revision < 10) winner.exec(`CREATE TRIGGER pause_winner BEFORE INSERT ON schema_migrations WHEN new.version=${revision + 2} BEGIN SELECT RAISE(ABORT, 'pause winner'); END;`);
+    if (revision < 11) winner.exec(`CREATE TRIGGER pause_winner BEFORE INSERT ON schema_migrations WHEN new.version=${revision + 2} BEGIN SELECT RAISE(ABORT, 'pause winner'); END;`);
     let winnerApplied = false;
     const database = new Database(path, { verbose: (sql) => {
       if (sql !== 'BEGIN IMMEDIATE' || winnerApplied) return;
       winnerApplied = true;
-      if (revision < 10) {
+      if (revision < 11) {
         expect(() => migrateCurrentSchema(winner)).toThrow(/pause winner/u);
         winner.exec('DROP TRIGGER pause_winner');
       } else {
-        expect(migrateCurrentSchema(winner)).toMatchObject({ removedSessions: 3, removedReceipts: 9 });
+        expect(migrateCurrentSchema(winner)).toMatchObject({ removedSessions: 0, removedReceipts: 0 });
       }
       expect(winner.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: revision + 1 });
     } });
     try {
       const report = migrateCurrentSchema(database);
       expect(winnerApplied).toBe(true);
-      expect(report).toMatchObject({ fromRevision: revision, toRevision: 11, ...(revision === 10 ? { removedSessions: 0, removedReceipts: 0 } : {}) });
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([...previousRevisions, ...Array.from({ length: 11 - revision }, (_, index) => ({ version: revision + index + 1 }))]);
+      expect(report).toMatchObject({ fromRevision: revision, toRevision: 12, ...(revision === 10 ? { removedSessions: 0, removedReceipts: 0 } : {}) });
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([...previousRevisions, ...Array.from({ length: 12 - revision }, (_, index) => ({ version: revision + index + 1 }))]);
       expect(database.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(database.pragma('foreign_key_check')).toEqual([]);
     } finally { winner.close(); database.close(); }
@@ -512,7 +706,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
           expect(outcome.error.code).toMatch(/^SQLITE_BUSY/u);
           expect(outcome.error.message).toMatch(/busy|locked/iu);
           expect(outcome.error.message.length).toBeLessThan(300);
-        } else expect(outcome.report?.toRevision).toBe(11);
+        } else expect(outcome.report?.toRevision).toBe(12);
       }
       const database = new Database(path);
       const backup = new Database(preV11BackupPath(path), { readonly: true, fileMustExist: true });
@@ -539,15 +733,16 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     try {
       expect(migrateCurrentSchema(database)).toEqual({
         fromRevision: revision,
-        toRevision: 11,
+        toRevision: 12,
         backups: [
           ...(revision === 9 ? [{ path: preV10BackupPath(path), status: 'created' }] : []),
           { path: preV11BackupPath(path), status: 'created' },
+          { path: preV12BackupPath(path), status: 'created' },
         ],
         removedSessions: revision === 9 ? 2 : 3,
         removedReceipts: revision === 9 ? 6 : 9,
       });
-      expect(migrateCurrentSchema(database)).toEqual({ fromRevision: 11, toRevision: 11, backups: [], removedSessions: 0, removedReceipts: 0 });
+      expect(migrateCurrentSchema(database)).toEqual({ fromRevision: 12, toRevision: 12, backups: [], removedSessions: 0, removedReceipts: 0 });
     } finally { database.close(); }
   });
 
@@ -557,12 +752,12 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const migrated = new MemoryService({ databasePath: path });
     try {
       expect(migrated.migrationReport).toEqual({
-        fromRevision: 10, toRevision: 11,
-        backups: [{ path: preV11BackupPath(path), status: 'verified' }],
+        fromRevision: 10, toRevision: 12,
+        backups: [{ path: preV11BackupPath(path), status: 'verified' }, { path: preV12BackupPath(path), status: 'created' }],
         removedSessions: 3, removedReceipts: 9,
       });
     } finally { migrated.close(); }
-    const noOp = { fromRevision: 11, toRevision: 11, backups: [], removedSessions: 0, removedReceipts: 0 };
+    const noOp = { fromRevision: 12, toRevision: 12, backups: [], removedSessions: 0, removedReceipts: 0 };
     for (const databasePath of [path, fixturePath(), ':memory:']) {
       const service = new MemoryService({ databasePath });
       try { expect(service.migrationReport).toEqual(noOp); }
@@ -597,15 +792,15 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     const beforeOtherRows = exactLogicalRows(database, ['schema_migrations', 'sessions', 'lifecycle_receipts']);
     const emptyIds = ['empty-codex', 'empty-opencode', 'empty-pi'];
-    const beforeSessions = database.prepare('SELECT * FROM sessions ORDER BY id').all() as Array<{ id: string }>;
+    const beforeSessions = database.prepare('SELECT * FROM sessions ORDER BY id').all() as Array<{ id: string; state: string; ended_at: string | null }>;
     const beforeReceipts = database.prepare('SELECT * FROM lifecycle_receipts ORDER BY harness,project_id,root_session_key,event_key,operation').all() as Array<{ root_session_key: string; harness: string; project_id: string }>;
     const removedRoots = new Set(['codex:project-1:empty-codex', 'opencode:project-1:empty-opencode', 'pi:project-1:empty-pi']);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(beforeSessions.filter((row) => !emptyIds.includes(row.id)));
+      expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(beforeSessions.filter((row) => !emptyIds.includes(row.id)).map(({ state, ended_at, ...row }) => row));
       expect(database.prepare('SELECT * FROM lifecycle_receipts ORDER BY harness,project_id,root_session_key,event_key,operation').all()).toEqual(beforeReceipts.filter((row) => !removedRoots.has(`${row.harness}:${row.project_id}:${row.root_session_key}`)));
       expect(exactLogicalRows(database, ['schema_migrations', 'sessions', 'lifecycle_receipts'])).toBe(beforeOtherRows);
-      expect(database.prepare('SELECT version FROM schema_migrations WHERE version>=9 ORDER BY version').all()).toEqual([{ version: 9 }, { version: 10 }, { version: 11 }].filter((row) => row.version >= revision));
+      expect(database.prepare('SELECT version FROM schema_migrations WHERE version>=9 ORDER BY version').all()).toEqual([{ version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }].filter((row) => row.version >= revision));
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'search*'").all()).toEqual([{ memory_id: 'memory-1' }]);
       expect(database.pragma('foreign_key_check')).toEqual([]);
       expect(database.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
@@ -624,14 +819,14 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
   });
 
   it('migrates 8000 sessions with 25000 evidence and 30000 legacy rows within a generous bound', () => {
-    const path = fixturePath(); createScaleRevisionTenFixture(path);
+    const path = fixturePath(); createScaleSessionFixture(path);
     const database = new Database(path);
     try {
       const before = database.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>;
       const started = performance.now();
       migrateCurrentSchema(database);
       const elapsedMs = performance.now() - started;
-      console.info(`Revision 10->11 synthetic migration: ${elapsedMs.toFixed(1)} ms`);
+      console.info(`Revision 10->12 synthetic migration: ${elapsedMs.toFixed(1)} ms`);
       // Includes backup + verification + locked state comparison, but not fixture construction.
       // 15 seconds is deliberately generous for shared Windows/CI runners; plan coverage is deterministic.
       expect(elapsedMs).toBeLessThan(15_000);
@@ -642,11 +837,33 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
       const receiptRoots = database.prepare('SELECT DISTINCT root_session_key FROM lifecycle_receipts ORDER BY root_session_key').all();
       expect(receiptRoots).toEqual(Array.from({ length: 4_000 }, (_, index) => `scale-${4_000 + index}`).sort().map((id) => ({ root_session_key: id })));
       expect(database.prepare('SELECT count(*) AS count FROM lifecycle_receipts').get()).toEqual({ count: 12_000 });
-      expect(database.prepare('SELECT count(*) AS count FROM evidence').get()).toEqual({ count: 25_000 });
+      expect(database.prepare('SELECT count(*) AS count FROM evidence').get()).toEqual({ count: 25_100 });
       expect(database.prepare('SELECT count(*) AS count FROM legacy_import_rows').get()).toEqual({ count: 30_000 });
       expect(database.pragma('foreign_key_check')).toEqual([]);
-      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
       expect(existsSync(preV11BackupPath(path))).toBe(true);
+    } finally { database.close(); }
+  });
+
+  it('drops session columns and unifies summaries in a file-backed revision-11 database of 8000 sessions in every state', () => {
+    const path = fixturePath(); createScaleSessionFixture(path, 11);
+    const database = new Database(path);
+    try {
+      const others = exactLogicalRows(database, ['sessions', 'schema_migrations']);
+      const sessions = database.prepare('SELECT id,project_id,root_session_key,harness,started_at,next_event_sequence FROM sessions ORDER BY id').all();
+      expect(database.prepare('SELECT DISTINCT state FROM sessions').all()).toHaveLength(4);
+      const started = performance.now();
+      const report = migrateCurrentSchema(database);
+      const elapsedMs = performance.now() - started;
+      console.info(`Revision 11->12 synthetic migration: ${elapsedMs.toFixed(1)} ms`);
+      expect(elapsedMs).toBeLessThan(15_000);
+      expect(report).toMatchObject({ fromRevision: 11, toRevision: 12, backups: [{ path: preV12BackupPath(path), status: 'created' }], removedSessions: 0, removedReceipts: 0 });
+      expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(sessions);
+      expect(sessions).toHaveLength(8_000);
+      expect(database.prepare("SELECT count(*) AS count FROM session_summaries WHERE version=1 AND status='current'").get()).toEqual({ count: 100 });
+      expect(exactLogicalRows(database, ['sessions', 'schema_migrations'])).toBe(others);
+      expect(database.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+      expect(database.pragma('foreign_key_check')).toEqual([]);
     } finally { database.close(); }
   });
 
@@ -691,7 +908,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
       expect(existsSync(preV11BackupPath(path))).toBe(true);
       database.exec('DROP TRIGGER reject_revision_eleven');
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
     } finally { database.close(); }
   });
 
@@ -733,16 +950,16 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     const contender = new Database(path); contender.pragma('busy_timeout = 1');
     const beforeAllRows = exactLogicalRows(database);
-    const beforeAuthoritativeRows = exactLogicalRows(database, ['schema_migrations']);
+    const beforeAuthoritativeRows = exactLogicalRows(database, ['schema_migrations', 'sessions']);
     try {
-      const before = database.prepare('SELECT * FROM sessions ORDER BY id').all();
+      const before = database.prepare('SELECT id,project_id,root_session_key,harness,started_at,next_event_sequence FROM sessions ORDER BY id').all();
       migrateCurrentSchema(database, { afterRevisionNineTableRebuilt: () => {
         expect(() => contender.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('concurrent', 'concurrent', 'Concurrent', null, '2026-09-03T00:00:00.000Z', '2026-09-03T00:00:00.000Z')).toThrow(/locked|busy/iu);
       } });
       expect(database.prepare('SELECT * FROM sessions ORDER BY id').all()).toEqual(before);
-      expect(exactLogicalRows(database, ['schema_migrations'])).toBe(beforeAuthoritativeRows);
-      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
-      expect(() => database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)').run('pi-session', 'project-1', 'pi-root', 'pi', 'active', '2026-09-03T00:00:00.000Z', null, 0)).not.toThrow();
+      expect(exactLogicalRows(database, ['schema_migrations', 'sessions'])).toBe(beforeAuthoritativeRows);
+      expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
+      expect(() => database.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('pi-session', 'project-1', 'pi-root', 'pi', '2026-09-03T00:00:00.000Z', 0)).not.toThrow();
       expect(database.pragma('foreign_key_check')).toEqual([]);
       expect(() => migrateCurrentSchema(database)).not.toThrow();
     } finally { contender.close(); database.close(); }
@@ -811,7 +1028,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(SQLITE_SCHEMA_REVISION).toBe(11);
+      expect(SQLITE_SCHEMA_REVISION).toBe(12);
       expect(database.prepare('SELECT import_id,cohort_sequence FROM legacy_import_cohorts ORDER BY cohort_sequence').all()).toEqual([
         { import_id: 'import-a', cohort_sequence: 1 },
         { import_id: 'import-z', cohort_sequence: 2 },
@@ -828,8 +1045,8 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(SQLITE_SCHEMA_REVISION).toBe(11);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(SQLITE_SCHEMA_REVISION).toBe(12);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('observations','observation_facets','observation_supports','observation_reviews','observation_review_supports','observation_promotions','observation_receipts') ORDER BY name").all()).toHaveLength(7);
       for (const table of ['observations', 'observation_facets', 'observation_supports', 'observation_reviews', 'observation_review_supports', 'observation_promotions', 'observation_receipts']) {
         expect(database.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
@@ -867,14 +1084,14 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     } finally { source.close(); }
     expect(existsSync(preV6BackupPath(path))).toBe(true);
   });
-  it('creates revision 11 directly with aliases, observation projections, import audit state, and shared prefix indexes', () => {
+  it('creates revision 12 directly with aliases, observation projections, import audit state, and shared prefix indexes', () => {
     const path = fixturePath();
     for (const target of [path, ':memory:']) {
       const database = new Database(target);
       try {
         migrateCurrentSchema(database);
-        expect(SQLITE_SCHEMA_REVISION).toBe(11);
-        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+        expect(SQLITE_SCHEMA_REVISION).toBe(12);
+        expect(database.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
         expect(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='project_aliases'").get()).toEqual({ count: 1 });
         expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('legacy_imports','legacy_project_mappings','legacy_import_rows') ORDER BY name").all()).toHaveLength(3);
         expect(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='legacy_import_cohorts'").get()).toEqual({ count: 1 });
@@ -899,7 +1116,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.prepare('SELECT next_event_sequence FROM sessions WHERE id=?').get('session-1')).toEqual({ next_event_sequence: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_events').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM session_summaries').get()).toEqual({ count: 0 });
@@ -923,7 +1140,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.prepare('SELECT id,content FROM memories').get()).toEqual({ id: 'memory-1', content: 'searchable migration marker café' });
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'migra*'").all()).toEqual([{ memory_id: 'memory-1' }]);
       expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_fts'").get()).toMatchObject({ sql: expect.stringContaining("prefix='2 3 4 5 6 7 8 9 10 11 12'") });
@@ -992,7 +1209,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     try {
       migrateCurrentSchema(database);
       database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
-      database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,?,?,?)').run('session-1', 'project-1', 'root-1', 'codex', 'active', timestamp);
+      database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,started_at) VALUES(?,?,?,?,?)').run('session-1', 'project-1', 'root-1', 'codex', timestamp);
       for (const [id, kind] of [['evidence-1', 'explicit_save'], ['submission-1', 'session_summary'], ['submission-2', 'session_summary']] as const) {
         database.prepare('INSERT INTO evidence VALUES(?,?,?,?,?,?,?,?,?)').run(id, 'project-1', 'session-1', kind, id, `hash-${id}`, null, timestamp, '{}');
       }
@@ -1003,9 +1220,9 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
       expect(() => database.prepare("UPDATE evidence SET content='changed' WHERE id='evidence-1'").run()).toThrow(/immutable/i);
       expect(() => database.prepare("DELETE FROM session_events WHERE evidence_id='evidence-1'").run()).toThrow(/immutable/i);
 
-      const insertSummary = database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-      insertSummary.run('summary-1', 'project-1', 'session-1', 'submission-1', 'checkpoint', 1, 'current', 1, 1, 'root_agent', 'codex', null, null, null, timestamp);
-      expect(() => insertSummary.run('summary-2', 'project-1', 'session-1', 'submission-2', 'checkpoint', 2, 'current', 1, 2, 'root_agent', 'codex', null, null, 'summary-1', timestamp)).toThrow(/unique constraint/i);
+      const insertSummary = database.prepare('INSERT INTO session_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      insertSummary.run('summary-1', 'project-1', 'session-1', 'submission-1', 1, 'current', 1, 1, 'root_agent', 'codex', null, null, null, timestamp);
+      expect(() => insertSummary.run('summary-2', 'project-1', 'session-1', 'submission-2', 2, 'current', 1, 2, 'root_agent', 'codex', null, null, 'summary-1', timestamp)).toThrow(/unique constraint/i);
       expect(() => database.prepare("UPDATE session_summaries SET generator_name='forged' WHERE id='summary-1'").run()).toThrow(/immutable/i);
 
       database.prepare('INSERT INTO session_summary_claims VALUES(?,?,?,?,?,?)').run('claim-1', 'summary-1', 0, 'objective', 'Ship safely', null);
@@ -1019,7 +1236,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='project_aliases'").get()).toMatchObject({ sql: expect.stringContaining('alias_key TEXT PRIMARY KEY') });
       expect(database.prepare('SELECT count(*) AS count FROM project_aliases').get()).toEqual({ count: 0 });
       expect(database.prepare("SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'revision'").all()).toEqual([{ memory_id: 'memory-1' }]);
@@ -1062,7 +1279,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     const database = new Database(path);
     try {
       migrateCurrentSchema(database);
-      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
+      expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all()).toEqual([{ version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }, { version: 12 }]);
       expect(database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('legacy_imports','legacy_project_mappings','legacy_import_rows') ORDER BY name").all()).toEqual([
         { name: 'legacy_import_rows' }, { name: 'legacy_imports' }, { name: 'legacy_project_mappings' },
       ]);
@@ -1109,7 +1326,7 @@ describe('SQLite current schema migrations', { timeout: 30_000 }, () => {
     try {
       retry.exec('DROP TRIGGER reject_revision_eight');
       expect(() => migrateCurrentSchema(retry)).not.toThrow();
-      expect(retry.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 11 });
+      expect(retry.prepare('SELECT max(version) AS version FROM schema_migrations').get()).toEqual({ version: 12 });
     } finally { retry.close(); }
   });
 

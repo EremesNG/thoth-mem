@@ -4,13 +4,13 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool; tool and field descriptions MUST state each operational constraint once in compact form without repeating a tool description inside a field description, the catalog schemas registered natively in Pi MUST omit the `$schema` marker, and the aggregate serialized size of the model-facing definitions on the MCP and Pi surfaces MUST be locked by budget tests so it grows only through a deliberate definition change, all without changing input schema structure or runtime semantics.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool; tool and field descriptions MUST state each operational constraint once in compact form without repeating a tool description inside a field description, the catalog schemas registered natively in Pi MUST omit the `$schema` marker, and the aggregate serialized size of the model-facing definitions on the MCP and Pi surfaces MUST be locked by budget tests so it grows only through a deliberate definition change; compacting descriptions MUST NOT alter input schemas or runtime validation.
 
 #### Scenario: MCP Surface MUST Be Compact and Workflow-Level
 
-- **GIVEN** the compacted catalog
+- **GIVEN** the catalog
 - **WHEN** an MCP client lists tools and a Pi session registers its tools
-- **THEN** each surface stays within its pinned aggregate budget, every property, type, enum, required field, branch, and limit of the previous schemas is retained, and runtime validation is unchanged
+- **THEN** each surface stays within its pinned aggregate budget and every listed input schema is the one runtime validation enforces
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 
@@ -276,11 +276,11 @@ When an MCP client that does not identify as a supported native host calls a too
 
 - **GIVEN** a generic MCP client that saves two memories without a session pair and then closes stdin
 - **WHEN** a later connection reads context
-- **THEN** both saves belong to one `mcp` connection session with a final derived summary shown as the previous-session summary, and an observation review attempted with that session's identity is rejected
+- **THEN** both saves belong to one `mcp` connection session with a derived summary shown as the previous-session summary, and an observation review attempted with that session's identity is rejected
 
 ### Requirement: mem_project Summaries MUST Return Oversized Records in Bounded Form
 
-`mem_project action=summaries` MUST list summaries newest first within `budget_chars`; when a record does not fit the remaining budget, the response MUST include it in bounded form with its identifiers, kind, version, status, coverage, and generator plus as many leading claims as fit, clipping the last included claim when necessary and marking the item truncated, and MUST then stop with `payload_truncated`, so a budget able to hold one record's metadata never yields an empty list while summaries exist; the full record MUST remain available through `mem_get`.
+`mem_project action=summaries` MUST list summaries newest first within `budget_chars`; when a record does not fit the remaining budget, the response MUST include it in bounded form with its identifiers, version, status, coverage, and generator plus as many leading claims as fit, clipping the last included claim when necessary and marking the item truncated, and MUST then stop with `payload_truncated`, so a budget able to hold one record's metadata never yields an empty list while summaries exist; the full record MUST remain available through `mem_get`.
 
 #### Scenario: mem_project Summaries MUST Return Oversized Records in Bounded Form
 
@@ -296,7 +296,7 @@ Every MCP tool result MUST carry text content that is valid JSON of at most 20,0
 
 - **GIVEN** a valid submitted session summary close to the submission limit whose expanded envelope exceeds 20,000 characters, and a Pi tool call
 - **WHEN** `mem_get` expands it through MCP and through the Pi extension
-- **THEN** both receive valid JSON within 20,000 characters with the summary ID, kind, coverage, and leading claims, clipped claim text, and the `payload_truncated` warning
+- **THEN** both receive valid JSON within 20,000 characters with the summary ID, version, coverage, and leading claims, clipped claim text, and the `payload_truncated` warning
 
 ### Requirement: mem_get MUST Return the Selected Record Once
 
@@ -307,3 +307,13 @@ Every MCP tool result MUST carry text content that is valid JSON of at most 20,0
 - **GIVEN** a memory corrected twice under one topic key
 - **WHEN** `mem_get` expands the current version without and with history
 - **THEN** the first response has an empty lineage and the second lists the two predecessors newest first, neither repeating the selected record
+
+### Requirement: Memory Guidance MUST Name Proactive Recall, Save, and Closure Triggers
+
+Server instructions, the relevant tool descriptions, and the shared Skill MUST direct unprompted recall before exploring non-trivial repository work, immediate saving of verified durable findings, and closure of completed recovered handoffs by saving their outcome under the same `topic_key`; server instructions and the Skill MUST exclude trivial or conversational turns; server instructions MUST remain at most 699 UTF-16 code units, the six tool descriptions MUST total at most 1653 UTF-16 code units, and the canonical Skill MUST remain below 7244 UTF-16 code units, with distributed Skill copies synchronized.
+
+#### Scenario: Memory Guidance MUST Name Proactive Recall, Save, and Closure Triggers
+
+- **GIVEN** the MCP server and packaged shared Skill
+- **WHEN** an agent loads their memory guidance
+- **THEN** it receives the task-start recall, verified-save, and same-key closure triggers within the stated text ceilings, with equivalent Skill guidance across supported distributions

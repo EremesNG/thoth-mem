@@ -171,8 +171,8 @@ export function insertObservationReviewProjection(database: Database.Database, i
   const observation = observationFromId(database, review.observationId);
   if (!observation || observation.projectId !== input.projectId) throw new Error('Observation review requires an existing candidate in the same project');
   if (observation.review) throw new Error('Observation already has a terminal review');
-  const session = database.prepare('SELECT project_id,harness,state FROM sessions WHERE id=?').get(input.reviewerSessionId) as { project_id: string; harness: string; state: string } | undefined;
-  if (!session || session.project_id !== input.projectId || session.harness === 'import' || session.state === 'degraded') throw new Error('Observation review requires verified non-import root identity');
+  const session = database.prepare('SELECT project_id,harness FROM sessions WHERE id=?').get(input.reviewerSessionId) as { project_id: string; harness: string } | undefined;
+  if (!session || session.project_id !== input.projectId || session.harness === 'import') throw new Error('Observation review requires verified non-import root identity');
   const rootOnly = observation.kind === 'decision' || observation.kind === 'constraint' || observation.kind === 'preference';
   if (rootOnly && review.basis !== 'root_user_confirmed') throw new Error(`Observation kind ${observation.kind} requires root_user_confirmed review`);
 

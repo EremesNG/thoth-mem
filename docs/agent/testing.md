@@ -138,7 +138,7 @@ recovery guidance.
 
 Memory-operating-model seams are covered by:
 
-- `tests/integration/lifecycle.test.ts` for the automatic-capture allowlist, private/recognizable-credential filtering, one-state-change idempotency, restart/post-compaction recovery, degraded identity, and truthful no-fit delivery;
+- `tests/integration/lifecycle.test.ts` for the automatic-capture allowlist, private/recognizable-credential filtering, event/receipt idempotency, restart/post-compaction recovery, degraded identity, and truthful no-fit delivery;
 - `tests/memory-core/context.test.ts` for handoff-first selection, failed/mixed lessons, temporal truth, deterministic aggregate budgets, hidden actions, and project isolation;
 - `tests/memory-core/continuation.test.ts` for Unicode caps, useful-content floors/ratio, metadata-starvation abstention, complete metadata, trust delimiters, poisoning/control characters, and embedded supporting-evidence omission;
 - `tests/tools/mcp.test.ts` for the compact → context → get funnel, shared briefing selection, deferred evidence IDs, and history provenance;

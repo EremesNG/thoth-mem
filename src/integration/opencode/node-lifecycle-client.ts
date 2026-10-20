@@ -10,7 +10,6 @@ import {
   MEMORY_OUTCOME_VALUES,
   MEMORY_STATUS_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
-  SESSION_SUMMARY_KIND_VALUES,
   type LifecycleInput,
   type LifecycleResult,
   type RecallItem,
@@ -119,7 +118,6 @@ function summaryItem(value: unknown): value is SummaryContextItem {
   return Boolean(item
     && item.recordType === 'summary'
     && typeof item.id === 'string'
-    && isCanonicalValue(SESSION_SUMMARY_KIND_VALUES, item.kind)
     && Number.isSafeInteger(item.version) && Number(item.version) > 0
     && item.status === 'current'
     && coverage && Number.isSafeInteger(coverage.fromSequence) && Number.isSafeInteger(coverage.toSequence)
@@ -182,8 +180,7 @@ function hasInvalidRecoveryTaxonomy(value: unknown): boolean {
   return recovery.items.some((value) => {
     const item = record(value);
     return Boolean(item && (
-      ('kind' in item && item.recordType === 'summary' && !isCanonicalValue(SESSION_SUMMARY_KIND_VALUES, item.kind))
-      || ('kind' in item && item.recordType !== 'summary' && !isCanonicalValue(MEMORY_KIND_VALUES, item.kind))
+      ('kind' in item && item.recordType !== 'summary' && !isCanonicalValue(MEMORY_KIND_VALUES, item.kind))
       || ('outcome' in item && !isCanonicalValue(MEMORY_OUTCOME_VALUES, item.outcome))
       || ('status' in item && !isCanonicalValue(MEMORY_STATUS_VALUES, item.status))
     ));

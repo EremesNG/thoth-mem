@@ -33,7 +33,6 @@ const item = (id: string, kind: MemoryKind, title: string, content: string): Rec
 const summaryItem = (id: string): SummaryContextItem => ({
   recordType: 'summary',
   id,
-  kind: 'checkpoint',
   version: 2,
   coverage: { fromSequence: 1, toSequence: 9 },
   status: 'current',
@@ -359,6 +358,7 @@ describe('continuation renderer', () => {
     expect(result.selectedSummaryIds).toEqual(['summary-123']);
     expect(result.selectedMemoryIds).toContain('memory-fallback');
     expect(result.selectedRecordIds).toEqual(result.selectedItems.map((selected) => selected.id));
+    expect(result.context).toContain('[summary v2]');
     expect(result.context).toContain('(summary:summary-123)');
     expect(result.context).toContain('RUN-EXACT-NEXT-ACTION.');
     expect(result.context).not.toContain(summary.submissionEvidenceId);
@@ -383,7 +383,7 @@ describe('continuation renderer', () => {
         kind: 'handoff', title: 'Verify native recovery', topicKey: 'summary/recovery',
         content: `Objective: Verify all supported native hosts.\nCompleted: ${'The deterministic derivation and citations passed focused tests. '.repeat(20)}\nFirst pending action: Run the integration suite after building.\nBlockers: None.`,
       } });
-      const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!)!;
       expect(summary.generator.name).toBe('thoth-mem.session-evidence.v3');
       expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'next_action', 'decision', 'completed']);
       expect(summary.claims.every((claim) => codePoints(claim.content) <= 300)).toBe(true);

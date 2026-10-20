@@ -207,8 +207,8 @@ function writeCandidateTransaction(
     } else {
       sessionId = importedSessionId(plan.source.logicalFingerprint, projectId, sourceKey);
       const endedAt = normalizedText(row.ended_at);
-      database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at,ended_at,next_event_sequence) VALUES(?,?,?,\'import\',?,?,?,0)').run(
-        sessionId, projectId, importedSessionRootKey(plan.source.logicalFingerprint, sourceKey), endedAt ? 'ended' : 'active', capturedAt, endedAt,
+      database.prepare('INSERT INTO sessions(id,project_id,root_session_key,harness,started_at,next_event_sequence) VALUES(?,?,?,\'import\',?,0)').run(
+        sessionId, projectId, importedSessionRootKey(plan.source.logicalFingerprint, sourceKey), capturedAt,
       );
       sessionIds.set(sourceKey, sessionId);
       recordReceipt({ entity: 'session', sourceKey, sourceVersion: 0, sourceHash, transformedHash: transformedHash({ projectId, sessionId, startedAt: capturedAt, endedAt }), disposition: 'imported', reason: 'imported', projectId, sessionId, evidenceId: null, memoryId: null, capturedAt });

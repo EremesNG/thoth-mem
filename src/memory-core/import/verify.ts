@@ -322,8 +322,8 @@ export function verifyImportedDatabase(options: {
       }
       if (row.disposition === 'linked' && (row.evidence_id === null || row.memory_id === null || row.source_entity === 'session' || row.source_entity === 'prompt')) return false;
       if (row.source_entity === 'session' && row.disposition === 'imported') {
-        const session = database.prepare('SELECT project_id,root_session_key,harness,state,started_at,ended_at,next_event_sequence FROM sessions WHERE id=?').get(row.session_id) as Record<string, unknown> | undefined;
-        const expectedSession = { project_id: row.project_id, root_session_key: sourceRow.session!.rootKey, harness: 'import', state: sourceRow.session!.endedAt ? 'ended' : 'active', started_at: sourceRow.session!.startedAt, ended_at: sourceRow.session!.endedAt, next_event_sequence: 0 };
+        const session = database.prepare('SELECT project_id,root_session_key,harness,started_at,next_event_sequence FROM sessions WHERE id=?').get(row.session_id) as Record<string, unknown> | undefined;
+        const expectedSession = { project_id: row.project_id, root_session_key: sourceRow.session!.rootKey, harness: 'import', started_at: sourceRow.session!.startedAt, next_event_sequence: 0 };
         if (canonicalJson(session) !== canonicalJson(expectedSession)
           || row.transformed_hash !== hashCanonical({ projectId: row.project_id, sessionId: row.session_id, startedAt: sourceRow.session!.startedAt, endedAt: sourceRow.session!.endedAt })) return false;
       }

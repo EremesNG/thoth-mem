@@ -4,7 +4,6 @@ import {
   MEMORY_OUTCOME_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
   SESSION_SUMMARY_GENERATOR_KIND_VALUES,
-  SESSION_SUMMARY_KIND_VALUES,
   SESSION_SUMMARY_LIMITS,
   requireCanonicalValue,
   type SessionSummaryClaimRecord,
@@ -15,7 +14,8 @@ import { sanitizePrivateContent } from './privacy.js';
 import { stableUuid } from './sqlite/ledger.js';
 import { SESSION_PROJECTION_TRIGGER_SQL } from './sqlite/schema.js';
 
-const SUMMARY_EVIDENCE_SCHEMA = 'thoth-mem.session-summary.v1';
+const SUMMARY_EVIDENCE_SCHEMA = 'thoth-mem.session-summary.v2';
+const PREVIOUS_SUMMARY_EVIDENCE_SCHEMA = 'thoth-mem.session-summary.v1';
 const SUMMARY_TRIGGER_NAMES = [
   'session_event_scope_guard', 'session_event_immutable_update', 'session_event_immutable_delete',
   'session_summary_scope_guard', 'session_summary_immutable_update', 'session_summary_immutable_delete',
@@ -64,10 +64,9 @@ function positiveInteger(value: unknown, label: string, requirement = 'a positiv
   return Number(value);
 }
 
-export function canonicalizeSessionSummary(value: SessionSummaryInput): CanonicalSummary {
+export function canonicalizeSessionSummary(value: unknown): CanonicalSummary {
   const input = object(value, 'summary');
-  exactKeys(input, ['kind', 'coverage', 'generator', 'claims'], 'summary');
-  const kind = requireCanonicalValue('summary.kind', SESSION_SUMMARY_KIND_VALUES, input.kind);
+  exactKeys(input, ['coverage', 'generator', 'claims'], 'summary');
 
   const coverageInput = object(input.coverage, 'summary.coverage');
   exactKeys(coverageInput, ['fromSequence', 'toSequence'], 'summary.coverage');
@@ -107,7 +106,6 @@ export function canonicalizeSessionSummary(value: SessionSummaryInput): Canonica
   });
 
   const sanitized: SessionSummaryInput = {
-    kind,
     coverage: { fromSequence, toSequence },
     generator: {
       kind: generatorKind,
@@ -127,8 +125,10 @@ function parseSummaryEvidence(content: string): SessionSummaryInput {
   try { parsed = JSON.parse(content); } catch { throw new Error('Session summary evidence is not valid JSON'); }
   const envelope = object(parsed, 'summary evidence');
   exactKeys(envelope, ['schema', 'summary'], 'summary evidence');
-  if (envelope.schema !== SUMMARY_EVIDENCE_SCHEMA) throw new Error('Session summary evidence has an unsupported schema');
-  return canonicalizeSessionSummary(envelope.summary as SessionSummaryInput).input;
+  if (envelope.schema !== SUMMARY_EVIDENCE_SCHEMA && envelope.schema !== PREVIOUS_SUMMARY_EVIDENCE_SCHEMA) throw new Error('Session summary evidence has an unsupported schema');
+  const summary = { ...object(envelope.summary, 'summary') };
+  if (envelope.schema === PREVIOUS_SUMMARY_EVIDENCE_SCHEMA) delete summary.kind;
+  return canonicalizeSessionSummary(summary).input;
 }
 
 export function sessionSummaryFromId(database: Database.Database, id: string): SessionSummaryRecord | null {
@@ -148,7 +148,6 @@ export function sessionSummaryFromId(database: Database.Database, id: string): S
     projectId: String(row.project_id),
     sessionId: String(row.session_id),
     submissionEvidenceId: String(row.submission_evidence_id),
-    kind: row.kind as SessionSummaryRecord['kind'],
     version: Number(row.version),
     status: row.status as SessionSummaryRecord['status'],
     coverage: { fromSequence: Number(row.source_sequence_from), toSequence: Number(row.source_sequence_to) },
@@ -185,13 +184,13 @@ export function insertSessionSummaryProjection(database: Database.Database, inpu
     throw new Error(`summary.claims[${invalidSupport.claimIndex}].support_ids: support id ${JSON.stringify(invalidSupport.supportId)} must reference evidence from this project_key + root_session_key/harness session within summary.coverage (${canonical.coverage.fromSequence}-${canonical.coverage.toSequence})`);
   }
 
-  const current = database.prepare("SELECT id,version,source_sequence_to FROM session_summaries WHERE session_id=? AND kind=? AND status='current'").get(input.sessionId, canonical.kind) as { id: string; version: number; source_sequence_to: number } | undefined;
-  if (current && canonical.coverage.toSequence <= current.source_sequence_to) throw new Error(`summary.coverage.to_sequence must exceed the current summary's ending sequence ${current.source_sequence_to} for this session and kind="${canonical.kind}"; received ${canonical.coverage.toSequence}`);
+  const current = database.prepare("SELECT id,version,source_sequence_to FROM session_summaries WHERE session_id=? AND status='current'").get(input.sessionId) as { id: string; version: number; source_sequence_to: number } | undefined;
+  if (current && canonical.coverage.toSequence < current.source_sequence_to) throw new Error(`summary.coverage.to_sequence must be at least the current summary's ending sequence ${current.source_sequence_to} for this session; received ${canonical.coverage.toSequence}`);
   const version = (current?.version ?? 0) + 1;
   const id = stableUuid(`session-summary:${input.submissionEvidenceId}`);
   if (current) database.prepare("UPDATE session_summaries SET status='superseded' WHERE id=?").run(current.id);
-  database.prepare('INSERT INTO session_summaries(id,project_id,session_id,submission_evidence_id,kind,version,status,source_sequence_from,source_sequence_to,generator_kind,generator_name,generator_version,generator_config_hash,supersedes_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
-    id, input.projectId, input.sessionId, input.submissionEvidenceId, canonical.kind, version, 'current', canonical.coverage.fromSequence, canonical.coverage.toSequence,
+  database.prepare('INSERT INTO session_summaries(id,project_id,session_id,submission_evidence_id,version,status,source_sequence_from,source_sequence_to,generator_kind,generator_name,generator_version,generator_config_hash,supersedes_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(
+    id, input.projectId, input.sessionId, input.submissionEvidenceId, version, 'current', canonical.coverage.fromSequence, canonical.coverage.toSequence,
     canonical.generator.kind, canonical.generator.name, canonical.generator.version ?? null, canonical.generator.configHash ?? null, current?.id ?? null, input.createdAt,
   );
   canonical.claims.forEach((claim, ordinal) => {
@@ -208,13 +207,18 @@ export function rebuildSessionSummaryProjection(database: Database.Database): { 
     database.prepare('UPDATE lifecycle_receipts SET summary_id=NULL WHERE summary_id IS NOT NULL').run();
     for (const trigger of SUMMARY_TRIGGER_NAMES) database.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
     database.exec('DELETE FROM session_summary_claim_supports; DELETE FROM session_summary_claims; DELETE FROM session_summaries;');
-    const submissions = database.prepare("SELECT e.id,e.project_id,e.session_id,e.content,e.captured_at FROM evidence e JOIN session_events se ON se.evidence_id=e.id WHERE e.kind='session_summary' ORDER BY se.session_id,se.sequence,e.id").all() as Array<{ id: string; project_id: string; session_id: string; content: string; captured_at: string }>;
-    for (const submission of submissions) {
+    const submissions = database.prepare("SELECT e.id,e.project_id,e.session_id,e.content,e.captured_at,se.sequence FROM evidence e JOIN session_events se ON se.evidence_id=e.id WHERE e.kind='session_summary' ORDER BY se.session_id,se.sequence,e.id").all() as Array<{ id: string; project_id: string; session_id: string; content: string; captured_at: string; sequence: number }>;
+    const parsed = submissions.map((submission) => ({ ...submission, summary: parseSummaryEvidence(submission.content) }));
+    parsed.sort((left, right) => left.session_id.localeCompare(right.session_id)
+      || left.summary.coverage.toSequence - right.summary.coverage.toSequence
+      || left.sequence - right.sequence
+      || stableUuid(`session-summary:${left.id}`).localeCompare(stableUuid(`session-summary:${right.id}`)));
+    for (const submission of parsed) {
       insertSessionSummaryProjection(database, {
         projectId: submission.project_id,
         sessionId: submission.session_id,
         submissionEvidenceId: submission.id,
-        summary: parseSummaryEvidence(submission.content),
+        summary: submission.summary,
         createdAt: submission.captured_at,
       });
     }

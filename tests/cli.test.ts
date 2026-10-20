@@ -10,7 +10,7 @@ import { runCli } from '../src/cli.js';
 import { shouldRunCli } from '../src/index.js';
 import { MemoryService } from '../src/memory-core/service.js';
 import { SQLITE_SCHEMA_REVISION } from '../src/memory-core/sqlite/migrations.js';
-import { CURRENT_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL } from '../src/memory-core/sqlite/schema.js';
+import { LEGACY_IMPORT_AUDIT_SCHEMA_SQL, LEGACY_IMPORT_COHORT_SCHEMA_SQL, PROJECT_ALIAS_SCHEMA_SQL, REVISION_SIX_SCHEMA_SQL } from '../src/memory-core/sqlite/schema.js';
 
 // Inject only filesystem copy failures; database connections and migration work stay real.
 vi.mock('node:fs', async (importOriginal) => {
@@ -22,7 +22,14 @@ function createMigrationFixture(databasePath: string): void {
   const database = new Database(databasePath);
   const timestamp = '2026-10-19T00:00:00.000Z';
   try {
-    database.exec(CURRENT_SCHEMA_SQL);
+    const revisionTenSchema = REVISION_SIX_SCHEMA_SQL.replace(
+      "harness IN ('opencode','codex','claude','mcp','cli','import')",
+      "harness IN ('opencode','codex','claude','pi','mcp','cli','import')",
+    );
+    database.exec(`${revisionTenSchema}
+${PROJECT_ALIAS_SCHEMA_SQL}
+${LEGACY_IMPORT_AUDIT_SCHEMA_SQL}
+${LEGACY_IMPORT_COHORT_SCHEMA_SQL}`);
     database.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(10, timestamp);
     database.prepare('INSERT INTO projects VALUES(?,?,?,?,?,?)').run('project-1', 'fixture', 'Fixture', null, timestamp, timestamp);
     for (const harness of ['pi', 'codex', 'import']) {
@@ -80,7 +87,7 @@ describe('migrate CLI', () => {
     try {
       expect(filesBefore).toEqual(['memory.sqlite', 'memory.sqlite-shm', 'memory.sqlite-wal']);
       expect(await runCli(['migrate', '--data-dir', dataDir, '--json'])).toBe(0);
-      expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({ data: { fromRevision: 11, toRevision: 11, alreadyCurrent: true } });
+      expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toMatchObject({ data: { fromRevision: 12, toRevision: 12, alreadyCurrent: true } });
       expect(readdirSync(dataDir).sort()).toEqual(filesBefore);
       for (const [file, bytes] of bytesBefore) expect(readFileSync(join(dataDir, file)), file).toEqual(bytes);
     } finally {
@@ -142,7 +149,7 @@ describe('migrate CLI', () => {
   it.each([
     ['legacy', 'CREATE TABLE sessions(id TEXT)', /one-way legacy importer/],
     ['missing revision', 'CREATE TABLE schema_migrations(version INTEGER)', /Unsupported memory SQLite schema revision: null/],
-    ['future revision', 'CREATE TABLE schema_migrations(version); INSERT INTO schema_migrations VALUES(12)', /Unsupported memory SQLite schema revision: 12/],
+    ['future revision', 'CREATE TABLE schema_migrations(version); INSERT INTO schema_migrations VALUES(13)', /Unsupported memory SQLite schema revision: 13/],
     ['retired revision', 'CREATE TABLE schema_migrations(version); INSERT INTO schema_migrations VALUES(1)', /Unsupported memory SQLite schema revision: 1/],
     ['unrecognized revision', "CREATE TABLE schema_migrations(version); INSERT INTO schema_migrations VALUES('unknown')", /Unsupported memory SQLite schema revision: unknown/],
     ['malformed revision table', 'CREATE TABLE schema_migrations(other TEXT)', /no such column: version/],
@@ -194,10 +201,10 @@ describe('migrate CLI', () => {
         if (json) {
           expect(JSON.parse(String(stdout.mock.calls.at(-1)?.[0]))).toEqual({
             schema: 'thoth-mem.migrate.v1',
-            data: { fromRevision: 11, toRevision: 11, backups: [], removedSessions: 0, removedReceipts: 0, alreadyCurrent: true, durationMs: expect.any(Number) },
+            data: { fromRevision: 12, toRevision: 12, backups: [], removedSessions: 0, removedReceipts: 0, alreadyCurrent: true, durationMs: expect.any(Number) },
           });
         } else {
-          expect(stdout.mock.calls.map(([text]) => String(text)).join('')).toContain('11 → 11 (already current; no-op)');
+          expect(stdout.mock.calls.map(([text]) => String(text)).join('')).toContain('12 → 12 (already current; no-op)');
         }
         expect(readdirSync(dataDir).sort()).toEqual(filesBefore);
         for (const [file, bytes] of bytesBefore) expect(readFileSync(join(dataDir, file)), file).toEqual(bytes);
@@ -217,8 +224,9 @@ describe('migrate CLI', () => {
     try {
       expect(await runCli(['migrate', `--data-dir=${dataDir}`])).toBe(0);
       const output = stdout.mock.calls.map(([text]) => String(text)).join('');
-      expect(output).toContain('10 → 11');
+      expect(output).toContain('10 → 12');
       expect(output).toContain(`Backup ${status}: ${databasePath}.pre-v11.bak`);
+      expect(output).toContain(`Backup created: ${databasePath}.pre-v12.bak`);
       expect(output).toContain('Sessions removed: 2');
       expect(output).toContain('Lifecycle receipts removed: 6');
       expect(output).toMatch(/Duration: \d+(?:\.\d+)? ms/);
@@ -241,7 +249,7 @@ describe('migrate CLI', () => {
     }
   });
 
-  it('migrates revision 10 to 11 and emits one JSON envelope with the backup and removal counts', async () => {
+  it('migrates revision 10 to 12 and emits one JSON envelope with the backup and removal counts', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'thoth-cli-migrate-pending-'));
     const databasePath = join(dataDir, 'memory.sqlite');
     createMigrationFixture(databasePath);
@@ -254,12 +262,13 @@ describe('migrate CLI', () => {
       expect(JSON.parse(output)).toEqual({
         schema: 'thoth-mem.migrate.v1',
         data: {
-          fromRevision: 10, toRevision: 11, alreadyCurrent: false,
-          backups: [{ path: `${databasePath}.pre-v11.bak`, status: 'created' }],
+          fromRevision: 10, toRevision: 12, alreadyCurrent: false,
+          backups: [{ path: `${databasePath}.pre-v11.bak`, status: 'created' }, { path: `${databasePath}.pre-v12.bak`, status: 'created' }],
           removedSessions: 2, removedReceipts: 6, durationMs: expect.any(Number),
         },
       });
       expect(existsSync(`${databasePath}.pre-v11.bak`)).toBe(true);
+      expect(existsSync(`${databasePath}.pre-v12.bak`)).toBe(true);
     } finally { rmSync(dataDir, { recursive: true, force: true }); }
   });
 

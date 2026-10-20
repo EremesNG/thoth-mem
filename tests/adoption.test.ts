@@ -43,7 +43,7 @@ describe('read-only adoption baseline', () => {
     const { path } = fixture();
     const db = new Database(path);
     try {
-      const session = db.prepare("INSERT INTO sessions(id,project_id,root_session_key,harness,state,started_at) VALUES(?,?,?,'cli','active','2026-01-01')");
+      const session = db.prepare("INSERT INTO sessions(id,project_id,root_session_key,harness,started_at) VALUES(?,?,?,'cli','2026-01-01')");
       session.run('s1', 'p1', 'root-one'); session.run('s0', 'p1', 'zero'); session.run('s2', 'p2', 'root-two');
       const evidence = db.prepare("INSERT INTO evidence VALUES(?,?,?,?,?,'hash',NULL,'2026-01-01','{}')");
       const event = db.prepare("INSERT INTO session_events VALUES(?,?,?,?,'root_user','project','standard')");

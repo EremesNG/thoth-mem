@@ -16,7 +16,6 @@ import {
   RETENTION_CLASS_VALUES,
   SESSION_SUMMARY_CLAIM_KIND_VALUES,
   SESSION_SUMMARY_GENERATOR_KIND_VALUES,
-  SESSION_SUMMARY_KIND_VALUES,
   SESSION_SUMMARY_STATUS_VALUES,
   SESSION_SUMMARY_SUPPORT_RELATION_VALUES,
 } from '../contracts.js';
@@ -46,18 +45,13 @@ CREATE TRIGGER evidence_immutable_delete BEFORE DELETE ON evidence BEGIN SELECT 
 CREATE TRIGGER memory_content_immutable BEFORE UPDATE OF title,content,kind,project_id,topic_key,created_at,valid_from ON memories BEGIN SELECT RAISE(ABORT, 'memory content is immutable'); END;
 `;
 
-export const SESSION_PROJECTION_TRIGGER_SQL = `
-CREATE TRIGGER session_event_scope_guard BEFORE INSERT ON session_events
-WHEN NOT EXISTS (SELECT 1 FROM evidence WHERE id=new.evidence_id AND session_id=new.session_id)
-BEGIN SELECT RAISE(ABORT, 'session event evidence scope mismatch'); END;
-CREATE TRIGGER session_event_immutable_update BEFORE UPDATE ON session_events BEGIN SELECT RAISE(ABORT, 'session event is immutable'); END;
-CREATE TRIGGER session_event_immutable_delete BEFORE DELETE ON session_events BEGIN SELECT RAISE(ABORT, 'session event is immutable'); END;
+export const SESSION_SUMMARY_TRIGGER_SQL = `
 CREATE TRIGGER session_summary_scope_guard BEFORE INSERT ON session_summaries
 WHEN NOT EXISTS (SELECT 1 FROM evidence WHERE id=new.submission_evidence_id AND project_id=new.project_id AND session_id=new.session_id AND kind='session_summary')
 BEGIN SELECT RAISE(ABORT, 'session summary evidence scope mismatch'); END;
 CREATE TRIGGER session_summary_immutable_update BEFORE UPDATE ON session_summaries
 WHEN new.id IS NOT old.id OR new.project_id IS NOT old.project_id OR new.session_id IS NOT old.session_id
-  OR new.submission_evidence_id IS NOT old.submission_evidence_id OR new.kind IS NOT old.kind
+  OR new.submission_evidence_id IS NOT old.submission_evidence_id
   OR new.version IS NOT old.version OR new.source_sequence_from IS NOT old.source_sequence_from
   OR new.source_sequence_to IS NOT old.source_sequence_to OR new.generator_kind IS NOT old.generator_kind
   OR new.generator_name IS NOT old.generator_name OR new.generator_version IS NOT old.generator_version
@@ -65,6 +59,15 @@ WHEN new.id IS NOT old.id OR new.project_id IS NOT old.project_id OR new.session
   OR new.created_at IS NOT old.created_at OR NOT (old.status='current' AND new.status='superseded')
 BEGIN SELECT RAISE(ABORT, 'session summary content is immutable'); END;
 CREATE TRIGGER session_summary_immutable_delete BEFORE DELETE ON session_summaries BEGIN SELECT RAISE(ABORT, 'session summary is immutable'); END;
+`;
+
+export const SESSION_PROJECTION_TRIGGER_SQL = `
+CREATE TRIGGER session_event_scope_guard BEFORE INSERT ON session_events
+WHEN NOT EXISTS (SELECT 1 FROM evidence WHERE id=new.evidence_id AND session_id=new.session_id)
+BEGIN SELECT RAISE(ABORT, 'session event evidence scope mismatch'); END;
+CREATE TRIGGER session_event_immutable_update BEFORE UPDATE ON session_events BEGIN SELECT RAISE(ABORT, 'session event is immutable'); END;
+CREATE TRIGGER session_event_immutable_delete BEFORE DELETE ON session_events BEGIN SELECT RAISE(ABORT, 'session event is immutable'); END;
+${SESSION_SUMMARY_TRIGGER_SQL}
 CREATE TRIGGER session_summary_claim_immutable_update BEFORE UPDATE ON session_summary_claims BEGIN SELECT RAISE(ABORT, 'session summary claim is immutable'); END;
 CREATE TRIGGER session_summary_claim_immutable_delete BEFORE DELETE ON session_summary_claims BEGIN SELECT RAISE(ABORT, 'session summary claim is immutable'); END;
 CREATE TRIGGER session_summary_support_immutable_update BEFORE UPDATE ON session_summary_claim_supports BEGIN SELECT RAISE(ABORT, 'session summary support is immutable'); END;
@@ -122,12 +125,16 @@ ${REVISION_THREE_TAXONOMY_GUARD_SQL}
 ${IMMUTABILITY_TRIGGER_SQL}
 `;
 
+export const SESSION_SUMMARY_SCHEMA_SQL = `
+CREATE TABLE session_summaries(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL REFERENCES sessions(id), submission_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id), version INTEGER NOT NULL CHECK(version > 0), status TEXT NOT NULL CHECK(status IN (${sqlValues(SESSION_SUMMARY_STATUS_VALUES)})), source_sequence_from INTEGER NOT NULL CHECK(source_sequence_from > 0), source_sequence_to INTEGER NOT NULL CHECK(source_sequence_to >= source_sequence_from), generator_kind TEXT NOT NULL CHECK(generator_kind IN (${sqlValues(SESSION_SUMMARY_GENERATOR_KIND_VALUES)})), generator_name TEXT NOT NULL CHECK(length(generator_name) BETWEEN 1 AND 200), generator_version TEXT CHECK(generator_version IS NULL OR length(generator_version) BETWEEN 1 AND 200), generator_config_hash TEXT CHECK(generator_config_hash IS NULL OR generator_config_hash GLOB '[0-9a-f]*' AND length(generator_config_hash)=64), supersedes_id TEXT REFERENCES session_summaries(id), created_at TEXT NOT NULL, UNIQUE(session_id,version));
+CREATE UNIQUE INDEX session_summaries_current ON session_summaries(session_id) WHERE status='current';
+CREATE INDEX session_summaries_selection ON session_summaries(session_id,status,source_sequence_to DESC,created_at DESC,id);
+`;
+
 export const SESSION_PROJECTION_SCHEMA_SQL = `
 CREATE TABLE session_events(evidence_id TEXT PRIMARY KEY REFERENCES evidence(id), session_id TEXT NOT NULL REFERENCES sessions(id), sequence INTEGER NOT NULL CHECK(sequence > 0), actor TEXT NOT NULL CHECK(actor IN (${sqlValues(EVENT_ACTOR_VALUES)})), authority TEXT NOT NULL CHECK(authority IN (${sqlValues(EVENT_AUTHORITY_VALUES)})), retention_class TEXT NOT NULL CHECK(retention_class IN (${sqlValues(RETENTION_CLASS_VALUES)})), privacy_class TEXT NOT NULL CHECK(privacy_class IN (${sqlValues(PRIVACY_CLASS_VALUES)})), UNIQUE(session_id, sequence));
 CREATE INDEX session_events_session_sequence ON session_events(session_id,sequence);
-CREATE TABLE session_summaries(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL REFERENCES sessions(id), submission_evidence_id TEXT NOT NULL UNIQUE REFERENCES evidence(id), kind TEXT NOT NULL CHECK(kind IN (${sqlValues(SESSION_SUMMARY_KIND_VALUES)})), version INTEGER NOT NULL CHECK(version > 0), status TEXT NOT NULL CHECK(status IN (${sqlValues(SESSION_SUMMARY_STATUS_VALUES)})), source_sequence_from INTEGER NOT NULL CHECK(source_sequence_from > 0), source_sequence_to INTEGER NOT NULL CHECK(source_sequence_to >= source_sequence_from), generator_kind TEXT NOT NULL CHECK(generator_kind IN (${sqlValues(SESSION_SUMMARY_GENERATOR_KIND_VALUES)})), generator_name TEXT NOT NULL CHECK(length(generator_name) BETWEEN 1 AND 200), generator_version TEXT CHECK(generator_version IS NULL OR length(generator_version) BETWEEN 1 AND 200), generator_config_hash TEXT CHECK(generator_config_hash IS NULL OR generator_config_hash GLOB '[0-9a-f]*' AND length(generator_config_hash)=64), supersedes_id TEXT REFERENCES session_summaries(id), created_at TEXT NOT NULL, UNIQUE(session_id,kind,version));
-CREATE UNIQUE INDEX session_summaries_current_kind ON session_summaries(session_id,kind) WHERE status='current';
-CREATE INDEX session_summaries_selection ON session_summaries(session_id,status,source_sequence_to DESC,kind,created_at DESC,id);
+${SESSION_SUMMARY_SCHEMA_SQL}
 CREATE TABLE session_summary_claims(id TEXT PRIMARY KEY, summary_id TEXT NOT NULL REFERENCES session_summaries(id), ordinal INTEGER NOT NULL CHECK(ordinal >= 0), kind TEXT NOT NULL CHECK(kind IN (${sqlValues(SESSION_SUMMARY_CLAIM_KIND_VALUES)})), content TEXT NOT NULL CHECK(length(content) > 0), outcome TEXT CHECK(outcome IS NULL OR outcome IN (${sqlValues(MEMORY_OUTCOME_VALUES)})), UNIQUE(summary_id,ordinal));
 CREATE TABLE session_summary_claim_supports(claim_id TEXT NOT NULL REFERENCES session_summary_claims(id), evidence_id TEXT NOT NULL REFERENCES evidence(id), relation TEXT NOT NULL CHECK(relation IN (${sqlValues(SESSION_SUMMARY_SUPPORT_RELATION_VALUES)})), PRIMARY KEY(claim_id,evidence_id));
 ${SESSION_PROJECTION_TRIGGER_SQL}
@@ -360,7 +367,7 @@ CREATE TRIGGER legacy_import_cohorts_immutable_delete BEFORE DELETE ON legacy_im
 export const CURRENT_SCHEMA_SQL = `
 ${SHARED_SCHEMA_PREFIX}
 ${PROJECT_ALIAS_SCHEMA_SQL}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), state TEXT NOT NULL CHECK(state IN ('active','compacted','ended','degraded')), started_at TEXT NOT NULL, ended_at TEXT, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
+CREATE TABLE sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), root_session_key TEXT NOT NULL, harness TEXT NOT NULL CHECK(harness IN (${sqlValues(HARNESS_VALUES)})), started_at TEXT NOT NULL, next_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK(next_event_sequence >= 0), UNIQUE(project_id, root_session_key, harness));
 ${sharedSchemaSuffix(', summary_id TEXT REFERENCES session_summaries(id)', ", prefix='2 3 4 5 6 7 8 9 10 11 12'")}
 ${SESSION_PROJECTION_SCHEMA_SQL}
 ${OBSERVATION_PROJECTION_SCHEMA_SQL}

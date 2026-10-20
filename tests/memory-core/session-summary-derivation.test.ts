@@ -157,9 +157,9 @@ describe('deterministic session summary derivation', () => {
         content: 'Objective: Verify the resumed session.\nFirst pending action: Run the new integration checks.\nBlockers: None.',
       } });
       const finalized = service.lifecycle({ ...session, project, operation: 'finalize', eventKey: 'final' });
-      const summary = service.deriveAndPersistSessionSummary(first.sessionId, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(first.sessionId)!;
       expect(summary.id).toBe(finalized.summaryId);
-      expect(summary.kind).toBe('final');
+      expect(summary).not.toHaveProperty('kind');
       expect(summary.coverage.toSequence).toBe(handoff.event!.sequence);
       expect(summary.claims.map(({ kind, content, supportIds }) => ({ kind, content, supportIds }))).toEqual([
         { kind: 'objective', content: 'Implement deterministic summaries and verify native recovery.', supportIds: [first.evidenceId] },
@@ -184,7 +184,7 @@ describe('deterministic session summary derivation', () => {
       const earlierMemory = position === 'before' ? saveMemory() : null;
       const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' }, capturedAt: '2020-01-01T00:00:00Z' } });
       const memory = earlierMemory ?? saveMemory();
-      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!)!;
       expect(summary.claims.filter((claim) => claim.supportIds.includes(checkpoint.evidence.id)).map(({ kind, content }) => ({ kind, content }))).toEqual([
         ...(position === 'before' ? [
           { kind: 'objective', content: 'Finish the original implementation.' },
@@ -212,7 +212,7 @@ describe('deterministic session summary derivation', () => {
       service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Implement deterministic summaries and verify native recovery.' } });
       const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
       service.save({ project, session, evidence: { kind: 'root_prompt', content } });
-      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!)!;
       expect(summary.claims.filter((claim) => claim.supportIds.includes(checkpoint.evidence.id)).map(({ kind, content }) => ({ kind, content }))).toEqual([
         { kind: 'objective', content: 'Finish the original implementation.' },
         { kind: 'next_action', content: 'Run the old live tests.' },
@@ -236,7 +236,7 @@ describe('deterministic session summary derivation', () => {
       const first = service.save({ project, session, eventKey: 'first', evidence: { kind: 'root_prompt', content } });
       const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
       service.save({ project, session, eventKey: 'repeat', evidence: { kind: 'root_prompt', content: ` \n${content}\t ` } });
-      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!)!;
       expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'decision', 'completed', 'changed_surface']);
       expect(summary.claims[0]).toMatchObject({ content: content.normalize('NFC'), supportIds: [first.evidence.id] });
       expect(summary.claims.slice(1).every((claim) => claim.supportIds.includes(checkpoint.evidence.id))).toBe(true);
@@ -251,7 +251,7 @@ describe('deterministic session summary derivation', () => {
       const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
       service.save({ project, session, evidence: { kind: 'handoff', content: 'Old plan.' }, memory: { kind: 'handoff', title: 'Old plan', content: 'Run the old checks.', topicKey: 'work/replaced' } });
       service.save({ project, session: { ...session, rootSessionKey: 'other' }, evidence: { kind: 'handoff', content: 'Replacement plan.' }, memory: { kind: 'handoff', title: 'Replacement', content: 'Run other checks.', topicKey: 'work/replaced' } });
-      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!)!;
       expect(summary.claims.map((claim) => claim.kind)).toEqual(['objective', 'next_action', 'blocker', 'pending', 'decision', 'completed', 'changed_surface']);
       expect(summary.claims.every((claim) => claim.supportIds.length === 1 && claim.supportIds[0] === checkpoint.evidence.id)).toBe(true);
     } finally { service.close(); }
@@ -265,12 +265,12 @@ describe('deterministic session summary derivation', () => {
       for (let index = 0; index < 32; index++) service.save({ project, session, eventKey: `decision-${index}`, evidence: { kind: 'explicit_save', content: `Decision evidence ${index}.` }, memory: { kind: 'decision', title: `Decision ${index}`, content: 'Result: Preserve the existing contract.' } });
       const checkpoint = service.save({ project, session, evidence: { kind: 'checkpoint', content: hostCompaction, metadata: { source: 'host_compaction' } } });
       const later = service.save({ project, session, evidence: { kind: 'explicit_save', content: 'A later discovery.' }, memory: { kind: 'discovery', title: 'Later discovery', content: 'Result: The new parser passed checks.' } });
-      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(checkpoint.sessionId!)!;
       expect(summary.claims).toHaveLength(32);
       expect(summary.claims.every((claim) => claim.kind === 'decision')).toBe(true);
       expect(summary.claims).toContainEqual(expect.objectContaining({ content: 'Keep SQLite authoritative.', supportIds: [checkpoint.evidence.id] }));
       expect(summary.claims.some((claim) => claim.supportIds.includes(later.evidence.id))).toBe(false);
-      expect(service.deriveAndPersistSessionSummary(checkpoint.sessionId!, 'final')).toEqual(summary);
+      expect(service.deriveAndPersistSessionSummary(checkpoint.sessionId!)).toEqual(summary);
     } finally { service.close(); }
   });
 
@@ -281,9 +281,9 @@ describe('deterministic session summary derivation', () => {
       const enrolled = service.lifecycle({ operation: 'enroll', project, harness: 'pi', rootSessionKey: 'empty', eventKey: 'enroll' });
       service.save({ project, session: { harness: 'pi', rootSessionKey: 'other' }, evidence: { kind: 'root_prompt', content: 'Foreign objective.' } });
       service.save({ project, session: { harness: 'pi', rootSessionKey: 'empty' }, evidence: { kind: 'checkpoint', content: 'Unstructured checkpoint.' } });
-      expect(service.deriveAndPersistSessionSummary(enrolled.sessionId, 'final')).toBeNull();
+      expect(service.deriveAndPersistSessionSummary(enrolled.sessionId)).toBeNull();
       const legacy = service.save({ project, session: { harness: 'import', rootSessionKey: 'legacy' }, evidence: { kind: 'legacy_prompt', content: 'Unordered legacy objective.' } });
-      expect(service.deriveAndPersistSessionSummary(legacy.sessionId!, 'final')).toBeNull();
+      expect(service.deriveAndPersistSessionSummary(legacy.sessionId!)).toBeNull();
       expect(service.projectSummaries({ projectKey: project.key }).items).toEqual([]);
     } finally { service.close(); }
   });
@@ -301,7 +301,7 @@ describe('deterministic session summary derivation', () => {
       const latest = service.save({ project, session, eventKey: 'latest', evidence: { kind: 'root_prompt', content: '🚀'.repeat(301) } });
       service.save({ project, session, eventKey: 'repeat', evidence: { kind: 'root_prompt', content: '😀'.repeat(40) } });
       service.save({ project, session, eventKey: 'trivial-latest', evidence: { kind: 'root_prompt', content: 'Done.' } });
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')?.claims).toEqual([
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)?.claims).toEqual([
         expect.objectContaining({ kind: 'objective', content: '😀'.repeat(40), supportIds: [first.evidence.id] }),
         expect.objectContaining({ kind: 'objective', content: '🚀'.repeat(300), supportIds: [latest.evidence.id] }),
       ]);
@@ -315,7 +315,7 @@ describe('deterministic session summary derivation', () => {
     try {
       service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Trivial.' } });
       const prompt = service.save({ project, session, evidence: { kind: 'root_prompt', content: ` \n${'e\u0301'.repeat(20)}\t ` } });
-      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')?.claims).toEqual([
+      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!)?.claims).toEqual([
         expect.objectContaining({ kind: 'objective', content: 'é'.repeat(20), supportIds: [prompt.evidence.id] }),
       ]);
     } finally { service.close(); }
@@ -328,7 +328,7 @@ describe('deterministic session summary derivation', () => {
     try {
       const first = service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Ya hice /reload' } });
       service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Continue.' } });
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')?.claims).toEqual([
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)?.claims).toEqual([
         expect.objectContaining({ kind: 'objective', content: 'Ya hice /reload', supportIds: [first.evidence.id] }),
       ]);
     } finally { service.close(); }
@@ -343,7 +343,7 @@ describe('deterministic session summary derivation', () => {
       service.save({ project, session, eventKey: 'second', evidence: { kind: 'root_prompt', content: 'Implement the second part of the summary pipeline.' } });
       service.save({ project, session, eventKey: 'third', evidence: { kind: 'root_prompt', content: 'Implement the third part of the summary pipeline.' } });
       const latest = service.save({ project, session, eventKey: 'latest', evidence: { kind: 'root_prompt', content: 'Implement the second part of the summary pipeline.' } });
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')?.claims).toEqual([
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)?.claims).toEqual([
         expect.objectContaining({ kind: 'objective', content: 'Implement the first part of the summary pipeline.', supportIds: [first.evidence.id] }),
         expect.objectContaining({ kind: 'objective', content: 'Implement the second part of the summary pipeline.', supportIds: [latest.evidence.id] }),
       ]);
@@ -356,20 +356,21 @@ describe('deterministic session summary derivation', () => {
     const session = { harness: 'codex' as const, rootSessionKey: 'root' };
     try {
       const first = service.save({ project, session, eventKey: 'first', evidence: { kind: 'root_prompt', content: 'First objective.' } });
-      const initial = service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')!;
+      const initial = service.deriveAndPersistSessionSummary(first.sessionId!)!;
       expect(initial.coverage.toSequence).toBe(1);
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')).toEqual(initial);
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)).toEqual(initial);
       const later = service.save({ project, session, eventKey: 'later', evidence: { kind: 'root_prompt', content: 'Implement a later objective with citable session events.' } });
       expect(later.event?.sequence).toBe(3);
-      const refreshed = service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')!;
+      const refreshed = service.deriveAndPersistSessionSummary(first.sessionId!)!;
       expect(refreshed).toMatchObject({ version: 2, supersedesId: initial.id, coverage: { fromSequence: 1, toSequence: 3 } });
       expect(refreshed.claims).toContainEqual(expect.objectContaining({ content: 'Implement a later objective with citable session events.', supportIds: [later.evidence.id] }));
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'checkpoint')).toEqual(refreshed);
-      const final = service.deriveAndPersistSessionSummary(first.sessionId!, 'final')!;
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)).toEqual(refreshed);
+      const final = service.deriveAndPersistSessionSummary(first.sessionId!)!;
+      expect(final).toEqual(refreshed);
       expect(final.coverage.toSequence).toBe(3);
-      expect(service.deriveAndPersistSessionSummary(first.sessionId!, 'final')).toEqual(final);
+      expect(service.deriveAndPersistSessionSummary(first.sessionId!)).toEqual(final);
       const history = service.projectSummaries({ projectKey: project.key, history: true, budgetChars: 20_000 });
-      expect(history.items.map((summary) => summary.id).sort()).toEqual([initial.id, refreshed.id, final.id].sort());
+      expect(history.items.map((summary) => summary.id).sort()).toEqual([initial.id, refreshed.id].sort());
     } finally { service.close(); }
   });
 
@@ -380,13 +381,13 @@ describe('deterministic session summary derivation', () => {
     try {
       const prompt = service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Implement the summary pipeline with immutable citations.' } });
       const persisted = service.lifecycle({ ...session, project, operation: 'checkpoint_pre_compact', eventKey: 'old-summary', summary: {
-        kind: 'checkpoint', coverage: { fromSequence: 1, toSequence: 1 },
+        coverage: { fromSequence: 1, toSequence: 1 },
         generator: { kind: 'harness', name: `thoth-mem.session-evidence.${generation}` },
         claims: [{ kind: 'objective', content: 'Original persisted summary.', supportIds: [prompt.evidence.id] }],
       } });
-      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toEqual(service.get({ id: persisted.summaryId! }).record);
+      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!)).toEqual(service.get({ id: persisted.summaryId! }).record);
       service.save({ project, session, evidence: { kind: 'root_prompt', content: 'Verify that new activity derives a compact v3 summary.' } });
-      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toMatchObject({ version: 2, supersedesId: persisted.summaryId, generator: { name: 'thoth-mem.session-evidence.v3' } });
+      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!)).toMatchObject({ version: 2, supersedesId: persisted.summaryId, generator: { name: 'thoth-mem.session-evidence.v3' } });
     } finally { service.close(); }
   });
 
@@ -405,7 +406,7 @@ describe('deterministic session summary derivation', () => {
       const open = save('handoff', 'Native recovery', 'Objective: Finish native recovery.\nFirst pending action: Run the Pi lifecycle checks.\nBlockers: None.', 'work/open');
       const closed = save('handoff', 'Old migration plan', 'First pending action: Apply the migration.', 'work/closed');
       const closure = save('decision', 'Migration verified', 'Rationale: Backups protect existing data.\nResult: Revision 11 retained every referenced session.\nChecks: Passed.', 'work/closed');
-      const summary = service.deriveAndPersistSessionSummary(direct.sessionId!, 'final')!;
+      const summary = service.deriveAndPersistSessionSummary(direct.sessionId!)!;
       expect(summary.generator).toEqual({ kind: 'harness', name: 'thoth-mem.session-evidence.v3' });
       expect(summary.claims).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'decision', content: 'SQLite ledger: SQLite remains authoritative.', supportIds: [direct.evidence.id] }),
@@ -429,7 +430,7 @@ describe('deterministic session summary derivation', () => {
         memory: { kind: index % 2 ? 'failure' : 'discovery', title: 'Native SQLite', content: `Result: Node owns the native driver.\nDetail: Run ${index}.` },
       }));
       const decision = service.save({ project, session, evidence: { kind: 'explicit_save', content: 'Separate decision evidence.' }, memory: { kind: 'decision', title: 'Native SQLite', content: 'Result: Node owns the native driver.' } });
-      const summary = service.deriveAndPersistSessionSummary(saved[0]!.sessionId!, 'checkpoint')!;
+      const summary = service.deriveAndPersistSessionSummary(saved[0]!.sessionId!)!;
       expect(summary.claims).toEqual([
         expect.objectContaining({ kind: 'decision', content: 'Native SQLite: Node owns the native driver.', supportIds: [decision.evidence.id] }),
         expect.objectContaining({ kind: 'completed', content: 'Native SQLite: Node owns the native driver.', outcome: 'failed', supportIds: saved.map((result) => result.evidence.id).sort().slice(0, 16) }),
@@ -444,7 +445,7 @@ describe('deterministic session summary derivation', () => {
     try {
       service.save({ project, session, eventKey: 'old', evidence: { kind: 'handoff', content: 'Old plan.' }, memory: { kind: 'handoff', title: 'Old', content: 'Old plan.', topicKey: 'work' } });
       const next = service.save({ project, session, eventKey: 'new', evidence: { kind: 'handoff', content: 'New plan.' }, memory: { kind: 'handoff', title: 'New', content: 'New plan.', topicKey: 'work' } });
-      expect(service.deriveAndPersistSessionSummary(next.sessionId!, 'checkpoint')?.claims).toEqual([
+      expect(service.deriveAndPersistSessionSummary(next.sessionId!)?.claims).toEqual([
         expect.objectContaining({ kind: 'next_action', content: 'New: New plan.', supportIds: [next.evidence.id] }),
       ]);
     } finally { service.close(); }
@@ -460,15 +461,15 @@ describe('deterministic session summary derivation', () => {
         service.save({ project, session, eventKey: `memory-${i}`, evidence: { kind: 'explicit_save', content: 'Evidence.' }, memory: { kind: 'discovery', title: `Discovery ${i}`, content: `${i}: ${unit.repeat(unit === 'x' ? 5 : 2_100)}` } });
       }
       const handoff = service.save({ project, session, eventKey: 'handoff', evidence: { kind: 'handoff', content: 'Pending action.' }, memory: { kind: 'handoff', title: 'Continue', content: 'Pending action.', topicKey: 'pending' } });
-      const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')!;
+      const summary = service.deriveAndPersistSessionSummary(prompt.sessionId!)!;
       expect(summary.claims.length).toBeGreaterThan(0);
       expect(summary.claims.length).toBeLessThanOrEqual(32);
       expect(summary.claims.every((claim) => [...claim.content].length <= 300)).toBe(true);
       expect(summary.claims).toContainEqual(expect.objectContaining({ kind: 'objective', content: 'p'.repeat(300) }));
       expect(summary.claims).toContainEqual(expect.objectContaining({ kind: 'next_action', supportIds: [handoff.evidence.id] }));
-      const input: SessionSummaryInput = { kind: summary.kind, coverage: summary.coverage, generator: summary.generator, claims: summary.claims.map(({ kind, content, outcome, supportIds }) => ({ kind, content, ...(outcome ? { outcome } : {}), supportIds })) };
+      const input: SessionSummaryInput = { coverage: summary.coverage, generator: summary.generator, claims: summary.claims.map(({ kind, content, outcome, supportIds }) => ({ kind, content, ...(outcome ? { outcome } : {}), supportIds })) };
       expect(canonicalizeSessionSummary(input).canonicalJson.length).toBeLessThanOrEqual(20_000);
-      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!, 'checkpoint')).toEqual(summary);
+      expect(service.deriveAndPersistSessionSummary(prompt.sessionId!)).toEqual(summary);
     } finally { service.close(); }
   });
 
@@ -499,8 +500,8 @@ describe('deterministic session summary derivation', () => {
       service.save({ project, eventKey: 'project-only', evidence: { kind: 'explicit_save', content: 'Unordered evidence.' }, memory: { kind: 'decision', title: 'Project only', content: 'Do not include project-only memory.' } });
       service.save({ project, session: { ...session, rootSessionKey: 'other' }, eventKey: 'other', evidence: { kind: 'root_prompt', content: 'Foreign request.' } });
 
-      const summary = service.deriveAndPersistSessionSummary(first.sessionId!, 'final')!;
-      expect(summary).toMatchObject({ kind: 'final', coverage: { fromSequence: 1, toSequence: 14 }, generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v3' } });
+      const summary = service.deriveAndPersistSessionSummary(first.sessionId!)!;
+      expect(summary).toMatchObject({ coverage: { fromSequence: 1, toSequence: 14 }, generator: { kind: 'harness', name: 'thoth-mem.session-evidence.v3' } });
       expect(summary.claims.filter((claim) => claim.kind === 'objective').map((claim) => [claim.content, claim.supportIds])).toEqual([
         ['Implement the first requested feature with cited evidence.', [first.evidence.id]], ['Implement the latest requested feature with cited evidence.', [latest.evidence.id]],
       ]);

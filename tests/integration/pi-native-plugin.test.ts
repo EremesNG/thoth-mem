@@ -51,7 +51,7 @@ describe('Pi native extension', () => {
       expect(database.prepare('SELECT root_session_key,operation FROM lifecycle_receipts').all()).toEqual([{ root_session_key: 'typed', operation: 'capture_root' }]);
       await handlers.get('session_shutdown')!({ reason: 'quit' }, active);
       expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 1 });
-      expect(database.prepare('SELECT kind FROM session_summaries').all()).toEqual([{ kind: 'final' }]);
+      expect(database.prepare('SELECT version,status FROM session_summaries').all()).toEqual([{ version: 1, status: 'current' }]);
       expect(database.prepare("SELECT count(*) AS count FROM lifecycle_receipts WHERE root_session_key='untouched'").get()).toEqual({ count: 0 });
     } finally { database.close(); service.close(); }
   });
@@ -84,18 +84,16 @@ describe('Pi native extension', () => {
       await handlers.get('session_shutdown')!(shutdown, context);
       const firstFinal = calls.at(-1)!.result;
       expect(firstFinal).toMatchObject({ duplicate: false, summaryId: expect.any(String) });
-      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ kind: 'final', version: 1, coverage: { toSequence: 1 } });
+      expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ version: 1, coverage: { toSequence: 1 } });
       const replayedFinal = await tools.mem_session(calls.at(-1)!.args);
       expect(replayedFinal.structuredContent.data).toMatchObject({ duplicate: true, summaryId: firstFinal.summaryId });
 
       await handlers.get('session_start')!({ reason: 'resume' }, context);
-      expect(database.prepare('SELECT state FROM sessions WHERE root_session_key=?').get('resumed-root')).toEqual({ state: 'ended' });
       leaf = 'leaf-2';
       const prompt = { text: 'Continue the resumed lifecycle with new activity and verify a second final summary.', source: 'interactive' };
       await handlers.get('input')!(prompt, context);
       const captured = calls.at(-1)!.result;
       expect(captured).toMatchObject({ duplicate: false, sessionId: firstFinal.sessionId, event: { sequence: 3 } });
-      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'active', ended_at: null });
       await handlers.get('input')!(prompt, context);
       expect(calls.at(-1)!.result).toMatchObject({ duplicate: true, evidenceId: captured.evidenceId, event: captured.event });
       for (let index = 0; index < 2; index += 1) {
@@ -107,12 +105,11 @@ describe('Pi native extension', () => {
       expect(secondFinal).toMatchObject({ duplicate: false, sessionId: firstFinal.sessionId });
       expect(secondFinal.summaryId).not.toBe(firstFinal.summaryId);
       expect(service.get({ id: secondFinal.summaryId! }).record).toMatchObject({
-        kind: 'final', version: 2, status: 'current', supersedesId: firstFinal.summaryId,
+        version: 2, status: 'current', supersedesId: firstFinal.summaryId,
         coverage: { fromSequence: 1, toSequence: captured.event!.sequence }, generator: { kind: 'harness' },
         claims: expect.arrayContaining([expect.objectContaining({ kind: 'objective', content: prompt.text, supportIds: [captured.evidenceId] })]),
       });
       expect(service.get({ id: firstFinal.summaryId! }).record).toMatchObject({ status: 'superseded' });
-      expect(database.prepare('SELECT state,ended_at FROM sessions WHERE id=?').get(firstFinal.sessionId)).toEqual({ state: 'ended', ended_at: expect.any(String) });
       expect(database.prepare("SELECT count(*) AS count FROM lifecycle_receipts WHERE root_session_key=? AND operation='finalize'").get('resumed-root')).toEqual({ count: 2 });
       expect(calls.every(({ args }) => !('summary' in args))).toBe(true);
       expect(createRunNonce).toHaveBeenCalledTimes(2);
