@@ -38,8 +38,18 @@ export function identityOnlyRecovery(rootSessionKey: string, directory: string):
   } catch { return undefined; }
 }
 
+export interface RecoveryBlock {
+  block: string;
+  source: 'verified' | 'fallback';
+}
+
 export function verifiedRecovery(result: LifecycleResult | undefined, rootSessionKey: string, directory: string, harness?: Harness): string | undefined {
-  const fallback = identityOnlyRecovery(rootSessionKey, directory);
+  return recoveryWithProvenance(result, rootSessionKey, directory, harness)?.block;
+}
+
+export function recoveryWithProvenance(result: LifecycleResult | undefined, rootSessionKey: string, directory: string, harness?: Harness): RecoveryBlock | undefined {
+  const fallbackBlock = identityOnlyRecovery(rootSessionKey, directory);
+  const fallback: RecoveryBlock | undefined = fallbackBlock ? { block: fallbackBlock, source: 'fallback' } : undefined;
   let localProject;
   try { localProject = resolveLocalProjectIdentity(directory); } catch { return fallback; }
   const recovery = result?.recovery;
@@ -66,5 +76,5 @@ export function verifiedRecovery(result: LifecycleResult | undefined, rootSessio
     || recovery.items.some((item) => !isSummaryItem(item) && !(MEMORY_KIND_VALUES as readonly string[]).includes(item.kind))
     || recovery.items.some((item) => !context.includes(`(${isSummaryItem(item) ? 'summary' : 'memory'}:${item.id})`))
     || recovery.items.some((item) => isSummaryItem(item) ? context.includes(item.submissionEvidenceId) : item.evidenceIds.some((id) => context.includes(id)))) return fallback;
-  return context;
+  return { block: context, source: 'verified' };
 }

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,7 +9,7 @@ import type { LifecycleResult } from '../../memory-core/contracts.js';
 import { RECOVERY_TAG_END, RECOVERY_TAG_START } from '../../memory-core/continuation.js';
 import { sanitizePrivateContent } from '../../memory-core/privacy.js';
 import { resolveLocalProjectIdentity } from '../project-identity.js';
-import { isOwnedRecoveryBlock, verifiedRecovery } from '../recovery.js';
+import { recoveryWithProvenance } from '../recovery.js';
 import {
   dispatchOpenCodeLifecycleThroughNode,
   type OpenCodeLifecycleDispatchInput,
@@ -23,6 +23,17 @@ const MAX_IDENTITY_PARENT_DEPTH = 16;
 interface SessionState {
   directory: string;
   root: boolean;
+}
+
+interface PendingDelivery {
+  kind: 'verified' | 'fallback-delivered-awaiting-verified';
+  block: string;
+}
+
+type MessageParts = Parameters<NonNullable<Hooks['chat.message']>>[1]['parts'];
+
+function hasRecovery(parts: MessageParts): boolean {
+  return parts.some((part) => 'text' in part && part.text.includes(RECOVERY_TAG_START));
 }
 
 export interface ThothMemPluginOptions {
@@ -67,6 +78,29 @@ function stableLifecycleEventKey(parts: unknown[]): string {
 export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugin {
   return async ({ client, directory }) => {
     const sessions = new Map<string, SessionState>();
+    const startedSessions = new Set<string>();
+    const pendingDeliveries = new Map<string, PendingDelivery>();
+    // A queued fallback may be deferred by deduplication before its first push.
+    const fallbackDelivered = new Set<string>();
+    const deliveredMessages = new Set<string>();
+    let partCounter = 0;
+    const nextPartID = (parts: MessageParts): string => {
+      let maximum: string | undefined;
+      for (const part of parts) {
+        if (maximum === undefined || Buffer.compare(Buffer.from(part.id), Buffer.from(maximum)) > 0) maximum = part.id;
+      }
+      if (maximum !== undefined) return `${maximum}~thoth-mem`;
+      const timestamp = (BigInt(Date.now()) * 0x1000n + BigInt(partCounter++)) & 0xffffffffffffn;
+      const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+      const random = Array.from({ length: 14 }, () => alphabet[randomInt(alphabet.length)]).join('');
+      return `prt_${timestamp.toString(16).padStart(12, '0')}${random}`;
+    };
+    const queueRecovery = (sessionID: string, sessionDirectory: string, result: LifecycleResult | undefined): void => {
+      const recovery = recoveryWithProvenance(result, sessionID, sessionDirectory);
+      fallbackDelivered.delete(sessionID);
+      if (recovery) pendingDeliveries.set(sessionID, { kind: recovery.source === 'verified' ? 'verified' : 'fallback-delivered-awaiting-verified', block: recovery.block });
+      else pendingDeliveries.delete(sessionID);
+    };
     const runtimeEntry = options.runtimeEntry ?? defaultRuntimeEntry();
     let timeoutReported = false;
     const reportDiagnostic = (code: string, detail?: string): void => {
@@ -96,7 +130,7 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
         return undefined;
       }
     };
-    const resolveRootSession = async (callerSessionID: string, sessionDirectory: string): Promise<{ rootSessionID: string } | { reason: string }> => {
+    const resolveRootSession = async (callerSessionID: string, sessionDirectory: string): Promise<{ rootSessionID: string; directory: string } | { reason: string }> => {
       const visited = new Set<string>();
       let sessionID = callerSessionID;
       for (let depth = 0; depth <= MAX_IDENTITY_PARENT_DEPTH; depth += 1) {
@@ -110,7 +144,7 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
         }
         if (!isSessionInfo(response.data)) return { reason: 'session_not_found' };
         if (response.data.id !== sessionID) return { reason: 'session_id_mismatch' };
-        if (response.data.parentID === undefined) return { rootSessionID: sessionID };
+        if (response.data.parentID === undefined) return { rootSessionID: sessionID, directory: response.data.directory };
         if (!isBoundedIdentifier(response.data.parentID)) return { reason: 'parent_id_invalid' };
         sessionID = response.data.parentID;
       }
@@ -172,7 +206,9 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
                 .map((part) => part.text).join('\n').trim());
             }
           } catch { reportDiagnostic('compaction_summary_lookup_failed'); }
-          await dispatch({ operation: 'guide_post_compact', directory: state.directory, rootSessionKey: sessionID, eventKey: `session-compacted:${sessionID}${messageID ? `:${messageID}` : ''}`, ...(content ? { content } : {}) });
+          const result = await dispatch({ operation: 'guide_post_compact', directory: state.directory, rootSessionKey: sessionID, eventKey: `session-compacted:${sessionID}${messageID ? `:${messageID}` : ''}`, ...(content ? { content } : {}) });
+          startedSessions.add(sessionID);
+          queueRecovery(sessionID, state.directory, result);
           return;
         }
         if (event.type === 'session.deleted') {
@@ -181,18 +217,67 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
           const state = sessions.get(info.id) ?? { directory: info.directory, root: !info.parentID };
           if (state.root) await dispatch({ operation: 'finalize', directory: state.directory, rootSessionKey: info.id, eventKey: `session-deleted:${info.id}` });
           sessions.delete(info.id);
+          startedSessions.delete(info.id);
+          pendingDeliveries.delete(info.id);
+          fallbackDelivered.delete(info.id);
         }
       },
-      'chat.message': async (_input, output) => {
-        const state = sessions.get(output.message.sessionID);
-        if (!state?.root || output.message.role !== 'user') return;
+      'chat.message': async (input, output) => {
+        const sessionID = input.sessionID;
+        if (output.message.role !== 'user' || output.message.sessionID !== sessionID || !isBoundedIdentifier(sessionID)) return;
+        let state = sessions.get(sessionID);
+        if (!state) {
+          const resolution = await resolveRootSession(sessionID, directory);
+          if ('reason' in resolution) return;
+          state = { directory: resolution.directory, root: resolution.rootSessionID === sessionID };
+          sessions.set(sessionID, state);
+        }
+        if (!state.root) return;
         const content = sanitizePrivateContent(output.parts
           .filter((part): part is Extract<(typeof output.parts)[number], { type: 'text' }> => part.type === 'text' && !part.synthetic && !part.ignored)
           .map((part) => part.text)
           .join('\n')
           .trim());
-        if (!content) return;
-        await dispatch({ operation: 'capture_root', directory: state.directory, rootSessionKey: output.message.sessionID, eventKey: `message:${output.message.id}`, content });
+        if (content) await dispatch({ operation: 'capture_root', directory: state.directory, rootSessionKey: sessionID, eventKey: `message:${output.message.id}`, content });
+        if (!startedSessions.has(sessionID)) {
+          startedSessions.add(sessionID);
+          const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `message-recovery:${sessionID}:${output.message.id}` });
+          queueRecovery(sessionID, state.directory, result);
+        }
+        let pending = pendingDeliveries.get(sessionID);
+        if (!pending) return;
+        if (pending.kind === 'fallback-delivered-awaiting-verified' && fallbackDelivered.has(sessionID)) {
+          const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `message-recovery:${sessionID}:${output.message.id}` });
+          if (pendingDeliveries.get(sessionID) !== pending) return;
+          const recovery = recoveryWithProvenance(result, sessionID, state.directory);
+          if (recovery?.source !== 'verified') return;
+          pending = { kind: 'verified', block: recovery.block };
+          pendingDeliveries.set(sessionID, pending);
+        }
+        if (deliveredMessages.has(output.message.id)) return;
+        if (hasRecovery(output.parts)) {
+          deliveredMessages.add(output.message.id);
+          return;
+        }
+        if (input.messageID) {
+          try {
+            const response = await client.session.message({ path: { id: sessionID, messageID: input.messageID } });
+            const status = response.response?.status;
+            const notFound = status === 404 || (status === undefined && response.error?.name === 'NotFoundError');
+            if (!notFound) {
+              if (response.error || !response.data || (status !== undefined && (status < 200 || status >= 300))) return;
+              if (hasRecovery(response.data.parts)) {
+                deliveredMessages.add(output.message.id);
+                return;
+              }
+            }
+          } catch { return; }
+        }
+        if (deliveredMessages.has(output.message.id) || pendingDeliveries.get(sessionID) !== pending) return;
+        output.parts.push({ id: nextPartID(output.parts), sessionID, messageID: output.message.id, type: 'text', text: pending.block, synthetic: true });
+        deliveredMessages.add(output.message.id);
+        if (pending.kind === 'verified') pendingDeliveries.delete(sessionID);
+        else fallbackDelivered.add(sessionID);
       },
       'experimental.session.compacting': async ({ sessionID }, output) => {
         const state = sessions.get(sessionID);
@@ -205,15 +290,6 @@ export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugi
           eventKey: `compacting:${stableLifecycleEventKey([sessionID, content])}`,
           ...(content ? { content } : {}),
         });
-      },
-      'experimental.chat.system.transform': async ({ sessionID }, output) => {
-        if (!sessionID) return;
-        const state = sessions.get(sessionID);
-        if (!state?.root) return;
-        const stablePrefix = output.system.filter((entry) => !isOwnedRecoveryBlock(entry));
-        const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `system-recovery:${sessionID}` });
-        const recovery = verifiedRecovery(result, sessionID, state.directory);
-        output.system.splice(0, output.system.length, ...stablePrefix, ...(recovery ? [recovery] : []));
       },
     };
 

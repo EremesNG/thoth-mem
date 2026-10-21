@@ -20,6 +20,179 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('Pi native extension', () => {
+  it.each(['startup', 'resume', 'new', 'fork'])('delivers one hidden recovery on %s and leaves system sections untouched after a save', async (reason) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-boundary-')); roots.push(cwd);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const tools: PiToolDefinition[] = [];
+    const calls: Record<string, unknown>[] = [];
+    const results: LifecycleResult[] = [];
+    const toolHandlers = createToolHandlers(service);
+    const client: PiMcpClient = {
+      callTool: async (name, args) => {
+        const response = await toolHandlers[name](args);
+        if (name === 'mem_session') { calls.push(args); results.push(response.structuredContent.data as LifecycleResult); }
+        return response;
+      },
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: (tool) => tools.push(tool), on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'root', getLeafId: () => 'leaf', getBranch: () => [] } };
+    const sections = Object.freeze({ other: 'keep', thoth_mem_recovery: 'not owned by this extension anymore' });
+    const prompt = { systemPromptOptions: { sections } };
+    try {
+      await handlers.get('session_start')!({ reason }, context);
+      const block = results.at(-1)!.recovery!.context;
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toEqual({ message: { customType: 'thoth-mem-recovery', content: block, display: false } });
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toBeUndefined();
+      const saved = await tools.find((tool) => tool.name === 'mem_save')!.execute('save', {
+        project_key: results[0]!.projectKey, project_name: results[0]!.projectName,
+        evidence: { kind: 'explicit_save', content: 'Verified stable delivery.' },
+        memory: { kind: 'decision', title: 'Mid-session choice', content: 'Result: Keep later prompts stable.\nRationale: Preserve the request prefix.' },
+      });
+      expect(saved.details).toMatchObject({ data: { memory: { title: 'Mid-session choice' } } });
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toBeUndefined();
+      expect(calls.map(({ operation }) => operation)).toEqual(['enroll', 'recover']);
+      await handlers.get('session_compact')!({ reason: 'manual', compactionEntry: { id: 'compact-1', summary: '## Goal\nKeep the delivery stable.' } }, context);
+      const compactedBlock = results.at(-1)!.recovery!.context;
+      expect(compactedBlock).toContain('Keep later prompts stable.');
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toEqual({ message: { customType: 'thoth-mem-recovery', content: compactedBlock, display: false } });
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toBeUndefined();
+      await handlers.get('session_compact_failed')!({ reason: 'manual' }, context);
+      expect(await handlers.get('before_agent_start')!(prompt, context)).toBeUndefined();
+      expect(calls.map(({ operation }) => operation)).toEqual(['enroll', 'recover', 'guide_post_compact']);
+      expect(sections).toEqual({ other: 'keep', thoth_mem_recovery: 'not owned by this extension anymore' });
+      expect(await handlers.get('before_agent_start')!({ get systemPromptOptions() { throw new Error('must not read system prompt options'); } }, context)).toBeUndefined();
+    } finally { service.close(); }
+  });
+
+  it.each([
+    { label: 'empty branch', branch: [], delivers: true },
+    { label: 'unrelated custom message', branch: [{ type: 'custom_message', customType: 'other' }], delivers: true },
+    { label: 'existing recovery', branch: [{ type: 'custom_message', customType: 'thoth-mem-recovery' }, { type: 'message' }], delivers: false },
+    { label: 'recovery after compaction', branch: [{ type: 'compaction' }, { type: 'custom_message', customType: 'thoth-mem-recovery' }, { type: 'message' }], delivers: false },
+    { label: 'recovery only before latest compaction', branch: [{ type: 'compaction' }, { type: 'custom_message', customType: 'thoth-mem-recovery' }, { type: 'compaction' }, { type: 'message' }], delivers: true },
+  ])('deduplicates reload delivery against $label', async ({ branch, delivers }) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-reload-')); roots.push(cwd);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const tools = createToolHandlers(service);
+    const calls: Record<string, unknown>[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const client: PiMcpClient = {
+      callTool: async (name, args) => { calls.push(args); return tools[name](args); },
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'root', getLeafId: () => 'leaf', getBranch: () => branch } };
+    try {
+      await handlers.get('session_start')!({ reason: 'reload' }, context);
+      const first = await handlers.get('before_agent_start')!({}, context);
+      if (delivers) expect(first).toMatchObject({ message: { customType: 'thoth-mem-recovery', display: false, content: expect.stringContaining('root_session_id=root;') } });
+      else expect(first).toBeUndefined();
+      expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
+      expect(calls.map(({ operation }) => operation)).toEqual(['enroll', 'recover']);
+    } finally { service.close(); }
+  });
+
+  it.each(['start', 'compact'])('delivers fallback then retries until one verified block at the %s boundary', async (boundary) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-retry-')); roots.push(cwd);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const tools = createToolHandlers(service);
+    const calls: Record<string, unknown>[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    let unavailable = boundary === 'start';
+    let verified: string | undefined;
+    const client: PiMcpClient = {
+      callTool: async (name, args) => {
+        calls.push(args);
+        if (unavailable && (args.operation === 'recover' || args.operation === 'guide_post_compact')) return { structuredContent: { data: { outcome: 'degraded' } } };
+        const response = await tools[name](args);
+        if (args.operation === 'recover') verified = (response.structuredContent.data as LifecycleResult).recovery!.context;
+        return response;
+      },
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'root', getLeafId: () => 'leaf', getBranch: () => [] } };
+    try {
+      await handlers.get('session_start')!({ reason: 'startup' }, context);
+      if (boundary === 'compact') {
+        await handlers.get('before_agent_start')!({}, context);
+        unavailable = true;
+        await handlers.get('session_compact')!({ compactionEntry: { id: 'compact-1' } }, context);
+      }
+      const initialCalls = calls.length;
+      expect(await handlers.get('before_agent_start')!({}, context)).toEqual({ message: {
+        customType: 'thoth-mem-recovery', display: false,
+        content: expect.stringContaining('Memory recovery was unavailable; only local identity is shown.'),
+      } });
+      expect(calls).toHaveLength(initialCalls);
+      expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
+      expect(calls).toHaveLength(initialCalls + 1);
+      unavailable = false;
+      const recovered = await handlers.get('before_agent_start')!({}, context);
+      expect(recovered).toEqual({ message: { customType: 'thoth-mem-recovery', content: verified, display: false } });
+      expect(verified).toContain('No memory was recovered;');
+      expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
+      expect(calls).toHaveLength(initialCalls + 2);
+      const keys = calls.filter(({ operation }) => operation === 'recover').map(({ event_key }) => event_key);
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(calls.slice(initialCalls).map(({ operation }) => operation)).toEqual(['recover', 'recover']);
+      expect(calls.slice(initialCalls).every((call) => !('content' in call))).toBe(true);
+    } finally { service.close(); }
+  });
+
+  it('replaces a pending fallback boundary on compaction and ignores an in-flight retry from the old boundary', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-retry-compact-')); roots.push(cwd);
+    const service = new MemoryService({ databasePath: ':memory:' });
+    const tools = createToolHandlers(service);
+    const calls: Record<string, unknown>[] = [];
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    let completeRetry: (value: Record<string, unknown>) => void = () => { throw new Error('retry did not start'); };
+    const retry = new Promise<Record<string, unknown>>((resolve) => { completeRetry = resolve; });
+    let compactedBlock: string | undefined;
+    const client: PiMcpClient = {
+      callTool: async (name, args) => {
+        calls.push(args);
+        if (args.operation === 'recover') {
+          if (calls.filter(({ operation }) => operation === 'recover').length === 1) return {};
+          return retry;
+        }
+        const response = await tools[name](args);
+        if (args.operation === 'guide_post_compact') compactedBlock = (response.structuredContent.data as LifecycleResult).recovery!.context;
+        return response;
+      },
+      close: async () => undefined,
+    };
+    createPiExtension({ client })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => 'root', getLeafId: () => 'leaf', getBranch: () => [] } };
+    try {
+      await handlers.get('session_start')!({ reason: 'startup' }, context);
+      expect(await handlers.get('before_agent_start')!({}, context)).toMatchObject({ message: { content: expect.stringContaining('Memory recovery was unavailable;') } });
+      const oldPrompt = handlers.get('before_agent_start')!({}, context);
+      await handlers.get('session_compact')!({ compactionEntry: { id: 'compact-1' } }, context);
+      completeRetry({});
+      expect(await oldPrompt).toBeUndefined();
+      expect(await handlers.get('before_agent_start')!({}, context)).toEqual({ message: { customType: 'thoth-mem-recovery', content: compactedBlock, display: false } });
+      expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
+      expect(calls.map(({ operation }) => operation)).toEqual(['enroll', 'recover', 'recover', 'guide_post_compact']);
+    } finally { completeRetry({}); service.close(); }
+  });
+
+  it.each(['invalid;root', '', 'root\ninjected'])('delivers nothing and never retries invalid local identity %j', async (root) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-invalid-')); roots.push(cwd);
+    const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
+    const callTool = vi.fn(async () => ({}));
+    createPiExtension({ client: { callTool, close: async () => undefined } })({ registerTool: () => undefined, on: (name, handler) => handlers.set(name, handler) });
+    const context = { cwd, sessionManager: { getSessionId: () => root, getLeafId: () => 'leaf', getBranch: () => [] } };
+    await handlers.get('session_start')!({ reason: 'startup' }, context);
+    const initialCalls = callTool.mock.calls.length;
+    for (let index = 0; index < 2; index += 1) {
+      expect(await handlers.get('before_agent_start')!({ get systemPromptOptions() { throw new Error('must not read system prompt options'); } }, context)).toBeUndefined();
+    }
+    expect(callTool).toHaveBeenCalledTimes(initialCalls);
+  });
+
   it.each(['resume', 'quit'])('leaves untouched start/recover/%s sessions absent until a typed prompt', async (reason) => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-lazy-')); roots.push(cwd);
     const databasePath = join(cwd, 'memory.sqlite');
@@ -34,9 +207,10 @@ describe('Pi native extension', () => {
       const untouched = context('untouched');
       await handlers.get('session_start')!({ reason: 'startup' }, untouched);
       const sections: Record<string, string> = {};
-      await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, untouched);
-      expect(sections.thoth_mem_recovery).toContain('root_session_id=untouched;');
-      expect(sections.thoth_mem_recovery).not.toContain('Memory recovery was unavailable');
+      const recovery = await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, untouched);
+      expect(recovery).toMatchObject({ message: { customType: 'thoth-mem-recovery', content: expect.stringContaining('root_session_id=untouched;'), display: false } });
+      expect(recovery).toMatchObject({ message: { content: expect.not.stringContaining('Memory recovery was unavailable') } });
+      expect(sections).toEqual({});
       expect(database.prepare('SELECT count(*) AS count FROM sessions').get()).toEqual({ count: 0 });
       expect(database.prepare('SELECT count(*) AS count FROM lifecycle_receipts').get()).toEqual({ count: 0 });
       await handlers.get('session_shutdown')!({ reason }, untouched);
@@ -116,7 +290,7 @@ describe('Pi native extension', () => {
     } finally { database.close(); service.close(); }
   });
 
-  it('retains one nonce through repeated start and post-compaction recovery refreshes, replacing it at each session_start', async () => {
+  it('retains one nonce with fresh retry keys across start and compaction, replacing it at each session_start', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-run-keys-')); roots.push(cwd);
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
     const calls: Record<string, unknown>[] = [];
@@ -141,12 +315,10 @@ describe('Pi native extension', () => {
       }
       await handlers.get('session_shutdown')!({ reason: 'quit', targetSessionFile: 'same-session.jsonl' }, context);
       const runCalls = calls.slice(offset);
-      expect(runCalls.map(({ operation }) => operation)).toEqual(['enroll', 'recover', 'recover', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'recover', 'recover', 'finalize']);
-      expect(runCalls[2]!.event_key).toBe(runCalls[1]!.event_key);
-      expect(runCalls[3]!.event_key).toBe(runCalls[1]!.event_key);
-      expect(runCalls[7]!.event_key).not.toBe(runCalls[1]!.event_key);
-      expect(runCalls[8]!.event_key).toBe(runCalls[7]!.event_key);
-      expect(runCalls[7]).not.toHaveProperty('content');
+      expect(runCalls.map(({ operation }) => operation)).toEqual(['enroll', 'recover', 'recover', 'capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'recover', 'finalize']);
+      const retries = runCalls.filter(({ operation }) => operation === 'recover');
+      expect(new Set(retries.map(({ event_key }) => event_key)).size).toBe(3);
+      expect(retries.every((call) => !('content' in call))).toBe(true);
       return runCalls;
     };
     const first = await run();
@@ -283,7 +455,7 @@ describe('Pi native extension', () => {
     }
   });
 
-  it('keeps prompts usable, replaces only owned context, preserves cache on compact failure, and closes on reload', async () => {
+  it('keeps prompts usable, emits fallback only once through compact failure, and clears delivery on reload shutdown', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-plugin-')); roots.push(cwd);
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
     const calls: string[] = [];
@@ -295,15 +467,18 @@ describe('Pi native extension', () => {
     const context = { cwd, sessionManager: { getSessionId: () => 'session-1', getLeafId: () => 'leaf-1' }, ui: { notify: () => undefined } };
     await handlers.get('session_start')!({ reason: 'startup' }, context);
     expect(await handlers.get('input')!({ text: 'root prompt', source: 'interactive' }, context)).toEqual({ action: 'continue' });
-    const sections: Record<string, string> = { other: 'keep', thoth_mem_recovery: 'old' };
-    expect(await handlers.get('before_agent_start')!({ prompt: 'root prompt', systemPromptOptions: { sections } }, context)).toBeUndefined();
-    expect(sections.other).toBe('keep');
-    expect(sections.thoth_mem_recovery!.split('\n')[2]).toBe('Memory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.');
-    expect(sections.thoth_mem_recovery).toMatch(/^<!-- thoth-mem:recovery:start -->\n.*root_session_id=session-1;/u);
+    const sections = Object.freeze({ other: 'keep', thoth_mem_recovery: 'old' });
+    expect(await handlers.get('before_agent_start')!({ prompt: 'root prompt', systemPromptOptions: { sections } }, context)).toEqual({ message: {
+      customType: 'thoth-mem-recovery', display: false,
+      content: expect.stringMatching(/^<!-- thoth-mem:recovery:start -->\n.*root_session_id=session-1;.*\nMemory recovery was unavailable;/u),
+    } });
+    expect(sections).toEqual({ other: 'keep', thoth_mem_recovery: 'old' });
     expect(handlers.has('context')).toBe(false);
     await handlers.get('session_compact_failed')!({ reason: 'manual' }, context);
+    expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
     await handlers.get('agent_settled')!({}, context);
     await handlers.get('session_shutdown')!({ reason: 'reload' }, context);
+    expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
     expect(calls).toEqual(['enroll', 'recover', 'capture_root', 'recover']);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
@@ -335,12 +510,13 @@ describe('Pi native extension', () => {
         const context = { cwd, sessionManager: { getSessionId: () => session, getLeafId: () => 'leaf-1' }, ui: { notify } };
         await expect(handlers.get('session_start')!({ reason: 'startup' }, context)).resolves.toBeUndefined();
         await expect(handlers.get('input')!({ text: 'keep working', source: 'interactive' }, context)).resolves.toEqual({ action: 'continue' });
-        const sections: Record<string, string> = { other: 'keep', thoth_mem_recovery: 'unverified old content' };
-        await expect(handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context)).resolves.toBeUndefined();
-        expect(sections.other).toBe('keep');
-        expect(sections.thoth_mem_recovery).not.toContain('unverified old content');
-        expect(sections.thoth_mem_recovery).toContain(`root_session_id=${session};`);
-        expect(sections.thoth_mem_recovery).toContain('Memory recovery was unavailable; only local identity is shown.');
+        const sections = Object.freeze({ other: 'keep', thoth_mem_recovery: 'unverified old content' });
+        await expect(handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context)).resolves.toEqual({ message: {
+          customType: 'thoth-mem-recovery', display: false,
+          content: expect.stringContaining(`root_session_id=${session};`),
+        } });
+        expect(sections).toEqual({ other: 'keep', thoth_mem_recovery: 'unverified old content' });
+        await expect(handlers.get('before_agent_start')!({}, context)).resolves.toBeUndefined();
         await expect(tools[0]!.execute('call', {}, undefined, undefined, context)).rejects.toThrow('thoth-mem Pi bridge failed: memory server startup timed out');
         expect(notify).toHaveBeenCalledTimes(session === 'session-1' ? 1 : 2);
       }
@@ -391,13 +567,14 @@ describe('Pi native extension', () => {
     await handlers.get('session_start')!({}, context);
     await expect(handlers.get('input')!({ text: 'keep working', source: 'rpc' }, context)).resolves.toEqual({ action: 'continue' });
     await handlers.get('before_agent_start')!({ systemPromptOptions: { sections: {} } }, context);
+    await handlers.get('before_agent_start')!({}, context);
     await expect(tools[0]!.execute('call', {}, undefined, undefined, context)).rejects.toThrow('request timed out');
     expect(notify.mock.calls).toEqual(Array.from({ length: 4 }, () => ['thoth-mem degraded: pi_lifecycle_request_failed', 'warning']));
     expect(diagnostics).toEqual([...Array<string>(4).fill('pi_lifecycle_request_failed'), 'pi_tool_request_failed']);
     await handlers.get('session_shutdown')!({ reason: 'reload' }, context);
   });
 
-  it('forwards distinct compaction summaries once per identity and refreshes project and predecessor recovery', async () => {
+  it('forwards distinct compaction summaries once per identity and delivers the returned recovery without a refresh', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-summaries-')); roots.push(cwd);
     const service = new MemoryService({ databasePath: ':memory:' });
     const project = { key: `path:${cwd.replaceAll('\\', '/')}`, name: cwd.split(/[\\/]/u).at(-1)! };
@@ -433,14 +610,18 @@ describe('Pi native extension', () => {
       expect(compactions[0]!.event_key).not.toBe(compactions[1]!.event_key);
       expect(compactions[1]!.event_key).toBe(compactions[2]!.event_key);
       expect(results.at(-1)).toMatchObject({ duplicate: true });
+      const compactedBlock = results.at(-1)!.recovery!.context;
       service.lifecycle({ ...previous, operation: 'capture_root', eventKey: 'new', content: 'Updated predecessor. Continue verifying native recovery across hosts.' });
-      const sections: Record<string, string> = {};
-      await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context);
-      expect(calls.at(-1)).toMatchObject({ operation: 'recover' });
-      expect(calls.at(-1)).not.toHaveProperty('content');
-      expect(sections.thoth_mem_recovery).toContain('Updated predecessor.');
-      expect(sections.thoth_mem_recovery).toContain('Keep project recovery.');
-      expect(sections.thoth_mem_recovery).not.toContain('Own compact-');
+      const sections = Object.freeze({ other: 'keep' });
+      expect(await handlers.get('before_agent_start')!({ systemPromptOptions: { sections } }, context)).toEqual({ message: {
+        customType: 'thoth-mem-recovery', content: compactedBlock, display: false,
+      } });
+      expect(await handlers.get('before_agent_start')!({}, context)).toBeUndefined();
+      expect(calls.at(-1)).toBe(compactions.at(-1));
+      expect(compactedBlock).not.toContain('Updated predecessor.');
+      expect(compactedBlock).toContain('Keep project recovery.');
+      expect(compactedBlock).not.toContain('Own compact-');
+      expect(sections).toEqual({ other: 'keep' });
     } finally { service.close(); }
   });
 

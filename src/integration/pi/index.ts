@@ -1,7 +1,7 @@
-import type { LifecycleInput, LifecycleResult } from '../../memory-core/contracts.js';
+import type { LifecycleResult } from '../../memory-core/contracts.js';
 import { TOOL_OUTPUT_MAX_CHARS } from '../../tools/bounded-json.js';
 import { MEMORY_RECALL_INSTRUCTION_SENTENCES, MEMORY_SAVE_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG, type MemoryToolName } from '../../tools/index.js';
-import { verifiedRecovery } from '../recovery.js';
+import { recoveryWithProvenance, type RecoveryBlock } from '../recovery.js';
 import { createPiMcpClient, PiMcpStartupTimeoutError, type PiMcpClient, type PiMcpClientOptions } from './mcp-client.js';
 import { createToolRenderers } from './render.js';
 import {
@@ -15,10 +15,6 @@ import {
   type PiLifecycleContext,
   type PiLifecycleState,
 } from './lifecycle.js';
-
-// One named system-prompt section, replaced or removed at each root prompt. Pi diffs
-// sections into the transcript, so an unchanged block costs no extra context.
-const RECOVERY_SECTION = 'thoth_mem_recovery';
 
 interface PiToolResult {
   content: Array<{ type: 'text'; text: string }>;
@@ -39,6 +35,9 @@ interface PiExtensionApi {
 }
 
 interface PiExtensionContext extends PiLifecycleContext {
+  sessionManager: PiLifecycleContext['sessionManager'] & {
+    getBranch(): Array<{ type: string; customType?: string }>;
+  };
   ui?: { notify(message: string, level?: 'warning' | 'error' | 'info'): void };
 }
 
@@ -85,6 +84,16 @@ function lifecycleArguments(input: ReturnType<typeof piSessionStartInput>): Reco
   };
 }
 
+function hasRecoverySinceCompaction(context: PiExtensionContext): boolean {
+  const branch = context.sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index]!;
+    if (entry.type === 'compaction') break;
+    if (entry.type === 'custom_message' && entry.customType === 'thoth-mem-recovery') return true;
+  }
+  return false;
+}
+
 export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExtensionApi) => void {
   return (pi) => {
     let startupTimeoutWarned = false;
@@ -100,9 +109,8 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
     };
     const client = options.client ?? createPiMcpClient({ ...options, onDiagnostic: (code) => report(code) });
     let state: PiLifecycleState | undefined;
-    let recovery: string | undefined;
-    // Replaying the same recovery event key re-renders current memory without a new receipt.
-    let refresh: LifecycleInput | undefined;
+    let delivery: { recovery: RecoveryBlock; fallbackDelivered: boolean } | undefined;
+    let retryAttempt = 0;
 
     const dispatch = async (input: ReturnType<typeof piSessionStartInput>, context?: PiExtensionContext): Promise<LifecycleResult | undefined> => {
       try { return lifecycleResult(await client.callTool('mem_session', lifecycleArguments(input))); }
@@ -145,12 +153,16 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
         const nextState = createPiLifecycleState(context, options.createRunNonce);
         if (nextState.rootSessionKey !== state?.rootSessionKey) startupTimeoutWarned = false;
         state = nextState;
+        delivery = undefined;
+        retryAttempt = 0;
         const reason = typeof event.reason === 'string' ? event.reason : 'startup';
         await dispatch(piSessionStartInput(state, reason), context);
-        refresh = piRecoveryInput(state, 'start');
-        const recovered = await dispatch(refresh, context);
-        recovery = verifiedRecovery(recovered, state.rootSessionKey, state.directory, 'pi');
-      } catch { state = undefined; recovery = undefined; refresh = undefined; report('pi_session_start_failed', context); }
+        const recovered = await dispatch(piRecoveryInput(state, 'start'), context);
+        const recovery = reason === 'reload' && hasRecoverySinceCompaction(context)
+          ? undefined
+          : recoveryWithProvenance(recovered, state.rootSessionKey, state.directory, 'pi');
+        delivery = recovery ? { recovery, fallbackDelivered: false } : undefined;
+      } catch { state = undefined; delivery = undefined; report('pi_session_start_failed', context); }
     });
     pi.on('input', async (event, context) => {
       if (!state) return { action: 'continue' };
@@ -164,18 +176,21 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
       } catch { report('pi_input_capture_failed', context); }
       return { action: 'continue' };
     });
-    pi.on('before_agent_start', async (event, context) => {
-      const sections = asRecord(asRecord(event.systemPromptOptions)?.sections);
-      if (!sections) return undefined;
-      if (state && refresh) {
-        try {
-          const recovered = await dispatch(refresh, context);
-          if (recovered) recovery = verifiedRecovery(recovered, state.rootSessionKey, state.directory, 'pi');
-        } catch { report('pi_recovery_refresh_failed', context); }
+    pi.on('before_agent_start', async (_event, context) => {
+      const run = state;
+      const pending = delivery;
+      if (!run || !pending) return undefined;
+      let recovery = pending.recovery;
+      if (pending.fallbackDelivered) {
+        const recovered = await dispatch(piRecoveryInput(run, 'context', ++retryAttempt), context);
+        if (state !== run || delivery !== pending) return undefined;
+        const retry = recoveryWithProvenance(recovered, run.rootSessionKey, run.directory, 'pi');
+        if (!retry) { delivery = undefined; return undefined; }
+        if (retry.source === 'fallback') return undefined;
+        recovery = retry;
       }
-      if (recovery) sections[RECOVERY_SECTION] = recovery;
-      else delete sections[RECOVERY_SECTION];
-      return undefined;
+      delivery = recovery.source === 'fallback' ? { recovery, fallbackDelivered: true } : undefined;
+      return { message: { customType: 'thoth-mem-recovery', content: recovery.block, display: false } };
     });
     pi.on('session_before_compact', async (event, context) => {
       if (!state) return;
@@ -186,13 +201,13 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
     });
     pi.on('session_compact', async (event, context) => {
       if (!state) return;
+      delivery = undefined;
       try {
         const entry = asRecord(event.compactionEntry) ?? {};
         const guidance = piPostCompactInput(state, { compactionEntryId: typeof entry.id === 'string' ? entry.id : undefined, summary: typeof entry.summary === 'string' ? entry.summary : undefined, reason: typeof event.reason === 'string' ? event.reason : 'manual', isRetry: event.willRetry === true });
         const result = await dispatch(guidance, context);
-        recovery = verifiedRecovery(result, state.rootSessionKey, state.directory, 'pi') ?? recovery;
-        // Refresh project recovery without replaying harvested content under its receipt key.
-        refresh = piRecoveryInput(state, 'context');
+        const recovery = recoveryWithProvenance(result, state.rootSessionKey, state.directory, 'pi');
+        delivery = recovery ? { recovery, fallbackDelivered: false } : undefined;
       } catch { report('pi_post_compact_failed', context); }
     });
     pi.on('session_compact_failed', (_event, context) => { report('pi_compact_failed', context); });
@@ -204,7 +219,7 @@ export function createPiExtension(options: PiExtensionOptions = {}): (pi: PiExte
           if (mapped) await dispatch(mapped, context);
         }
       } catch { report('pi_shutdown_finalize_failed', context); }
-      finally { await client.close().catch(() => report('pi_shutdown_close_failed', context)); state = undefined; recovery = undefined; refresh = undefined; }
+      finally { await client.close().catch(() => report('pi_shutdown_close_failed', context)); state = undefined; delivery = undefined; }
     });
   };
 }
