@@ -21,11 +21,11 @@ accepted only when the returned project and session identity match the local
 dispatch.
 The extension alone calls `mem_session`; it is not a model-visible Pi tool.
 
-Pi 1.0.x exposes no native delegated-agent identity contract. The integration
-must not infer root authority or community delegation semantics from extension
-metadata, prompts, tool output, package sources, or third-party agent plugins.
-Ambiguous, incomplete, or child-key-mismatched identity receives no root-only
-capture or recovery authority.
+Pi's tested `1.0.1` SDK baseline exposes no native delegated-agent identity
+contract. The integration must not infer root authority or community delegation
+semantics from extension metadata, prompts, tool output, package sources, or
+third-party agent plugins. Ambiguous, incomplete, or child-key-mismatched
+identity receives no root-only capture or recovery authority.
 
 A delegated child may use the `project_key` passed by the root, copied verbatim,
 for project-scoped reads: `mem_recall`, `mem_context` in project mode,
