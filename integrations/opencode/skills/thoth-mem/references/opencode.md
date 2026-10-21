@@ -12,7 +12,21 @@ Call `thoth_mem_root_identity` with no arguments before attempting a weaker sour
 
 The tool follows at most 16 validated `parentID` links with cycle detection. It performs no enrollment, prompt capture, memory dispatch, or persistence.
 
-Only if the native tool is not registered, reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project_key=<opaque-key>; project_name=<display-name>`. Inside the native plugin, root events use `properties.info.id`; transform and compaction inputs use `input.sessionID`; `parentID` proves delegated traffic. Do not invent an OpenCode environment variable.
+Only if the native tool is not registered, reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project_key=<opaque-key>; project_name=<display-name>`. Inside the native plugin, root events use `properties.info.id`; chat and compaction inputs use `input.sessionID`; `parentID` proves delegated traffic. Do not invent an OpenCode environment variable.
+
+## Recovery delivery
+
+On the first root message per plugin process (including resume) and the first
+message after compaction, `chat.message` appends one persisted synthetic text part
+hidden from the transcript UI, never per prompt or in the system prompt.
+Post-compaction delivery uses the recovery returned by `guide_post_compact`;
+automatic continuation bypasses `chat.message` and receives no new part.
+A cold resumed session is verified on demand; delegated or unverifiable sessions
+receive no part. Message-ID deduplication prevents repeat delivery on resubmission.
+If memory is unavailable, deliver the locally verified identity-only block first,
+then retry on later root prompts until one verified recovery block is delivered;
+at most two blocks per boundary. Invalid local identity delivers nothing.
+Synthetic parts are excluded from prompt capture.
 
 ## Map to memory tools
 

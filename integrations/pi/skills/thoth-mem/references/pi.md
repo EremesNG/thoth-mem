@@ -5,14 +5,20 @@ Pi is a native `harness=pi` integration. A verified root session binds the exact
 the current working directory. Apply privacy sanitation before deriving any
 content-based identity or capture key.
 
-The extension maps `session_start` to enrollment and bounded recovery, each root
-prompt's `before_agent_start` to a refreshed recovery block delivered as the
-`thoth_mem_recovery` system-prompt section (never a trailing message), admitted
+The extension maps `session_start` to enrollment and bounded recovery, admitted
 root `input` events to ordered capture, `session_before_compact` to a checkpoint,
 successful `session_compact` to post-compaction guidance, and `session_shutdown`
-to reload-safe close or idempotent finalization. Failed compaction and
-`agent_settled` never finalize the root session. Recovery is accepted only when
-the returned project and session identity match the local dispatch.
+to reload-safe close or idempotent finalization. On the first root prompt after
+startup, resume, new, fork, or successful compaction, `before_agent_start` returns
+one persisted hidden message (`thoth-mem-recovery`, `display: false`),
+never per prompt or in the system prompt. Reload delivers only if the active
+branch has no recovery message after its latest compaction. If memory is
+unavailable, deliver the locally verified identity-only block first, then retry
+on later root prompts until one verified recovery block is delivered; at most
+two blocks per boundary. Invalid local identity delivers nothing. Failed
+compaction and `agent_settled` never finalize the root session. Recovery is
+accepted only when the returned project and session identity match the local
+dispatch.
 The extension alone calls `mem_session`; it is not a model-visible Pi tool.
 
 Pi 1.0.x exposes no native delegated-agent identity contract. The integration

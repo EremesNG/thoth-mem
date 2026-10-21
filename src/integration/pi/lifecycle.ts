@@ -54,8 +54,9 @@ export function piSessionStartInput(state: PiLifecycleState, reason: string): Li
   return base(state, 'enroll', eventKey('start', [state.rootSessionKey, state.runNonce, stableReason]));
 }
 
-export function piRecoveryInput(state: PiLifecycleState, phase: 'start' | 'context' | 'post_compact'): LifecycleInput {
-  return base(state, phase === 'post_compact' ? 'guide_post_compact' : 'recover', eventKey('recovery', [state.rootSessionKey, state.runNonce, phase]));
+export function piRecoveryInput(state: PiLifecycleState, phase: 'start' | 'context' | 'post_compact', attempt = 0): LifecycleInput {
+  // Context keys are only for pending-boundary retries, never per-prompt refreshes.
+  return base(state, phase === 'post_compact' ? 'guide_post_compact' : 'recover', eventKey('recovery', [state.rootSessionKey, state.runNonce, phase, ...(phase === 'context' ? [attempt] : [])]));
 }
 
 export function piInputCapture(state: PiLifecycleState, context: PiLifecycleContext, event: { text: string; source: string; streamingBehavior?: string }): LifecycleInput | undefined {

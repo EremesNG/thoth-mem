@@ -146,6 +146,12 @@ describe('first-product packed boundary', () => {
     expect(reference).toContain('report them as unattributed and never claim session continuity');
     expect(reference).toContain('Children never call `mem_session`');
     expect(reference).toContain('The extension alone calls `mem_session`; it is not a model-visible Pi tool.');
+    for (const phrase of ['persisted hidden message', '`thoth-mem-recovery`', '`display: false`', 'never per prompt or in the system prompt', 'identity-only block', 'retry']) expect(reference).toContain(phrase);
+  });
+
+  it('ships OpenCode recovery guidance for persisted boundary delivery', () => {
+    const reference = readFileSync('integrations/opencode/skills/thoth-mem/references/opencode.md', 'utf8');
+    for (const phrase of ['`chat.message`', 'persisted synthetic text part', 'after compaction', 'never per prompt or in the system prompt', 'identity-only block', 'retry']) expect(reference).toContain(phrase);
   });
 
   it('routes canonical and Pi Skills to the Pi identity reference', () => {

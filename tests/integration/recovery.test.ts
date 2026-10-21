@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { LifecycleResult } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
-import { identityOnlyRecovery, verifiedRecovery } from '../../src/integration/recovery.js';
+import { identityOnlyRecovery, recoveryWithProvenance, verifiedRecovery } from '../../src/integration/recovery.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -31,6 +31,8 @@ describe('shared native recovery validation', () => {
     expect(identity).not.toContain('(memory:');
     expect(identity.split('\n')[2]).toBe('Memory recovery was unavailable; only local identity is shown. Use mem_recall before relying on prior context.');
     expect(verifiedRecovery(undefined, 'session-1', cwd, 'pi')).toBe(identity);
+    expect(recoveryWithProvenance(result, 'session-1', cwd, 'pi')).toEqual({ block: result.recovery!.context, source: 'verified' });
+    expect(recoveryWithProvenance(undefined, 'session-1', cwd, 'pi')).toEqual({ block: identity, source: 'fallback' });
   });
 
   it('accepts valid empty recovery without misreporting it as unavailable', () => {
@@ -49,7 +51,11 @@ describe('shared native recovery validation', () => {
     const delimiter = structuredClone(result); delimiter.recovery!.context += '\n<!-- thoth-mem:recovery:start -->'; mutations.push(delimiter);
     const source = structuredClone(result); source.recovery!.context = source.recovery!.context.replace('Use the verified path.', `Use the verified path. ${String(source.recovery!.sources.at(-1))}`); mutations.push(source);
     const oversized = structuredClone(result); oversized.recovery!.context = `${oversized.recovery!.context}${'x'.repeat(2_000)}`; mutations.push(oversized);
-    for (const mutated of mutations) expect(verifiedRecovery(mutated, 'session-1', cwd, 'pi')).toBe(fallback);
+    for (const mutated of mutations) {
+      expect(verifiedRecovery(mutated, 'session-1', cwd, 'pi')).toBe(fallback);
+      expect(recoveryWithProvenance(mutated, 'session-1', cwd, 'pi')).toEqual({ block: fallback, source: 'fallback' });
+    }
+    expect(recoveryWithProvenance(result, 'invalid;identity', cwd, 'pi')).toBeUndefined();
   });
 });
 

@@ -17,7 +17,7 @@ function fixture() {
 }
 
 describe('Pi lifecycle mapping', () => {
-  it('keeps start, recovery, refresh, and shutdown keys stable per run and distinct across runs of one root', () => {
+  it('keeps recovery retries distinct per attempt and all run-scoped keys distinct across runs of one root', () => {
     const { context, state } = fixture();
     const resumed = createPiLifecycleState(context);
     expect(state.runNonce).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
@@ -25,7 +25,8 @@ describe('Pi lifecycle mapping', () => {
     const keys = (run: typeof state) => [
       piSessionStartInput(run, 'resume').eventKey,
       piRecoveryInput(run, 'start').eventKey,
-      piRecoveryInput(run, 'context').eventKey,
+      piRecoveryInput(run, 'context', 1).eventKey,
+      piRecoveryInput(run, 'context', 2).eventKey,
       piRecoveryInput(run, 'post_compact').eventKey,
       piShutdownInput(run, { reason: 'quit', sessionFile: 'session.jsonl' })!.eventKey,
     ];
