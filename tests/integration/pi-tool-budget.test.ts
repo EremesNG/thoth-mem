@@ -19,6 +19,7 @@ it('keeps the five registered Pi definitions within their model-facing budget', 
     name, description, parameters, promptSnippet, promptGuidelines,
   }).length, 0);
 
-  // Baseline: 20,390 chars across six tools; compacted: 11,895, with 5% headroom.
-  expect(size).toBeLessThanOrEqual(12_490);
+  // Compacted: 9,478 chars, with 5% headroom. Keep at least 20% off 11,895.
+  expect(size).toBeLessThanOrEqual(9_952);
+  expect(size).toBeLessThanOrEqual(Math.floor(11_895 * 0.8));
 });
