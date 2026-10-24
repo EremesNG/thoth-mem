@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "assets": {
-    "plugin/.claude-plugin/plugin.json": "14fc3b5820e040f6c7bf0a4c0d9d7d3d3cc51a83a442f87b15b977ba10b93d7e",
-    "plugin/.codex-plugin/plugin.json": "1d88356d9ca5484bacb1638da98d1ec1c8451de18c9533781467a347f08d61c0",
+    "plugin/.claude-plugin/plugin.json": "fa542db1a24dcfb28362d7df6383db62fa146d3fe9358c781f15c55b713d9c66",
+    "plugin/.codex-plugin/plugin.json": "f4656554339b6766a17cc6255f78b894b178a7501bfddea0784196ea7f489d3c",
     "plugin/.mcp.json": "c17846df19f06d1a587e02d393597183c8c927707ee8e52b52e6ac4d6e79dd5f",
     "plugin/codex.mcp.json": "8dbe27a78f01e335049f2050b0733d434f2c32c90cb4cd1e39f9346f72c45bc1",
     "plugin/hooks/claude-hooks.json": "88bb6801cc76b38b84bfa98957eccbbb724bc538c3ef856b9a0f3ec76690b2b5",
     "plugin/hooks/hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
     "plugin/runners/public-runner.mjs": "93d0d240c58563324cd07960c3195e4fb632b4701f0ac5d02621e6ee5c736532",
-    "plugin/runtime.json": "9d45063eb0c2b87c180c0d5fbf0d7b811b0f6c6e39fe65a0d67d826ba8b60975",
+    "plugin/runtime.json": "0993915771426883d33f21872baec022ab56148e0f227fa6b267613386714c1d",
     "plugin/skills/thoth-mem/SKILL.md": "399925d3e2be12da2016d148962394d78a97fddd524a09977bd702c2b8bfe273",
     "plugin/skills/thoth-mem/references/claude-code.md": "6db493777b74c38be8cb7281f51f61801e7a7c043a176a60fc23b18db4693b0e",
     "plugin/skills/thoth-mem/references/codex.md": "ed56c8e74dfd38febdc49c329bc9bc33abca58a8464c125773fc49a25cdf5676",
