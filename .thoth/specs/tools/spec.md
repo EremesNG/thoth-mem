@@ -4,13 +4,13 @@
 
 ### Requirement: MCP Surface MUST Be Compact and Workflow-Level
 
-The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool; tool and field descriptions MUST state each operational constraint once in compact form without repeating a tool description inside a field description, the catalog schemas registered natively in Pi MUST omit the `$schema` marker, and the aggregate serialized size of the model-facing definitions on the MCP and Pi surfaces MUST be locked by budget tests so it grows only through a deliberate definition change; compacting descriptions MUST NOT alter input schemas or runtime validation.
+The server MUST continue to expose exactly `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`, MUST publish concise server instructions that balance progressive recall with deliberate durable save/handoff behavior, and MUST publish a distinct action-oriented description for each tool; tool and field descriptions MUST state each operational constraint once in compact form without repeating a tool description inside a field description; published input schemas on the MCP and Pi surfaces MUST be identical compact projections (apart from the `$schema` marker, which Pi omits) that keep property names, types, enums, and required lists but omit length, count, range, pattern, and nested `additionalProperties` keywords and express each object as a single variant; every input accepted by runtime validation MUST be accepted by the published schema, while runtime validation MUST keep enforcing the complete strict contract, including rejecting unknown nested keys, on both surfaces; and the aggregate serialized size of the model-facing definitions on the MCP and Pi surfaces MUST be locked by budget tests so it grows only through a deliberate definition change.
 
 #### Scenario: MCP Surface MUST Be Compact and Workflow-Level
 
 - **GIVEN** the catalog
-- **WHEN** an MCP client lists tools and a Pi session registers its tools
-- **THEN** each surface stays within its pinned aggregate budget and every listed input schema is the one runtime validation enforces
+- **WHEN** an MCP client lists tools, a Pi session registers its tools, and either surface submits an input that violates a strict-only constraint
+- **THEN** both surfaces publish the same compact schemas within their pinned aggregate budgets, every strictly valid input matches the published schema, and the server rejects the violating input with the existing error envelope 
 
 ### Requirement: MCP Envelopes MUST Use Closed Current Schemas
 

@@ -2,14 +2,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import type { LifecycleInput, LifecycleResult } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { createPiExtension } from '../../src/integration/pi/index.js';
-import { PiMcpStartupTimeoutError, type PiMcpClient } from '../../src/integration/pi/mcp-client.js';
-import { SERVER_INSTRUCTIONS } from '../../src/server.js';
+import { createPiMcpClient, PiMcpStartupTimeoutError, type PiMcpClient } from '../../src/integration/pi/mcp-client.js';
+import { createServer, SERVER_INSTRUCTIONS } from '../../src/server.js';
 import { createToolHandlers, MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
 
 type PiApi = Parameters<ReturnType<typeof createPiExtension>>[0];
@@ -349,6 +352,43 @@ describe('Pi native extension', () => {
     const result = await (tools[0]!.execute as (id: string, params: Record<string, unknown>) => Promise<unknown>)('call-1', {});
     expect(result).toMatchObject({ details: { schema: 'test.mem_save' } });
     expect(handlers.size).toBe(8);
+  });
+
+  it.each([
+    { label: 'empty string', name: 'mem_recall', input: { project_key: 'repo:pi-strict', query: '' } },
+    { label: 'over-length string', name: 'mem_project', input: { action: 'timeline', project_key: 'repo:pi-strict', cursor: 'x'.repeat(4_097) } },
+    { label: 'out-of-range number', name: 'mem_project', input: { action: 'timeline', project_key: 'repo:pi-strict', limit: 101 } },
+    { label: 'unknown nested key', name: 'mem_save', branch: { evidence: { kind: 'explicit_save', content: 'Support.', unexpected: true } } },
+    { label: 'invalid metadata combination', name: 'mem_save', branch: { evidence: { kind: 'handoff', content: 'Support.', metadata: { observation_validation: { observation_id: 'candidate', result: 'passed', method: 'vitest' } } } } },
+    { label: 'bad config_hash', name: 'mem_save', branch: { observation: { kind: 'fact', scope: 'project', title: 'Candidate', claim: 'Claim.', proposed_memory: { kind: 'discovery', title: 'Candidate', content: 'Claim.' }, support_ids: ['support'], generator: { kind: 'root_agent', name: 'pi', config_hash: 'bad-hash' } } } },
+    { label: 'metadata with memory', name: 'mem_save', handler: true, branch: { evidence: { kind: 'explicit_save', content: 'Support.', metadata: { observation_validation: { observation_id: 'candidate', result: 'passed', method: 'vitest' } } }, memory: { kind: 'discovery', title: 'Candidate', content: 'Claim.' } } },
+  ])('preserves strict rejection for $label through Pi execution and its MCP bridge', async (testCase) => {
+    const root = mkdtempSync(join(tmpdir(), 'thoth-pi-strict-')); roots.push(root);
+    const built = createServer({ dataDir: root, databasePath: ':memory:' });
+    const sdk = new Client({ name: 'thoth-mem-pi', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const tools: PiToolDefinition[] = [];
+    const bridge = createPiMcpClient({ connect: async () => ({
+      callTool: (name, args) => sdk.callTool({ name, arguments: args }),
+      close: async () => undefined,
+    }) });
+    createPiExtension({ client: bridge })({ registerTool: (tool) => tools.push(tool), on: () => undefined });
+    try {
+      await built.server.connect(serverTransport);
+      await sdk.connect(clientTransport);
+      const tool = tools.find((item) => item.name === testCase.name)!;
+      const input = testCase.input ?? { project_key: 'repo:pi-strict', project_name: 'pi-strict', root_session_key: 'root', harness: 'pi', event_key: 'invalid', ...testCase.branch };
+      const expected = testCase.handler
+        ? 'thoth-mem Pi bridge failed: {"schema":"thoth-mem.mcp.error","error":{"code":"invalid_request","message":"memory: structured support evidence cannot include memory","retryable":false}}'
+        : `thoth-mem Pi bridge failed: MCP error -32602: Input validation error: Invalid arguments for tool ${testCase.name}:`;
+      await expect(tool.execute('invalid', input)).rejects.toThrow(expected);
+      expect(z.fromJSONSchema(tool.parameters).safeParse(input).success).toBe(true);
+    } finally {
+      await bridge.close();
+      await sdk.close();
+      await built.server.close();
+      built.service.close();
+    }
   });
 
   it.each([

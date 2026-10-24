@@ -50,7 +50,7 @@ describe('MCP boundary', () => {
       }
       for (const tool of listed.filter((tool) => tool.name === 'mem_save' || tool.name === 'mem_session')) {
         expect(tool.inputSchema).toMatchObject({ properties: {
-          project_name: { description: 'Display/creation metadata only, not identity; prefer the persisted name from lifecycle/project output.' },
+          project_name: { description: 'Display/creation name, not identity; prefer persisted lifecycle/project name.' },
         } });
       }
       const saveTool = listed.find((tool) => tool.name === 'mem_save');
@@ -82,15 +82,15 @@ describe('MCP boundary', () => {
       const recallTool = listed.find((tool) => tool.name === 'mem_recall');
       expect(recallTool?.description).toContain('Search promoted project memory before expanding selected records.');
       expect(recallTool?.inputSchema).toMatchObject({ properties: {
-        query: { minLength: 1, description: 'Non-empty task search terms.' },
-        mode: { description: 'compact (default): bounded snippets; context: selected content.' },
-        temporal: { description: 'current (default): current guidance; history: historical records.' },
+        query: { description: 'Non-empty task search terms.' },
+        mode: { description: 'compact (default): snippets; context: selected content.' },
+        temporal: { description: 'current (default) or historical guidance.' },
       } });
       const getTool = listed.find((tool) => tool.name === 'mem_get');
       expect(getTool?.description).toContain('Expand one selected record from a prior tool result.');
       expect(getTool?.inputSchema).toMatchObject({ properties: {
         id: { description: 'Memory, summary, observation, or evidence id.' },
-        history: { description: 'true: include predecessor lineage; evidence has no lineage.' },
+        history: { description: 'Include predecessors; evidence has none.' },
       } });
       const projectTool = listed.find((tool) => tool.name === 'mem_project');
       expect(projectTool?.description).toContain('list: no fields required; returns at most 256 exact aliases/project with aliasCount/aliasesTruncated.');
@@ -98,11 +98,11 @@ describe('MCP boundary', () => {
       expect(projectTool?.description).toContain('briefing/summaries/observations: project_key required; optional session filter selects summaries/observations, not briefing\'s project-wide memories.');
       expect(projectTool?.description).toContain('history: id required from a prior result.');
       expect(projectTool?.inputSchema).toMatchObject({ properties: {
-        action: { description: 'Project view.' },
-        id: { description: 'Prior-result record id.' },
-        root_session_key: { description: 'Verified session filter; pair with harness or omit both.' },
-        temporal: { description: 'Summaries/observations only: current=latest summaries/correction leaves; history=older summaries/observation predecessors.' },
-        cursor: { description: 'Timeline nextCursor, unchanged; keep project_key, since, until unchanged.' },
+        action: { enum: ['list', 'timeline', 'briefing', 'history', 'summaries', 'observations'] },
+        id: { type: 'string' },
+        root_session_key: { description: 'Session filter; pair with harness.' },
+        temporal: { description: 'Summaries/observations: current=latest summaries/correction leaves; history=predecessors.' },
+        cursor: { description: 'Unchanged nextCursor; preserve project_key, since, until.' },
       } });
       const sessionTool = listed.find((tool) => tool.name === 'mem_session');
       expect(sessionTool?.description).toContain('Record verified root lifecycle events, never ordinary saves.');
@@ -117,14 +117,14 @@ describe('MCP boundary', () => {
               description: 'Inclusive session evidence range.',
               properties: {
                 from_sequence: { description: 'First event sequence: 1.' },
-                to_sequence: { description: "Last sequence: >= from_sequence and >= the current summary's ending sequence for this session." },
+                to_sequence: { description: '>= from_sequence and the previous summary end.' },
               },
             },
             claims: {
               description: 'Supported claims; canonical summary <=20000 UTF-16 units.',
               items: { properties: {
                 content: { description: 'Atomic claim; <=2000 code points after privacy filtering.' },
-                support_ids: { description: 'Distinct evidence ids inside coverage from this project_key + root_session_key/harness session; never memory, summary, or observation ids.' },
+                support_ids: { description: 'Distinct same-session evidence ids within coverage; no memory/summary/observation ids.' },
               } },
             },
           },
@@ -362,8 +362,8 @@ describe('MCP boundary', () => {
     } finally { service.close(); }
   });
 
-  it('advertises and enforces a non-empty recall query', async () => {
-    expect(MEMORY_TOOL_CATALOG.find((tool) => tool.name === 'mem_recall')?.inputSchema).toMatchObject({ properties: { query: { minLength: 1 } } });
+  it('enforces a non-empty recall query behind the compact published string schema', async () => {
+    expect(MEMORY_TOOL_CATALOG.find((tool) => tool.name === 'mem_recall')?.inputSchema).toMatchObject({ properties: { query: { type: 'string' } } });
     const service = new MemoryService({ databasePath: ':memory:' });
     try {
       const handlers = createToolHandlers(service);

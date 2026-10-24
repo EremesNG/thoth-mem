@@ -22,8 +22,10 @@ it('keeps the six listed MCP definitions within their model-facing budget', asyn
       name, description, inputSchema,
     }).length, 0);
 
-    // Baseline: 19,561 chars; compacted: 14,457, with 5% headroom.
-    expect(size).toBeLessThanOrEqual(15_180);
+    // Compacted: 11,332 chars, with 5% headroom. Keep at least 20% off both
+    // the recorded 14,457-char baseline and its fresh 14,327-char measurement.
+    expect(size).toBeLessThanOrEqual(11_899);
+    expect(size).toBeLessThanOrEqual(Math.floor(14_327 * 0.8));
   } finally {
     await client.close();
     await built.server.close();

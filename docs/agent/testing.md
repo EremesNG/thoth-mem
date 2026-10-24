@@ -48,9 +48,16 @@ pnpm exec vitest run tests/setup/pi.test.ts tests/integration/pi-lifecycle.test.
 Tool-contract size guards are `tests/tools/tool-budget.test.ts` for the six MCP
 definitions and `tests/integration/pi-tool-budget.test.ts` for Pi's five native
 definitions. They assert exact names and aggregate `JSON.stringify(...).length`
-character budgets with about 5% headroom; increasing a budget requires a deliberate
-definition change. Pi omits `$schema` and keeps `mem_session` hook-only, while MCP
-still enumerates all six tools.
+character budgets: Pi 9,478 (ceiling 9,952) and MCP 11,332 (ceiling 11,899), with
+about 5% headroom and a separate guard for at least 20% savings from Pi 11,895
+and MCP 14,327 (recorded baseline 14,457). Increasing a budget requires a deliberate
+definition change. Tool descriptions remain 1,574 chars (ceiling 1,653). Pi omits
+`$schema` and keeps `mem_session` hook-only, while MCP still enumerates all six tools.
+`tests/tools/published-schema.test.ts` validates representative strict inputs against
+the compact published JSON Schema, checks omitted keywords, and preserves strict-only
+rejections through MCP; `tests/integration/pi-native-plugin.test.ts` checks the same
+publication/validation split through Pi execution and its MCP bridge. SDK text-only
+validation errors and handler `invalid_request` JSON envelopes must retain their forms.
 
 The host-shaped packed smoke is a separate terminating check:
 
