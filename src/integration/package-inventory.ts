@@ -15,7 +15,7 @@ export const CANONICAL_PUBLIC_PLUGIN_INVENTORY = [
   '.mcp.json',
   'codex.mcp.json',
   'hooks/hooks.json',
-  'hooks/claude-hooks.json',
+  'hooks/codex-hooks.json',
   'runners/public-runner.mjs',
   'runtime.json',
   'distribution-lock.json',

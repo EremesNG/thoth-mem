@@ -89,7 +89,7 @@ describe('public plugin release inventory', () => {
       const server = wrapped ? config.mcpServers![name] : config[name];
       expect(server, path).toMatchObject({ env: { THOTH_MEM_NATIVE_HOST: host } });
     }
-    for (const path of ['plugin/hooks/claude-hooks.json', 'integrations/claude-code/hooks/hooks.json']) {
+    for (const path of ['plugin/hooks/hooks.json', 'integrations/claude-code/hooks/hooks.json']) {
       const hooks = readJson<{ hooks: Record<string, unknown[]> }>(path);
       expect(hooks.hooks.PostCompact, path).toHaveLength(1);
       expect(JSON.stringify(hooks.hooks.PostCompact), path).toContain('runner.mjs');
@@ -112,7 +112,8 @@ describe('public plugin release inventory', () => {
   it.each([
     ['manifest', 'plugin/.codex-plugin/plugin.json', '"./codex.mcp.json"', '"./stale.mcp.json"'],
     ['MCP descriptor', 'plugin/.mcp.json', './runners/public-runner.mjs', './runners/stale-runner.mjs'],
-    ['hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
+    ['Claude hook command', 'plugin/hooks/hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
+    ['Codex hook command', 'plugin/hooks/codex-hooks.json', 'public-runner.mjs', 'stale-runner.mjs'],
     ['Skill', 'plugin/skills/thoth-mem/SKILL.md', 'five native tools', 'six native tools'],
     ['launcher', 'plugin/runners/public-runner.mjs', "['lifecycle', '--harness'", "['lifecycle-stale', '--harness'"],
   ])('fails release verification for a stale %s asset', (_category, relativePath, current, stale) => {

@@ -16,6 +16,5 @@
     "coding-agent"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/claude-hooks.json",
   "mcpServers": "./.mcp.json"
 }

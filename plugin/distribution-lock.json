@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "assets": {
-    "plugin/.claude-plugin/plugin.json": "fa542db1a24dcfb28362d7df6383db62fa146d3fe9358c781f15c55b713d9c66",
-    "plugin/.codex-plugin/plugin.json": "f4656554339b6766a17cc6255f78b894b178a7501bfddea0784196ea7f489d3c",
+    "plugin/.claude-plugin/plugin.json": "bda13606c8cc0225156682aea873ab7fe12882651b6b47f11e7a96a2970864fa",
+    "plugin/.codex-plugin/plugin.json": "268fb7f3427b39cd5aad2e58a80c8205ff30f8e09861d5d2f674760e13f5b004",
     "plugin/.mcp.json": "c17846df19f06d1a587e02d393597183c8c927707ee8e52b52e6ac4d6e79dd5f",
     "plugin/codex.mcp.json": "8dbe27a78f01e335049f2050b0733d434f2c32c90cb4cd1e39f9346f72c45bc1",
-    "plugin/hooks/claude-hooks.json": "88bb6801cc76b38b84bfa98957eccbbb724bc538c3ef856b9a0f3ec76690b2b5",
-    "plugin/hooks/hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
+    "plugin/hooks/codex-hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
+    "plugin/hooks/hooks.json": "88bb6801cc76b38b84bfa98957eccbbb724bc538c3ef856b9a0f3ec76690b2b5",
     "plugin/runners/public-runner.mjs": "93d0d240c58563324cd07960c3195e4fb632b4701f0ac5d02621e6ee5c736532",
     "plugin/runtime.json": "0993915771426883d33f21872baec022ab56148e0f227fa6b267613386714c1d",
     "plugin/skills/thoth-mem/SKILL.md": "399925d3e2be12da2016d148962394d78a97fddd524a09977bd702c2b8bfe273",

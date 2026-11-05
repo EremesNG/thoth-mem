@@ -1,5 +1,5 @@
 {
-  "description": "thoth-mem persistent lifecycle memory for Claude Code",
+  "description": "thoth-mem persistent lifecycle memory for Codex",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
             "timeout": 15,
             "statusMessage": "Loading thoth-mem context"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
             "timeout": 10
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
             "timeout": 15
           }
         ]
@@ -38,10 +38,11 @@
     ],
     "PostCompact": [
       {
+        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
+            "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
             "timeout": 15
           }
         ]
@@ -52,8 +53,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs\" --harness claude",
-            "timeout": 5
+            "command": "node \"${PLUGIN_ROOT}/runners/public-runner.mjs\" --harness codex",
+            "timeout": 3
           }
         ]
       }

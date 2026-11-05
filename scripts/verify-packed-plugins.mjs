@@ -410,7 +410,7 @@ process.stdout.write('native-pi-ok');
     '.claude-plugin/plugin.json',
     '.mcp.json',
     'hooks/hooks.json',
-    'hooks/claude-hooks.json',
+    'hooks/codex-hooks.json',
     'skills/thoth-mem/SKILL.md',
     'runners/public-runner.mjs',
   ]) assert(existsSync(join(publicPluginRoot, path)), `Packed native manager bundle is missing ${path}.`);

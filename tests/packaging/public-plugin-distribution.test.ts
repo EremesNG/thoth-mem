@@ -54,6 +54,7 @@ describe('public plugin distribution', () => {
       name: string;
       version: string;
       mcpServers: string;
+      hooks: string;
       skills: string;
       interface: { displayName: string; category: string };
     }>(join(pluginRoot, '.codex-plugin', 'plugin.json'));
@@ -61,26 +62,26 @@ describe('public plugin distribution', () => {
       name: 'thoth-mem',
       version: packageVersion,
       mcpServers: './codex.mcp.json',
+      hooks: './hooks/codex-hooks.json',
       skills: './skills/',
       interface: { displayName: 'thoth-mem Persistent Memory', category: 'Productivity' },
     });
-    expect(manifest).not.toHaveProperty('hooks');
     expect(manifest).not.toHaveProperty('displayName');
     expect(manifest).not.toHaveProperty('category');
     expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
       `cache/thoth-plugins/thoth-mem/${packageVersion}/skills/thoth-mem/SKILL.md`,
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
-    for (const component of ['./hooks/hooks.json', manifest.mcpServers, manifest.skills]) {
+    for (const component of [manifest.hooks, manifest.mcpServers, manifest.skills]) {
       expect(existsSync(resolve(pluginRoot, component)), component).toBe(true);
     }
 
-    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string; timeout: number }> }>> }>(resolve(pluginRoot, './hooks/hooks.json'));
+    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string; timeout: number }> }>> }>(resolve(pluginRoot, manifest.hooks));
     expect(Object.keys(hooks.hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'SessionEnd']);
     expect(hooks.hooks.SessionEnd?.flatMap((group) => group.hooks).map((hook) => hook.timeout)).toEqual([3]);
     for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
       expect(hook.type).toBe('command');
-      expect(hook.command).toContain('${PLUGIN_ROOT}/runners/public-runner.mjs');
+      expect(hook.command).toBe('node "${PLUGIN_ROOT}/runners/public-runner.mjs" --harness codex');
     }
 
     const mcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
@@ -98,30 +99,29 @@ describe('public plugin distribution', () => {
     const manifest = readJson<{
       name: string;
       version: string;
-      hooks: string;
       mcpServers: string;
       skills: string;
     }>(join(pluginRoot, '.claude-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       name: 'thoth-mem',
       version: packageVersion,
-      hooks: './hooks/claude-hooks.json',
       mcpServers: './.mcp.json',
       skills: './skills/',
     });
+    expect(manifest).not.toHaveProperty('hooks');
     expect(join('cache', 'thoth-plugins', manifest.name, manifest.version, manifest.skills, manifest.name, 'SKILL.md').replaceAll('\\', '/')).toBe(
       `cache/thoth-plugins/thoth-mem/${packageVersion}/skills/thoth-mem/SKILL.md`,
     );
     expect(existsSync(resolve(pluginRoot, manifest.skills, manifest.name, 'SKILL.md'))).toBe(true);
-    for (const component of [manifest.hooks, manifest.mcpServers, manifest.skills]) {
+    for (const component of ['./hooks/hooks.json', manifest.mcpServers, manifest.skills]) {
       expect(existsSync(resolve(pluginRoot, component)), component).toBe(true);
     }
 
-    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>> }>(resolve(pluginRoot, manifest.hooks));
+    const hooks = readJson<{ hooks: Record<string, Array<{ hooks: Array<{ type: string; command: string }> }>> }>(resolve(pluginRoot, './hooks/hooks.json'));
     expect(Object.keys(hooks.hooks)).toEqual(['SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact', 'SessionEnd']);
     for (const groups of Object.values(hooks.hooks)) for (const group of groups) for (const hook of group.hooks) {
       expect(hook.type).toBe('command');
-      expect(hook.command).toContain('${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs');
+      expect(hook.command).toBe('node "${CLAUDE_PLUGIN_ROOT}/runners/public-runner.mjs" --harness claude');
     }
 
     const mcp = readJson<{ mcpServers: Record<string, { cwd: string; command: string; args: string[] }> }>(resolve(pluginRoot, manifest.mcpServers));
