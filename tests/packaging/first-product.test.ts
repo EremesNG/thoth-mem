@@ -215,7 +215,7 @@ describe('first-product packed boundary', () => {
     expect(new Set(skills)).toHaveLength(1);
     const canonical = skills[0]!;
     expect(canonical).toContain('MCP hosts expose six memory tools:');
-    expect(canonical).toContain('Pi exposes five native tools (the first five above); `mem_session` is hook-only.');
+    expect(canonical).toContain('Pi and OpenCode expose the first five natively; `mem_session` is plugin-internal.');
     expect(canonical).toMatch(/On MCP hosts, do not call `mem_session` for ordinary completion; reserve it for\s+an actual verified root lifecycle event\./u);
     for (const host of ['opencode', 'codex', 'claude-code', 'pi']) expect(canonical).toContain(`references/${host}.md`);
     for (const [index, skill] of skills.entries()) expect(skill, skillPaths[index]).toMatch(/For Pi, select\s+`references\/pi\.md`\s+for identity and lifecycle operations\./u);

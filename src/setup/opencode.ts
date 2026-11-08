@@ -152,10 +152,11 @@ function recoverInterruptedSetup(journalPath: string, configDirectory: string, p
 }
 
 function installedOpenCodeVersion(): string | null {
-  const result = spawnSync('opencode', ['--version'], {
-    encoding: 'utf8', timeout: 5_000, maxBuffer: 16_384, windowsHide: true,
-    shell: process.platform === 'win32',
-  });
+  const options = { encoding: 'utf8' as const, timeout: 5_000, maxBuffer: 16_384, windowsHide: true };
+  // Windows shims need a shell; keep its command fixed and omit shell arguments (DEP0190).
+  const result = process.platform === 'win32'
+    ? spawnSync('opencode --version', { ...options, shell: true })
+    : spawnSync('opencode', ['--version'], { ...options, shell: false });
   return result.status === 0 && !result.error ? result.stdout : null;
 }
 
