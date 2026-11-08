@@ -42,23 +42,23 @@ Every packaged native asset MUST continue to appear exactly once under one harne
 
 ### Requirement: OpenCode MUST Keep SQLite Behind a Literal Node Boundary
 
-The native OpenCode plugin MAY execute in Bun, but every SQLite-backed MCP or lifecycle operation MUST cross bounded JSON stdio to literal Node and the package-relative built entry. The Bun bundle MUST NOT import `better-sqlite3` or instantiate the memory service.
+The OpenCode plugin MAY execute in Bun or a compiled Bun executable, but its entry MUST NOT import `better-sqlite3`, any `@opencode/*` or `@opencode-ai/*` runtime module, or instantiate the memory service; every SQLite-backed operation MUST cross bounded JSON stdio to one owned MCP child executed by literal Node, never by the host's `process.execPath`: the literal `node` command running an explicitly configured local runtime entry validated for package name and version, else the package-relative built entry only when its `better-sqlite3` native binding file exists, else the platform `npx --yes thoth-mem@<exact plugin version> mcp --no-http`, because OpenCode installs npm plugins without lifecycle scripts.
 
-#### Scenario: Execute a packed OpenCode lifecycle hook
+#### Scenario: OpenCode MUST Keep SQLite Behind a Literal Node Boundary
 
-- **GIVEN** a Bun-loaded native bundle and valid root event
-- **WHEN** recovery runs
-- **THEN** the adapter spawns literal Node `lifecycle`, validates the bounded current envelope, and returns host-shaped output
+- **GIVEN** a plugin installed with lifecycle scripts disabled so its `better-sqlite3` binding is absent, no configured local runtime, and a host whose `process.execPath` is not Node
+- **WHEN** the first memory tool call and root lifecycle event run
+- **THEN** the plugin launches the exact-version npx runtime once, both operations succeed through it, no child is launched with the host executable, and the plugin bundle never loads the native module 
 
 ### Requirement: Public and Local Runtime Provenance MUST Be Explicit
 
-Public Codex and Claude runners MUST resolve the exact package version declared by the plugin runtime. Explicit local setup MAY use only an absolute verified checkout build. OpenCode public setup MUST use an exact npm entry and local setup one canonical absolute file URL.
+Public Codex and Claude runners MUST resolve the exact package version declared by the plugin runtime. Explicit local setup MAY use only an absolute verified checkout build. OpenCode public setup MUST write the exact `thoth-mem@<version>` entry under `plugins`, and local setup one canonical absolute package-root directory entry, never a file entry.
 
-#### Scenario: Local runtime identity does not match the plugin
+#### Scenario: Public and Local Runtime Provenance MUST Be Explicit
 
-- **GIVEN** a configured local entry from a different package name or version
-- **WHEN** a native runner validates provenance
-- **THEN** it fails closed before executing that entry
+- **GIVEN** a configured local entry from a different package name or version, and explicit local OpenCode setup for a verified checkout
+- **WHEN** a native runner validates provenance and OpenCode setup writes configuration
+- **THEN** the runner fails closed before executing that entry and `plugins` holds the checkout's absolute package-root directory with no `dist/opencode.js` file entry 
 
 ### Requirement: Managed Setup MUST Own Only Declared Installation State
 

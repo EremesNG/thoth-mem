@@ -13,6 +13,11 @@
     "url": "https://github.com/EremesNG/thoth-mem/issues"
   },
   "main": "dist/opencode.js",
+  "exports": {
+    ".": "./dist/opencode.js",
+    "./server": "./dist/opencode.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "thoth-mem": "dist/index.js"
   },
@@ -78,12 +83,12 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opencode-ai/plugin": "1.18.2",
     "better-sqlite3": "^12.10.0",
     "jsonc-parser": "3.3.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@opencode/plugin": "2.2.6",
     "@earendil-works/pi-coding-agent": "1.0.1",
     "@earendil-works/pi-tui": "1.0.1",
     "@types/better-sqlite3": "^7.6.13",

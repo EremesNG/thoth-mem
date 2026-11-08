@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, win32 } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -16,6 +16,53 @@ const observationReviewPaths = [
   'integrations/claude-code/skills/thoth-mem/references/observation-review.md',
   'integrations/pi/skills/thoth-mem/references/observation-review.md',
 ];
+
+describe('npm CLI discovery', () => {
+  function fixtureFs(files: Record<string, string>, links: Record<string, string> = {}) {
+    return {
+      realpathSync(path: string) {
+        const target = links[path] ?? path;
+        if (!(target in files)) throw new Error('missing fixture file');
+        return target;
+      },
+      statSync: (path: string) => ({ isFile: () => path in files }),
+      readFileSync(path: string) {
+        if (!(path in files)) throw new Error('missing fixture file');
+        return files[path]!;
+      },
+    };
+  }
+
+  it.each(['npm.cmd', 'npm'])('finds real npm through a Windows PATH %s shim, not npm_execpath pnpm', (shim) => {
+    const cli = 'C:\\global\\node_modules\\npm\\bin\\npm-cli.js';
+    const shimPath = win32.join('C:\\bin', shim);
+    const fs = fixtureFs({
+      [cli]: '// real npm',
+      [shimPath]: shim === 'npm.cmd'
+        ? '@node "%~dp0\\..\\global\\node_modules\\npm\\bin\\npm-cli.js" %*'
+        : 'exec node "$basedir/../global/node_modules/npm/bin/npm-cli.js" "$@"',
+      'C:\\pnpm.exe': '// pnpm',
+    });
+    expect(resolveNpmCli({ platform: 'win32', execPath: 'C:\\managed\\node.exe', env: { npm_execpath: 'C:\\pnpm.exe', Path: 'C:\\absent;"C:\\bin"' }, fs })).toBe(cli);
+  });
+
+  it.each(['symlink', 'script'])('finds real npm through a POSIX PATH %s', (layout) => {
+    const cli = '/opt/npm/bin/npm-cli.js';
+    const fs = fixtureFs({
+      [cli]: '// real npm',
+      ...(layout === 'script' ? { '/usr/bin/npm': 'exec node "$basedir/../../opt/npm/bin/npm-cli.js" "$@"' } : {}),
+    }, layout === 'symlink' ? { '/usr/bin/npm': cli } : {});
+    expect(resolveNpmCli({ platform: 'linux', execPath: '/managed/node', env: { PATH: '/missing:/usr/bin' }, fs })).toBe(cli);
+  });
+
+  it('keeps explicit npm precedence and rejects PATH shims for other package managers', () => {
+    const cli = '/explicit/npm-cli.js';
+    const fs = fixtureFs({ [cli]: '// npm', '/bin/npm': 'exec node "/bin/pnpm.cjs"', '/bin/pnpm.cjs': '// pnpm' });
+    expect(resolveNpmCli({ platform: 'linux', execPath: '/managed/node', env: { npm_execpath: cli, PATH: '/bin' }, fs })).toBe(cli);
+    expect(() => resolveNpmCli({ platform: 'linux', execPath: '/managed/node', env: { PATH: '/bin' }, fs }))
+      .toThrow('npm CLI was not found for Node at /managed/node; checked /managed/node_modules/npm/bin/npm-cli.js, /lib/node_modules/npm/bin/npm-cli.js, /managed/npm, /bin/npm.');
+  });
+});
 
 describe('first-product packed boundary', () => {
   it('normalizes supported npm pack envelopes and rejects ambiguous output', () => {
@@ -41,6 +88,7 @@ describe('first-product packed boundary', () => {
     expect(smoke.stdout).toContain('Packed smoke passed for opencode, codex, claude-code, pi.');
     expect(smoke.stdout).toContain('Activated lifecycle fixtures for opencode, codex, claude-code, pi.');
     expect(smoke.stdout).toContain('Verified hermetic public Pi candidate and complete runtime closure.');
+    expect(smoke.stdout).toContain('Verified OpenCode V2 scripts-disabled install: binding absent, exact-version candidate npx');
     expect(smoke.stdout).toContain('Verified exact public Pi list and full installed runtime graph.');
     expect(smoke.stdout).toContain('Verified SHA-256, SHA-512 integrity, and SHA-1 shasum ledger fields.');
   }, 180_000);
@@ -71,6 +119,8 @@ describe('first-product packed boundary', () => {
       devDependencies: Record<string, string>;
     };
     expect(manifest.main).toBe('dist/opencode.js');
+    expect(manifest).toMatchObject({ exports: { '.': './dist/opencode.js', './server': './dist/opencode.js', './package.json': './package.json' } });
+    expect(manifest.devDependencies['@opencode/plugin']).toBe('2.2.6');
     expect(manifest.bin).toEqual({ 'thoth-mem': 'dist/index.js' });
     expect(manifest.pi).toEqual({ extensions: ['./dist/pi.js'], skills: ['./integrations/pi/skills/thoth-mem'] });
     expect(manifest.keywords).toContain('pi-package');
@@ -78,7 +128,6 @@ describe('first-product packed boundary', () => {
     expect(manifest.devDependencies).toMatchObject({ '@earendil-works/pi-coding-agent': '1.0.1', typebox: '1.3.7' });
     expect(Object.keys(manifest.dependencies).sort()).toEqual([
       '@modelcontextprotocol/sdk',
-      '@opencode-ai/plugin',
       'better-sqlite3',
       'jsonc-parser',
       'zod',
@@ -151,7 +200,7 @@ describe('first-product packed boundary', () => {
 
   it('ships OpenCode recovery guidance for persisted boundary delivery', () => {
     const reference = readFileSync('integrations/opencode/skills/thoth-mem/references/opencode.md', 'utf8');
-    for (const phrase of ['`chat.message`', 'persisted synthetic text part', 'after compaction', 'never per prompt or in the system prompt', 'identity-only block', 'retry']) expect(reference).toContain(phrase);
+    for (const phrase of ['`prompt` hook', 'instruction entry', '`thoth-mem-recovery`', '`ctx.storage`', 'identity-only block', 'retry', 'mem_recall', 'thoth_mem_root_identity']) expect(reference).toContain(phrase);
   });
 
   it('routes canonical and Pi Skills to the Pi identity reference', () => {

@@ -33,10 +33,12 @@ The supported-host contract has exactly four native hosts:
 
 | Host | Managed setup and runtime boundary | Focused coverage |
 | --- | --- | --- |
-| OpenCode | `setup opencode`; Bun loads the thin native entry and Node owns SQLite/MCP lifecycle work. | `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/lifecycle.test.ts` |
+| OpenCode | `setup opencode` gates on stable ≥2.2.6; V2 native tools, packaged Skill, instruction-entry recovery, and one literal-Node/npx MCP child. | `tests/integration/opencode-native-plugin.test.ts`, `tests/integration/lifecycle.test.ts` |
 | Codex | `setup codex`; native plugin hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
 | Claude Code | `setup claude`; native hooks call the shared public runner and pinned Node runtime. | `tests/integration/public-plugin-runner.test.ts`, `tests/setup/native-managers.test.ts` |
 | Pi | `setup pi`; admission is capability-based with no version allowlist. The native extension shares one lazy Node MCP child for tools and lifecycle calls. Reproducible SDK baseline: `1.0.1`; packed smoke reports the host selected by `PATH`. | `tests/setup/pi.test.ts`, `tests/integration/pi-lifecycle.test.ts`, `tests/integration/pi-mcp-client.test.ts`, `tests/integration/pi-native-plugin.test.ts`, `tests/integration/pi-tool-error.test.ts` |
+
+Opt-in disposable OpenCode ≥2.2.6 loopback-provider verification (otherwise skipped): after `pnpm run build`, run `THOTH_MEM_OPENCODE_HOST_TEST=1 pnpm exec vitest run tests/integration/opencode-v2-host.test.ts --config vitest.integration.config.ts` (PowerShell: set `$env:THOTH_MEM_OPENCODE_HOST_TEST='1'` first).
 
 For the Pi lane, run the terminating focused suite after a build:
 
@@ -174,3 +176,24 @@ pnpm run benchmark:observation
 The committed summary outcome fixture is offline and deterministic. For each OpenCode-, Codex-, Claude-, and Pi-shaped harness it uses isolated control and candidate projects, identical five-field actionable source values, and the same 1,000-code-point delivery cap. It requires ordered idempotency, same-scope claim support, version precedence, four-host recovery, non-empty checkpoint capture, zero automatic handoff promotion, zero support leakage, zero mixed candidate memories, zero model/network calls, and a candidate useful-content ratio no lower than the handoff control. `benchmarks/report.mjs` and `benchmarks/report.schema.json` close that summary envelope; missing, extra, incoherent, contaminated, or non-inferior-by-assertion-only reports fail validation.
 
 Run the nearest file first, then `pnpm run build`, `pnpm test`, `pnpm run integration:verify`, `pnpm run integration:smoke`, `pnpm run benchmark:fixture`, and `pnpm run prepublishOnly`. The committed fixture must make zero network/model calls and must not claim external quality while LongMemEval-S, LoCoMo, AMB/BEAM/PersonaMem, or SDEBench lanes are unavailable.
+
+## OpenCode V2 packed fallback
+
+The packed verifier drives a plain plugin object through a fake V2 context in
+Bun: six native tools, absolute packaged Skill, root enrollment/capture,
+compaction, finalize, awaited instruction entry, and cleanup. Setup uses an
+isolated fake `opencode --version` on PATH and checks V2 `plugins` directory/npm
+entries without Skill copies. Migration fixtures intentionally retain legacy
+configuration solely to test managed cleanup.
+
+A second disposable install uses `--ignore-scripts` and a loopback registry
+closure with native build artifacts omitted, matching OpenCode's npm cache.
+It asserts SQLite's binding and provider configuration are absent, then drives
+the installed plugin with the real platform npx (`npx.cmd` on Windows). The
+existing loopback registry serves the exact candidate and frozen built runtime
+closure; no public candidate is used. Registry/proxy isolation matches the Pi
+lane, with lowercase proxies also set. MCP initialization, a native tool call,
+root lifecycle, verified recovery, and cleanup must succeed. This is not a
+host-model consumption or global network-interception claim.
+
+Packaging checks fall back to npm on `PATH` when the Node installation has no adjacent npm, validating the resolved `npm-cli.js` rather than accepting pnpm or yarn.

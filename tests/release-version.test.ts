@@ -26,12 +26,19 @@ function createReleaseFixture(autocrlf: boolean): string {
   const sourceRoot = process.cwd();
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'thoth-release-version-'));
   temporaryRoots.push(fixtureRoot);
-  cpSync(join(sourceRoot, '.gitattributes'), join(fixtureRoot, '.gitattributes'));
+  for (const file of ['.gitattributes', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
+    cpSync(join(sourceRoot, file), join(fixtureRoot, file));
+  }
+  // pnpm may install dependencies before running the version lifecycle.
+  // Carry the workspace's build approvals and frozen resolutions, not host settings.
+  writeFileSync(join(fixtureRoot, '.gitignore'), 'node_modules/\n');
 
   const manifest = JSON.parse(
     readFileSync(join(sourceRoot, 'package.json'), 'utf8'),
   ) as {
+    dependencies: Record<string, string>;
     devDependencies: Record<string, string>;
+    exports: Record<string, string>;
     keywords: string[];
     name: string;
     packageManager: string;
@@ -46,7 +53,9 @@ function createReleaseFixture(autocrlf: boolean): string {
   writeFileSync(
     join(fixtureRoot, 'package.json'),
     `${JSON.stringify({
+      dependencies: manifest.dependencies,
       devDependencies: manifest.devDependencies,
+      exports: manifest.exports,
       keywords: manifest.keywords,
       name: manifest.name,
       packageManager: manifest.packageManager,
@@ -68,6 +77,7 @@ function createReleaseFixture(autocrlf: boolean): string {
   });
   mkdirSync(join(fixtureRoot, 'dist'));
   cpSync(join(sourceRoot, 'dist', 'pi.js'), join(fixtureRoot, 'dist', 'pi.js'));
+  cpSync(join(sourceRoot, 'dist', 'opencode.js'), join(fixtureRoot, 'dist', 'opencode.js'));
   mkdirSync(join(fixtureRoot, 'scripts'));
   for (const script of [
     'sync-plugin-distribution.mjs',
@@ -98,6 +108,19 @@ afterEach(() => {
 });
 
 describe('npm version release lifecycle', () => {
+  test('preserves dependency resolution and build decisions in the temporary checkout', () => {
+    const fixtureRoot = createReleaseFixture(false);
+    for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
+      expect(readFileSync(join(fixtureRoot, file), 'utf8')).toBe(readFileSync(file, 'utf8'));
+    }
+    const source = JSON.parse(readFileSync('package.json', 'utf8'));
+    const fixture = JSON.parse(readFileSync(join(fixtureRoot, 'package.json'), 'utf8'));
+    for (const key of ['dependencies', 'devDependencies', 'peerDependencies']) {
+      expect(fixture[key]).toEqual(source[key]);
+    }
+    expect(readFileSync(join(fixtureRoot, '.gitignore'), 'utf8')).toContain('node_modules/');
+  });
+
   test.each([false, true])('commits a portable clean release with autocrlf=%s', (autocrlf) => {
     const fixtureRoot = createReleaseFixture(autocrlf);
 

@@ -1,298 +1,87 @@
-import { createHash, randomInt } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { tool, type Hooks, type Plugin } from '@opencode-ai/plugin';
+import type { Plugin } from '@opencode/plugin';
 
-import type { RuntimeConfigOptions } from '../../config/runtime.js';
-import type { LifecycleResult } from '../../memory-core/contracts.js';
-import { RECOVERY_TAG_END, RECOVERY_TAG_START } from '../../memory-core/continuation.js';
-import { sanitizePrivateContent } from '../../memory-core/privacy.js';
-import { resolveLocalProjectIdentity } from '../project-identity.js';
-import { recoveryWithProvenance } from '../recovery.js';
-import {
-  dispatchOpenCodeLifecycleThroughNode,
-  type OpenCodeLifecycleDispatchInput,
-} from './node-lifecycle-client.js';
-
-export { RECOVERY_TAG_END, RECOVERY_TAG_START };
-const IDENTITY_SCHEMA = 'thoth-mem.opencode.identity.v2';
-const MAX_IDENTITY_CODE_POINTS = 128;
-const MAX_IDENTITY_PARENT_DEPTH = 16;
-
-interface SessionState {
-  directory: string;
-  root: boolean;
-}
-
-interface PendingDelivery {
-  kind: 'verified' | 'fallback-delivered-awaiting-verified';
-  block: string;
-}
-
-type MessageParts = Parameters<NonNullable<Hooks['chat.message']>>[1]['parts'];
-
-function hasRecovery(parts: MessageParts): boolean {
-  return parts.some((part) => 'text' in part && part.text.includes(RECOVERY_TAG_START));
-}
+import { loadRuntimeConfig, type RuntimeConfigOptions } from '../../config/runtime.js';
+import { VERSION } from '../../version.js';
+import { createMcpChildClient, type McpChildClient } from '../mcp-child-client.js';
+import { resolveMcpRuntime } from '../runtime-resolver.js';
+import { createNativeTools } from './tools.js';
+import { loadPackagedSkill } from './skills.js';
+import { registerLifecycle } from './lifecycle.js';
 
 export interface ThothMemPluginOptions {
   runtimeConfig?: RuntimeConfigOptions;
   runtimeEntry?: string;
-  lifecycleDispatch?: (input: OpenCodeLifecycleDispatchInput) => Promise<LifecycleResult | undefined>;
+  client?: McpChildClient;
 }
 
-function defaultRuntimeEntry(): string {
-  const modulePath = fileURLToPath(import.meta.url);
-  const moduleDirectory = dirname(modulePath);
-  return basename(moduleDirectory) === 'dist'
-    ? join(moduleDirectory, 'index.js')
-    : resolve(moduleDirectory, '../../../dist/index.js');
+function packageRoot(): string {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  return resolve(directory, basename(directory) === 'dist' ? '..' : '../../..');
 }
 
-function isSessionInfo(value: unknown): value is { id: string; directory: string; parentID?: string } {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.id === 'string' && typeof record.directory === 'string' && (record.parentID === undefined || typeof record.parentID === 'string');
-}
-
-function isBoundedIdentifier(value: unknown): value is string {
-  return typeof value === 'string'
-    && Array.from(value).length > 0
-    && Array.from(value).length <= MAX_IDENTITY_CODE_POINTS
-    && /^[a-z0-9][a-z0-9._-]*$/iu.test(value);
-}
-
-function identityResult(value: Record<string, unknown>): string {
-  return JSON.stringify({ schema: IDENTITY_SCHEMA, ...value });
-}
-
-function degradedIdentity(reason: string): string {
-  return identityResult({ status: 'degraded', reason, authorization: 'none' });
-}
-
-function stableLifecycleEventKey(parts: unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
-export function createThothMemPlugin(options: ThothMemPluginOptions = {}): Plugin {
-  return async ({ client, directory }) => {
-    const sessions = new Map<string, SessionState>();
-    const startedSessions = new Set<string>();
-    const pendingDeliveries = new Map<string, PendingDelivery>();
-    // A queued fallback may be deferred by deduplication before its first push.
-    const fallbackDelivered = new Set<string>();
-    const deliveredMessages = new Set<string>();
-    let partCounter = 0;
-    const nextPartID = (parts: MessageParts): string => {
-      let maximum: string | undefined;
-      for (const part of parts) {
-        if (maximum === undefined || Buffer.compare(Buffer.from(part.id), Buffer.from(maximum)) > 0) maximum = part.id;
+export function createThothMemPlugin(options: ThothMemPluginOptions = {}) {
+  // Cache static content (including a failed load) for this plugin instance.
+  let skill: ReturnType<typeof loadPackagedSkill> | undefined;
+  return {
+    id: 'thoth-mem',
+    async setup(ctx: Plugin.Context) {
+      const runtimeConfig = loadRuntimeConfig(options.runtimeConfig);
+      const env = { ...process.env, ...options.runtimeConfig?.env };
+      if (options.runtimeConfig?.homeDir) {
+        env.HOME = options.runtimeConfig.homeDir;
+        env.USERPROFILE = options.runtimeConfig.homeDir;
       }
-      if (maximum !== undefined) return `${maximum}~thoth-mem`;
-      const timestamp = (BigInt(Date.now()) * 0x1000n + BigInt(partCounter++)) & 0xffffffffffffn;
-      const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-      const random = Array.from({ length: 14 }, () => alphabet[randomInt(alphabet.length)]).join('');
-      return `prt_${timestamp.toString(16).padStart(12, '0')}${random}`;
-    };
-    const queueRecovery = (sessionID: string, sessionDirectory: string, result: LifecycleResult | undefined): void => {
-      const recovery = recoveryWithProvenance(result, sessionID, sessionDirectory);
-      fallbackDelivered.delete(sessionID);
-      if (recovery) pendingDeliveries.set(sessionID, { kind: recovery.source === 'verified' ? 'verified' : 'fallback-delivered-awaiting-verified', block: recovery.block });
-      else pendingDeliveries.delete(sessionID);
-    };
-    const runtimeEntry = options.runtimeEntry ?? defaultRuntimeEntry();
-    let timeoutReported = false;
-    const reportDiagnostic = (code: string, detail?: string): void => {
-      if (code === 'node_lifecycle_timeout') {
-        if (timeoutReported) return;
-        timeoutReported = true;
-        detail = 'memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate`';
-      }
-      const message = Array.from(`OpenCode lifecycle degraded: ${code}${detail ? ` — ${detail}` : ''}`).slice(0, 560).join('');
+      if (options.runtimeConfig?.explicitDataDir !== undefined) env.THOTH_MEM_DATA_DIR = runtimeConfig.dataDir;
+      const runtime = resolveMcpRuntime({
+        packageRoot: packageRoot(), version: VERSION,
+        provider: runtimeConfig.provider, runtimeEntry: options.runtimeEntry, env,
+      });
+      const reportDiagnostic = (code: string): void => {
+        console.error(`[thoth-mem] OpenCode bridge degraded: ${code.slice(0, 100)}`);
+      };
+      // The shared client owns one lazy, reconnecting child; constructing it never spawns.
+      const client = options.client ?? createMcpChildClient({
+        ...runtime, env,
+        clientIdentity: { name: 'thoth-mem-opencode', version: VERSION },
+        nativeHost: 'opencode', label: 'OpenCode MCP',
+        errorPrefix: 'thoth-mem OpenCode bridge failed', diagnosticPrefix: 'opencode_mcp',
+        onDiagnostic: reportDiagnostic,
+      });
+      const subscription = new AbortController();
+      const registrations: { dispose(): Promise<void> }[] = [];
+
+      const tools = createNativeTools(client, ctx);
       try {
-        void client.app.log({ body: { service: 'thoth-mem', level: 'warn', message } })
-          .catch(() => console.error(`[thoth-mem] WARN: ${message}`));
-      } catch {
-        console.error(`[thoth-mem] WARN: ${message}`);
+        registrations.push(await ctx.tool.transform((editor) => {
+          for (const tool of tools) editor.add(tool);
+        }));
+      } catch (error) {
+        await client.close();
+        throw error;
       }
-    };
-    const lifecycleDispatch = options.lifecycleDispatch ?? ((input: OpenCodeLifecycleDispatchInput) => dispatchOpenCodeLifecycleThroughNode(input, {
-      runtimeEntry,
-      runtimeConfig: options.runtimeConfig,
-      onDiagnostic: reportDiagnostic,
-    }));
-    const dispatch = async (input: OpenCodeLifecycleDispatchInput): Promise<LifecycleResult | undefined> => {
       try {
-        return await lifecycleDispatch(input);
+        const info = await (skill ??= loadPackagedSkill(packageRoot()));
+        registrations.push(await ctx.skill.transform((editor) => editor.add(info)));
       } catch {
-        reportDiagnostic('node_lifecycle_unexpected_failure');
-        return undefined;
+        reportDiagnostic('packaged_skill_registration_failed');
       }
-    };
-    const resolveRootSession = async (callerSessionID: string, sessionDirectory: string): Promise<{ rootSessionID: string; directory: string } | { reason: string }> => {
-      const visited = new Set<string>();
-      let sessionID = callerSessionID;
-      for (let depth = 0; depth <= MAX_IDENTITY_PARENT_DEPTH; depth += 1) {
-        if (visited.has(sessionID)) return { reason: 'parent_cycle' };
-        visited.add(sessionID);
-        let response: Awaited<ReturnType<typeof client.session.get>>;
-        try {
-          response = await client.session.get({ path: { id: sessionID }, query: { directory: sessionDirectory } });
-        } catch {
-          return { reason: 'session_lookup_failed' };
-        }
-        if (!isSessionInfo(response.data)) return { reason: 'session_not_found' };
-        if (response.data.id !== sessionID) return { reason: 'session_id_mismatch' };
-        if (response.data.parentID === undefined) return { rootSessionID: sessionID, directory: response.data.directory };
-        if (!isBoundedIdentifier(response.data.parentID)) return { reason: 'parent_id_invalid' };
-        sessionID = response.data.parentID;
+      try {
+        await registerLifecycle(ctx, client, subscription.signal, registrations, reportDiagnostic);
+      } catch {
+        reportDiagnostic('lifecycle_registration_failed');
       }
-      return { reason: 'parent_depth_exceeded' };
-    };
 
-    const hooks: Hooks = {
-      tool: {
-        thoth_mem_root_identity: tool({
-          description: 'Return the verified OpenCode root session identity as versioned JSON.',
-          args: {},
-          execute: async (_args, context) => {
-            if (!isBoundedIdentifier(context.sessionID)) return degradedIdentity('invalid_caller_session');
-            const resolution = await resolveRootSession(context.sessionID, context.directory);
-            if ('reason' in resolution) return degradedIdentity(resolution.reason);
-            let project;
-            try { project = resolveLocalProjectIdentity(context.worktree || context.directory); } catch { return degradedIdentity('project_unavailable'); }
-            const callerIsRoot = resolution.rootSessionID === context.sessionID;
-            return identityResult({ status: 'verified', root_session_id: resolution.rootSessionID, caller_session_id: context.sessionID, caller_role: callerIsRoot ? 'root' : 'delegated', project_key: project.key, project_name_hint: project.name, authorization: callerIsRoot ? 'root_lifecycle' : 'none' });
-          },
-        }),
-      },
-      config: async (config) => {
-        config.mcp = {
-          ...config.mcp,
-          'thoth-mem': {
-            type: 'local',
-            command: ['node', runtimeEntry, 'mcp', '--no-http'],
-            environment: { THOTH_MEM_NATIVE_HOST: 'opencode' },
-          },
-        };
-      },
-      event: async ({ event }) => {
-        if (event.type === 'session.created' || event.type === 'session.updated') {
-          if (!isSessionInfo(event.properties.info)) return;
-          const info = event.properties.info;
-          const state = { directory: info.directory, root: !info.parentID };
-          sessions.set(info.id, state);
-          if (event.type === 'session.created' && state.root) {
-            await dispatch({ operation: 'enroll', directory: state.directory, rootSessionKey: info.id, eventKey: `session-created:${info.id}` });
-          }
-          return;
+      let cleanup: Promise<void> | undefined;
+      return () => cleanup ??= (async () => {
+        subscription.abort();
+        for (const registration of registrations.reverse()) {
+          try { await registration.dispose(); } catch { reportDiagnostic('registration_cleanup_failed'); }
         }
-        if (event.type === 'session.compacted') {
-          const state = sessions.get(event.properties.sessionID);
-          if (!state?.root) return;
-          const sessionID = event.properties.sessionID;
-          let messageID: string | undefined;
-          let content: string | undefined;
-          try {
-            const response = await client.session.messages({ path: { id: sessionID } });
-            const summary = response.data
-              ?.filter(({ info }) => info.sessionID === sessionID && info.role === 'assistant' && info.summary === true)
-              .sort((left, right) => right.info.time.created - left.info.time.created)[0];
-            if (summary) {
-              messageID = summary.info.id;
-              content = sanitizePrivateContent(summary.parts
-                .filter((part): part is Extract<(typeof summary.parts)[number], { type: 'text' }> => part.type === 'text')
-                .map((part) => part.text).join('\n').trim());
-            }
-          } catch { reportDiagnostic('compaction_summary_lookup_failed'); }
-          const result = await dispatch({ operation: 'guide_post_compact', directory: state.directory, rootSessionKey: sessionID, eventKey: `session-compacted:${sessionID}${messageID ? `:${messageID}` : ''}`, ...(content ? { content } : {}) });
-          startedSessions.add(sessionID);
-          queueRecovery(sessionID, state.directory, result);
-          return;
-        }
-        if (event.type === 'session.deleted') {
-          if (!isSessionInfo(event.properties.info)) return;
-          const info = event.properties.info;
-          const state = sessions.get(info.id) ?? { directory: info.directory, root: !info.parentID };
-          if (state.root) await dispatch({ operation: 'finalize', directory: state.directory, rootSessionKey: info.id, eventKey: `session-deleted:${info.id}` });
-          sessions.delete(info.id);
-          startedSessions.delete(info.id);
-          pendingDeliveries.delete(info.id);
-          fallbackDelivered.delete(info.id);
-        }
-      },
-      'chat.message': async (input, output) => {
-        const sessionID = input.sessionID;
-        if (output.message.role !== 'user' || output.message.sessionID !== sessionID || !isBoundedIdentifier(sessionID)) return;
-        let state = sessions.get(sessionID);
-        if (!state) {
-          const resolution = await resolveRootSession(sessionID, directory);
-          if ('reason' in resolution) return;
-          state = { directory: resolution.directory, root: resolution.rootSessionID === sessionID };
-          sessions.set(sessionID, state);
-        }
-        if (!state.root) return;
-        const content = sanitizePrivateContent(output.parts
-          .filter((part): part is Extract<(typeof output.parts)[number], { type: 'text' }> => part.type === 'text' && !part.synthetic && !part.ignored)
-          .map((part) => part.text)
-          .join('\n')
-          .trim());
-        if (content) await dispatch({ operation: 'capture_root', directory: state.directory, rootSessionKey: sessionID, eventKey: `message:${output.message.id}`, content });
-        if (!startedSessions.has(sessionID)) {
-          startedSessions.add(sessionID);
-          const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `message-recovery:${sessionID}:${output.message.id}` });
-          queueRecovery(sessionID, state.directory, result);
-        }
-        let pending = pendingDeliveries.get(sessionID);
-        if (!pending) return;
-        if (pending.kind === 'fallback-delivered-awaiting-verified' && fallbackDelivered.has(sessionID)) {
-          const result = await dispatch({ operation: 'recover', directory: state.directory, rootSessionKey: sessionID, eventKey: `message-recovery:${sessionID}:${output.message.id}` });
-          if (pendingDeliveries.get(sessionID) !== pending) return;
-          const recovery = recoveryWithProvenance(result, sessionID, state.directory);
-          if (recovery?.source !== 'verified') return;
-          pending = { kind: 'verified', block: recovery.block };
-          pendingDeliveries.set(sessionID, pending);
-        }
-        if (deliveredMessages.has(output.message.id)) return;
-        if (hasRecovery(output.parts)) {
-          deliveredMessages.add(output.message.id);
-          return;
-        }
-        if (input.messageID) {
-          try {
-            const response = await client.session.message({ path: { id: sessionID, messageID: input.messageID } });
-            const status = response.response?.status;
-            const notFound = status === 404 || (status === undefined && response.error?.name === 'NotFoundError');
-            if (!notFound) {
-              if (response.error || !response.data || (status !== undefined && (status < 200 || status >= 300))) return;
-              if (hasRecovery(response.data.parts)) {
-                deliveredMessages.add(output.message.id);
-                return;
-              }
-            }
-          } catch { return; }
-        }
-        if (deliveredMessages.has(output.message.id) || pendingDeliveries.get(sessionID) !== pending) return;
-        output.parts.push({ id: nextPartID(output.parts), sessionID, messageID: output.message.id, type: 'text', text: pending.block, synthetic: true });
-        deliveredMessages.add(output.message.id);
-        if (pending.kind === 'verified') pendingDeliveries.delete(sessionID);
-        else fallbackDelivered.add(sessionID);
-      },
-      'experimental.session.compacting': async ({ sessionID }, output) => {
-        const state = sessions.get(sessionID);
-        if (!state?.root) return;
-        const content = sanitizePrivateContent(output.context.join('\n').trim());
-        await dispatch({
-          operation: 'checkpoint_pre_compact',
-          directory: state.directory,
-          rootSessionKey: sessionID,
-          eventKey: `compacting:${stableLifecycleEventKey([sessionID, content])}`,
-          ...(content ? { content } : {}),
-        });
-      },
-    };
-
-    return hooks;
-  };
+        await client.close();
+      })();
+    },
+  } satisfies Plugin.Plugin;
 }

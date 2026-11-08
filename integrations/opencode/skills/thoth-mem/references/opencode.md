@@ -1,6 +1,10 @@
 # OpenCode identity
 
-Use this reference only in OpenCode. The six shared MCP tools remain unchanged; identity discovery is a separate read-only native plugin capability.
+Use this reference only in OpenCode V2 (≥2.2.6). Native tools are `mem_save`,
+`mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `thoth_mem_root_identity`.
+The plugin alone calls `mem_session` through its owned Node MCP child; it is not
+model-visible. No host MCP server is registered. The packaged Skill is registered
+through `ctx.skill`, not copied into configuration.
 
 ## Resolve the root identity
 
@@ -12,21 +16,23 @@ Call `thoth_mem_root_identity` with no arguments before attempting a weaker sour
 
 The tool follows at most 16 validated `parentID` links with cycle detection. It performs no enrollment, prompt capture, memory dispatch, or persistence.
 
-Only if the native tool is not registered, reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project_key=<opaque-key>; project_name=<display-name>`. Inside the native plugin, root events use `properties.info.id`; chat and compaction inputs use `input.sessionID`; `parentID` proves delegated traffic. Do not invent an OpenCode environment variable.
+Only if the native tool is not registered, reuse a complete model-visible line shaped like `thoth-mem verified identity: root_session_id=<id>; project_key=<opaque-key>; project_name=<display-name>`. Inside the native plugin, V2 events use `data.sessionID`; prompt and compaction hooks use `event.sessionID`; `parentID` proves delegated traffic. Do not invent an OpenCode environment variable.
 
 ## Recovery delivery
 
-On the first root message per plugin process (including resume) and the first
-message after compaction, `chat.message` appends one persisted synthetic text part
-hidden from the transcript UI, never per prompt or in the system prompt.
-Post-compaction delivery uses the recovery returned by `guide_post_compact`;
-automatic continuation bypasses `chat.message` and receives no new part.
-A cold resumed session is verified on demand; delegated or unverifiable sessions
-receive no part. Message-ID deduplication prevents repeat delivery on resubmission.
+The first root `prompt` hook awaits the keyed session instruction entry
+`thoth-mem-recovery` before the host freezes its instruction baseline. Delivery
+state in `ctx.storage` prevents rewrites on restart, resume, later prompts, or
+compaction. The host carries the entry into later compaction epochs. Prompt text
+is never changed; no context or system transform is used. Delegated or
+unverifiable sessions receive nothing.
+
 If memory is unavailable, deliver the locally verified identity-only block first,
-then retry on later root prompts until one verified recovery block is delivered;
-at most two blocks per boundary. Invalid local identity delivers nothing.
-Synthetic parts are excluded from prompt capture.
+then retry on later root prompts until one verified entry replaces it once (at
+most two writes per root session). The host appends that replacement as an
+instruction update rather than rewriting its frozen baseline. Invalid local
+identity delivers nothing. Root deletion finalizes once and removes delivery
+state. Children never call `mem_session` or own root recovery delivery.
 
 ## Map to memory tools
 
