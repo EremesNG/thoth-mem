@@ -1,21 +1,23 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 
 import { parse as parseJsonc } from 'jsonc-parser';
 import { packTarball, parseNpmPackRecord, resolveNpmCli } from './npm-pack.mjs';
+import { piInstallationSnapshot } from './pi-installation-snapshot.mjs';
 
 const repository = resolve(import.meta.dirname, '..');
 const scratch = mkdtempSync(join(tmpdir(), 'thoth-packed-native-'));
 const npmCli = resolveNpmCli();
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
-  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${result.error?.message ?? result.stderr ?? result.stdout}`);
+  if (process.env.THOTH_MEM_PACKED_TRACE) process.stderr.write(`packed command: ${command} ${args.join(' ')}\n`);
+  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 120_000, ...options });
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${result.error?.message ?? ''}\n${result.stderr ?? result.stdout}`);
   return result;
 }
 
@@ -39,26 +41,19 @@ function isolatedEnvironment(name) {
     env: {
       ...process.env,
       OPENCODE_CONFIG_DIR: join(root, 'opencode'),
+      HOME: root, USERPROFILE: root,
       XDG_CONFIG_HOME: join(root, 'config'),
+      XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'),
+      PATH: `${join(scratch, 'host-bin')}${delimiter}${process.env.PATH ?? ''}`,
       THOTH_MEM_DATA_DIR: '',
     },
   };
 }
 
-function treeDigest(root) {
-  if (!existsSync(root)) return 'missing';
-  const hash = createHash('sha256');
-  const visit = (path, relative = '') => {
-    for (const entry of readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const child = join(path, entry.name);
-      const name = relative ? `${relative}/${entry.name}` : entry.name;
-      hash.update(`${entry.isDirectory() ? 'd' : 'f'}:${name}\0`);
-      if (entry.isDirectory()) visit(child, name);
-      else if (entry.isFile()) hash.update(readFileSync(child));
-    }
-  };
-  visit(root);
-  return hash.digest('hex');
+function assertRealPiUnchanged(root, before) {
+  const after = piInstallationSnapshot(root);
+  const changed = [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])].filter((path) => before.files[path] !== after.files[path]);
+  assert(before.digest === after.digest, `Packed Pi smoke observed real-home changes: ${changed.join(', ')}`);
 }
 
 function isolatedPiEnvironment(name) {
@@ -101,7 +96,7 @@ function findInstalledPackage(from, name) {
   }
 }
 
-function materializeRuntimeClosure(packageRoot, artifactsRoot) {
+function materializeRuntimeClosure(packageRoot, artifactsRoot, withoutBindings = false) {
   mkdirSync(artifactsRoot, { recursive: true });
   const lockText = readFileSync(join(repository, 'pnpm-lock.yaml'), 'utf8');
   const queue = Object.keys(json(join(packageRoot, 'package.json')).dependencies ?? {}).map((name) => ({ name, from: packageRoot }));
@@ -119,7 +114,7 @@ function materializeRuntimeClosure(packageRoot, artifactsRoot) {
     if (!new RegExp(`\\n  ['"]?${escaped}['"]?:`, 'u').test(lockText)) throw new Error(`Frozen lockfile does not contain ${identity}`);
     const stage = join(artifactsRoot, `.stage-${entries.length}`);
     const stagedPackage = join(stage, 'package');
-    cpSync(directory, stagedPackage, { recursive: true, filter: (source) => basename(source) !== 'node_modules' });
+    cpSync(directory, stagedPackage, { recursive: true, filter: (source) => basename(source) !== 'node_modules' && (!withoutBindings || !source.endsWith('.node')) });
     const tarball = join(artifactsRoot, `${manifest.name.replaceAll('@', '').replaceAll('/', '-')}-${manifest.version}.tgz`);
     try { packTarball(stage, tarball); }
     catch (error) { throw new Error(`Failed to pack frozen dependency ${identity}`, { cause: error }); }
@@ -209,17 +204,7 @@ let registryProcess;
 try {
   const packed = run(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', scratch], { cwd: repository });
   const tarball = join(scratch, parseNpmPackRecord(packed.stdout).filename);
-  writeFileSync(join(scratch, 'package.json'), `${JSON.stringify({ private: true, allowScripts: { 'better-sqlite3': true, 'msgpackr-extract': true } }, null, 2)}\n`);
-  run(process.execPath, [npmCli, 'install', '--no-audit', '--no-fund', tarball], { cwd: scratch });
-  const packageRoot = join(scratch, 'node_modules', 'thoth-mem');
-  const cli = join(packageRoot, 'dist', 'index.js');
-  const nativeMain = join(packageRoot, 'dist', 'opencode.js');
-  const manifest = json(join(packageRoot, 'package.json'));
-  assert(manifest.main === 'dist/opencode.js', 'Packed package main is not the native OpenCode entry.');
-  assert(manifest.bin?.['thoth-mem'] === 'dist/index.js', 'Packed package bin is not the standalone CLI/MCP entry.');
-  const nativeSource = readFileSync(nativeMain, 'utf8');
-  assert(!nativeSource.includes('better-sqlite3') && !nativeSource.includes('class MemoryService'), 'Packed Bun entry contains the Node-native persistence graph.');
-
+  const manifest = json(join(repository, 'package.json'));
   const closureRoot = join(scratch, 'registry-artifacts');
   const runtimeClosure = materializeRuntimeClosure(repository, closureRoot);
   const candidateBytes = readFileSync(tarball);
@@ -234,9 +219,22 @@ try {
   const registry = await startRegistry(closureLedger, scratch);
   registryProcess = registry.child;
 
+  const installRoot = joinDirectory(scratch, 'installed');
+  writeFileSync(join(installRoot, 'package.json'), `${JSON.stringify({ private: true, allowScripts: { 'better-sqlite3': true, 'msgpackr-extract': true } }, null, 2)}\n`);
+  run(process.execPath, [npmCli, 'install', '--no-audit', '--no-fund', tarball], { cwd: installRoot, env: loopbackEnvironment(isolatedPiEnvironment('packed-install').env, registry.url) });
+  const packageRoot = join(installRoot, 'node_modules', 'thoth-mem');
+  const cli = join(packageRoot, 'dist', 'index.js');
+  const nativeMain = join(packageRoot, 'dist', 'opencode.js');
+  assert(JSON.stringify(json(join(packageRoot, 'package.json'))) === JSON.stringify(manifest), 'Installed candidate manifest drifted.');
+  assert(manifest.main === 'dist/opencode.js', 'Packed package main is not the native OpenCode entry.');
+  assert(manifest.bin?.['thoth-mem'] === 'dist/index.js', 'Packed package bin is not the standalone CLI/MCP entry.');
+  const nativeSource = readFileSync(nativeMain, 'utf8');
+  assert(!/(?:from\s*|import\s*\(|require\s*\()\s*["'](?:better-sqlite3|@opencode(?:-ai)?\/)/u.test(nativeSource) && !nativeSource.includes('class MemoryService'), 'Packed Bun entry imports a host SDK or Node-native persistence graph.');
+
   const help = run(process.execPath, [cli, '--help'], { cwd: tmpdir() });
   assert(help.stdout.includes('setup <opencode|codex|claude|pi>') && !help.stdout.includes(`setup-v${2}`), 'Packed CLI exposes the wrong setup contract.');
 
+  createOpenCodeShim();
   const publicHome = isolatedEnvironment('opencode-public');
   const publicData = join(publicHome.root, 'shared data');
   const publicSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'opencode', '--json', '--data-dir', publicData], { cwd: tmpdir(), env: publicHome.env }));
@@ -250,51 +248,58 @@ try {
   const localHome = isolatedEnvironment('opencode-local');
   const localData = join(localHome.root, 'shared data');
   const localSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'opencode', '--json', '--local-package-root', packageRoot, '--data-dir', localData], { cwd: tmpdir(), env: localHome.env }));
-  assert(localSetup.status === 'complete' && localSetup.plugin === pathToFileURL(nativeMain).href, 'Packed local OpenCode setup did not converge canonical file provenance.');
+  assert(localSetup.status === 'complete' && localSetup.plugin === packageRoot, 'Packed local OpenCode setup did not converge canonical directory provenance.');
   const localConfig = jsoncPlugins(readFileSync(localSetup.configPath, 'utf8'));
   assert(localConfig.length === 1 && localConfig[0] === localSetup.plugin, 'Packed local OpenCode configuration contains duplicate activation.');
-  assert(existsSync(join(localHome.env.OPENCODE_CONFIG_DIR, 'skills', 'thoth-mem', 'SKILL.md')), 'Packed OpenCode Skill was not synchronized.');
+  assert(!existsSync(join(localHome.env.OPENCODE_CONFIG_DIR, 'skills', 'thoth-mem')), 'Packed OpenCode setup copied the Skill.');
+  assert(jsoncPlugins(publicConfigBefore)[0] === `thoth-mem@${manifest.version}`, 'Public setup did not use V2 plugins.');
 
   const nativeProject = join(scratch, 'project with spaces');
   mkdirSync(nativeProject, { recursive: true });
-  const nativeSmokePath = join(scratch, 'native-open-code-smoke.mjs');
-  writeFileSync(nativeSmokePath, `
-const pluginModule = await import(${JSON.stringify(pathToFileURL(nativeMain).href)});
-if (typeof pluginModule.default !== 'function') throw new Error('missing default Plugin export');
-if (Object.keys(pluginModule).join(',') !== 'default') throw new Error('native entry exports non-plugin runtime values');
-const hooks = await pluginModule.default({ directory: ${JSON.stringify(nativeProject)}, client: { session: { messages: async () => ({ data: [] }) } } });
-if (Object.keys(hooks.tool ?? {}).join(',') !== 'thoth_mem_root_identity') throw new Error('missing native OpenCode identity tool');
-const resolvedConfig = { skills: { paths: ['user-path'] }, mcp: { user: { type: 'remote', url: 'https://example.test' } } };
-await hooks.config(resolvedConfig);
-if (JSON.stringify(resolvedConfig.skills.paths) !== '["user-path"]') throw new Error('changed user skill paths');
-if (resolvedConfig.mcp['thoth-mem'].command[0] !== 'node' || resolvedConfig.mcp['thoth-mem'].command[1] !== ${JSON.stringify(cli)}) throw new Error('wrong package-relative MCP entry');
-if (hooks['experimental.chat.system.transform']) throw new Error('OpenCode recovery must not use a system transform');
-await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'packed-root', directory: ${JSON.stringify(nativeProject)} } } } });
-const rootMessage = (id) => ({ message: { id, sessionID: 'packed-root', role: 'user' }, parts: [{ id: 'prt_' + id, sessionID: 'packed-root', messageID: id, type: 'text', text: 'Packed OpenCode root input.' }] });
-const assertRecoveryPart = (output) => {
-  const part = output.parts.at(-1);
-  if (output.parts.length !== 2 || part.id !== output.parts[0].id + '~thoth-mem' || part.sessionID !== 'packed-root' || part.messageID !== output.message.id || part.type !== 'text' || part.synthetic !== true) throw new Error('invalid OpenCode synthetic recovery part');
-  if (!part.text.includes('root_session_id=packed-root')) throw new Error('missing verified OpenCode identity');
-  if (part.text.includes('Packed lifecycle checkpoint.') || part.text.includes('(memory:')) throw new Error('checkpoint-only OpenCode capture was promoted into recovery memory');
-};
-const firstMessage = rootMessage('packed-first');
-await hooks['chat.message']({ sessionID: 'packed-root' }, firstMessage);
-assertRecoveryPart(firstMessage);
-const laterMessage = rootMessage('packed-later');
-await hooks['chat.message']({ sessionID: 'packed-root' }, laterMessage);
-if (laterMessage.parts.length !== 1) throw new Error('OpenCode recovery repeated per prompt');
-await hooks['experimental.session.compacting']({ sessionID: 'packed-root' }, { context: ['Packed lifecycle checkpoint.'], prompt: undefined });
-await hooks.event({ event: { type: 'session.compacted', properties: { sessionID: 'packed-root' } } });
-const compactMessage = rootMessage('packed-compacted');
-await hooks['chat.message']({ sessionID: 'packed-root' }, compactMessage);
-assertRecoveryPart(compactMessage);
-const afterCompactMessage = rootMessage('packed-after-compact');
-await hooks['chat.message']({ sessionID: 'packed-root' }, afterCompactMessage);
-if (afterCompactMessage.parts.length !== 1) throw new Error('OpenCode post-compaction recovery repeated');
-process.stdout.write('native-open-code-ok');
-`);
-  const nativeSmoke = run(process.env.BUN_BINARY ?? 'bun', [nativeSmokePath], { cwd: tmpdir(), env: { ...isolatedEnvironment('native-hooks').env, THOTH_MEM_DATA_DIR: join(scratch, 'native hook data') } });
-  assert(nativeSmoke.stdout === 'native-open-code-ok', 'Packed native OpenCode hook smoke failed.');
+  const nativeSmokePath = join(repository, 'scripts', 'packed-opencode-context.mjs');
+  const nativeSmoke = run(process.env.BUN_BINARY ?? 'bun', [nativeSmokePath, nativeMain, nativeProject], { cwd: tmpdir(), env: { ...isolatedEnvironment('native-hooks').env, THOTH_MEM_DATA_DIR: join(scratch, 'native hook data') }, timeout: 30_000 });
+  assert(nativeSmoke.stdout === 'native-opencode-v2-ok', 'Packed native OpenCode V2 smoke failed.');
+
+  // Model OpenCode's scripts-disabled npm cache with pristine (unbuilt) native dependencies.
+  // The runtime registry keeps the frozen Node builds, so npx needs no public egress.
+  const unbuiltClosure = materializeRuntimeClosure(repository, join(scratch, 'unbuilt-artifacts'), true);
+  const installRegistry = await startRegistry([candidateEntry, ...unbuiltClosure], joinDirectory(scratch, 'unbuilt-registry'));
+  const disabled = isolatedPiEnvironment('opencode-scripts-disabled');
+  const disabledEnv = loopbackEnvironment(disabled.env, installRegistry.url);
+  try {
+    writeFileSync(join(disabled.root, 'package.json'), JSON.stringify({ private: true }));
+    run(process.execPath, [npmCli, 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=peer', tarball], { cwd: disabled.root, env: disabledEnv, timeout: 60_000 });
+  } finally {
+    installRegistry.child.kill();
+    await once(installRegistry.child, 'exit');
+  }
+  const disabledPackage = join(disabled.root, 'node_modules', 'thoth-mem');
+  const sqlite = findInstalledPackage(disabledPackage, 'better-sqlite3');
+  assert(!existsSync(join(sqlite, 'build', 'Release', 'better_sqlite3.node')), 'Scripts-disabled install unexpectedly has a SQLite binding.');
+  assert(!existsSync(join(disabledEnv.XDG_CONFIG_HOME, 'thoth-mem', 'config.json')), 'Scripts-disabled lane has a configured local runtime.');
+  const fallbackEnv = loopbackEnvironment({ ...disabled.env, npm_config_cache: join(disabled.root, 'runtime-npm-cache') }, registry.url);
+  delete fallbackEnv.THOTH_MEM_PUBLIC_NPX_COMMAND;
+  // Isolated real platform npx (npx.cmd through cross-spawn on Windows), never a fake runtime.
+  const fallback = run(process.env.BUN_BINARY ?? 'bun', [nativeSmokePath, join(disabledPackage, 'dist', 'opencode.js'), nativeProject], { cwd: nativeProject, env: fallbackEnv, timeout: 150_000 });
+  assert(fallback.stdout === 'native-opencode-v2-ok', 'Scripts-disabled OpenCode exact-version npx runtime failed.');
+  assert(existsSync(join(disabled.data, 'memory.sqlite')), 'OpenCode npx runtime did not persist lifecycle evidence.');
+  assert(!existsSync(join(sqlite, 'build', 'Release', 'better_sqlite3.node')), 'npx modified the host plugin dependency.');
+  // A separate Node verifier releases the native DLL on exit (Windows cannot
+  // remove an addon loaded by this long-lived packaging process).
+  run(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    const Database = createRequire(${JSON.stringify(join(packageRoot, 'package.json'))})('better-sqlite3');
+    const database = new Database(${JSON.stringify(join(disabled.data, 'memory.sqlite'))}, { readonly: true });
+    try {
+      const operations = database.prepare("SELECT operation FROM lifecycle_receipts WHERE harness='opencode' AND root_session_key='packed-root' ORDER BY operation").all().map(({ operation }) => operation);
+      for (const operation of ['capture_root', 'checkpoint_pre_compact', 'guide_post_compact', 'recover', 'finalize']) assert.ok(operations.includes(operation), 'Missing persisted ' + operation);
+      assert.equal(operations.filter((operation) => operation === 'finalize').length, 1);
+    } finally { database.close(); }
+  `]);
+  const fallbackRequests = readFileSync(registry.logPath, 'utf8');
+  assert(fallbackRequests.includes('/thoth-mem') && fallbackRequests.includes(basename(tarball)), 'npx did not request the candidate from the loopback registry.');
+  process.stdout.write(`Verified OpenCode V2 scripts-disabled install: binding absent, exact-version candidate npx (${process.platform === 'win32' ? 'npx.cmd' : 'npx'}), MCP init, native tool, root lifecycle, recovery and cleanup.\n`);
 
   const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'thoth-packed-smoke', version: '1.0.0' } } };
   const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
@@ -308,7 +313,7 @@ process.stdout.write('native-open-code-ok');
   const piVersion = runPi(['--version'], { cwd: tmpdir() }).stdout.trim();
   assert(/^\d+\.\d+\.\d+$/u.test(piVersion), `Packed Pi smoke received malformed version output: ${piVersion}.`);
   const realPiHome = join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.pi', 'agent');
-  const realPiBefore = treeDigest(realPiHome);
+  const realPiBefore = piInstallationSnapshot(realPiHome);
   const piLocal = isolatedPiEnvironment('local');
   const localPiSetup = jsonOutput(run(process.execPath, [cli, 'setup', 'pi', '--json', '--local-package-root', packageRoot, '--data-dir', piLocal.data], { cwd: nativeProject, env: piLocal.env }));
   assert(localPiSetup.piVersion === piVersion, 'Packed local Pi setup used a different host version.');
@@ -356,9 +361,9 @@ for (const tool of tools) await assert.rejects(tool.execute('packed-call', {}), 
 await handlers.get('session_shutdown')({ reason: 'quit', targetSessionFile: 'packed.jsonl' }, context);
 process.stdout.write('native-pi-ok');
 `);
-  const nativePi = run(process.execPath, [piSmokePath], { cwd: nativeProject, env: piLocal.env });
+  const nativePi = run(process.execPath, [piSmokePath], { cwd: nativeProject, env: piLocal.env, timeout: 30_000 });
   assert(nativePi.stdout === 'native-pi-ok', 'Packed native Pi tools/lifecycle smoke failed.');
-  assert(treeDigest(realPiHome) === realPiBefore, 'Packed Pi smoke mutated the real Pi home.');
+  assertRealPiUnchanged(realPiHome, realPiBefore);
 
   const piPublic = isolatedPiEnvironment('public');
   // The frozen closure already includes native builds; install hooks would fetch outside the loopback registry.
@@ -402,7 +407,7 @@ process.stdout.write('native-pi-ok');
   assert(existsSync(join(piPublic.data, 'memory.sqlite')), 'Hermetic public Pi MCP did not open its native SQLite database.');
   const requests = readFileSync(registry.logPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean);
   assert(requests.length > 0 && requests.every((request) => request.startsWith('/')), 'Registry request log is invalid.');
-  assert(treeDigest(realPiHome) === realPiBefore, 'Hermetic public Pi smoke mutated the real Pi home.');
+  assertRealPiUnchanged(realPiHome, realPiBefore);
 
   const publicPluginRoot = join(packageRoot, 'plugin');
   for (const path of [
@@ -494,7 +499,8 @@ process.stdout.write('native-pi-ok');
     registryProcess.kill();
     await Promise.race([once(registryProcess, 'exit'), new Promise((resolve) => setTimeout(resolve, 5_000))]);
   }
-  rmSync(scratch, { recursive: true, force: true });
+  // Windows can briefly retain npm/native-addon handles after child exit.
+  rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 
 function jsonOutput(result) {
@@ -502,7 +508,7 @@ function jsonOutput(result) {
 }
 
 function jsoncPlugins(text) {
-  return parseJsonc(text).plugin ?? [];
+  return parseJsonc(text).plugins ?? [];
 }
 
 function createNpxShim(root, cli) {
@@ -523,4 +529,21 @@ process.exit(child.status ?? 1);
   writeFileSync(command, `#!/bin/sh\n"${process.execPath}" "${runtime}" "$@"\n`);
   chmodSync(command, 0o755);
   return command;
+}
+
+function joinDirectory(...parts) {
+  const path = join(...parts); mkdirSync(path, { recursive: true }); return path;
+}
+
+function createOpenCodeShim() {
+  const bin = joinDirectory(scratch, 'host-bin');
+  if (process.platform === 'win32') writeFileSync(join(bin, 'opencode.cmd'), '@echo off\r\necho 2.2.6\r\n');
+  else { const path = join(bin, 'opencode'); writeFileSync(path, '#!/bin/sh\nprintf "2.2.6\\n"\n'); chmodSync(path, 0o755); }
+}
+function loopbackEnvironment(env, registry) {
+  return { ...env, npm_config_ignore_scripts: 'true', npm_config_legacy_peer_deps: 'true', npm_config_registry: registry, NPM_CONFIG_REGISTRY: registry,
+    npm_config_offline: 'false', NPM_CONFIG_OFFLINE: 'false',
+    HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9', ALL_PROXY: 'http://127.0.0.1:9',
+    http_proxy: 'http://127.0.0.1:9', https_proxy: 'http://127.0.0.1:9', all_proxy: 'http://127.0.0.1:9',
+    NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
 }

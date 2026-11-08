@@ -54,7 +54,7 @@ describe('native adapters', () => {
       harness: 'claude',
       capability: { contextInjection: true },
     });
-    expect(normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'open:prompt', project: { key: 'repo:open', name: 'open' }, properties: { info: { id: 'root' }, message: { role: 'user', sessionID: 'root', content: 'root request' } } })).toMatchObject({ operation: 'capture_root', harness: 'opencode', content: 'root request' });
+    expect(normalizeNativePayload('opencode', { type: 'session.compaction.ended', id: 'open:compact', project: { key: 'repo:open', name: 'open' }, data: { sessionID: 'root', text: 'Host summary <private>secret</private>safe' } })).toMatchObject({ operation: 'guide_post_compact', harness: 'opencode', content: 'Host summary safe' });
   });
 
   it('recovers Claude SessionStart sources with distinct retry-stable keys and context injection', () => {
@@ -133,7 +133,7 @@ describe('native adapters', () => {
 
   it('degrades unsupported capabilities and rejects delegated or inconsistent native identity', () => {
     expect(() => normalizeNativePayload('codex', { hook_event_name: 'Unknown', session_id: 'root', cwd: '/repo' })).toThrow(/unsupported/i);
-    expect(() => normalizeNativePayload('opencode', { event: 'chat.message', eventId: 'child', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'child', parentID: 'root' }, message: { role: 'user', sessionID: 'child', content: 'child' } } })).toThrow(/delegated/i);
+    expect(() => normalizeNativePayload('opencode', { type: 'session.created', id: 'child', project: { key: 'repo:x', name: 'x' }, data: { sessionID: 'child', parentID: 'root' } })).toThrow(/delegated/i);
     expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: '', cwd: '/repo', prompt: 'x', event_id: 'bad' })).toThrow(/identity/i);
     expect(() => normalizeNativePayload('claude', { hook_event_name: 'UserPromptSubmit', session_id: 'root\ninjected', cwd: '/repo', prompt: 'x', event_id: 'bad-line' })).toThrow(/identity/i);
   });
@@ -141,7 +141,7 @@ describe('native adapters', () => {
   it('normalizes one identical root-owned structured summary across all three native hosts', () => {
     const structured = { coverage: { fromSequence: 1, toSequence: 1 }, generator: { kind: 'harness', name: 'fixture' }, claims: [{ kind: 'objective', content: 'Resume safely.', supportIds: ['evidence-1'] }] };
     const normalized = [
-      normalizeNativePayload('opencode', { event: 'experimental.session.compacting', eventId: 'open:summary', project: { key: 'repo:x', name: 'x' }, properties: { info: { id: 'root' }, thothMemSummary: structured } }),
+      normalizeAdapterEvent({ version: 3, harness: 'opencode', intent: 'session.checkpoint_pre_compact', projectKey: 'repo:x', projectName: 'x', rootSessionKey: 'root', eventKey: 'open:summary', summary: structured }),
       normalizeNativePayload('codex', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', turn_id: 'turn-1', thoth_mem_summary: structured }),
       normalizeNativePayload('claude', { hook_event_name: 'PreCompact', session_id: 'root', cwd: '/repo', event_id: 'claude:summary', thoth_mem_summary: structured }),
     ];

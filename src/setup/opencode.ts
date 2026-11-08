@@ -1,7 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+
+import { parse } from 'jsonc-parser';
 
 import { getRuntimeConfigPath, loadRuntimeConfig, persistRuntimeDataDir } from '../config/runtime.js';
 import {
@@ -12,7 +15,7 @@ import {
   updateOpenCodePluginText,
   type OpenCodeConfigOptions,
 } from './opencode-config.js';
-import { inspectOpenCodeSkill, restoreOpenCodeSkill, stageOpenCodeSkill } from './opencode-skills.js';
+import { inspectOpenCodeSkill, restoreOpenCodeSkill } from './opencode-skills.js';
 import { atomicWriteText, isPathWithin } from './transaction.js';
 
 export type OpenCodeSetupMode = 'public' | 'local';
@@ -22,14 +25,16 @@ export interface OpenCodeSetupOptions extends OpenCodeConfigOptions {
   packageRoot?: string;
   dataDir?: string;
   planOnly?: boolean;
+  versionRunner?: () => string | null;
   failAfter?: 'provider' | 'config' | 'skill';
-  interruptAfter?: 'config';
+  interruptAfter?: 'config' | 'receipt';
 }
 
 export interface OpenCodeSetupResult {
   status: 'planned' | 'complete';
   changed: boolean;
   plugin: string;
+  opencodeVersion: string;
   configPath: string;
   skillPath: string;
   providerConfigPath: string;
@@ -47,7 +52,9 @@ interface OpenCodeJournal {
   configPath: string;
   configExisted: boolean;
   configChanged: boolean;
-  priorManagedPlugins: string[];
+  priorManagedPlugins: unknown[];
+  configBeforeText?: string;
+  configAfterText?: string;
   skillPath: string;
   skillExisted: boolean;
   skillChanged: boolean;
@@ -77,7 +84,8 @@ function desiredPlugin(mode: OpenCodeSetupMode, packageRoot: string, version: st
   if (mode === 'public') return `thoth-mem@${version}`;
   const entry = join(packageRoot, 'dist', 'opencode.js');
   if (!existsSync(entry) || !statSync(entry).isFile()) throw new Error('Local OpenCode setup requires an explicit package root with dist/opencode.js');
-  return pathToFileURL(entry).href;
+  // V2 resolves local plugins from package directories, not bundle file URLs.
+  return packageRoot;
 }
 
 function injectFailure(stage: OpenCodeSetupOptions['failAfter'], current: NonNullable<OpenCodeSetupOptions['failAfter']>): void {
@@ -93,7 +101,9 @@ function validateJournal(value: unknown, configDirectory: string, providerConfig
     !isPathWithin(configDirectory, journal.configPath) || !isPathWithin(configDirectory, journal.skillPath) ||
     !isPathWithin(receiptDirectory, journal.skillBackupPath) || journal.providerConfigPath !== providerConfigPath ||
     typeof journal.configChanged !== 'boolean' || typeof journal.skillChanged !== 'boolean' || typeof journal.providerChanged !== 'boolean' ||
-    !Array.isArray(journal.priorManagedPlugins) || journal.priorManagedPlugins.some((entry) => typeof entry !== 'string') ||
+    !Array.isArray(journal.priorManagedPlugins) ||
+    (journal.configBeforeText !== undefined && typeof journal.configBeforeText !== 'string') ||
+    (journal.configAfterText !== undefined && typeof journal.configAfterText !== 'string') ||
     (journal.providerBeforeText !== null && typeof journal.providerBeforeText !== 'string')
   ) throw new Error('OpenCode in-progress receipt is invalid');
   return journal;
@@ -102,12 +112,17 @@ function validateJournal(value: unknown, configDirectory: string, providerConfig
 function restoreManagedConfig(journal: OpenCodeJournal): void {
   if (!existsSync(journal.configPath)) return;
   const current = inspectOpenCodeConfig({ env: { OPENCODE_CONFIG_DIR: journal.configDirectory } });
-  const restored = [...current.plugins.filter((entry) => !isThothMemPluginEntry(entry)), ...journal.priorManagedPlugins];
-  if (!journal.configExisted && restored.length === 0) {
-    rmSync(journal.configPath, { force: true });
+  if (journal.configBeforeText !== undefined && current.text === journal.configAfterText) {
+    if (!journal.configExisted) rmSync(journal.configPath, { force: true });
+    else atomicWriteText(journal.configPath, journal.configBeforeText);
     return;
   }
-  const text = updateOpenCodePluginText(current.text, restored);
+  // Preserve concurrent unrelated edits; old V1 journals restore into the legacy key.
+  const prior = journal.configBeforeText === undefined ? null : parse(journal.configBeforeText) as { plugin?: string[] };
+  const restored = [...current.plugins.filter((entry) => !isThothMemPluginEntry(entry)), ...(prior ? journal.priorManagedPlugins : [])];
+  const priorLegacy = prior ? (prior.plugin ?? []).filter(isThothMemPluginEntry) : journal.priorManagedPlugins.filter((entry): entry is string => typeof entry === 'string');
+  const legacy = [...current.legacyPlugins.filter((entry) => !isThothMemPluginEntry(entry)), ...priorLegacy];
+  const text = updateOpenCodePluginText(current.text, restored, legacy);
   if (text !== current.text) atomicWriteText(journal.configPath, text);
 }
 
@@ -123,17 +138,43 @@ function rollbackJournal(journal: OpenCodeJournal): void {
 function recoverInterruptedSetup(journalPath: string, configDirectory: string, providerConfigPath: string): boolean {
   if (!existsSync(journalPath)) return false;
   const journal = validateJournal(JSON.parse(readFileSync(journalPath, 'utf8')) as unknown, configDirectory, providerConfigPath);
-  rollbackJournal(journal);
+  // A matching durable receipt is the commit point. Finish cleanup rather than
+  // restoring a Skill after the receipt has deliberately relinquished ownership.
+  let committed = false;
+  try {
+    const receipt = JSON.parse(readFileSync(join(configDirectory, '.thoth-mem', 'opencode.json'), 'utf8')) as { schemaVersion?: unknown; operationId?: unknown };
+    committed = receipt.schemaVersion === 2 && receipt.operationId === journal.operationId;
+  } catch { /* No committed receipt: recover the prior owned state. */ }
+  if (committed) rmSync(journal.skillBackupPath, { recursive: true, force: true });
+  else rollbackJournal(journal);
   rmSync(journalPath, { force: true });
   return true;
 }
 
+function installedOpenCodeVersion(): string | null {
+  const result = spawnSync('opencode', ['--version'], {
+    encoding: 'utf8', timeout: 5_000, maxBuffer: 16_384, windowsHide: true,
+    shell: process.platform === 'win32',
+  });
+  return result.status === 0 && !result.error ? result.stdout : null;
+}
+
+function requireOpenCodeVersion(runner: () => string | null): string {
+  let output: string | null = null;
+  try { output = runner(); } catch { /* Missing or failed executable fails closed. */ }
+  const match = /^(?:opencode\s+)?v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/iu.exec(output?.trim() ?? '');
+  if (!match || !(Number(match[1]) > 2 || (Number(match[1]) === 2 && (Number(match[2]) > 2 || (Number(match[2]) === 2 && Number(match[3]) >= 6))))) {
+    throw new Error('OpenCode stable 2.2.6 or later is required; install or upgrade OpenCode and ensure opencode --version works before setup.');
+  }
+  return `${match[1]}.${match[2]}.${match[3]}`;
+}
+
 export function setupOpenCode(options: OpenCodeSetupOptions): OpenCodeSetupResult {
+  const opencodeVersion = requireOpenCodeVersion(options.versionRunner ?? installedOpenCodeVersion);
   const packageRoot = resolve(options.packageRoot ?? defaultPackageRoot());
   const version = packageVersion(packageRoot);
   const plugin = desiredPlugin(options.mode, packageRoot, version);
   const configDirectory = getOpenCodeConfigDirectory(options);
-  const skillSource = join(packageRoot, 'integrations', 'opencode', 'skills', 'thoth-mem');
   const skillPath = join(configDirectory, 'skills', 'thoth-mem');
   const receiptDirectory = join(configDirectory, '.thoth-mem');
   const receiptPath = join(receiptDirectory, 'opencode.json');
@@ -141,28 +182,34 @@ export function setupOpenCode(options: OpenCodeSetupOptions): OpenCodeSetupResul
   const providerConfigPath = getRuntimeConfigPath(options);
   const actions = [
     `converge one OpenCode plugin entry to ${plugin}`,
-    `synchronize the owned global Skill at ${skillPath}`,
+    `remove only an unmodified receipt-owned copied Skill at ${skillPath}; use the packaged Skill`,
     options.dataDir ? `persist provider data directory ${resolve(options.dataDir)}` : 'preserve provider configuration',
-    'restart OpenCode and verify plugin, MCP, Skill, hooks, and recovery',
+    'restart OpenCode and verify native tools, packaged Skill, lifecycle, and recovery',
   ];
 
   if (options.planOnly) {
     const config = inspectOpenCodeConfig(options);
-    inspectOpenCodeSkill(skillSource, skillPath);
+    const skill = inspectOpenCodeSkill(skillPath, receiptPath);
     loadRuntimeConfig(options);
-    return { status: 'planned', changed: false, plugin, configPath: config.path, skillPath, providerConfigPath, receiptPath: null, actions, recovered: false, warnings: [] };
+    return { status: 'planned', changed: false, plugin, opencodeVersion, configPath: config.path, skillPath, providerConfigPath, receiptPath: null, actions, recovered: false, warnings: skill.warnings };
   }
 
   const recovered = recoverInterruptedSetup(journalPath, configDirectory, providerConfigPath);
   const config = inspectOpenCodeConfig(options);
   const wantedPlugins = desiredOpenCodePlugins(config.plugins, plugin);
-  const skill = inspectOpenCodeSkill(skillSource, skillPath);
+  const skill = inspectOpenCodeSkill(skillPath, receiptPath);
   const runtime = loadRuntimeConfig(options);
   const wantedDataDir = options.dataDir ? resolve(options.dataDir) : null;
-  const configCurrent = JSON.stringify(config.plugins) === JSON.stringify(wantedPlugins);
+  const nextConfigText = updateOpenCodePluginText(config.text, wantedPlugins);
+  const configCurrent = nextConfigText === config.text;
+  let receiptCurrent = false;
+  try {
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as { schemaVersion?: unknown; host?: unknown; plugin?: unknown };
+    receiptCurrent = receipt.schemaVersion === 2 && receipt.host === 'opencode' && receipt.plugin === plugin;
+  } catch { /* Missing or stale receipt is repaired. */ }
   const providerCurrent = wantedDataDir === null || (runtime.provider?.dataDir ? resolve(runtime.provider.dataDir) === wantedDataDir : false);
-  if (configCurrent && skill.current && providerCurrent) {
-    return { status: 'complete', changed: false, plugin, configPath: config.path, skillPath, providerConfigPath, receiptPath: existsSync(receiptPath) ? receiptPath : null, actions, recovered, warnings: [] };
+  if (configCurrent && !skill.remove && providerCurrent && receiptCurrent) {
+    return { status: 'complete', changed: false, plugin, opencodeVersion, configPath: config.path, skillPath, providerConfigPath, receiptPath: existsSync(receiptPath) ? receiptPath : null, actions, recovered, warnings: skill.warnings };
   }
 
   const skillBackupPath = join(receiptDirectory, `opencode-skill-backup-${randomUUID()}`);
@@ -176,9 +223,11 @@ export function setupOpenCode(options: OpenCodeSetupOptions): OpenCodeSetupResul
     configExisted: existsSync(config.path),
     configChanged: !configCurrent,
     priorManagedPlugins: config.managedPlugins,
+    configBeforeText: config.text,
+    configAfterText: nextConfigText,
     skillPath,
     skillExisted: existsSync(skillPath),
-    skillChanged: !skill.current,
+    skillChanged: skill.remove,
     skillBackupPath,
     providerConfigPath,
     providerExisted,
@@ -186,45 +235,46 @@ export function setupOpenCode(options: OpenCodeSetupOptions): OpenCodeSetupResul
     providerBeforeText: providerExisted ? readFileSync(providerConfigPath, 'utf8') : null,
   };
   atomicWriteText(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  let committed = false;
 
   try {
     if (!providerCurrent && wantedDataDir) persistRuntimeDataDir(wantedDataDir, options);
     injectFailure(options.failAfter, 'provider');
 
-    const nextConfigText = updateOpenCodePluginText(config.text, wantedPlugins);
     if (nextConfigText !== config.text) atomicWriteText(config.path, nextConfigText);
     injectFailure(options.failAfter, 'config');
     if (options.interruptAfter === 'config') throw new SimulatedOpenCodeInterruption('Simulated OpenCode setup interruption after config');
 
-    if (!skill.current) stageOpenCodeSkill(skillSource, skillPath, skillBackupPath);
+    if (skill.remove) renameSync(skillPath, skillBackupPath);
     injectFailure(options.failAfter, 'skill');
 
     const verifiedConfig = inspectOpenCodeConfig(options);
-    const verifiedSkill = inspectOpenCodeSkill(skillSource, skillPath);
     const verifiedRuntime = loadRuntimeConfig(options);
-    if (JSON.stringify(verifiedConfig.plugins) !== JSON.stringify(wantedPlugins) || !verifiedSkill.current || (wantedDataDir && (!verifiedRuntime.provider?.dataDir || resolve(verifiedRuntime.provider.dataDir) !== wantedDataDir))) {
+    if (JSON.stringify(verifiedConfig.plugins) !== JSON.stringify(wantedPlugins) || verifiedConfig.legacyPlugins.some(isThothMemPluginEntry) || (skill.remove && existsSync(skillPath)) || (wantedDataDir && (!verifiedRuntime.provider?.dataDir || resolve(verifiedRuntime.provider.dataDir) !== wantedDataDir))) {
       throw new Error('OpenCode setup post-state verification failed');
     }
 
     const receipt = {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      operationId: journal.operationId,
       host: 'opencode',
       result: 'complete',
       provenance: options.mode,
       plugin,
       configPath: config.path,
-      skillPath,
-      skillHash: verifiedSkill.sourceHash,
+      skill: 'packaged',
       providerConfigPath,
       dataDir: wantedDataDir,
-      verification: { plugin: true, skill: true, provider: true },
+      verification: { plugin: true, provider: true },
     };
     atomicWriteText(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+    committed = true;
+    if (options.interruptAfter === 'receipt') throw new SimulatedOpenCodeInterruption('Simulated OpenCode setup interruption after receipt');
     rmSync(skillBackupPath, { recursive: true, force: true });
     rmSync(journalPath, { force: true });
-    return { status: 'complete', changed: true, plugin, configPath: config.path, skillPath, providerConfigPath, receiptPath, actions, recovered, warnings: [] };
+    return { status: 'complete', changed: true, plugin, opencodeVersion, configPath: config.path, skillPath, providerConfigPath, receiptPath, actions, recovered, warnings: skill.warnings };
   } catch (error) {
-    if (error instanceof SimulatedOpenCodeInterruption) throw error;
+    if (committed || error instanceof SimulatedOpenCodeInterruption) throw error;
     try {
       rollbackJournal(journal);
       rmSync(journalPath, { force: true });

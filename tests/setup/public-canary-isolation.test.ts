@@ -17,6 +17,7 @@ describe('central catalog and local native setup isolation', () => {
       writeFileSync(sentinel, 'must remain unchanged\n');
       const result = setupOpenCode({
         mode: 'local',
+        versionRunner: () => '2.2.6',
         packageRoot: process.cwd(),
         homeDir: join(root, 'home'),
         env: { OPENCODE_CONFIG_DIR: configDir },
@@ -24,7 +25,7 @@ describe('central catalog and local native setup isolation', () => {
       });
 
       expect(result.status).toBe('complete');
-      expect(result.plugin).toMatch(/^file:\/\//u);
+      expect(result.plugin).toBe(process.cwd());
       expect(catalogs.every((path) => !existsSync(path))).toBe(true);
       expect(readFileSync(sentinel, 'utf8')).toBe('must remain unchanged\n');
       expect(existsSync(join(configDir, '.thoth-mem'))).toBe(true);

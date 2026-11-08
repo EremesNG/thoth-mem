@@ -44,17 +44,17 @@ export function normalizeAdapterEvent(event: AdapterEvent): LifecycleInput {
 export function normalizeNativePayload(harness: NativeHarness, value: unknown): LifecycleInput {
   const payload = object(value, harness);
   if (harness === 'opencode') {
-    const event = required(payload.event, 'event'); const eventKey = required(payload.eventId, 'event key'); const properties = object(payload.properties, 'OpenCode properties'); const info = object(properties.info, 'OpenCode session');
-    if (optional(info.parentID)) throw new Error('Native lifecycle identity is delegated');
-    const rootSessionKey = required(info.id, 'root session'); const message = properties.message ? object(properties.message, 'OpenCode message') : undefined;
-    if (message && optional(message.sessionID) !== rootSessionKey) throw new Error('Stable native root session identity is required');
-    const operations: Record<string, LifecycleInput['operation']> = { 'session.created': 'enroll', 'session.resumed': 'recover', 'chat.message': 'capture_root', 'experimental.session.compacting': 'checkpoint_pre_compact', 'experimental.session.compacted': 'guide_post_compact', 'session.deleted': 'finalize' };
-    const operation = operations[event]; if (!operation || (operation === 'capture_root' && message?.role !== 'user')) throw new Error('Unsupported OpenCode lifecycle event');
-    const directory = optional(info.directory) ?? optional(payload.directory) ?? optional(object(payload.project ?? {}, 'OpenCode project').directory) ?? 'unknown'; const project = projectFrom(directory, object(payload.project ?? {}, 'OpenCode project'));
-    const rawContent = operation === 'capture_root' ? optional(message?.content) : optional(properties.summary ?? properties.content);
-    const content = rawContent ? sanitizePrivateContent(rawContent) : undefined;
-    const summary = structuredSummary(properties.thothMemSummary, operation);
-    return { operation, harness, project, rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), ...(summary ? { summary } : {}), capability: { nativeEvent: event, contextInjection: event === 'experimental.session.compacted' || event === 'session.resumed', modelConsumption: false } };
+    const event = required(payload.type, 'event'); const eventKey = required(payload.id, 'event key'); const data = object(payload.data, 'OpenCode data');
+    if (data.parentID !== undefined) throw new Error('Native lifecycle identity is delegated');
+    // The plugin verifies ancestry before normalizing events without parent metadata.
+    const rootSessionKey = required(data.sessionID, 'root session');
+    const operations: Record<string, LifecycleInput['operation']> = { 'session.created': 'enroll', 'session.compaction.ended': 'guide_post_compact', 'session.deleted': 'finalize' };
+    const operation = operations[event]; if (!operation) throw new Error('Unsupported OpenCode lifecycle event');
+    const location = object(payload.location ?? data.location ?? {}, 'OpenCode location');
+    const directory = optional(location.directory) ?? optional(payload.directory) ?? 'unknown';
+    const project = projectFrom(directory, object(payload.project ?? {}, 'OpenCode project'));
+    const content = operation === 'guide_post_compact' ? sanitizedOptional(data.text) : undefined;
+    return { operation, harness, project, rootSessionKey, eventKey, ...(content ? { content: content.slice(0, 20_000) } : {}), capability: { nativeEvent: event, contextInjection: false, modelConsumption: false } };
   }
   const event = required(payload.hook_event_name, 'event'); const rootSessionKey = required(payload.session_id, 'root session'); const directory = required(payload.cwd, 'project');
   if (harness === 'codex') {

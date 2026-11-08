@@ -12,7 +12,7 @@ const shared = {
   target: 'node22',
   sourcemap: true,
   packages: 'external',
-  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+  banner: { js: "import { createRequire as __thothCreateRequire } from 'node:module'; const require = __thothCreateRequire(import.meta.url);" },
 };
 
 await esbuild.build({ ...shared, entryPoints: [resolve('src/index.ts')], outfile: resolve(outputDirectory, 'index.js') });

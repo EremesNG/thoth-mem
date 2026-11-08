@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 function hashTree(root: string): string {
   if (!existsSync(root) || lstatSync(root).isSymbolicLink() || !statSync(root).isDirectory()) return 'invalid';
@@ -18,25 +18,20 @@ function hashTree(root: string): string {
   return hash.digest('hex');
 }
 
-export function inspectOpenCodeSkill(source: string, destination: string): { sourceHash: string; destinationHash: string; current: boolean } {
-  const sourceHash = hashTree(source);
-  if (sourceHash === 'invalid') throw new Error('Packaged OpenCode Skill source is missing or invalid');
-  const destinationHash = hashTree(destination);
-  return { sourceHash, destinationHash, current: sourceHash === destinationHash };
-}
-
-export function stageOpenCodeSkill(source: string, destination: string, backup: string): void {
-  const staging = join(dirname(destination), `.thoth-mem-skill-staging-${randomUUID()}`);
-  mkdirSync(dirname(destination), { recursive: true });
-  cpSync(source, staging, { recursive: true, errorOnExist: true, dereference: false });
-  if (existsSync(destination)) renameSync(destination, backup);
+/** Only a V1 receipt's exact tree hash grants permission to remove a copied Skill. */
+export function inspectOpenCodeSkill(destination: string, receiptPath: string): { remove: boolean; warnings: string[] } {
+  let exists = false;
+  try { lstatSync(destination); exists = true; } catch { /* No copied Skill. */ }
+  if (!exists) return { remove: false, warnings: [] };
   try {
-    renameSync(staging, destination);
-  } catch (error) {
-    rmSync(staging, { recursive: true, force: true });
-    if (existsSync(backup) && !existsSync(destination)) renameSync(backup, destination);
-    throw error;
-  }
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Record<string, unknown>;
+    if (receipt.schemaVersion === 1 && receipt.host === 'opencode' && receipt.result === 'complete' &&
+        receipt.skillPath === destination && typeof receipt.skillHash === 'string' &&
+        /^[a-f0-9]{64}$/u.test(receipt.skillHash) && hashTree(destination) === receipt.skillHash) {
+      return { remove: true, warnings: [] };
+    }
+  } catch { /* Unowned, malformed receipt, linked or modified tree: leave untouched. */ }
+  return { remove: false, warnings: ['Existing thoth-mem Skill was left untouched (unowned or modified); review and remove it manually to avoid duplicate packaged Skill discovery.'] };
 }
 
 export function restoreOpenCodeSkill(destination: string, backup: string, existed: boolean): void {

@@ -46,7 +46,7 @@ thoth-mem gives every supported harness one durable local memory without turning
 
 ## Install
 
-Requirements: Node.js `>=22.12.0` and a supported harness. Pi setup has no version allowlist or upper version limit: it checks package-manager capabilities and verifies the installed extension and resources. New Pi releases do not require a version override. The reproducible SDK test baseline is `@earendil-works/pi-coding-agent` `1.0.1`; passing setup is not certification of every runtime behavior on future releases.
+Requirements: Node.js `>=22.12.0` and a supported harness (OpenCode stable `>=2.2.6`). Pi setup has no version allowlist or upper version limit: it checks package-manager capabilities and verifies the installed extension and resources. New Pi releases do not require a version override. The reproducible SDK test baseline is `@earendil-works/pi-coding-agent` `1.0.1`; passing setup is not certification of every runtime behavior on future releases.
 
 thoth-mem installs memory tooling and lifecycle integration—not agents or subagents. Add `--plan --json` to any managed `npx` setup command to preview its changes without writing.
 
@@ -54,7 +54,7 @@ thoth-mem installs memory tooling and lifecycle integration—not agents or suba
 | --- | --- | --- |
 | <a href="https://claude.com/product/claude-code"><img src="https://github.com/anthropics.png?size=120" alt="Claude Code" width="48" height="48" /></a><br/>**Claude Code** | Marketplace plugin, native hooks, six-tool MCP registration, and memory skill | `claude plugin marketplace add https://github.com/EremesNG/thoth-plugins.git --scope user`<br/>`claude plugin install thoth-mem@thoth-plugins --scope user`<br/><br/>Managed: `npx --yes thoth-mem@latest setup claude` |
 | <a href="https://github.com/openai/codex"><img src="https://github.com/openai.png?size=120" alt="Codex CLI" width="48" height="48" /></a><br/>**Codex CLI** | Marketplace plugin, native hooks, six-tool MCP registration, and memory skill | `codex plugin marketplace add https://github.com/EremesNG/thoth-plugins.git`<br/>`codex plugin add thoth-mem@thoth-plugins`<br/><br/>Managed: `npx --yes thoth-mem@latest setup codex` |
-| <a href="https://github.com/anomalyco/opencode"><picture><source media="(prefers-color-scheme: dark)" srcset="https://svgl.app/library/opencode-dark.svg"><img src="https://svgl.app/library/opencode.svg" alt="OpenCode" width="48" height="48" /></picture></a><br/>**OpenCode** | Native npm plugin, lifecycle adapter, six-tool MCP surface, and memory skill | `npx --yes thoth-mem@latest setup opencode` |
+| <a href="https://github.com/anomalyco/opencode"><picture><source media="(prefers-color-scheme: dark)" srcset="https://svgl.app/library/opencode-dark.svg"><img src="https://svgl.app/library/opencode.svg" alt="OpenCode" width="48" height="48" /></picture></a><br/>**OpenCode** | V2 npm plugin, five native memory tools plus identity helper, owned Node MCP child, and packaged memory skill | `npx --yes thoth-mem@latest setup opencode` |
 | <a href="https://github.com/earendil-works/pi"><img src="img/pi.svg" alt="Pi" width="48" height="48" /></a><br/>**Pi** | Native package extension, five model-facing tools, lifecycle adapter, and one package-relative six-tool MCP child | `npx --yes thoth-mem@latest setup pi` |
 
 > [!IMPORTANT]
@@ -85,7 +85,9 @@ flowchart LR
 4. Recall combines project isolation, temporal truth, lexical ranking, and a strict character budget.
 5. Every harness receives the same bounded context without introducing another model into the loop.
 
-Pi delivers recovery once as a persisted hidden message on the first root prompt after startup, resume, new, fork, or successful compaction. Reload skips delivery when the active branch already has recovery after its latest compaction. OpenCode adds a persisted synthetic text part to the first root message per plugin process (including resume) and the first after compaction. Neither host puts recovery in the system prompt or refreshes it per prompt, preserving system-prompt cache stability. If memory is unavailable, both deliver locally verified identity first and retry on later root prompts until one verified recovery block is delivered.
+Pi delivers recovery once as a persisted hidden message on the first root prompt after startup, resume, new, fork, or successful compaction. Reload skips delivery when the active branch already has recovery after its latest compaction. OpenCode V2 writes the keyed `thoth-mem-recovery` session instruction entry before the first root request, with durable delivery state preventing rewrites on restart, resume, or compaction. Prompt text and frozen request baselines are unchanged. If memory is unavailable, both hosts deliver locally verified identity first and retry on later root prompts until one verified recovery block is delivered; OpenCode's one replacement becomes an appended instruction update.
+
+OpenCode setup writes an exact-version entry under `plugins` (or an absolute package-root directory for explicit local setup), and registers the packaged Skill without copying it. Since OpenCode skips install scripts, its thin plugin uses literal Node for validated local runtimes or exact-version npx when the SQLite binding is absent.
 
 Automatic capture is limited to verified root prompts and checkpoint evidence, including available host compaction text. It excludes assistant reasoning, arbitrary tool traffic, delegated/subagent output, filesystem sweeps, and full transcripts. Private blocks and recognizable credentials are filtered before content-dependent keys or persistence; do not submit secrets.
 

@@ -42,31 +42,13 @@ Plan mode MUST NOT write configuration, Skills, provider state, receipts, backup
 
 ### Requirement: Setup MUST Merge Only Managed Configuration
 
-OpenCode, Codex, and Claude Code setup MUST preserve their current ownership contracts. Pi setup MUST use Pi's native package manager to inspect, install, repair, and verify only the exact thoth-mem package, MUST record only receipt-owned thoth-mem state, and MUST preserve unrelated Pi packages, extensions, Skills, settings, and files during success or rollback.
+Codex and Claude Code setup MUST preserve their current ownership contracts. OpenCode setup MUST require an installed stable OpenCode version of at least 2.2.6 reported by `opencode --version` before any write, MUST manage exactly one thoth-mem entry under `plugins` while removing managed thoth-mem entries from the legacy `plugin` array, MUST recognize string and `{package, options}` managed entries, MUST preserve unrelated entries, their order, and JSONC comments, MUST NOT copy the memory Skill, and MUST remove only a receipt-owned unmodified previously copied Skill. Pi setup MUST use Pi's native package manager to inspect, install, repair, and verify only the exact thoth-mem package, MUST record only receipt-owned thoth-mem state, and MUST preserve unrelated Pi packages, extensions, Skills, settings, and files during success or rollback.
 
-#### Scenario: US1 - Install thoth-mem natively in Pi 1
+#### Scenario: Setup MUST Merge Only Managed Configuration
 
-- **GIVEN** Pi is installed with the supported package-manager contract
-- **WHEN** `thoth-mem setup pi` runs for the public package
-- **THEN** it asks Pi to install the exact thoth-mem package version globally and reports complete only after the package is independently visible and loadable
-
-#### Scenario: US1 - Install thoth-mem natively in Pi 2
-
-- **GIVEN** a verified local thoth-mem build
-- **WHEN** setup runs with the explicit local package-root option
-- **THEN** it installs that absolute local package through Pi and records its distinct provenance
-
-#### Scenario: US1 - Install thoth-mem natively in Pi 3
-
-- **GIVEN** plan mode or an already verified matching installation
-- **WHEN** setup runs
-- **THEN** plan mode performs zero writes and the repeated real setup performs zero mutations with `changed=false`
-
-#### Scenario: US1 - Install thoth-mem natively in Pi 4
-
-- **GIVEN** unrelated Pi packages and configuration
-- **WHEN** setup installs, repairs, or rolls back thoth-mem
-- **THEN** it mutates only the exact managed thoth-mem package and its receipt-owned state
+- **GIVEN** unrelated Pi packages and an OpenCode 2.2.6 configuration with an unrelated plugin, comments, a legacy `plugin` thoth-mem entry, and a receipt-owned copied Skill
+- **WHEN** `thoth-mem setup pi` and `thoth-mem setup opencode` run, then run again
+- **THEN** Pi mutates only the exact managed thoth-mem package and its receipt-owned state, OpenCode `plugins` holds exactly one exact thoth-mem entry after the unrelated plugin with the legacy entry and owned Skill copy gone and comments intact, both repeated runs report `changed=false`, and OpenCode setup fails before any write when OpenCode is absent or older than 2.2.6 
 
 ### Requirement: Mutating Setup MUST Be Atomic, Receipt-Owned, and Verifiable
 

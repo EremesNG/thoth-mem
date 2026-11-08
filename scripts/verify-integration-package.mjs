@@ -9,6 +9,16 @@ if (JSON.stringify(Object.keys(inventory.harnesses ?? {}).sort()) !== JSON.strin
 for (const [harness, assets] of Object.entries(inventory.harnesses)) for (const asset of assets) { const path = resolve(root, 'integrations', harness, asset); if (!existsSync(path)) errors.push(`${harness}:${asset}`); }
 for (const asset of inventory.publicDistribution?.assets ?? []) if (!existsSync(resolve(root, 'plugin', asset))) errors.push(`public-plugin:${asset}`);
 const packageManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+const openCodeAssets = ['skills/thoth-mem/SKILL.md', 'skills/thoth-mem/references/observation-review.md', 'skills/thoth-mem/references/opencode.md'];
+if (JSON.stringify(inventory.harnesses.opencode) !== JSON.stringify(openCodeAssets)) errors.push('stale-opencode-inventory:assets');
+if (packageManifest.exports?.['.'] !== './dist/opencode.js' || packageManifest.exports?.['./server'] !== './dist/opencode.js') errors.push('stale-opencode-exports');
+if (packageManifest.devDependencies?.['@opencode/plugin'] !== '2.2.6' || packageManifest.dependencies?.['@opencode/plugin']) errors.push('stale-opencode-sdk:type-only');
+const openCodeEntry = resolve(root, 'dist/opencode.js');
+if (!existsSync(openCodeEntry)) errors.push('missing-opencode-entry:dist/opencode.js');
+else {
+  const source = readFileSync(openCodeEntry, 'utf8');
+  if (/(?:from\s*|import\s*\(|require\s*\()\s*["'](?:better-sqlite3|@opencode(?:-ai)?\/)|class MemoryService/u.test(source)) errors.push('stale-opencode-entry:runtime-import');
+}
 if (JSON.stringify(packageManifest.pi) !== JSON.stringify({ extensions: ['./dist/pi.js'], skills: ['./integrations/pi/skills/thoth-mem'] })) errors.push('stale-pi-manifest:resources');
 if (!packageManifest.keywords?.includes('pi-package')) errors.push('stale-pi-manifest:keyword');
 if (packageManifest.peerDependencies?.['@earendil-works/pi-coding-agent'] !== '*' || packageManifest.peerDependencies?.typebox !== '*') errors.push('stale-pi-manifest:peers');
