@@ -11,7 +11,7 @@ description: >-
 
 MCP hosts expose six memory tools:
 `mem_save`, `mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `mem_session`.
-Pi exposes five native tools (the first five above); `mem_session` is hook-only.
+Pi and OpenCode expose the first five natively; `mem_session` is plugin-internal.
 
 ## Default cadence
 

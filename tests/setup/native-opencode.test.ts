@@ -1,12 +1,15 @@
+import * as childProcess from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import { parse } from 'jsonc-parser';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { setupOpenCode } from '../../src/setup/opencode.js';
+
+vi.mock('node:child_process', { spy: true });
 
 const temporaryRoots: string[] = [];
 const packageVersion = (JSON.parse(
@@ -41,6 +44,27 @@ afterEach(() => {
 });
 
 describe('native OpenCode setup', () => {
+  test.each(['win32', 'linux'] as const)('probes the installed version without shell arguments on %s', (platform) => {
+    const state = fixture(temporaryRoot('default-version-probe'));
+    const spawn = vi.spyOn(childProcess, 'spawnSync').mockReturnValue({
+      pid: 1, output: [null, '2.2.6\n', ''], stdout: '2.2.6\n', stderr: '', status: 0, signal: null,
+    });
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+    try {
+      const result = setupOpenCode({ ...state, versionRunner: undefined, mode: 'public', planOnly: true });
+      expect(result).toMatchObject({ status: 'planned', opencodeVersion: '2.2.6' });
+      const options = { encoding: 'utf8', timeout: 5_000, maxBuffer: 16_384, windowsHide: true, shell: platform === 'win32' };
+      if (platform === 'win32') expect(spawn).toHaveBeenCalledExactlyOnceWith('opencode --version', options);
+      else expect(spawn).toHaveBeenCalledExactlyOnceWith('opencode', ['--version'], options);
+      expect(existsSync(state.configDir)).toBe(false);
+      expect(existsSync(state.homeDir)).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+      spawn.mockRestore();
+    }
+  });
+
   test.each(['2.2.5', '2.2.6-beta.1', 'garbage', '', null])('rejects unsupported version %s before even plan writes', (output) => {
     const state = fixture(temporaryRoot('version'));
     expect(() => setupOpenCode({ ...state, mode: 'public', planOnly: true, versionRunner: () => output })).toThrow(/OpenCode.*2\.2\.6/u);

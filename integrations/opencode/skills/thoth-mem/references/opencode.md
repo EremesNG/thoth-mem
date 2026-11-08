@@ -1,7 +1,7 @@
 # OpenCode identity
 
 Use this reference only in OpenCode V2 (≥2.2.6). Native tools are `mem_save`,
-`mem_recall`, `mem_context`, `mem_get`, `mem_project`, and `thoth_mem_root_identity`.
+`mem_recall`, `mem_context`, `mem_get`, `mem_project`, and read-only `thoth_mem_root_identity`.
 The plugin alone calls `mem_session` through its owned Node MCP child; it is not
 model-visible. No host MCP server is registered. The packaged Skill is registered
 through `ctx.skill`, not copied into configuration.
@@ -26,6 +26,8 @@ state in `ctx.storage` prevents rewrites on restart, resume, later prompts, or
 compaction. The host carries the entry into later compaction epochs. Prompt text
 is never changed; no context or system transform is used. Delegated or
 unverifiable sessions receive nothing.
+
+When recovery is empty or unavailable, use `mem_recall` before relying on prior context.
 
 If memory is unavailable, deliver the locally verified identity-only block first,
 then retry on later root prompts until one verified entry replaces it once (at
