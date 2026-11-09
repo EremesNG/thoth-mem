@@ -1,21 +1,72 @@
 name: CI
 on:
-  push: {branches: [main, master]}
-  pull_request: {branches: [main, master]}
+  push: {branches: [master]}
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Unique non-PR groups also prevent queued push runs from being replaced.
+# Release requires a successful push run for each tag's exact SHA.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  verify:
+  static:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with: {run_install: false}
-      - uses: actions/setup-node@v6
-        with: {node-version: 22.13, cache: pnpm}
-      - uses: oven-sh/setup-bun@v2
-        with: {bun-version: 1.3.10}
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
       - run: pnpm run build
-      - run: pnpm test
       - run: pnpm run integration:verify
+
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - run: pnpm run build
+      # The default config covers both unit and integration suites. Avoid the
+      # test script's second build (dist must not be rebuilt concurrently).
+      - name: Run Linux test shard
+        if: runner.os == 'Linux'
+        run: pnpm exec vitest run --config vitest.config.ts --shard=${{ matrix.shard }}/3
+      # Packed installs and native-closure activation run in Linux only.
+      # Keep the remaining packaging regression tests in the Windows suite.
+      - name: Run Windows test shard
+        if: runner.os == 'Windows'
+        run: >-
+          pnpm exec vitest run --config vitest.config.ts --shard=${{ matrix.shard }}/3 --retry=2
+          --exclude=tests/packaging/first-product.test.ts
+          --exclude=tests/integration/public-marketplace-smoke.test.ts
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - run: pnpm run build
       - run: pnpm run integration:smoke
       - run: pnpm run benchmark:fixture
+
+  ci-ok:
+    if: always()
+    needs: [static, test, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          jq -e 'all(.[]; .result == "success")' <<< "$NEEDS_JSON"

@@ -127,9 +127,13 @@ describe('thoth-mem marketplace publication', () => {
       join(process.cwd(), '.github', 'workflows', 'release.yml'),
       'utf8',
     ).replaceAll('\r\n', '\n');
-    const setupNode = workflow.indexOf('uses: actions/setup-node@v6');
+    const setupAction = readFileSync(
+      join(process.cwd(), '.github', 'actions', 'setup', 'action.yml'),
+      'utf8',
+    );
+    const setupNode = workflow.indexOf('uses: ./.github/actions/setup');
     const setupNpm = workflow.indexOf('- run: npm install -g npm@11.19.1');
-    const npmPublish = workflow.indexOf('- run: npm publish --ignore-scripts');
+    const npmPublish = workflow.indexOf('- name: Publish to npm');
     const createRelease = workflow.indexOf('- name: Create GitHub release');
     const createToken = workflow.indexOf('- name: Create marketplace token');
     const publishMarketplace = workflow.indexOf(
@@ -137,12 +141,42 @@ describe('thoth-mem marketplace publication', () => {
     );
 
     expect(setupNode).toBeGreaterThan(-1);
+    expect(setupAction).toContain('uses: actions/setup-node@v6');
+    expect(setupAction).toContain('pnpm install --frozen-lockfile');
     expect(setupNpm).toBeGreaterThan(setupNode);
     expect(workflow.slice(setupNode, setupNpm)).toContain('node-version: 22.14');
     expect(npmPublish).toBeGreaterThan(setupNpm);
     expect(createRelease).toBeGreaterThan(npmPublish);
     expect(createToken).toBeGreaterThan(createRelease);
     expect(publishMarketplace).toBeGreaterThan(createToken);
+    expect(workflow.slice(npmPublish, createRelease)).toContain(
+      'run: npm publish --ignore-scripts',
+    );
+
+    const waitCi = workflow.indexOf('- name: Wait for CI');
+    expect(waitCi).toBeGreaterThan(workflow.indexOf('pnpm run benchmark:fixture'));
+    expect(waitCi).toBeLessThan(npmPublish);
+    const gate = workflow.slice(waitCi, npmPublish);
+    expect(workflow).toContain('actions: read');
+    expect(gate).toContain('git merge-base --is-ancestor "$HEAD_SHA" origin/master');
+    expect(gate).toContain(
+      'actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&event=push',
+    );
+    expect(gate).toContain('.head_branch == "master" and .head_sha == $sha');
+    expect(gate).toContain('deadline=$((SECONDS + 2700))');
+    expect(gate).toContain('"$conclusion" = "success"');
+    expect(gate).toContain('gh run view');
+    expect(gate).toContain('.conclusion == "failure" or .conclusion == "cancelled"');
+    for (const step of [
+      workflow.slice(npmPublish, createRelease),
+      workflow.slice(createRelease, createToken),
+      workflow.slice(createToken, publishMarketplace),
+      workflow.slice(publishMarketplace),
+    ]) {
+      expect(step).toContain(
+        `if: ${workflowExpression("steps.wait-ci.outcome == 'success'")}`,
+      );
+    }
 
     const tokenStep = workflow.slice(createToken, publishMarketplace);
     expect(tokenStep).toContain('uses: actions/create-github-app-token@v3');

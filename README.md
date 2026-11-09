@@ -134,9 +134,11 @@ mem_get only for selected stable IDs
 | Inspect timelines, summaries, observations, or project state | `mem_project` |
 | Record verified root lifecycle events and supported summaries | `mem_session` |
 
-The MCP server exposes exactly these six tools. Pi exposes every tool except `mem_session` as a native model-facing tool; `mem_session` is hook-owned and called only by the extension through its MCP child. OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool; it is session metadata, not a memory operation. Generic MCP connections attribute sessionless saves to a server-assigned connection session, not a verified native root session.
+The MCP server exposes exactly these six tools. Pi and OpenCode expose every tool except `mem_session` as a native model-facing tool; `mem_session` is integration-owned and called only by the lifecycle adapter through its MCP child. OpenCode additionally exposes the read-only native `thoth_mem_root_identity` tool; it is session metadata, not a memory operation. Generic MCP connections attribute sessionless saves to a server-assigned connection session, not a verified native root session.
 
 Tool text is valid JSON capped at 20,000 characters and matches `structuredContent`. Oversized results clip long strings, then drop trailing array items if needed, with `payload_truncated` first in `warnings`; irreducible results return `output_too_large`. Narrow requests when needed. Pi never slices tool text: unexpected over-cap text becomes a `thoth-mem.pi.output_truncated` JSON notice with narrowing guidance.
+
+In Pi, memory tool cards render through the Thoth render kit when one is available, honoring the `pi-thoth-theme` tool density and its expanded/collapsed layouts. Without a compatible kit, Pi keeps the built-in frames; no extra dependency is required.
 
 <details>
 <summary><strong>Temporal history, summaries, and observation review</strong></summary>
@@ -232,7 +234,7 @@ The importer fingerprints its inputs, creates a verified backup and isolated can
 If memory stays unavailable after an upgrade, look for these host diagnostics:
 
 - **Pi:** `` thoth-mem degraded: pi_mcp_startup_timeout — the memory server did not start in time; if memory stays unavailable, run `thoth-mem migrate` `` (at most once per session). Other failures retain codes such as `pi_lifecycle_request_failed`.
-- **OpenCode logs:** `` OpenCode lifecycle degraded: node_lifecycle_timeout — memory did not respond in time; if memory stays unavailable, run `thoth-mem migrate` `` (once per plugin session), or `OpenCode lifecycle degraded: node_lifecycle_nonzero_exit — <bounded stderr tail>`.
+- **OpenCode logs:** `[thoth-mem] OpenCode bridge degraded: <code>`, where `<code>` is `opencode_mcp_startup_timeout`, `opencode_mcp_request_failed`, or `lifecycle_request_failed_or_timed_out`. A timeout alone does not mean a migration is pending; if memory stays unavailable, run `thoth-mem migrate`.
 - **Codex / Claude Code hook stderr:** `thoth-mem public plugin: Lifecycle failed: SQLite migration revision A→B failed: …`, including the observed failure and the `thoth-mem migrate` recommendation.
 
 A timeout alone does not prove a migration is pending. To complete any pending migrations outside host time limits, run:
