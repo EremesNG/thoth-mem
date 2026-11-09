@@ -1,3 +1,6 @@
 # Distribution hashes and synchronized copies must use identical bytes on every OS.
 plugin/** text=auto eol=lf
 integrations/** text=auto eol=lf
+
+# Immutable benchmark evidence is validated against raw-byte SHA-256 hashes.
+benchmarks/results/** text=auto eol=lf

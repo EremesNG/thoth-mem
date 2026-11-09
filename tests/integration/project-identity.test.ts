@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,6 +13,15 @@ const execFileAsync = promisify(execFile);
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync('git', ['-C', directory, ...args], { encoding: 'utf8' }).trim();
+}
+
+function windowsShortPath(directory: string): string {
+  return execFileSync('cmd.exe', ['/d', '/c', 'for %I in ("%THOTH_TEST_PATH%") do @echo %~sI'], {
+    encoding: 'utf8',
+    env: { ...process.env, THOTH_TEST_PATH: directory },
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  }).trim();
 }
 
 function repository(root: string, name: string): string {
@@ -98,7 +107,7 @@ describe('local project identity', () => {
   });
 
   it('publishes one Git identity shared by worktrees and preserved by a repository move', () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-project-id-'));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'thoth-project-id-')));
     try {
       const main = repository(root, 'main repo');
       const worktree = join(root, 'linked worktree');
@@ -127,6 +136,40 @@ describe('local project identity', () => {
       const relocated = join(destination, 'relocated repository');
       renameSync(moved, relocated);
       expect(resolveLocalProjectIdentity(relocated).key).toBe(first.key);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'win32')('canonicalizes short-path Git workspaces to the same ordered worktree aliases', ({ skip }) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'thoth-project-short-git-')));
+    try {
+      const shortRoot = windowsShortPath(root);
+      if (shortRoot === root) skip('8.3 path names are unavailable on this volume');
+      const main = repository(root, 'main repo');
+      const worktree = join(root, 'linked worktree');
+      git(main, 'worktree', 'add', '--quiet', '-b', 'linked-test', join(shortRoot, 'linked worktree'));
+
+      const first = resolveLocalProjectIdentity(main);
+      expect(first.aliases).toEqual([
+        `path:${main.replaceAll('\\', '/')}`,
+        `path:${worktree.replaceAll('\\', '/')}`,
+      ]);
+      expect(resolveLocalProjectIdentity(join(shortRoot, 'main repo'))).toEqual(first);
+      expect(resolveLocalProjectIdentity(join(shortRoot, 'linked worktree'))).toEqual({ ...first, rootHint: worktree });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'win32')('uses one non-Git identity for short and long workspace paths', ({ skip }) => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'thoth-project-short-path-')));
+    try {
+      const shortRoot = windowsShortPath(root);
+      if (shortRoot === root) skip('8.3 path names are unavailable on this volume');
+      const expected = { key: `path:${root.replaceAll('\\', '/')}`, name: basename(root), aliases: [], rootHint: root };
+      expect(resolveLocalProjectIdentity(root)).toEqual(expected);
+      expect(resolveLocalProjectIdentity(shortRoot)).toEqual(expected);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -183,7 +226,7 @@ describe('local project identity', () => {
   });
 
   it('uses an exact normalized path only for a verified non-Git workspace', () => {
-    const root = mkdtempSync(join(tmpdir(), 'thoth-non-git-'));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'thoth-non-git-')));
     try {
       expect(resolveLocalProjectIdentity(root)).toEqual({
         key: `path:${root.replaceAll('\\', '/')}`,

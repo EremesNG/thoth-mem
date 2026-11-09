@@ -87,7 +87,10 @@ function worktreePaths(directory: string): string[] {
   const paths = output
     .split('\0')
     .filter((field) => field.startsWith('worktree '))
-    .map((field) => normalizePath(field.slice('worktree '.length)));
+    .map((field) => {
+      const path = field.slice('worktree '.length);
+      return normalizePath(existsSync(path) ? realpathSync.native(path) : path);
+    });
   return [...new Set(paths)];
 }
 
@@ -96,7 +99,8 @@ export function resolveLocalProjectIdentity(directory: string, options: ProjectI
     const normalized = normalizePath(directory);
     return { key: `path:${normalized}`, name: basename(normalized), aliases: [], rootHint: resolve(directory) };
   }
-  const root = realpathSync(resolve(directory));
+  // The native API also expands Windows 8.3 names to a stable long path.
+  const root = realpathSync.native(resolve(directory));
   if (!statSync(root).isDirectory()) throw new Error('Project workspace must be a directory');
   const insideWorktree = runGit(root, ['rev-parse', '--is-inside-work-tree'], true);
   if (insideWorktree === null || insideWorktree.trim() !== 'true') {
@@ -105,7 +109,7 @@ export function resolveLocalProjectIdentity(directory: string, options: ProjectI
 
   const commonOutput = runGit(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (commonOutput === null) throw new Error('Git common directory is unavailable');
-  const commonDirectory = realpathSync(resolve(root, commonOutput.trim()));
+  const commonDirectory = realpathSync.native(resolve(root, commonOutput.trim()));
   if (!statSync(commonDirectory).isDirectory()) throw new Error('Git common directory is invalid');
   const markerPath = join(commonDirectory, PROJECT_ID_MARKER);
   if (dirname(markerPath) !== commonDirectory) throw new Error('Git project identity marker escaped its boundary');
