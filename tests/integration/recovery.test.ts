@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LifecycleResult } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { identityOnlyRecovery, recoveryWithProvenance, verifiedRecovery } from '../../src/integration/recovery.js';
+import { resolveLocalProjectIdentity } from '../../src/integration/project-identity.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -15,7 +16,7 @@ function resultFixture(withMemory = true): { result: LifecycleResult; cwd: strin
   const cwd = mkdtempSync(join(tmpdir(), 'thoth-recovery-')); roots.push(cwd);
   const service = new MemoryService({ databasePath: ':memory:' });
   try {
-    const project = { key: `path:${cwd.replaceAll('\\', '/')}`, name: cwd.split(/[\\/]/u).at(-1)! };
+    const project = resolveLocalProjectIdentity(cwd);
     if (withMemory) service.save({ project, evidence: { kind: 'explicit_save', content: 'support' }, memory: { kind: 'decision', title: 'Decision', content: 'Use the verified path.' } });
     service.lifecycle({ operation: 'enroll', harness: 'pi', project, rootSessionKey: 'session-1', eventKey: 'enroll' });
     return { result: service.lifecycle({ operation: 'recover', harness: 'pi', project, rootSessionKey: 'session-1', eventKey: 'recover' }), cwd };

@@ -127,14 +127,14 @@ function localGitState(directory) {
   if (common.error || common.status !== 0) return { kind: 'unavailable' };
   const commonDirectory = resolve(directory, common.stdout.trim());
   if (!existsSync(commonDirectory) || !statSync(commonDirectory).isDirectory()) return { kind: 'unavailable' };
-  return { kind: 'git', commonDirectory: realpathSync(commonDirectory) };
+  return { kind: 'git', commonDirectory: realpathSync.native(commonDirectory) };
 }
 
 function localProjectKey(payload) {
   if (!isSafeIdentityValue(payload?.cwd)) return undefined;
   const directory = resolve(payload.cwd);
   if (!existsSync(directory)) return `path:${normalizeProjectPath(directory)}`;
-  const root = realpathSync(directory);
+  const root = realpathSync.native(directory);
   if (!statSync(root).isDirectory()) return undefined;
   const git = localGitState(root);
   if (git.kind === 'unavailable') return undefined;

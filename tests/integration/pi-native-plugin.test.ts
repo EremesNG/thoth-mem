@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { LifecycleInput, LifecycleResult } from '../../src/memory-core/contracts.js';
 import { MemoryService } from '../../src/memory-core/service.js';
 import { createPiExtension } from '../../src/integration/pi/index.js';
+import { resolveLocalProjectIdentity } from '../../src/integration/project-identity.js';
 import { createPiMcpClient, PiMcpStartupTimeoutError, type PiMcpClient } from '../../src/integration/pi/mcp-client.js';
 import { createServer, SERVER_INSTRUCTIONS } from '../../src/server.js';
 import { createToolHandlers, MEMORY_INSTRUCTION_SENTENCES, MEMORY_TOOL_CATALOG } from '../../src/tools/index.js';
@@ -617,7 +618,7 @@ describe('Pi native extension', () => {
   it('forwards distinct compaction summaries once per identity and delivers the returned recovery without a refresh', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'thoth-pi-summaries-')); roots.push(cwd);
     const service = new MemoryService({ databasePath: ':memory:' });
-    const project = { key: `path:${cwd.replaceAll('\\', '/')}`, name: cwd.split(/[\\/]/u).at(-1)! };
+    const project = resolveLocalProjectIdentity(cwd);
     const previous = { harness: 'claude' as const, project, rootSessionKey: 'previous' };
     const handlers = new Map<string, (event: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> | unknown>();
     const calls: Record<string, unknown>[] = [];

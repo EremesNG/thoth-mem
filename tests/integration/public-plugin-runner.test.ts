@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -16,7 +16,7 @@ const packageVersion = (JSON.parse(
 ) as { version: string }).version;
 
 function projectFixture(root: string): { path: string; key: string } {
-  const path = join(root, 'fixture');
+  const path = join(realpathSync.native(root), 'fixture');
   return { path, key: `path:${path.replaceAll('\\', '/')}` };
 }
 
@@ -24,7 +24,7 @@ function createNpxShim(root: string): { command: string; capture: string } {
   const runtime = join(root, 'fake runtime.mjs');
   const capture = join(root, 'captured args.json');
   writeFileSync(runtime, `
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 writeFileSync(process.env.CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));
 const payload = JSON.parse(readFileSync(0, 'utf8'));
@@ -34,7 +34,7 @@ if (process.env.FAIL_RUNTIME === '1') {
 }
 const root = process.env.IDENTITY_ROOT ?? 'root';
 const project = process.env.IDENTITY_PROJECT ?? 'fixture';
-const projectKey = process.env.IDENTITY_PROJECT_KEY ?? 'path:' + resolve(payload.cwd).replaceAll('\\\\', '/');
+const projectKey = process.env.IDENTITY_PROJECT_KEY ?? 'path:' + (existsSync(payload.cwd) ? realpathSync.native(payload.cwd) : resolve(payload.cwd)).replaceAll('\\\\', '/');
 const content = process.env.RECOVERY_CONTENT ?? 'Use marketplace memory.';
 const summaryMode = process.env.SUMMARY_RECOVERY === '1';
 const context = [
@@ -305,7 +305,7 @@ describe('public plugin runner', () => {
       const workspace = join(root, 'plain workspace');
       mkdirSync(workspace);
       const shim = createNpxShim(root);
-      const projectKey = `path:${workspace.replaceAll('\\', '/')}`;
+      const projectKey = `path:${realpathSync.native(workspace).replaceAll('\\', '/')}`;
       const result = spawnSync(process.execPath, [runner, '--harness', 'codex'], {
         cwd: tmpdir(),
         input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'root', cwd: workspace, source: 'startup' }),

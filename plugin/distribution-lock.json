@@ -7,7 +7,7 @@
     "plugin/codex.mcp.json": "8dbe27a78f01e335049f2050b0733d434f2c32c90cb4cd1e39f9346f72c45bc1",
     "plugin/hooks/codex-hooks.json": "aeaf59bfc1a0d04ce0739b962d0d324fb2c376f0c084279c95b013794264d0b7",
     "plugin/hooks/hooks.json": "88bb6801cc76b38b84bfa98957eccbbb724bc538c3ef856b9a0f3ec76690b2b5",
-    "plugin/runners/public-runner.mjs": "93d0d240c58563324cd07960c3195e4fb632b4701f0ac5d02621e6ee5c736532",
+    "plugin/runners/public-runner.mjs": "310ffa36e841ba864743db43622d205fc4b0fbccebbe4b92a5763288957055aa",
     "plugin/runtime.json": "f67170f27bd3c63f66b4211c190d10907690daf56528fba2636949dd89696d14",
     "plugin/skills/thoth-mem/SKILL.md": "b8264cb97ece4692bef00ab5dc366d8ddc416940a89e7f87867489de0b0926e3",
     "plugin/skills/thoth-mem/references/claude-code.md": "6db493777b74c38be8cb7281f51f61801e7a7c043a176a60fc23b18db4693b0e",
