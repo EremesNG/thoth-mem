@@ -11,8 +11,52 @@ const COLLAPSED_LINES = 8;
 const MAX_SUMMARY_CODE_POINTS = 240;
 const ICON = '◆';
 
-interface RenderState { startedAt?: number; finishedAt?: number; hasResult?: boolean; callComponent?: Component }
-interface RenderContext { state?: RenderState; executionStarted?: boolean; isError?: boolean }
+interface RenderState {
+  startedAt?: number;
+  finishedAt?: number;
+  hasResult?: boolean;
+  hasAnyResult?: boolean;
+  callComponent?: Component;
+  args?: Record<string, unknown>;
+  expanded?: boolean;
+  isError?: boolean;
+}
+interface RenderContext { state?: RenderState; executionStarted?: boolean; isError?: boolean; expanded?: boolean }
+interface CardOptions {
+  surface: 'tool';
+  expanded: boolean;
+  part: 'full' | 'start' | 'end';
+  title?: string;
+  body: string[];
+  footer?: string;
+  status: 'running' | 'completed' | 'failed';
+  context: RenderContext;
+  isError: boolean;
+  isSuccess: boolean;
+  row: { title: string; summary: string; tail: string[]; body: string[] };
+}
+const RENDER_KIT_KEY = Symbol.for('thoth-agents.pi-core.render-kit.v1');
+
+/** Discover on every render; foreign registrations and cards must never break Pi. */
+function withRenderKit(theme: Theme, fallback: Component, options: () => CardOptions): Component {
+  return {
+    render(width) {
+      const safe = Math.max(0, Math.floor(width));
+      if (safe === 0) return [];
+      try {
+        const registry = globalThis as typeof globalThis & { [RENDER_KIT_KEY]?: unknown };
+        const kit = asRecord(asRecord(registry[RENDER_KIT_KEY])?.kit);
+        if (kit?.version === 1 && typeof kit.card === 'function') {
+          return kit.card(theme, options(), safe) as string[];
+        }
+      } catch {
+        // Preserve the standalone frame even if kit lookup or rendering throws.
+      }
+      return fallback.render(safe);
+    },
+    invalidate() { fallback.invalidate?.(); },
+  };
+}
 interface RenderResult { content?: Array<{ type: string; text?: string }>; details?: unknown }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -125,6 +169,22 @@ export function summarizeCall(tool: MemoryToolName, args: Record<string, unknown
   return escapeControls(Array.from(parts.join('  ')).slice(0, MAX_SUMMARY_CODE_POINTS).join(''));
 }
 
+function summarizeRowCall(tool: MemoryToolName, args: Record<string, unknown> | undefined): string {
+  if (tool !== 'mem_context') return summarizeCall(tool, args);
+  return summarizeCall(tool, { ...args, project_key: undefined, project_name: undefined });
+}
+
+function resultTail(details: unknown, count: string | undefined): string[] {
+  const data = asRecord(asRecord(details)?.data);
+  if (count) return [count.replace(/\+$/u, ''), ...(data?.hasMore === true ? ['+more'] : [])];
+  const record = asRecord(data?.record) ?? asRecord(data?.memory) ?? asRecord(data?.observation) ?? asRecord(data?.summary) ?? asRecord(data?.evidence);
+  const id = shortId(record?.id);
+  if (id) return [escapeControls(id)];
+  const recovery = asRecord(data?.recovery);
+  if (recovery) return [`${Array.isArray(recovery.selectedRecordIds) ? recovery.selectedRecordIds.length : 0} recovered`];
+  return [];
+}
+
 function itemLine(item: Record<string, unknown>): string | undefined {
   const label = text(item.title) ?? text(item.snippet) ?? text(item.name);
   const kind = text(item.kind) ?? text(item.recordType);
@@ -179,11 +239,15 @@ export function createToolRenderers(tool: MemoryToolName) {
     renderShell: 'self' as const,
     renderCall(args: Record<string, unknown>, theme: Theme, context: RenderContext): Component {
       const state = context?.state;
+      if (state) {
+        state.args = args;
+        state.expanded = context.expanded ?? state.expanded ?? false;
+      }
       if (state && context.executionStarted && !state.startedAt) state.startedAt = Date.now();
       const isError = Boolean(context?.isError);
       const summary = summarizeCall(tool, args);
       // Read the shared state at render time: the result invalidates this component.
-      const callComponent = component((width) => {
+      const fallback = component((width) => {
         const done = Boolean(state?.hasResult);
         const time = elapsed(state);
         const running = context?.executionStarted && !done ? [theme.fg('dim', 'running…'), time ? theme.fg('dim', time) : ''].filter(Boolean).join(theme.fg('dim', ' · ')) : undefined;
@@ -191,11 +255,31 @@ export function createToolRenderers(tool: MemoryToolName) {
         const lines = [rule(theme, '╭', '╮', title, width, isError), ...(summary ? [row(theme, theme.fg('dim', summary), width, isError)] : [])];
         return done ? [...lines, rule(theme, '├', '┤', 'Result', width, isError, 'dim')] : [...lines, rule(theme, '╰', '╯', running, width, isError)];
       });
+      const callComponent = withRenderKit(theme, fallback, () => {
+        const done = Boolean(state?.hasResult);
+        const failed = done && Boolean(state?.isError ?? context?.isError);
+        return {
+          surface: 'tool', expanded: context?.expanded ?? state?.expanded ?? false,
+          part: state?.hasAnyResult ? 'start' : 'full',
+          title: tool, body: summary ? [theme.fg('dim', summary)] : [],
+          status: done ? failed ? 'failed' : 'completed' : 'running', context,
+          isError: failed, isSuccess: done && !failed,
+          row: { title: tool, summary: summarizeRowCall(tool, args), tail: [], body: [] },
+        };
+      });
       if (state) state.callComponent = callComponent;
       return callComponent;
     },
-    renderResult(result: RenderResult, options: ToolRenderResultOptions, theme: Theme, context: RenderContext): Component {
+    renderResult(result: RenderResult, options: Omit<ToolRenderResultOptions, 'expanded'> & { expanded?: boolean }, theme: Theme, context: RenderContext): Component {
       const state = context?.state;
+      const expanded = options.expanded ?? context?.expanded ?? false;
+      if (state) {
+        // Split kit cards as soon as a partial result owns the result slot;
+        // hasResult stays terminal-only to preserve standalone frame output.
+        state.hasAnyResult = true;
+        state.expanded = expanded;
+        state.isError = Boolean(context?.isError);
+      }
       if (state && !options.isPartial) {
         state.hasResult = true;
         state.finishedAt ??= Date.now();
@@ -205,14 +289,33 @@ export function createToolRenderers(tool: MemoryToolName) {
       const raw = (result?.content ?? []).filter((block) => block?.type === 'text').map((block) => block.text ?? '').join('\n');
       const { lines, count } = summarizeResult(result?.details, raw);
       const time = elapsed(state);
-      return component((width) => {
-        const visible = options.expanded ? lines : lines.slice(0, COLLAPSED_LINES);
+      const resultBody = (showAll: boolean | undefined): string[] => {
+        const visible = showAll ? lines : lines.slice(0, COLLAPSED_LINES);
         const body = visible.map((line) => theme.fg(isError ? 'error' : 'toolOutput', escapeControls(line)));
-        if (!options.expanded && lines.length > COLLAPSED_LINES) body.push(theme.fg('dim', `… ${lines.length - COLLAPSED_LINES} more lines · ctrl+o to expand`));
+        if (!showAll && lines.length > COLLAPSED_LINES) body.push(theme.fg('dim', `… ${lines.length - COLLAPSED_LINES} more lines · ctrl+o to expand`));
         if (body.length === 0) body.push(theme.fg('dim', '(no output)'));
-        const status = options.isPartial ? theme.fg('dim', 'running…') : isError ? theme.fg('error', 'Error') : theme.fg('success', 'Done');
+        return body;
+      };
+      const label = options.isPartial ? 'running…' : isError ? 'Error' : 'Done';
+      const fallback = component((width) => {
+        const body = resultBody(options.expanded);
+        const status = theme.fg(options.isPartial ? 'dim' : isError ? 'error' : 'success', label);
         const footer = [status, time ? theme.fg('dim', time) : '', count ? theme.fg('dim', count) : ''].filter(Boolean).join(theme.fg('dim', ' · '));
         return [...body.map((line) => row(theme, line, width, isError)), rule(theme, '╰', '╯', footer, width, isError)];
+      });
+      return withRenderKit(theme, fallback, () => {
+        const status = options.isPartial ? 'running' : isError ? 'failed' : 'completed';
+        const body = resultBody(expanded);
+        const footer = [label, time, count].filter(Boolean).join(' · ');
+        return {
+          surface: 'tool', expanded, part: 'end', body, footer, status, context,
+          isError: status === 'failed', isSuccess: status === 'completed',
+          row: {
+            title: tool, summary: summarizeRowCall(tool, state?.args),
+            tail: options.isPartial || isError ? [] : resultTail(result.details, count),
+            body: [escapeControls((status === 'failed' ? raw.split('\n')[0] || lines[0] : lines[0]) ?? '')].filter(Boolean),
+          },
+        };
       });
     },
   };
